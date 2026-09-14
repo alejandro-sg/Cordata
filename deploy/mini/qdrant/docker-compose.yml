@@ -1,0 +1,13 @@
+services:
+  sierralab-agent-qdrant:
+    container_name: sierralab-agent-qdrant
+    image: docker.io/qdrant/qdrant:latest
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - sierralab-agent-qdrant-data:/qdrant/storage
+
+volumes:
+  sierralab-agent-qdrant-data:

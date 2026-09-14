@@ -1,0 +1,13 @@
+backend/.venv/
+backend/__pycache__/
+backend/.env
+frontend/node_modules/
+frontend/.next/
+
+# Runtime/local state, not source — regenerates or accumulates per machine.
+backend/sessions/
+backend/workspace/
+backend/repl_state/
+frontend/tsconfig.tsbuildinfo
+.memsearch/
+**/.DS_Store

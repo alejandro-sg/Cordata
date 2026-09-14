@@ -1,0 +1,632 @@
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+.app-layout {
+  display: flex;
+  height: 100vh;
+}
+
+.chat-pane {
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-pane-inner {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.chat-pane-chat {
+  flex: 1;
+  min-height: 0;
+}
+
+.queued-message {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  border-top: 1px solid #e2e2e2;
+  background: #fffbe6;
+  font-size: 12px;
+}
+
+.app-layout.dark .queued-message {
+  background: #3e3d32;
+  border-top-color: #49483e;
+}
+
+.queued-message-label {
+  color: #888;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.app-layout.dark .queued-message-label {
+  color: #a89f85;
+}
+
+.queued-message-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queued-message-cancel {
+  border: none;
+  background: none;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  color: #888;
+  padding: 0 4px;
+}
+
+.app-layout.dark .queued-message-cancel {
+  color: #f8f8f2;
+}
+
+.mention-autocomplete {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  margin: 0 16px 8px;
+  border: 1px solid #e2e2e2;
+  border-radius: 8px;
+  background: #fff;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.app-layout.dark .mention-autocomplete {
+  background: #2b2a25;
+  border-color: #49483e;
+}
+
+.mention-autocomplete-item {
+  text-align: left;
+  border: none;
+  background: none;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: ui-monospace, monospace;
+  cursor: pointer;
+  color: inherit;
+}
+
+.mention-autocomplete-item:hover {
+  background: #f0f0f0;
+}
+
+.app-layout.dark .mention-autocomplete-item:hover {
+  background: #3e3d32;
+}
+
+.thread-sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #e2e2e2;
+  background: #fafafa;
+  /* Flex items default to min-height: auto, so without this the sidebar
+     grows to fit every thread instead of being clipped to the viewport —
+     .thread-sidebar-list's own overflow-y:auto only works once its parent
+     is actually height-constrained. Without it, enough threads pushes the
+     settings footer below the visible window with no way to scroll to it. */
+  min-height: 0;
+}
+
+.thread-sidebar-new {
+  margin: 10px;
+  padding: 8px 10px;
+  border: 1px solid #d0d0d0;
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+}
+
+.thread-sidebar-new:hover {
+  background: #f0f0f0;
+}
+
+.thread-sidebar-list {
+  overflow-y: auto;
+  flex: 1;
+}
+
+.thread-sidebar-empty {
+  padding: 0 12px;
+  font-size: 12px;
+  color: #888;
+}
+
+.thread-sidebar-item {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  text-align: left;
+  padding: 8px 12px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  gap: 2px;
+}
+
+.thread-sidebar-item:hover {
+  background: #f0f0f0;
+}
+
+.thread-sidebar-item.active {
+  background: #e6e6ff;
+}
+
+.thread-sidebar-name {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.thread-sidebar-time {
+  font-size: 11px;
+  color: #888;
+}
+
+.thread-sidebar-footer {
+  border-top: 1px solid #e2e2e2;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.thread-sidebar-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* Monokai, applied to our own chrome (sidebar, page chrome). CopilotKit's
+   own chat component colors come from a shared Tailwind color-scale token
+   set reused across its whole tree — reskinning those globally to Monokai
+   risks breaking contrast/legibility in parts of the UI we don't render
+   ourselves, so its dark mode (already reasonable) is left as-is. */
+.app-layout.dark {
+  background: #272822; /* monokai background */
+  color: #f8f8f2; /* monokai foreground */
+}
+
+.app-layout.dark .thread-sidebar {
+  background: #2d2e27;
+  border-right-color: #49483e;
+}
+
+.app-layout.dark .thread-sidebar-new {
+  background: #3e3d32;
+  border-color: #75715e;
+  color: #f8f8f2;
+}
+
+.app-layout.dark .thread-sidebar-new:hover {
+  background: #49483e;
+}
+
+.app-layout.dark .thread-sidebar-item:hover {
+  background: #3e3d32;
+}
+
+.app-layout.dark .thread-sidebar-item.active {
+  background: #49483e;
+  box-shadow: inset 3px 0 0 #a6e22e;
+}
+
+.app-layout.dark .thread-sidebar-name {
+  color: #f8f8f2;
+}
+
+.app-layout.dark .thread-sidebar-time,
+.app-layout.dark .thread-sidebar-empty {
+  color: #75715e;
+}
+
+.app-layout.dark .thread-sidebar-footer {
+  border-top-color: #49483e;
+}
+
+.approval-card {
+  border: 1px solid #d0d0d0;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 4px 0;
+  background: #fffbe6;
+}
+
+.approval-card-tool {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.approval-card-summary {
+  font-size: 13px;
+  margin: 6px 0;
+  word-break: break-word;
+}
+
+.approval-card-code {
+  font-size: 12px;
+  background: #1e1e1e;
+  color: #f8f8f2;
+  padding: 8px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 6px 0;
+}
+
+.approval-card-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.approval-card-approve,
+.approval-card-deny {
+  border: none;
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.approval-card-approve {
+  background: #2f9e44;
+  color: white;
+}
+
+.approval-card-deny {
+  background: #e03131;
+  color: white;
+}
+
+.approval-card-waiting {
+  font-size: 12px;
+  color: #888;
+}
+
+.approval-card-done {
+  background: transparent;
+  border-style: dashed;
+  font-size: 12px;
+  color: #888;
+}
+
+.app-layout.dark .approval-card {
+  background: #3e3d32;
+  border-color: #75715e;
+  color: #f8f8f2;
+}
+
+.app-layout.dark .approval-card-done {
+  color: #a6e22e;
+  border-color: #49483e;
+}
+
+.approval-card-reason {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 12px;
+  padding: 6px 8px;
+  margin-top: 6px;
+  border: 1px solid #d0d0d0;
+  border-radius: 6px;
+}
+
+.app-layout.dark .approval-card-reason {
+  background: #272822;
+  border-color: #75715e;
+  color: #f8f8f2;
+}
+
+.agent-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid #e2e2e2;
+  margin-bottom: 4px;
+}
+
+.app-layout.dark .agent-settings {
+  border-bottom-color: #49483e;
+}
+
+.agent-settings-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.agent-settings-usage {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.agent-settings-label {
+  color: #888;
+  font-size: 11px;
+}
+
+.agent-settings-select,
+.agent-settings-number {
+  font-size: 12px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: 1px solid #d0d0d0;
+  background: white;
+}
+
+.agent-settings-refresh {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid #d0d0d0;
+  background: white;
+  cursor: pointer;
+}
+
+.app-layout.dark .agent-settings-select,
+.app-layout.dark .agent-settings-number,
+.app-layout.dark .agent-settings-refresh {
+  background: #272822;
+  border-color: #75715e;
+  color: #f8f8f2;
+}
+
+.swarm-rail {
+  width: 260px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  /* Top padding clears CopilotKit's dev-tools inspector badge
+     (<cpk-web-inspector>, fixed at top:16px/right:16px, ~62px tall,
+     z-index near the maximum) — it's on by default in this app
+     (ThreadSidebar's "CopilotKit dev tools" checkbox) and sits in this
+     exact corner, so without this the rail's title and first node render
+     underneath it. Confirmed by measuring its rendered position directly;
+     nothing on this side can lower its z-index, so the rail gives it room
+     instead. */
+  padding: 90px 14px 16px;
+  border-left: 1px solid #e2e2e2;
+  background: #fafafa;
+}
+
+.app-layout.dark .swarm-rail {
+  background: #2d2e27;
+  border-left-color: #49483e;
+}
+
+.swarm-rail-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 12px;
+}
+
+.swarm-rail-idle {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #aaa;
+}
+
+.swarm-rail-idle code {
+  font-size: 11px;
+  background: #eee;
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+
+.app-layout.dark .swarm-rail-idle code {
+  background: #3e3d32;
+  color: #f8f8f2;
+}
+
+.swarm-rail-track {
+  display: flex;
+  flex-direction: column;
+}
+
+.swarm-rail-step {
+  display: flex;
+  flex-direction: column;
+}
+
+.swarm-rail-node {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid #d0d0d0;
+  background: white;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.swarm-rail-node:disabled {
+  cursor: default;
+}
+
+.app-layout.dark .swarm-rail-node {
+  background: #272822;
+  border-color: #75715e;
+  color: #f8f8f2;
+}
+
+.swarm-rail-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.swarm-rail-dot-running {
+  background: #1c7ed6;
+  animation: swarm-rail-pulse 1.2s ease-in-out infinite;
+}
+
+.swarm-rail-dot-done {
+  background: #2f9e44;
+}
+
+.app-layout.dark .swarm-rail-dot-done {
+  background: #a6e22e;
+}
+
+@keyframes swarm-rail-pulse {
+  0%, 100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(28, 126, 214, 0.4);
+  }
+  50% {
+    opacity: 0.6;
+    box-shadow: 0 0 0 4px rgba(28, 126, 214, 0);
+  }
+}
+
+.swarm-rail-node-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.swarm-rail-node-status {
+  color: #888;
+  font-size: 11px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.swarm-rail-summary {
+  font-family: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.4;
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: white;
+  border: 1px solid #e2e2e2;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.app-layout.dark .swarm-rail-summary {
+  background: #272822;
+  border-color: #49483e;
+  color: #f8f8f2;
+}
+
+.swarm-rail-connector {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0 4px 15px;
+  color: #aaa;
+  font-size: 10px;
+}
+
+.swarm-rail-connector-line {
+  width: 1px;
+  height: 14px;
+  background: #d0d0d0;
+}
+
+.app-layout.dark .swarm-rail-connector-line {
+  background: #49483e;
+}
+
+.swarm-rail-connector-label {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* local_graph dependency-wave rendering — see SwarmProgress.tsx's
+   computeWaves(). Horizontal columns (one per wave), each stacking its
+   concurrently-runnable nodes vertically, same node markup/classes as the
+   flat rail above. overflow-x lets several waves scroll sideways inside the
+   fixed-width rail rather than squeezing node names unreadably. */
+.swarm-rail-lanes {
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.swarm-rail-lane-group {
+  display: flex;
+  align-items: flex-start;
+  flex-shrink: 0;
+}
+
+.swarm-rail-lane {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 150px;
+  flex-shrink: 0;
+}
+
+.swarm-rail-lane-connector {
+  display: flex;
+  align-items: center;
+  height: 32px;
+  margin-top: 3px;
+  padding: 0 4px;
+}
+
+.swarm-rail-lane-connector-line {
+  width: 14px;
+  height: 1px;
+  background: #d0d0d0;
+}
+
+.app-layout.dark .swarm-rail-lane-connector-line {
+  background: #49483e;
+}
+
+/* A node whose wave hasn't started yet (known from graph_structure before
+   its first node_start event) — dimmer and static, distinct from the
+   pulsing "running" dot and the solid "done" one. */
+.swarm-rail-node-pending {
+  opacity: 0.6;
+}
+
+.swarm-rail-dot-pending {
+  background: #ccc;
+}
+
+.app-layout.dark .swarm-rail-dot-pending {
+  background: #75715e;
+}

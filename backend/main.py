@@ -19,6 +19,8 @@ it. Don't expose this beyond localhost.
 """
 
 from ag_ui_strands import StrandsAgent, StrandsAgentConfig, ToolBehavior, create_strands_app
+from fastapi import HTTPException
+from pydantic import BaseModel
 
 # Imported before agent_common: importing agent_common chdirs the process
 # into backend/workspace/, which breaks any later bare-module import relying
@@ -177,14 +179,145 @@ def get_agent_config() -> dict:
     return _agent_config_payload()
 
 
+class AgentDefaultsPatch(BaseModel):
+    model_id: str | None = None
+    temperature: float | None = None
+    memory_window: int | None = None
+
+
+@app.post("/models")
+def set_agent_defaults(patch: AgentDefaultsPatch) -> dict:
+    """Silent counterpart to the set_active_model/set_temperature/
+    set_memory_window tools (model_control_tool.py), for restoring a
+    frontend-persisted default onto a brand-new, zero-message thread.
+
+    Those tools mutate a *live* per-thread Agent via a real chat turn, on
+    purpose — an in-progress conversation's config should visibly change
+    right there. A fresh thread has no live Agent yet: build_model()/
+    build_conversation_manager() (agent_common.py) read these same ACTIVE_*
+    globals when ag_ui_strands lazily constructs one, so mutating them here
+    has the identical effect on the *next* thread with none of a chat
+    turn's downsides — no synthetic message baked permanently into that
+    thread's history, no dependence on this local model's occasionally
+    flaky tool-calling to actually make the restore stick.
+
+    frontend/app/AgentSettings.tsx's restore-on-mount effect used to call
+    the real tools via a fake user message instead — harmless the moment
+    the persisted value already matched the backend default, but every
+    mismatch (e.g. this process restarting and resetting ACTIVE_TEMPERATURE
+    while the browser's localStorage still remembered an old value) sent
+    that fake message into every new thread's permanent history, forever,
+    until the mismatch was resolved. Reported live: a brand new thread's
+    first "message" was "Call set_temperature with temperature=1.1."
+    """
+    import agent_common
+
+    if patch.model_id is not None:
+        available = _fetch_available_models()
+        if available and patch.model_id not in available:
+            raise HTTPException(status_code=400, detail=f"'{patch.model_id}' is not currently loaded in oMLX.")
+        agent_common.ACTIVE_MODEL_ID = patch.model_id
+
+    if patch.temperature is not None:
+        if not 0.0 <= patch.temperature <= 2.0:
+            raise HTTPException(status_code=400, detail="temperature must be between 0.0 and 2.0.")
+        agent_common.ACTIVE_TEMPERATURE = patch.temperature
+
+    if patch.memory_window is not None:
+        if patch.memory_window < 2:
+            raise HTTPException(status_code=400, detail="memory_window must be at least 2.")
+        agent_common.ACTIVE_MEMORY_WINDOW = patch.memory_window
+
+    return _agent_config_payload()
+
+
+@app.get("/skills")
+def list_skills() -> list[dict]:
+    """Every skill under backend/skills/, for the frontend's `/` command menu
+    (ChatPane.tsx). Skill.from_directory is a plain sync classmethod that
+    reads SKILL.md files straight off disk — no live Agent or sandbox
+    indirection needed (that machinery in AgentSkills.get_available_skills
+    exists for per-agent filesystem resolution, irrelevant for "what's on
+    disk right now"). Source of truth stays the actual directory: add or
+    remove a skill folder and this list changes with it, no separate
+    registry to keep in sync.
+
+    A malformed SKILL.md is skipped with a warning by Skill.from_directory
+    itself (strict=False, this deployment's default), not raised here.
+    """
+    from strands.vended_plugins.skills import Skill
+
+    from agent_common import SKILLS_DIR
+
+    return [{"name": skill.name, "description": skill.description} for skill in Skill.from_directory(SKILLS_DIR)]
+
+
+_WORKSPACE_FILES_LIMIT = 500
+
+
+@app.get("/workspace-files")
+def list_workspace_files() -> list[str]:
+    """Relative paths of every file under agent_common.WORKSPACE_DIR, for the
+    frontend's `@` mention autocomplete (MentionAutocomplete.tsx). Read-only
+    listing, no approval gate needed the way sandbox_functions_api.py's
+    routes are gated — nothing here can be used to read a file's contents,
+    only to learn a path exists, and the workspace root is already the same
+    directory every tool's relative paths resolve against by default.
+
+    Capped rather than exhaustive: this deployment's workspace can accumulate
+    a lot of scratch output over a long session, and an autocomplete list
+    with hundreds of entries stops being useful long before it stops being
+    technically correct.
+    """
+    from agent_common import WORKSPACE_DIR
+
+    paths = []
+    for path in sorted(WORKSPACE_DIR.rglob("*")):
+        if path.is_file():
+            paths.append(str(path.relative_to(WORKSPACE_DIR)))
+            if len(paths) >= _WORKSPACE_FILES_LIMIT:
+                break
+    return paths
+
+
 # /sandbox/* — the REST bridge for openGenerativeUI.sandboxFunctions
 # (frontend/app/page.tsx), not the chat agent's own tool-call loop. See
 # sandbox_functions_api.py's module docstring for why these calls need their
 # own client-side approval gate instead of reusing interrupt_on_call.
 register_sandbox_routes(app, _agent_config_payload)
 
+# No backend route for the chat input's `$` trigger (frontend/app/
+# useQueueingAgentInput.ts): unlike /sandbox/*, a `$ <command>` from the
+# human's own chat input rewrites into a normal chat message ("Call the
+# shell tool with command=...") and goes through the *real* agent turn —
+# the same server-side-enforced ToolBehavior(interrupt_on_call=True) gate
+# every other shell call gets, not a new REST endpoint a client-side-only
+# approval card would be the sole gate for. An earlier draft of this file
+# had exactly that endpoint; the harness's own auto-mode classifier refused
+# to create it ("Create RCE Surface") because a plain POST route that runs
+# strands_tools.shell with no server-side gate is a real unauthenticated
+# remote-code-execution surface regardless of what the frontend promises to
+# do before calling it -- correctly, on the same reasoning this session's
+# own earlier security-warning about bridging generateSandboxedUi straight
+# to shell already laid out. Reusing the agent's own tool-call path instead
+# needed no new backend code at all.
+
 
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("main:app", host="0.0.0.0", port=8001, reload=True)
+    import agent_common
+
+    # reload_dirs is required, not optional: agent_common's own import (line
+    # 40 above) already os.chdir()'d the process into backend/workspace/
+    # before this line ever runs, and uvicorn's reloader otherwise defaults
+    # to watching the *current* working directory at startup — meaning
+    # without this, it silently watches workspace/ (a near-empty sandbox
+    # dir) instead of backend/ itself, and no edit to any real source file
+    # ever triggers a restart. Confirmed live: every edit made against a
+    # server started before this fix went completely unpicked-up, with no
+    # error or warning — `Will watch for changes in these directories:
+    # ['.../backend/workspace']` in the startup log was the only sign.
+    # agent_common.BACKEND_DIR is the absolute path computed before that
+    # chdir happens, so it's correct regardless of where cwd ends up.
+    uvicorn.run("main:app", host="0.0.0.0", port=8001, reload=True, reload_dirs=[str(agent_common.BACKEND_DIR)])

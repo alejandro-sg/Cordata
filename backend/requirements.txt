@@ -1,0 +1,10 @@
+ag-ui-protocol
+ag_ui_strands
+strands-agents[openai]
+strands-agents-tools
+agent-client-protocol
+qdrant-client
+sentence-transformers
+python-dotenv
+uvicorn
+fastapi

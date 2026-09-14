@@ -59,15 +59,23 @@ DENIED_TOOLS = {"shell", "python_repl", "file_write", "editor"}
 # "give every safe tool" default below (see resolve_tools) and even if a
 # spec explicitly asks for one by name. local_swarm/local_graph: a sub-agent
 # recursively spinning up its own team is unbounded fan-out with no limit on
-# depth. skill_forge: writing/validating new tools is a self-healing
-# decision for the orchestrator, not a narrow specialist. The
-# model/temperature/memory-window/list_models/context_usage tools mutate
-# process-wide or session-wide config — a sub-agent silently switching the
-# active model mid-swarm would be a surprising, hard-to-trace side effect.
+# depth. skill_forge/proposer: drafting new tools or harness changes is a
+# self-improvement decision for the orchestrator, not a narrow specialist —
+# and both already refuse to write anything themselves (see their own
+# module docstrings), so a sub-agent given either could still only ever
+# hand a draft back up, never write it; excluded anyway, for the same
+# "not a narrow specialist's job" reasoning as skill_forge, and because
+# proposer's own regression-test gate shells out via subprocess.run, which
+# resolve_tools has no visibility into if a sub-agent somehow reached it.
+# The model/temperature/memory-window/list_models/context_usage tools
+# mutate process-wide or session-wide config — a sub-agent silently
+# switching the active model mid-swarm would be a surprising, hard-to-trace
+# side effect.
 ORCHESTRATOR_ONLY_TOOLS = {
     "local_swarm",
     "local_graph",
     "skill_forge",
+    "proposer",
     "list_models",
     "set_active_model",
     "set_temperature",

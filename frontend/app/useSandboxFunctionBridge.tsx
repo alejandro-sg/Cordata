@@ -4,13 +4,12 @@ import { useCallback, useState } from "react";
 import { z } from "zod";
 import ApprovalCard from "./ApprovalCard";
 
-// Read client-side (NEXT_PUBLIC_ so Next inlines it into the browser
-// bundle) — separate from app/api/copilotkit/[[...route]]/route.ts's
-// server-only BACKEND_URL, since these handlers run in the user's browser,
-// not on the Next.js server. Same default and same reasoning for being
-// overridable (LAN deployment with frontend and backend on different
-// machines) as that file's own BACKEND_URL comment.
-const SANDBOX_API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8001";
+// Same-origin, proxied through app/api/sandbox/[...path]/route.ts rather
+// than fetching the backend directly from the browser — see that file's own
+// comment for why a direct browser-to-8001 fetch (this file's first cut)
+// was wrong the same way it would have been for app/api/backend-config's
+// GET, just not caught until this specific gap got reported.
+const SANDBOX_API_BASE = "/api/sandbox";
 
 type PendingApproval = {
   toolName: string;
@@ -55,14 +54,27 @@ export function useSandboxFunctionBridge() {
 
   const requestApproval = useCallback((toolName: string, summary: string, code?: boolean) => {
     return new Promise<boolean>((resolve) => {
-      setPending({
-        toolName,
-        summary,
-        code,
-        onDecision: (approved) => {
-          setPending(null);
-          resolve(approved);
-        },
+      // Deferred one microtask, not called synchronously here: a
+      // sandboxFunction handler is invoked by CopilotKit's own internal
+      // function-call dispatch, which wraps the call in flushSync — calling
+      // setPending synchronously inside that (the very first thing this
+      // function used to do) can land React mid-flushSync while it's
+      // already rendering elsewhere in the tree, producing "flushSync was
+      // called from inside a lifecycle method" in the console. queueMicrotask
+      // lets that synchronous dispatch unwind first; the approval card still
+      // appears effectively immediately (a microtask, not a user-visible
+      // delay), and onDecision below fires from a real click handler later,
+      // which was never the part at risk.
+      queueMicrotask(() => {
+        setPending({
+          toolName,
+          summary,
+          code,
+          onDecision: (approved) => {
+            setPending(null);
+            resolve(approved);
+          },
+        });
       });
     });
   }, []);
@@ -76,7 +88,7 @@ export function useSandboxFunctionBridge() {
       handler: async () => {
         const approved = await requestApproval("queryBackend", "Read backend config (model, temperature, sandbox mode).");
         if (!approved) return { error: "Denied by user." };
-        const res = await fetch(`${SANDBOX_API_BASE}/sandbox/agent-config`);
+        const res = await fetch(`${SANDBOX_API_BASE}/agent-config`);
         if (!res.ok) return { error: `Backend returned ${res.status}` };
         return res.json();
       },
@@ -89,7 +101,7 @@ export function useSandboxFunctionBridge() {
       handler: async ({ path }: { path: string }) => {
         const approved = await requestApproval("readWorkspaceFile", `Read file: ${path}`);
         if (!approved) return { error: "Denied by user." };
-        const res = await fetch(`${SANDBOX_API_BASE}/sandbox/workspace-file?path=${encodeURIComponent(path)}`);
+        const res = await fetch(`${SANDBOX_API_BASE}/workspace-file?path=${encodeURIComponent(path)}`);
         const body = await res.json().catch(() => ({}) as Record<string, unknown>);
         if (!res.ok) return { error: (body as { detail?: string }).detail ?? `Backend returned ${res.status}` };
         return body;
@@ -103,7 +115,7 @@ export function useSandboxFunctionBridge() {
       handler: async ({ code }: { code: string }) => {
         const approved = await requestApproval("runSnippet", code, true);
         if (!approved) return { error: "Denied by user." };
-        const res = await fetch(`${SANDBOX_API_BASE}/sandbox/run-snippet`, {
+        const res = await fetch(`${SANDBOX_API_BASE}/run-snippet`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ code }),

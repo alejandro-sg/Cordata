@@ -1,0 +1,10 @@
+services:
+  sierralab-agent-frontend:
+    container_name: sierralab-agent-frontend
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      # The machine actually running the backend + oMLX model — not this box.
+      BACKEND_URL: "http://asierra-llm-mbp.local:8001"

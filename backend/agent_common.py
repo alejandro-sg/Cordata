@@ -63,6 +63,7 @@ def build_model() -> OpenAIModel:
 # chdir. Also after build_model is defined: skill_forge_tool.py calls back
 # into this module for it lazily, inside its own skill_forge function.
 from skill_forge_tool import skill_forge  # noqa: E402
+from proposer_tool import proposer  # noqa: E402
 from model_control_tool import context_usage, list_models, set_active_model, set_memory_window, set_temperature  # noqa: E402
 from sandbox_mode_tool import set_sandbox_mode  # noqa: E402
 
@@ -124,6 +125,7 @@ TOOLS = [
     local_swarm,
     local_graph,
     skill_forge,
+    proposer,
     list_models,
     set_active_model,
     set_temperature,
