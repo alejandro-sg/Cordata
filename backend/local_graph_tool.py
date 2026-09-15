@@ -79,20 +79,44 @@ async def local_graph(task: str, agents: list[dict[str, Any]], tool_context: Too
     # comments for why this shape (yield {"state": ...} mid-run, the real
     # result last) needs no extra backend wiring to reach the frontend live.
     # "kind" lets the frontend tell a graph run's progress log apart from a
-    # swarm run's without guessing from field presence.
+    # swarm run's without guessing from field presence. "reasoning" feeds
+    # SwarmProgress.tsx's per-node thinking tab — see sub_agent_common.
     base_state = dict(tool_context.agent.state.get() or {})
     log: list[dict[str, Any]] = []
+    reasoning: dict[str, str] = {}
+    reasoning_pending = 0
     final_result = None
+
+    def _state() -> dict[str, Any]:
+        return {
+            **base_state,
+            "kind": "graph",
+            "graph_structure": structure,
+            "swarm_progress": list(log),
+            "reasoning": dict(reasoning),
+        }
 
     async for event in graph.stream_async(task):
         if event.get("type") == "multiagent_result":
             final_result = event["result"]
             continue
+
+        delta_hit = sac.reasoning_delta(event)
+        if delta_hit is not None:
+            node_id, delta = delta_hit
+            reasoning[node_id] = reasoning.get(node_id, "") + delta
+            reasoning_pending += len(delta)
+            if reasoning_pending < sac.REASONING_YIELD_CHARS:
+                continue
+            reasoning_pending = 0
+            yield {"state": _state()}
+            continue
+
         entry = sac.progress_entry(event)
         if entry is None:
             continue
         log.append(entry)
-        yield {"state": {**base_state, "kind": "graph", "graph_structure": structure, "swarm_progress": list(log)}}
+        yield {"state": _state()}
 
     yield {
         "status": str(final_result.status),

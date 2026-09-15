@@ -81,20 +81,38 @@ async def local_swarm(task: str, agents: list[dict[str, Any]], tool_context: Too
     # doesn't clobber unrelated settings live on the frontend.
     base_state = dict(tool_context.agent.state.get() or {})
     log: list[dict[str, Any]] = []
+    reasoning: dict[str, str] = {}
+    reasoning_pending = 0
     final_result = None
+
+    def _state() -> dict[str, Any]:
+        # "kind" mirrors local_graph_tool.py's discriminator, so the frontend
+        # never has to infer which tool produced a given progress log from
+        # field absence (e.g. a missing graph_structure). "reasoning" feeds
+        # SwarmProgress.tsx's per-node thinking tab — see sub_agent_common.
+        return {**base_state, "kind": "swarm", "swarm_progress": list(log), "reasoning": dict(reasoning)}
 
     async for event in sdk_swarm.stream_async(task):
         if event.get("type") == "multiagent_result":
             final_result = event["result"]
             continue
+
+        delta_hit = sac.reasoning_delta(event)
+        if delta_hit is not None:
+            node_id, delta = delta_hit
+            reasoning[node_id] = reasoning.get(node_id, "") + delta
+            reasoning_pending += len(delta)
+            if reasoning_pending < sac.REASONING_YIELD_CHARS:
+                continue
+            reasoning_pending = 0
+            yield {"state": _state()}
+            continue
+
         entry = sac.progress_entry(event)
         if entry is None:
             continue
         log.append(entry)
-        # "kind" mirrors local_graph_tool.py's discriminator, so the frontend
-        # never has to infer which tool produced a given progress log from
-        # field absence (e.g. a missing graph_structure).
-        yield {"state": {**base_state, "kind": "swarm", "swarm_progress": list(log)}}
+        yield {"state": _state()}
 
     yield {
         "status": str(final_result.status),

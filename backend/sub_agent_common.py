@@ -178,10 +178,12 @@ def progress_entry(event: dict[str, Any]) -> dict[str, Any] | None:
     for the frontend's live sub-agent view.
 
     Drops multiagent_node_stream (per-token internals of each sub-agent's
-    own reply — too chatty for a progress log, and its payload carries live
-    Agent object references that aren't JSON-serializable anyway) and
-    multiagent_result (the tool's own return value already carries that
-    summary).
+    own reply — most of it is far too chatty for a progress log, and its
+    payload can carry live Agent object references that aren't JSON-
+    serializable anyway) *except* for the reasoning-text slice of it, which
+    reasoning_delta() below pulls out separately for the frontend's per-node
+    "thinking" tab — and multiagent_result (the tool's own return value
+    already carries that summary).
     """
     event_type = event.get("type")
     if event_type == "multiagent_node_start":
@@ -196,3 +198,33 @@ def progress_entry(event: dict[str, Any]) -> dict[str, Any] | None:
             "message": str(event.get("message", ""))[:500],
         }
     return None
+
+
+# How many new reasoning characters to accumulate, per node, before the next
+# {"state": ...} yield — reasoning arrives as many small per-token deltas
+# (strands.types._events.ReasoningTextStreamEvent), and every yield resends
+# the *entire* accumulated state as a fresh snapshot (ag_ui_strands has no
+# diffing — confirmed reading its agent.py), so yielding on every single
+# token would mean re-sending the whole growing reasoning transcript, for
+# every node, many times a second. This throttles the update cadence without
+# dropping any text — deltas keep accumulating in the caller's `reasoning`
+# dict between yields, nothing is lost, only how often the snapshot goes out.
+REASONING_YIELD_CHARS = 24
+
+
+def reasoning_delta(event: dict[str, Any]) -> tuple[str, str] | None:
+    """(node_id, text) if this multiagent_node_stream event is a reasoning-
+    text delta from that node's own model, else None — for anything else
+    (the node's regular reply text, tool-call deltas, ...) as well as any
+    non-multiagent_node_stream event.
+    """
+    if event.get("type") != "multiagent_node_stream":
+        return None
+    inner = event.get("event") or {}
+    if not inner.get("reasoning"):
+        return None
+    delta = inner.get("reasoningText")
+    node_id = event.get("node_id")
+    if not delta or not node_id:
+        return None
+    return node_id, delta

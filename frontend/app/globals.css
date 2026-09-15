@@ -1,3 +1,59 @@
+/* Design tokens — this app's own chrome only (sidebar, sub-agents rail,
+   approval cards, settings). CopilotKit's chat area draws from its own
+   bundled Tailwind token set and is deliberately left alone (see the
+   ".app-layout.dark" comment further down) — reskinning it globally risks
+   breaking contrast in parts of the tree we don't render ourselves.
+   Light mode gets its own accent identity (a considered violet, not the
+   generic Bootstrap-blue this app started with); dark mode keeps leaning on
+   the Monokai palette already established here rather than introducing a
+   second, clashing accent hue. */
+:root {
+  --accent: #6d5ef8;
+  --accent-strong: #5643e6;
+  --accent-soft: #efedff;
+  --surface: #ffffff;
+  --surface-alt: #f7f7fb;
+  --surface-sunken: #f0f0f7;
+  --border: #e4e4ef;
+  --border-strong: #d4d4e4;
+  --text: #17171f;
+  --text-muted: #83839a;
+  --text-faint: #b3b3c4;
+  --success: #1f9d55;
+  --success-soft: #e6f7ec;
+  --running: #3b74f6;
+  --running-soft: #ebf1fe;
+  --pending: #b9b9cb;
+  --danger: #e03131;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --shadow-sm: 0 1px 2px rgba(23, 23, 31, 0.05), 0 1px 1px rgba(23, 23, 31, 0.03);
+  --shadow-md: 0 4px 16px rgba(23, 23, 31, 0.08), 0 1px 3px rgba(23, 23, 31, 0.05);
+}
+
+.app-layout.dark {
+  --accent: #a6e22e;
+  --accent-strong: #b8f542;
+  --accent-soft: rgba(166, 226, 46, 0.14);
+  --surface: #272822;
+  --surface-alt: #2d2e27;
+  --surface-sunken: #23241f;
+  --border: #49483e;
+  --border-strong: #5c5b4e;
+  --text: #f8f8f2;
+  --text-muted: #a89f85;
+  --text-faint: #75715e;
+  --success: #a6e22e;
+  --success-soft: rgba(166, 226, 46, 0.14);
+  --running: #66d9ef;
+  --running-soft: rgba(102, 217, 239, 0.14);
+  --pending: #75715e;
+  --danger: #f92672;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
 html,
 body {
   margin: 0;
@@ -9,6 +65,8 @@ body {
 .app-layout {
   display: flex;
   height: 100vh;
+  background: var(--surface);
+  color: var(--text);
 }
 
 .chat-pane {
@@ -112,12 +170,12 @@ body {
 }
 
 .thread-sidebar {
-  width: 220px;
+  width: 232px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  border-right: 1px solid #e2e2e2;
-  background: #fafafa;
+  border-right: 1px solid var(--border);
+  background: var(--surface-alt);
   /* Flex items default to min-height: auto, so without this the sidebar
      grows to fit every thread instead of being clipped to the viewport —
      .thread-sidebar-list's own overflow-y:auto only works once its parent
@@ -126,30 +184,60 @@ body {
   min-height: 0;
 }
 
-.thread-sidebar-new {
-  margin: 10px;
-  padding: 8px 10px;
-  border: 1px solid #d0d0d0;
+.thread-sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 14px 4px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.thread-sidebar-brand-mark {
+  width: 18px;
+  height: 18px;
   border-radius: 6px;
-  background: #fff;
+  flex-shrink: 0;
+  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+  box-shadow: var(--shadow-sm);
+}
+
+.thread-sidebar-new {
+  margin: 12px;
+  padding: 9px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text);
   cursor: pointer;
   font-size: 13px;
+  font-weight: 500;
   text-align: left;
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.15s ease, transform 0.1s ease;
 }
 
 .thread-sidebar-new:hover {
-  background: #f0f0f0;
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.thread-sidebar-new:active {
+  transform: scale(0.98);
 }
 
 .thread-sidebar-list {
   overflow-y: auto;
   flex: 1;
+  padding: 0 6px;
 }
 
 .thread-sidebar-empty {
-  padding: 0 12px;
+  padding: 8px 8px;
   font-size: 12px;
-  color: #888;
+  color: var(--text-muted);
 }
 
 .thread-sidebar-item {
@@ -157,19 +245,23 @@ body {
   flex-direction: column;
   width: 100%;
   text-align: left;
-  padding: 8px 12px;
+  padding: 8px 10px;
   border: none;
+  border-radius: var(--radius-sm);
   background: transparent;
+  color: var(--text);
   cursor: pointer;
   gap: 2px;
+  transition: background 0.12s ease;
 }
 
 .thread-sidebar-item:hover {
-  background: #f0f0f0;
+  background: var(--surface-sunken);
 }
 
 .thread-sidebar-item.active {
-  background: #e6e6ff;
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .thread-sidebar-name {
@@ -179,13 +271,22 @@ body {
   text-overflow: ellipsis;
 }
 
+.thread-sidebar-item.active .thread-sidebar-name {
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+
+.app-layout.dark .thread-sidebar-item.active .thread-sidebar-name {
+  color: var(--accent);
+}
+
 .thread-sidebar-time {
   font-size: 11px;
-  color: #888;
+  color: var(--text-muted);
 }
 
 .thread-sidebar-footer {
-  border-top: 1px solid #e2e2e2;
+  border-top: 1px solid var(--border);
   padding: 10px 12px;
   display: flex;
   flex-direction: column;
@@ -197,54 +298,8 @@ body {
   align-items: center;
   gap: 6px;
   font-size: 12px;
+  color: var(--text);
   cursor: pointer;
-}
-
-/* Monokai, applied to our own chrome (sidebar, page chrome). CopilotKit's
-   own chat component colors come from a shared Tailwind color-scale token
-   set reused across its whole tree — reskinning those globally to Monokai
-   risks breaking contrast/legibility in parts of the UI we don't render
-   ourselves, so its dark mode (already reasonable) is left as-is. */
-.app-layout.dark {
-  background: #272822; /* monokai background */
-  color: #f8f8f2; /* monokai foreground */
-}
-
-.app-layout.dark .thread-sidebar {
-  background: #2d2e27;
-  border-right-color: #49483e;
-}
-
-.app-layout.dark .thread-sidebar-new {
-  background: #3e3d32;
-  border-color: #75715e;
-  color: #f8f8f2;
-}
-
-.app-layout.dark .thread-sidebar-new:hover {
-  background: #49483e;
-}
-
-.app-layout.dark .thread-sidebar-item:hover {
-  background: #3e3d32;
-}
-
-.app-layout.dark .thread-sidebar-item.active {
-  background: #49483e;
-  box-shadow: inset 3px 0 0 #a6e22e;
-}
-
-.app-layout.dark .thread-sidebar-name {
-  color: #f8f8f2;
-}
-
-.app-layout.dark .thread-sidebar-time,
-.app-layout.dark .thread-sidebar-empty {
-  color: #75715e;
-}
-
-.app-layout.dark .thread-sidebar-footer {
-  border-top-color: #49483e;
 }
 
 .approval-card {
@@ -399,7 +454,7 @@ body {
 }
 
 .swarm-rail {
-  width: 260px;
+  width: 272px;
   flex-shrink: 0;
   overflow-y: auto;
   /* Top padding clears CopilotKit's dev-tools inspector badge
@@ -411,40 +466,82 @@ body {
      nothing on this side can lower its z-index, so the rail gives it room
      instead. */
   padding: 90px 14px 16px;
-  border-left: 1px solid #e2e2e2;
-  background: #fafafa;
+  border-left: 1px solid var(--border);
+  background: var(--surface-alt);
 }
 
-.app-layout.dark .swarm-rail {
-  background: #2d2e27;
-  border-left-color: #49483e;
+.swarm-rail-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
 }
 
 .swarm-rail-title {
   font-size: 11px;
-  font-weight: 600;
-  color: #888;
+  font-weight: 700;
+  color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
-  margin-bottom: 12px;
+  letter-spacing: 0.06em;
+}
+
+.swarm-rail-badge {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  border-radius: 999px;
+  padding: 2px 7px;
+}
+
+.app-layout.dark .swarm-rail-badge {
+  color: var(--accent);
+}
+
+.swarm-rail-collapse {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  display: flex;
+}
+
+.swarm-rail-collapse:hover {
+  background: var(--surface-sunken);
+  color: var(--text);
+}
+
+.swarm-rail-progress-track {
+  height: 3px;
+  border-radius: 999px;
+  background: var(--surface-sunken);
+  overflow: hidden;
+  margin-bottom: 14px;
+}
+
+.swarm-rail-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-strong));
+  border-radius: 999px;
+  transition: width 0.4s ease;
 }
 
 .swarm-rail-idle {
   font-size: 12px;
   line-height: 1.5;
-  color: #aaa;
+  color: var(--text-faint);
 }
 
 .swarm-rail-idle code {
   font-size: 11px;
-  background: #eee;
+  background: var(--surface-sunken);
   padding: 1px 4px;
   border-radius: 4px;
-}
-
-.app-layout.dark .swarm-rail-idle code {
-  background: #3e3d32;
-  color: #f8f8f2;
 }
 
 .swarm-rail-track {
@@ -462,23 +559,29 @@ body {
   align-items: center;
   gap: 6px;
   width: 100%;
-  padding: 7px 10px;
-  border-radius: 8px;
-  border: 1px solid #d0d0d0;
-  background: white;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
   font-size: 12px;
   text-align: left;
   cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.15s ease, transform 0.1s ease;
+}
+
+.swarm-rail-node:not(:disabled):hover {
+  border-color: var(--accent);
+}
+
+.swarm-rail-node:not(:disabled):active {
+  transform: scale(0.99);
 }
 
 .swarm-rail-node:disabled {
   cursor: default;
-}
-
-.app-layout.dark .swarm-rail-node {
-  background: #272822;
-  border-color: #75715e;
-  color: #f8f8f2;
+  box-shadow: none;
 }
 
 .swarm-rail-dot {
@@ -489,26 +592,37 @@ body {
 }
 
 .swarm-rail-dot-running {
-  background: #1c7ed6;
+  background: var(--running);
   animation: swarm-rail-pulse 1.2s ease-in-out infinite;
 }
 
 .swarm-rail-dot-done {
-  background: #2f9e44;
-}
-
-.app-layout.dark .swarm-rail-dot-done {
-  background: #a6e22e;
+  background: var(--success);
 }
 
 @keyframes swarm-rail-pulse {
   0%, 100% {
     opacity: 1;
-    box-shadow: 0 0 0 0 rgba(28, 126, 214, 0.4);
+    box-shadow: 0 0 0 0 rgba(59, 116, 246, 0.35);
   }
   50% {
     opacity: 0.6;
-    box-shadow: 0 0 0 4px rgba(28, 126, 214, 0);
+    box-shadow: 0 0 0 4px rgba(59, 116, 246, 0);
+  }
+}
+
+.app-layout.dark .swarm-rail-dot-running {
+  animation-name: swarm-rail-pulse-dark;
+}
+
+@keyframes swarm-rail-pulse-dark {
+  0%, 100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(102, 217, 239, 0.35);
+  }
+  50% {
+    opacity: 0.6;
+    box-shadow: 0 0 0 4px rgba(102, 217, 239, 0);
   }
 }
 
@@ -519,11 +633,63 @@ body {
   white-space: nowrap;
 }
 
+.swarm-rail-node-timer {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--running);
+  flex-shrink: 0;
+}
+
 .swarm-rail-node-status {
-  color: #888;
+  color: var(--text-muted);
   font-size: 11px;
   margin-left: auto;
   flex-shrink: 0;
+}
+
+.swarm-rail-detail {
+  margin-top: 6px;
+}
+
+.swarm-rail-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  margin-bottom: 6px;
+  background: var(--surface-sunken);
+  border-radius: var(--radius-sm);
+  width: fit-content;
+}
+
+.swarm-rail-tab {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.swarm-rail-tab:hover {
+  color: var(--text);
+}
+
+.swarm-rail-tab.active {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+
+.swarm-rail-tab-thinking-dot {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-left: 5px;
+  vertical-align: middle;
 }
 
 .swarm-rail-summary {
@@ -531,20 +697,21 @@ body {
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 12px;
-  line-height: 1.4;
-  margin: 6px 0 0;
+  line-height: 1.45;
+  margin: 0;
   padding: 8px 10px;
-  border-radius: 8px;
-  background: white;
-  border: 1px solid #e2e2e2;
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  border: 1px solid var(--border);
   max-height: 240px;
   overflow-y: auto;
 }
 
-.app-layout.dark .swarm-rail-summary {
-  background: #272822;
-  border-color: #49483e;
-  color: #f8f8f2;
+.swarm-rail-summary-thinking {
+  background: var(--accent-soft);
+  border-color: transparent;
+  color: var(--text-muted);
+  font-style: italic;
 }
 
 .swarm-rail-connector {
@@ -552,18 +719,14 @@ body {
   align-items: center;
   gap: 6px;
   padding: 4px 0 4px 15px;
-  color: #aaa;
+  color: var(--text-faint);
   font-size: 10px;
 }
 
 .swarm-rail-connector-line {
   width: 1px;
   height: 14px;
-  background: #d0d0d0;
-}
-
-.app-layout.dark .swarm-rail-connector-line {
-  background: #49483e;
+  background: var(--border-strong);
 }
 
 .swarm-rail-connector-label {
@@ -594,7 +757,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  width: 150px;
+  width: 156px;
   flex-shrink: 0;
 }
 
@@ -609,24 +772,16 @@ body {
 .swarm-rail-lane-connector-line {
   width: 14px;
   height: 1px;
-  background: #d0d0d0;
-}
-
-.app-layout.dark .swarm-rail-lane-connector-line {
-  background: #49483e;
+  background: var(--border-strong);
 }
 
 /* A node whose wave hasn't started yet (known from graph_structure before
    its first node_start event) — dimmer and static, distinct from the
    pulsing "running" dot and the solid "done" one. */
 .swarm-rail-node-pending {
-  opacity: 0.6;
+  opacity: 0.55;
 }
 
 .swarm-rail-dot-pending {
-  background: #ccc;
-}
-
-.app-layout.dark .swarm-rail-dot-pending {
-  background: #75715e;
+  background: var(--pending);
 }

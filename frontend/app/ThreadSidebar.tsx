@@ -56,6 +56,10 @@ export default function ThreadSidebar({
 
   return (
     <aside className="thread-sidebar">
+      <div className="thread-sidebar-brand">
+        <span className="thread-sidebar-brand-mark" aria-hidden="true" />
+        Trust Fabric
+      </div>
       <button className="thread-sidebar-new" onClick={onNew}>
         + New chat
       </button>
