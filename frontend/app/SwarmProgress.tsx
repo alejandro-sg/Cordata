@@ -133,12 +133,17 @@ function formatElapsed(ms: number): string {
  * before any sub-agent has run this thread, so the panel is a stable,
  * predictable part of the layout instead of something that only appears
  * (and shifts the chat pane's width) the first time it has something to say.
- * A separate collapse control (the chevron in its own header) minimizes the
- * body without removing the panel from the layout — for "I want it out of
- * the way for a second," as distinct from the sidebar checkbox's "I never
- * want to see this."
+ * Three independent header controls, each a different "I want less of
+ * this": the collapse chevron minimizes the body without removing the
+ * panel ("out of the way for a second"); the fullscreen button (⛶) opens a
+ * full-viewport overlay with the exact same content at a much more
+ * readable width — for actually reading several nodes' reasoning traces
+ * side by side, not squeezed into a 272px rail; the ✕ calls onHide, which
+ * is the *same* state ThreadSidebar's "Sub-agents panel" checkbox drives
+ * (passed down from page.tsx) — a second, more discoverable place to turn
+ * the whole thing off besides a checkbox buried in the settings footer.
  */
-export default function SwarmProgress() {
+export default function SwarmProgress({ onHide }: { onHide: () => void }) {
   const { agent } = useAgent({ agentId: "sierralab_agent" });
   const [entries, setEntries] = useState<SwarmEntry[]>([]);
   const [graphStructure, setGraphStructure] = useState<GraphStructure | undefined>(undefined);
@@ -146,6 +151,7 @@ export default function SwarmProgress() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [activeTab, setActiveTab] = useState<Map<string, Tab>>(new Map());
   const [collapsed, setCollapsed] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
   const [, setTick] = useState(0);
   const seenRunRef = useRef(false);
   const threadIdRef = useRef<string | undefined>(undefined);
@@ -203,6 +209,15 @@ export default function SwarmProgress() {
     const id = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(id);
   }, [anyRunning]);
+
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setFullscreen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [fullscreen]);
 
   const isIdle = !seenRunRef.current || entries.length === 0;
 
@@ -295,82 +310,131 @@ export default function SwarmProgress() {
     );
   };
 
+  const body = isIdle ? (
+    <p className="swarm-rail-idle">
+      No sub-agent activity yet. Ask the agent to use <code>local_swarm</code> or <code>local_graph</code> and it will
+      show up here live.
+    </p>
+  ) : waves ? (
+    // local_graph: dependency waves as columns — everything in one column
+    // genuinely ran concurrently on the backend (asyncio.gather over that
+    // same batch), so this is a real picture of parallelism, not a
+    // decorative layout. A node not yet started still renders (as
+    // "pending") since graph_structure carries every node's name upfront,
+    // before its first node_start event arrives.
+    <div className="swarm-rail-lanes">
+      {waves.map((wave, waveIdx) => (
+        <div className="swarm-rail-lane-group" key={waveIdx}>
+          <div className="swarm-rail-lane">
+            {wave.map((name) => {
+              const node = nodeByName.get(name) ?? { key: name, name, status: "pending" as const };
+              return (
+                <div className="swarm-rail-step" key={node.key}>
+                  {renderNode(node)}
+                </div>
+              );
+            })}
+          </div>
+          {waveIdx < waves.length - 1 && (
+            <div className="swarm-rail-lane-connector" aria-hidden="true">
+              <span className="swarm-rail-lane-connector-line" />
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  ) : (
+    <div className="swarm-rail-track">
+      {nodes.map((node, i) => (
+        <div className="swarm-rail-step" key={node.key}>
+          {renderNode(node)}
+          {i < nodes.length - 1 && (
+            // Label is deliberately generic: local_swarm nodes genuinely
+            // hand off (a real message exists, shown on hover); this branch
+            // never has a graph_structure, so anything shown here is real
+            // swarm hand-off order, not dependency order.
+            <div className="swarm-rail-connector" title={handoffs[i]?.message?.trim() || undefined}>
+              <span className="swarm-rail-connector-line" aria-hidden="true" />
+              <span className="swarm-rail-connector-label">{handoffs[i] ? "hand-off" : "next"}</span>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+
+  const badge = !isIdle && (
+    <span className="swarm-rail-badge">
+      {doneCount}/{totalCount || nodes.length}
+    </span>
+  );
+
+  const progressBar = !isIdle && totalCount > 0 && (
+    <div className="swarm-rail-progress-track">
+      <div className="swarm-rail-progress-fill" style={{ width: `${(doneCount / totalCount) * 100}%` }} />
+    </div>
+  );
+
   return (
-    <aside className="swarm-rail">
-      <div className="swarm-rail-header">
-        <div className="swarm-rail-title">Sub-agents</div>
-        {!isIdle && (
-          <span className="swarm-rail-badge">
-            {doneCount}/{totalCount || nodes.length}
-          </span>
-        )}
-        <button
-          type="button"
-          className="swarm-rail-collapse"
-          onClick={() => setCollapsed((c) => !c)}
-          aria-label={collapsed ? "Expand sub-agents panel" : "Collapse sub-agents panel"}
-          aria-expanded={!collapsed}
-        >
-          {collapsed ? "▸" : "▾"}
-        </button>
-      </div>
-      {!isIdle && !collapsed && totalCount > 0 && (
-        <div className="swarm-rail-progress-track">
-          <div className="swarm-rail-progress-fill" style={{ width: `${(doneCount / totalCount) * 100}%` }} />
+    <>
+      <aside className={`swarm-rail${fullscreen ? " swarm-rail-hidden" : ""}`}>
+        <div className="swarm-rail-header">
+          <div className="swarm-rail-title">Sub-agents</div>
+          {badge}
+          <div className="swarm-rail-actions">
+            <button
+              type="button"
+              className="swarm-rail-icon-btn"
+              onClick={() => setFullscreen(true)}
+              disabled={isIdle}
+              aria-label="Open sub-agents in fullscreen"
+              title="Fullscreen"
+            >
+              ⛶
+            </button>
+            <button
+              type="button"
+              className="swarm-rail-icon-btn"
+              onClick={() => setCollapsed((c) => !c)}
+              aria-label={collapsed ? "Expand sub-agents panel" : "Collapse sub-agents panel"}
+              aria-expanded={!collapsed}
+              title={collapsed ? "Expand" : "Collapse"}
+            >
+              {collapsed ? "▸" : "▾"}
+            </button>
+            <button
+              type="button"
+              className="swarm-rail-icon-btn"
+              onClick={onHide}
+              aria-label="Hide sub-agents panel"
+              title="Hide panel"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+        {!collapsed && progressBar}
+        {!collapsed && body}
+      </aside>
+
+      {fullscreen && (
+        <div className="swarm-fullscreen" role="dialog" aria-modal="true" aria-label="Sub-agents, fullscreen">
+          <div className="swarm-fullscreen-header">
+            <div className="swarm-rail-title">Sub-agents</div>
+            {badge}
+            <button
+              type="button"
+              className="swarm-fullscreen-close"
+              onClick={() => setFullscreen(false)}
+              aria-label="Exit fullscreen"
+            >
+              Exit fullscreen  ✕
+            </button>
+          </div>
+          {progressBar}
+          <div className="swarm-fullscreen-body">{body}</div>
         </div>
       )}
-      {collapsed ? null : isIdle ? (
-        <p className="swarm-rail-idle">
-          No sub-agent activity yet. Ask the agent to use <code>local_swarm</code> or <code>local_graph</code> and it
-          will show up here live.
-        </p>
-      ) : waves ? (
-        // local_graph: dependency waves as columns — everything in one
-        // column genuinely ran concurrently on the backend (asyncio.gather
-        // over that same batch), so this is a real picture of parallelism,
-        // not a decorative layout. A node not yet started still renders
-        // (as "pending") since graph_structure carries every node's name
-        // upfront, before its first node_start event arrives.
-        <div className="swarm-rail-lanes">
-          {waves.map((wave, waveIdx) => (
-            <div className="swarm-rail-lane-group" key={waveIdx}>
-              <div className="swarm-rail-lane">
-                {wave.map((name) => {
-                  const node = nodeByName.get(name) ?? { key: name, name, status: "pending" as const };
-                  return (
-                    <div className="swarm-rail-step" key={node.key}>
-                      {renderNode(node)}
-                    </div>
-                  );
-                })}
-              </div>
-              {waveIdx < waves.length - 1 && (
-                <div className="swarm-rail-lane-connector" aria-hidden="true">
-                  <span className="swarm-rail-lane-connector-line" />
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="swarm-rail-track">
-          {nodes.map((node, i) => (
-            <div className="swarm-rail-step" key={node.key}>
-              {renderNode(node)}
-              {i < nodes.length - 1 && (
-                // Label is deliberately generic: local_swarm nodes genuinely
-                // hand off (a real message exists, shown on hover); this
-                // branch never has a graph_structure, so anything shown here
-                // is real swarm hand-off order, not dependency order.
-                <div className="swarm-rail-connector" title={handoffs[i]?.message?.trim() || undefined}>
-                  <span className="swarm-rail-connector-line" aria-hidden="true" />
-                  <span className="swarm-rail-connector-label">{handoffs[i] ? "hand-off" : "next"}</span>
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-    </aside>
+    </>
   );
 }

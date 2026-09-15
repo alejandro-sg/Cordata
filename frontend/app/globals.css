@@ -498,22 +498,111 @@ body {
   color: var(--accent);
 }
 
-.swarm-rail-collapse {
+.swarm-rail-actions {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.swarm-rail-icon-btn {
   border: none;
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
   font-size: 11px;
   line-height: 1;
-  padding: 4px;
+  padding: 4px 5px;
   border-radius: var(--radius-sm);
   display: flex;
 }
 
-.swarm-rail-collapse:hover {
+.swarm-rail-icon-btn:hover:not(:disabled) {
   background: var(--surface-sunken);
   color: var(--text);
+}
+
+.swarm-rail-icon-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* Rendered but visually removed while the fullscreen overlay is open, so
+   its live-timer interval etc. don't keep two copies of the same node list
+   both re-rendering every second — the overlay below reuses the exact same
+   `body` JSX, not a duplicate. */
+.swarm-rail-hidden {
+  display: none;
+}
+
+.swarm-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  padding: 20px 28px;
+}
+
+.swarm-fullscreen-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.swarm-fullscreen-header .swarm-rail-title {
+  font-size: 13px;
+}
+
+.swarm-fullscreen-close {
+  margin-left: auto;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 6px 12px;
+  border-radius: var(--radius-md);
+}
+
+.swarm-fullscreen-close:hover {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.swarm-fullscreen-body {
+  flex: 1;
+  overflow: auto;
+  padding-top: 6px;
+}
+
+/* Same node/lane markup as the rail, just given far more breathing room —
+   wider columns, bigger type, taller summary panes — since a full viewport
+   is available instead of a 272px sidebar. */
+.swarm-fullscreen-body .swarm-rail-lane {
+  width: 320px;
+}
+
+.swarm-fullscreen-body .swarm-rail-node {
+  font-size: 14px;
+  padding: 12px 14px;
+}
+
+.swarm-fullscreen-body .swarm-rail-summary {
+  font-size: 13px;
+  max-height: 480px;
+}
+
+.swarm-fullscreen-body .swarm-rail-tab {
+  font-size: 12px;
+  padding: 6px 14px;
+}
+
+.swarm-fullscreen-body .swarm-rail-track {
+  max-width: 640px;
 }
 
 .swarm-rail-progress-track {

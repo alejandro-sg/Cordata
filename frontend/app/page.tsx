@@ -70,7 +70,7 @@ export default function Page() {
           <div className="chat-pane">
             <ChatPane threadId={threadId} hasExplicitThreadId={isExplicit} />
           </div>
-          {subAgentsOn && <SwarmProgress />}
+          {subAgentsOn && <SwarmProgress onHide={toggleSubAgents} />}
         </div>
       </CopilotChatConfigurationProvider>
     </CopilotKitProvider>
