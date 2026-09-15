@@ -1,0 +1,86 @@
+# Runs what's actually runnable off this machine: agent/tool construction,
+# the denylist/graph-structure/sandbox-token/model-control/proposer-guardrail
+# smoke tests (all pure Python, no external service but Qdrant, which the
+# `services:` block below provides), and the frontend type-check + build.
+#
+# Deliberately NOT run here: _acp_smoke_test.py (spawns a real ACP session
+# and expects the local oMLX model to actually respond and call tools —
+# oMLX is a local Apple Silicon MLX server, nothing to point it at in a
+# GitHub-hosted runner) and any live browser check. Those stay manual —
+# see README.md for how to run them against a real oMLX instance.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      qdrant:
+        image: qdrant/qdrant:latest
+        ports:
+          - 6333:6333
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install pinned dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt
+
+      - name: Compile-check every backend module
+        working-directory: backend
+        run: |
+          python -c "
+          import glob, py_compile
+          files = sorted(glob.glob('*.py'))
+          for f in files:
+              py_compile.compile(f, doraise=True)
+          print(f'{len(files)} files compiled OK')
+          "
+
+      # settings.py's QDRANT_HOST default (127.0.0.1) already matches how
+      # the services: qdrant container above is reachable from this job —
+      # no extra env wiring needed for _agent_memory_smoke_test.py or
+      # proposer_guardrail's own sandboxed re-run of it.
+      - name: Run regression smoke tests
+        working-directory: backend
+        run: |
+          python _subagent_denylist_smoke_test.py
+          python _local_graph_structure_smoke_test.py
+          python _sandbox_token_smoke_test.py
+          python _model_control_smoke_test.py
+          python _agent_memory_smoke_test.py
+          python _proposer_guardrail_smoke_test.py
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Type-check
+        working-directory: frontend
+        run: npx tsc --noEmit -p tsconfig.json
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build

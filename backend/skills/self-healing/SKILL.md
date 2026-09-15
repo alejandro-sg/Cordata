@@ -23,10 +23,12 @@ just retry it as-is and don't just give up. Follow this sequence:
    very next tool call. That real `file_write` call is the one that actually pauses for
    human approval; nothing before it does.
 
-4. A tool `skill_forge` just wrote is not available to call in this same conversation
-   turn. It becomes callable on your *next* real tool call attempt in a later turn (the
-   backend registers it at process start, not mid-conversation) — don't try to call it
-   immediately after `skill_forge` returns.
+4. Once your `file_write` call actually succeeds, the new tool registers itself on this
+   conversation automatically — you don't need to wait for a restart, and you don't need
+   to do anything else to make it callable. It just won't show up as an option in the
+   very same model turn as the `file_write` call itself; call it on your next turn
+   (right after, if that's what makes sense), not by trying to reference it before
+   `file_write` has actually returned a result.
 
 5. The first real call to a newly-written tool is gated a second time — a human has to
    approve it again, and it's dry-run checked, before it actually executes. If it gets

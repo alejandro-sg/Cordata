@@ -255,11 +255,19 @@ def proposer(observation: str) -> str:
     if not critic.strip().upper().startswith("PASS"):
         return f"Proposal:\n{proposal}\n\nRefused: critic did not approve this change:\n{critic}"
 
+    # path is relative-to-backend/ throughout the gates above (that's what
+    # _run_static_gate/_run_test_gate's own sandbox-copy logic expects) —
+    # but the orchestrator's own cwd is backend/workspace/ (agent_common.py's
+    # os.chdir), not backend/, so a bare relative path handed to a real
+    # file_write/editor call would resolve to the wrong location entirely
+    # and silently miss every gate that already ran against it. Only this
+    # final, orchestrator-facing line needs the absolute form.
+    absolute_path = (_BACKEND_DIR / path).resolve()
     return (
         f"Proposal:\n{proposal}\n\n"
         f"Static gate: passed\n"
         f"Test gate: passed (regression smoke tests still pass against a sandboxed copy)\n"
         f"Critic: {critic}\n\n"
         f"Drafted change (NOT written yet — call file_write or editor yourself with this exact path and content):\n"
-        f"FILE: {path}\n---\n{content}"
+        f"FILE: {absolute_path}\n---\n{content}"
     )

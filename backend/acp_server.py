@@ -35,11 +35,9 @@ from strands.interventions import Confirm, Deny, InterventionHandler, Proceed
 from agent_common import GENERATED_TOOL_NAMES, build_agent_for_session
 from model_control_tool import _context_window_limit, _fetch_available_models
 
-# Same set main.py's _APPROVAL_REQUIRED_TOOLS gates, plus `editor` — flagged
-# in main.py as ungated there too (a separate, not-yet-actioned finding for
-# the AG-UI front door); gating it here doesn't wait on that decision, since
-# a real filesystem-writing tool with zero approval on any front door is a
-# strictly worse default than gating it in the one place it's convenient to.
+# Set-identical to main.py's _APPROVAL_REQUIRED_TOOLS — both gate `editor`
+# too (main.py added it; this repo has no shared source for the two lists,
+# so keep them in sync by hand when either changes).
 APPROVAL_REQUIRED_TOOLS = {"shell", "python_repl", "file_write", "editor", *GENERATED_TOOL_NAMES}
 
 _TOOL_KIND: dict[str, str] = {

@@ -64,6 +64,7 @@ def build_model() -> OpenAIModel:
 # into this module for it lazily, inside its own skill_forge function.
 from skill_forge_tool import skill_forge  # noqa: E402
 from proposer_tool import proposer  # noqa: E402
+from skill_validation_hooks import SkillValidationHooks  # noqa: E402
 from model_control_tool import context_usage, list_models, set_active_model, set_memory_window, set_temperature  # noqa: E402
 from sandbox_mode_tool import set_sandbox_mode  # noqa: E402
 
@@ -111,7 +112,12 @@ def discover_generated_tools() -> list:
 
 _GENERATED_TOOLS = discover_generated_tools()
 
-TOOLS = [
+# Everything but skills_generated/*.py — split out so build_agent_for_session
+# (below) can rebuild the generated portion fresh per call instead of reusing
+# this module's one process-start snapshot; TOOLS itself (and everything
+# derived from it below) still is that one static snapshot, which is exactly
+# right for build_template_agent's use case — see that function's docstring.
+_STATIC_TOOLS = [
     shell,
     editor,
     file_read,
@@ -132,12 +138,36 @@ TOOLS = [
     set_memory_window,
     context_usage,
     set_sandbox_mode,
-    *_GENERATED_TOOLS,
 ]
 
-# Tool names loaded from skills_generated/ — main.py extends its
-# approval-required gating with these, same as _APPROVAL_REQUIRED_TOOLS.
+TOOLS = [*_STATIC_TOOLS, *_GENERATED_TOOLS]
+
+# Tool names loaded from skills_generated/ at process start — main.py and
+# acp_server.py extend their approval-required gating with this, same as
+# _APPROVAL_REQUIRED_TOOLS. A static, import-time snapshot on purpose: see
+# build_agent_for_session's docstring for why closing that gap for a
+# *hot-loaded* tool (skill_validation_hooks.py's hot_reload_generated_skill)
+# needs more than this repo has verified carefully enough to do yet.
 GENERATED_TOOL_NAMES = {generated_tool.tool_name for generated_tool in _GENERATED_TOOLS}
+
+
+def current_generated_tool_names() -> set[str]:
+    """Live version of GENERATED_TOOL_NAMES — a fresh directory listing
+    (just filenames, no import/exec needed for names alone), not the
+    process-start snapshot. Used only where a stale snapshot is a real
+    safety gap and not just a "needs a restart for full parity" one: see
+    sub_agent_common.resolve_tools, which must never hand a sub-agent a
+    generated tool regardless of whether it existed at process start or was
+    hot-loaded five seconds ago — a sub-agent has no human-in-the-loop gate
+    at all (DENIED_TOOLS' own reasoning), so "denylist reflects an outdated
+    world" is a strictly worse failure mode there than it is for the
+    approval-required sets above, which degrade to "one extra gate missing
+    on one tool's first call" rather than "a sub-agent silently got a tool
+    it should never have been given."
+    """
+    if not SKILLS_GENERATED_DIR.exists():
+        return set()
+    return {path.stem for path in SKILLS_GENERATED_DIR.glob("*.py")}
 
 SKILLS_DIR = BACKEND_DIR / "skills"
 
@@ -213,12 +243,37 @@ def build_agent_for_session(
     editor has open (see acp_server.py's own comment on why the sandboxed
     ``backend/workspace/`` framing this defaults to would be actively wrong
     there).
+
+    ``hooks=[SkillValidationHooks()]`` — main.py gets this via StrandsAgent's
+    own ``hooks=`` kwarg (a real wrapper-level mechanism there, unlike
+    ``plugins=``: confirmed reading ag_ui_strands/agent.py, StrandsAgent
+    stores it on self._hooks and it survives per-thread agent derivation).
+    ACP has no such wrapper — this function builds the one real Agent a
+    session gets directly — so it has to go on the Agent constructor itself.
+    Before this, a skills_generated/*.py tool reached through the ACP/Zed
+    front door skipped the AST/banned-import/dry-run gate entirely; only the
+    human-approval interrupt (ACP's own APPROVAL_REQUIRED_TOOLS) protected
+    it there, never the second, independent check the web path always had.
+
+    ``tools=`` deliberately does *not* reuse the shared, computed-once
+    ``TOOLS`` constant below — it re-runs ``discover_generated_tools()``
+    fresh on every call instead. TOOLS/_GENERATED_TOOLS are computed once at
+    import time (the AG-UI path's ``build_template_agent()`` genuinely needs
+    that — it's called exactly once, at process start, to build the one
+    template ``agui_agent`` in main.py derives every thread from). This
+    function, in contrast, is called fresh for *every new ACP session* — so
+    there's no reason to hand a new session a stale, process-start snapshot
+    of skills_generated/ when re-scanning it costs nothing extra here and
+    means a tool written by an earlier session (this process's lifetime,
+    restart or not) is available to every session opened after it, not just
+    ones started after the next restart.
     """
     return Agent(
         model=build_model(),
         system_prompt=system_prompt or SYSTEM_PROMPT,
-        tools=TOOLS,
+        tools=[*_STATIC_TOOLS, *discover_generated_tools()],
         plugins=build_plugins(),
+        hooks=[SkillValidationHooks()],
         conversation_manager=build_conversation_manager(),
         session_manager=FileSessionManager(session_id=session_id, storage_dir=str(SESSIONS_DIR)),
         interventions=interventions,

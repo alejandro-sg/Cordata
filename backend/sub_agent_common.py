@@ -110,7 +110,13 @@ def build_conversation_manager() -> SummarizingConversationManager:
 def resolve_tools(tool_names: list[str] | None, caller: Agent, tool_label: str) -> list:
     import agent_common
 
-    denied = DENIED_TOOLS | agent_common.GENERATED_TOOL_NAMES | ORCHESTRATOR_ONLY_TOOLS
+    # current_generated_tool_names(), not the static GENERATED_TOOL_NAMES —
+    # a sub-agent has no human-in-the-loop gate at all, so this denylist
+    # must reflect a tool hot-loaded onto `caller` five seconds ago
+    # (skill_validation_hooks.py's hot_reload_generated_skill) exactly as
+    # strictly as one that's been there since process start, not just
+    # whatever existed when this process launched.
+    denied = DENIED_TOOLS | agent_common.current_generated_tool_names() | ORCHESTRATOR_ONLY_TOOLS
     available = caller.tool_registry.registry
 
     if tool_names is None:

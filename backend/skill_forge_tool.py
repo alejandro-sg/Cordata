@@ -38,8 +38,26 @@ import at module-load time. By the time skill_forge is actually invoked as a
 real tool call, agent_common has already finished importing.
 """
 
+from pathlib import Path
+
 from strands import Agent, tool
 from strands_tools import file_read, http_request, python_repl, think
+
+# The one directory every relative path in this file's own comments/prompts
+# means "relative to" — computed from this file's own location, not the
+# process's current working directory. That distinction matters here
+# specifically: agent_common.py's own os.chdir(WORKSPACE_DIR) means the
+# *live* cwd during a real conversation is backend/workspace/, not backend/
+# — so a bare relative "skills_generated/<name>.py" handed to a real
+# file_write call (as the writer's draft literally says) would resolve
+# against workspace/ and silently land at
+# backend/workspace/skills_generated/<name>.py, a path
+# discover_generated_tools() never scans. Confirmed reading
+# strands_tools/file_write.py directly: it does
+# `path = expanduser(tool_input["path"])` and nothing else — no repo-root
+# resolution of its own. _rewrite_draft_path_absolute below is the fix:
+# the orchestrator is handed a real, unambiguous absolute path instead.
+_BACKEND_DIR = Path(__file__).resolve().parent
 
 # Kept short deliberately, same reasoning as agent_common.SYSTEM_PROMPT: a
 # longer prompt measurably hurt this small local model's tool-calling
@@ -98,6 +116,27 @@ def _run_writer(build_model, diagnosis: str) -> str:
     return str(agent(diagnosis))
 
 
+def _rewrite_draft_path_absolute(draft: str) -> str:
+    """Rewrite the writer's `FILE: <relative path>` line to an absolute
+    one, anchored at _BACKEND_DIR — see the module-level comment on why a
+    relative path here is actively wrong, not just less explicit. Leaves
+    the draft untouched (rather than raising) if it isn't in the expected
+    `FILE: ...\\n---\\n...` shape; _parse errors surface downstream (the
+    validator/orchestrator will see a draft with no usable FILE: line and
+    can say so) rather than this function guessing at a fix.
+    """
+    if "FILE:" not in draft:
+        return draft
+    header, sep, rest = draft.partition("\n")
+    if not header.strip().startswith("FILE:"):
+        return draft
+    relative = header.split("FILE:", 1)[1].strip()
+    if not relative or Path(relative).is_absolute():
+        return draft
+    absolute = (_BACKEND_DIR / relative).resolve()
+    return f"FILE: {absolute}{sep}{rest}"
+
+
 def _run_validator(build_model, draft: str) -> str:
     # No file_read — the draft isn't on disk yet, it's passed in directly.
     agent = Agent(
@@ -137,7 +176,14 @@ def skill_forge(stack_trace: str, failing_tool: str, attempted_args: str) -> str
 
     diagnosis = _run_debugger(build_model, stack_trace, failing_tool, attempted_args)
     draft = _run_writer(build_model, diagnosis)
+    # Validated against the writer's own relative FILE: line (irrelevant to
+    # the validator, which only reads the content after the --- separator)
+    # before rewriting it absolute for the orchestrator — order doesn't
+    # matter here, but keeping the validator's input identical to what the
+    # writer actually produced is one less thing to explain if its opinion
+    # ever needs debugging.
     validation = _run_validator(build_model, draft)
+    draft = _rewrite_draft_path_absolute(draft)
     return (
         f"Diagnosis:\n{diagnosis}\n\n"
         f"Drafted tool (NOT written yet — call file_write yourself with this exact path and content):\n{draft}\n\n"

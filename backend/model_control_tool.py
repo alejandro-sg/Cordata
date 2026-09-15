@@ -78,7 +78,16 @@ def set_active_model(model_id: str, tool_context: ToolContext) -> str:
         model_id: A model id from list_models' output, exactly as listed.
     """
     available = _fetch_available_models()
-    if available and model_id not in available:
+    # Fail closed, not open: `available` is also empty when oMLX is simply
+    # unreachable (_fetch_model_catalog swallows URLError/TimeoutError/
+    # JSONDecodeError into []) — the previous `if available and ...` read
+    # that the same way as "catalog fetched, genuinely zero models" and let
+    # *any* string through unchecked in exactly the case there's no way to
+    # verify it. A transient oMLX hiccup should mean "try again", not "the
+    # active model is now silently whatever string was passed in."
+    if not available:
+        return f"Could not reach oMLX at {OMLX_BASE_URL} to verify '{model_id}' is loaded — refusing to switch blind. Try list_models first, or retry once oMLX responds."
+    if model_id not in available:
         return f"'{model_id}' is not currently loaded in oMLX. Available: {', '.join(available)}"
 
     config_update: dict = {"model_id": model_id}

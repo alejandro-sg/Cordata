@@ -1,5 +1,7 @@
 """Validates tools the self-healing loop (skill_forge_tool.py) writes to
-backend/skills_generated/, before they ever run for real.
+backend/skills_generated/, before they ever run for real — and, separately,
+hot-loads a newly-written one onto the live agent that just wrote it, so it
+doesn't need the whole backend process to restart before it's callable.
 
 Per docs/self-healing-architecture.md §2 step 4 ("Interception"): this is a
 Strands hook, not a tool, so it runs on the agent's normal dispatch path —
@@ -14,7 +16,10 @@ independent gate, not the first.
 
 Every `BeforeToolCallEvent` fires through here, for every tool, not just
 generated ones — `validate_generated_skill` is a no-op unless the selected
-tool's name matches a file under skills_generated/.
+tool's name matches a file under skills_generated/. Same for
+`hot_reload_generated_skill` on `AfterToolCallEvent`: a no-op unless the
+tool that just ran was `file_write`/`editor` and it wrote inside
+skills_generated/.
 
 Also exports `find_banned_usage` and `GUARDRAIL_FILES` for proposer_tool.py's
 static gate to import directly — see this file for why: a proposed harness
@@ -23,13 +28,20 @@ skill is, and must never be allowed to target this file itself.
 """
 
 import ast
+import importlib.util
 from pathlib import Path
 
 import strands_tools.python_repl as python_repl_module
 from strands import tool
-from strands.hooks import BeforeToolCallEvent, HookProvider, HookRegistry
+from strands.hooks import AfterToolCallEvent, BeforeToolCallEvent, HookProvider, HookRegistry
+from strands.tools.decorator import DecoratedFunctionTool
 
 SKILLS_GENERATED_DIR = Path(__file__).parent.resolve() / "skills_generated"
+
+# Tools whose successful call might have just created a file — the only two
+# with write access to skills_generated/ at all (see sub_agent_common.py's
+# DENIED_TOOLS for the same two named for the same reason elsewhere).
+_WRITE_TOOL_NAMES = {"file_write", "editor"}
 
 # subprocess is banned wholesale (any alias); os.system and eval/exec are
 # banned as specific calls, per docs/self-healing-architecture.md §2 step 4a.
@@ -114,6 +126,84 @@ class SkillValidationHooks(HookProvider):
 
     def register_hooks(self, registry: HookRegistry) -> None:
         registry.add_callback(BeforeToolCallEvent, self.validate_generated_skill)
+        registry.add_callback(AfterToolCallEvent, self.hot_reload_generated_skill)
+
+    def hot_reload_generated_skill(self, event: AfterToolCallEvent) -> None:
+        """Register a just-written skills_generated/*.py tool on the live
+        agent immediately, instead of leaving it uncallable until the whole
+        backend process restarts (agent_common.discover_generated_tools()
+        otherwise only ever runs once, at import time).
+
+        Fires only after a genuinely successful file_write/editor call
+        (event.result is a dict with status="success" — an Exception, or a
+        status="error" result, means nothing was actually written). Only
+        registers it on *this* agent: for the AG-UI/web front door that
+        means the rest of this same thread's conversation, since
+        ag_ui_strands caches one live Agent per thread and reuses it across
+        turns (confirmed reading its source: `self._agents_by_thread`) — a
+        *different*, already-open thread, or a brand-new one, still needs a
+        restart, because ag_ui_strands derives every thread's agent by
+        deep-copying the one template Agent built once at process start,
+        not by re-scanning skills_generated/ per thread. ACP doesn't have
+        that limitation: agent_common.build_agent_for_session() re-scans
+        the directory on every call, so every new ACP session picks up
+        anything written since the process started, restart or not — see
+        that function's own comment.
+
+        IMPORTANT gating caveat, not a bug but worth being explicit about: a
+        tool hot-loaded this way still gets validate_generated_skill's
+        AST-scan + sandboxed dry-run on its first real call (that hook is
+        unconditional on any tool name matching a skills_generated/ file,
+        independent of anything below) — but it does NOT get the
+        interrupt-based human-approval pause shell/python_repl/file_write
+        and every *restart-registered* generated tool get, because that
+        gate is driven by a name list (main.py's _APPROVAL_REQUIRED_TOOLS /
+        acp_server.py's APPROVAL_REQUIRED_TOOLS) computed once, statically,
+        before this tool's name existed. After the next restart the tool is
+        part of the normal static list and gets full parity (both gates).
+        Extending the live interrupt set at runtime to close this gap too
+        would need verified changes in main.py/acp_server.py this session
+        didn't have room to do carefully — deliberately left as a known,
+        documented gap rather than a guessed-at fix to security-relevant
+        code.
+
+        Failure anywhere here (bad path, file doesn't parse, no @tool
+        function inside it) just means the tool isn't hot-loaded — the
+        existing restart-based path still works exactly as before.
+        """
+        if event.tool_use.get("name") not in _WRITE_TOOL_NAMES:
+            return
+        result = event.result
+        if not isinstance(result, dict) or result.get("status") != "success":
+            return
+
+        raw_path = (event.tool_use.get("input") or {}).get("path")
+        if not raw_path:
+            return
+
+        try:
+            written = Path(raw_path).expanduser().resolve()
+        except (OSError, ValueError):
+            return
+        if not written.is_relative_to(SKILLS_GENERATED_DIR) or written.suffix != ".py":
+            return
+
+        tool_name = written.stem
+        if tool_name in event.agent.tool_registry.registry:
+            return  # already registered this process — a rewrite of an existing generated tool, not a new one
+
+        try:
+            spec = importlib.util.spec_from_file_location(f"skills_generated.{tool_name}", written)
+            if spec is None or spec.loader is None:
+                return
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        except Exception:
+            return  # a broken generated file just doesn't get hot-loaded, same as discover_generated_tools()'s own "continue" on import failure
+
+        new_tools = [attr for attr in vars(module).values() if isinstance(attr, DecoratedFunctionTool)]
+        if new_tools:
+            event.agent.tool_registry.process_tools(new_tools)
 
     def validate_generated_skill(self, event: BeforeToolCallEvent) -> None:
         name = event.tool_use.get("name")
