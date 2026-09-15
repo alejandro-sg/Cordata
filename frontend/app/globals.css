@@ -1,57 +1,88 @@
 /* Design tokens — this app's own chrome only (sidebar, sub-agents rail,
    approval cards, settings). CopilotKit's chat area draws from its own
-   bundled Tailwind token set and is deliberately left alone (see the
-   ".app-layout.dark" comment further down) — reskinning it globally risks
-   breaking contrast in parts of the tree we don't render ourselves.
-   Light mode gets its own accent identity (a considered violet, not the
-   generic Bootstrap-blue this app started with); dark mode keeps leaning on
-   the Monokai palette already established here rather than introducing a
-   second, clashing accent hue. */
+   bundled Tailwind token set and is deliberately left alone (no
+   `--copilot-kit-*` custom properties exist to hook into — checked its
+   bundled CSS directly) — reskinning it globally risks breaking contrast in
+   parts of the tree we don't render ourselves. That's also *why* this is a
+   restrained take on Frutiger Aero rather than a literal one: no glossy
+   water-droplet/leaf imagery, no photographic sky wallpaper — the chat
+   surface itself stays flat and legible (readability over theme), and the
+   aero treatment (glass panels, a soft sky backdrop, a glossy top-sheen on
+   buttons, pill radii) is reserved for the chrome around it: sidebar,
+   sub-agents rail, cards. --glass-blur/--sheen are the two tokens that
+   actually make a surface read as "glass" rather than just translucent —
+   used together on every panel below. */
 :root {
-  --accent: #6d5ef8;
-  --accent-strong: #5643e6;
-  --accent-soft: #efedff;
-  --surface: #ffffff;
-  --surface-alt: #f7f7fb;
-  --surface-sunken: #f0f0f7;
-  --border: #e4e4ef;
-  --border-strong: #d4d4e4;
-  --text: #17171f;
-  --text-muted: #83839a;
-  --text-faint: #b3b3c4;
-  --success: #1f9d55;
-  --success-soft: #e6f7ec;
-  --running: #3b74f6;
-  --running-soft: #ebf1fe;
-  --pending: #b9b9cb;
-  --danger: #e03131;
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
-  --shadow-sm: 0 1px 2px rgba(23, 23, 31, 0.05), 0 1px 1px rgba(23, 23, 31, 0.03);
-  --shadow-md: 0 4px 16px rgba(23, 23, 31, 0.08), 0 1px 3px rgba(23, 23, 31, 0.05);
+  --accent: #0ea5e9;
+  --accent-strong: #0369a1;
+  --accent-bright: #7dd8ff;
+  --accent-soft: rgba(14, 165, 233, 0.14);
+  --surface: rgba(255, 255, 255, 0.72);
+  --surface-alt: rgba(255, 255, 255, 0.5);
+  --surface-sunken: rgba(214, 241, 255, 0.55);
+  --border: rgba(255, 255, 255, 0.75);
+  --border-strong: rgba(14, 165, 233, 0.28);
+  --text: #0b2a3d;
+  --text-muted: #5b7a8c;
+  --text-faint: #93aeb9;
+  --success: #22c55e;
+  --success-soft: rgba(34, 197, 94, 0.14);
+  --running: #06b6d4;
+  --running-soft: rgba(6, 182, 212, 0.14);
+  --pending: #a9c6d4;
+  --danger: #ef4444;
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 22px;
+  --shadow-sm: 0 1px 2px rgba(11, 42, 61, 0.08), 0 1px 0 rgba(255, 255, 255, 0.6) inset;
+  --shadow-md: 0 10px 28px rgba(14, 165, 233, 0.16), 0 2px 6px rgba(11, 42, 61, 0.08);
+  --glass-blur: blur(18px) saturate(180%);
+  --sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.8) 0%, rgba(255, 255, 255, 0.25) 45%, rgba(255, 255, 255, 0) 46%);
+  --sky-bg: linear-gradient(180deg, #dcf3ff 0%, #f0faff 45%, #ffffff 100%);
 }
 
 .app-layout.dark {
-  --accent: #a6e22e;
-  --accent-strong: #b8f542;
-  --accent-soft: rgba(166, 226, 46, 0.14);
-  --surface: #272822;
-  --surface-alt: #2d2e27;
-  --surface-sunken: #23241f;
-  --border: #49483e;
-  --border-strong: #5c5b4e;
-  --text: #f8f8f2;
-  --text-muted: #a89f85;
-  --text-faint: #75715e;
-  --success: #a6e22e;
-  --success-soft: rgba(166, 226, 46, 0.14);
-  --running: #66d9ef;
-  --running-soft: rgba(102, 217, 239, 0.14);
-  --pending: #75715e;
-  --danger: #f92672;
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25);
-  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.35);
+  --accent: #22d3ee;
+  --accent-strong: #06b6d4;
+  --accent-bright: #67e8f9;
+  --accent-soft: rgba(34, 211, 238, 0.16);
+  --surface: rgba(15, 23, 42, 0.62);
+  --surface-alt: rgba(15, 23, 42, 0.46);
+  --surface-sunken: rgba(8, 15, 30, 0.55);
+  --border: rgba(148, 197, 255, 0.18);
+  --border-strong: rgba(34, 211, 238, 0.32);
+  --text: #e6f6ff;
+  --text-muted: #8fb4c9;
+  --text-faint: #5c7a8c;
+  --success: #34d399;
+  --success-soft: rgba(52, 211, 153, 0.16);
+  --running: #22d3ee;
+  --running-soft: rgba(34, 211, 238, 0.16);
+  --pending: #4b6478;
+  --danger: #f87171;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 10px 32px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(34, 211, 238, 0.08);
+  --glass-blur: blur(18px) saturate(160%);
+  --sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.16) 0%, rgba(255, 255, 255, 0.04) 45%, rgba(255, 255, 255, 0) 46%);
+  --sky-bg: linear-gradient(180deg, #030712 0%, #0b1226 55%, #0f172a 100%);
+}
+
+/* Glossy top-sheen — a thin bright band across the upper portion of a
+   surface, the one detail that reads as "glass/plastic catching light"
+   instead of just "rounded card." Applied via ::before so it never
+   interferes with a button/card's own content or click target; inherits
+   the parent's border-radius so it never overhangs rounded corners. */
+.aero-sheen {
+  position: relative;
+  overflow: hidden;
+}
+
+.aero-sheen::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--sheen);
+  pointer-events: none;
 }
 
 html,
@@ -65,7 +96,12 @@ body {
 .app-layout {
   display: flex;
   height: 100vh;
-  background: var(--surface);
+  /* The sky backdrop lives here, behind everything — the sidebar and
+     sub-agents rail are glass (semi-transparent + blurred) precisely so
+     this shows through them; the chat pane itself stays opaque on top of
+     it (see .chat-pane-chat below) since CopilotKit's own surface needs to
+     stay flat and legible, not blurred glass, for actual reading. */
+  background: var(--sky-bg);
   color: var(--text);
 }
 
@@ -90,24 +126,16 @@ body {
   align-items: center;
   gap: 10px;
   padding: 8px 16px;
-  border-top: 1px solid #e2e2e2;
-  background: #fffbe6;
+  border-top: 1px solid var(--border);
+  background: var(--accent-soft);
+  color: var(--text);
   font-size: 12px;
 }
 
-.app-layout.dark .queued-message {
-  background: #3e3d32;
-  border-top-color: #49483e;
-}
-
 .queued-message-label {
-  color: #888;
+  color: var(--text-muted);
   flex-shrink: 0;
   white-space: nowrap;
-}
-
-.app-layout.dark .queued-message-label {
-  color: #a89f85;
 }
 
 .queued-message-text {
@@ -123,12 +151,8 @@ body {
   font-size: 16px;
   line-height: 1;
   cursor: pointer;
-  color: #888;
+  color: var(--text-muted);
   padding: 0 4px;
-}
-
-.app-layout.dark .queued-message-cancel {
-  color: #f8f8f2;
 }
 
 .mention-autocomplete {
@@ -137,16 +161,14 @@ body {
   gap: 2px;
   padding: 6px;
   margin: 0 16px 8px;
-  border: 1px solid #e2e2e2;
-  border-radius: 8px;
-  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--shadow-md);
   max-height: 160px;
   overflow-y: auto;
-}
-
-.app-layout.dark .mention-autocomplete {
-  background: #2b2a25;
-  border-color: #49483e;
 }
 
 .mention-autocomplete-item {
@@ -154,7 +176,7 @@ body {
   border: none;
   background: none;
   padding: 6px 8px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   font-size: 12px;
   font-family: ui-monospace, monospace;
   cursor: pointer;
@@ -162,11 +184,7 @@ body {
 }
 
 .mention-autocomplete-item:hover {
-  background: #f0f0f0;
-}
-
-.app-layout.dark .mention-autocomplete-item:hover {
-  background: #3e3d32;
+  background: var(--surface-sunken);
 }
 
 .thread-sidebar {
@@ -176,6 +194,8 @@ body {
   flex-direction: column;
   border-right: 1px solid var(--border);
   background: var(--surface-alt);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
   /* Flex items default to min-height: auto, so without this the sidebar
      grows to fit every thread instead of being clipped to the viewport —
      .thread-sidebar-list's own overflow-y:auto only works once its parent
@@ -195,37 +215,45 @@ body {
   color: var(--text);
 }
 
+/* A small glossy orb, not a flat icon square — the one unmistakably
+   Frutiger-Aero detail: a radial highlight near the top-left standing in
+   for a light source reflecting off a rounded, glassy surface. */
 .thread-sidebar-brand-mark {
   width: 18px;
   height: 18px;
-  border-radius: 6px;
+  border-radius: 50%;
   flex-shrink: 0;
-  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
-  box-shadow: var(--shadow-sm);
+  background:
+    radial-gradient(circle at 30% 28%, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0) 45%),
+    linear-gradient(160deg, var(--accent-bright), var(--accent) 55%, var(--accent-strong));
+  box-shadow: var(--shadow-sm), 0 0 0 1px rgba(255, 255, 255, 0.4) inset;
 }
 
 .thread-sidebar-new {
   margin: 12px;
-  padding: 9px 12px;
+  padding: 10px 14px;
   border: 1px solid var(--border-strong);
-  border-radius: var(--radius-md);
-  background: var(--surface);
-  color: var(--text);
+  border-radius: var(--radius-lg);
+  background: var(--sheen), linear-gradient(180deg, var(--accent-bright), var(--accent) 60%, var(--accent-strong));
+  color: #04283a;
   cursor: pointer;
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
   text-align: left;
-  box-shadow: var(--shadow-sm);
-  transition: border-color 0.15s ease, transform 0.1s ease;
+  box-shadow: var(--shadow-md);
+  transition: filter 0.15s ease, transform 0.1s ease;
 }
 
 .thread-sidebar-new:hover {
-  border-color: var(--accent);
-  color: var(--accent-strong);
+  filter: brightness(1.05);
 }
 
 .thread-sidebar-new:active {
   transform: scale(0.98);
+}
+
+.app-layout.dark .thread-sidebar-new {
+  color: #04222b;
 }
 
 .thread-sidebar-list {
@@ -303,15 +331,27 @@ body {
 }
 
 .approval-card {
-  border: 1px solid #d0d0d0;
-  border-radius: 8px;
-  padding: 10px 12px;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: var(--radius-lg);
+  padding: 12px 14px;
   margin: 4px 0;
-  background: #fffbe6;
+  /* Warm amber glass, not the neutral surface tone everything else uses —
+     this one specific card needs to keep reading as "needs your attention"
+     at a glance, security-relevant HITL prompt, not just another panel. */
+  background: rgba(254, 243, 199, 0.55);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  color: var(--text);
+  box-shadow: var(--shadow-md);
+}
+
+.app-layout.dark .approval-card {
+  background: rgba(120, 84, 15, 0.3);
+  border-color: rgba(245, 158, 11, 0.4);
 }
 
 .approval-card-tool {
-  font-weight: 600;
+  font-weight: 700;
   font-size: 13px;
 }
 
@@ -319,14 +359,15 @@ body {
   font-size: 13px;
   margin: 6px 0;
   word-break: break-word;
+  color: var(--text-muted);
 }
 
 .approval-card-code {
   font-size: 12px;
-  background: #1e1e1e;
-  color: #f8f8f2;
-  padding: 8px;
-  border-radius: 6px;
+  background: var(--surface-sunken);
+  color: var(--text);
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
   overflow-x: auto;
   margin: 6px 0;
 }
@@ -334,65 +375,75 @@ body {
 .approval-card-actions {
   display: flex;
   gap: 8px;
-  margin-top: 6px;
+  margin-top: 8px;
 }
 
 .approval-card-approve,
 .approval-card-deny {
+  position: relative;
+  overflow: hidden;
   border: none;
-  border-radius: 6px;
-  padding: 6px 14px;
+  border-radius: 999px;
+  padding: 7px 16px;
   font-size: 13px;
+  font-weight: 600;
   cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: filter 0.15s ease, transform 0.1s ease;
+}
+
+.approval-card-approve:hover,
+.approval-card-deny:hover {
+  filter: brightness(1.06);
+}
+
+.approval-card-approve:active,
+.approval-card-deny:active {
+  transform: scale(0.97);
+}
+
+.approval-card-approve::before,
+.approval-card-deny::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--sheen);
+  pointer-events: none;
 }
 
 .approval-card-approve {
-  background: #2f9e44;
-  color: white;
+  background: linear-gradient(180deg, #6ee7a8, var(--success) 60%, #0f9d4f);
+  color: #04250f;
 }
 
 .approval-card-deny {
-  background: #e03131;
-  color: white;
+  background: linear-gradient(180deg, #fca5a5, var(--danger) 60%, #b91c1c);
+  color: #2a0505;
 }
 
 .approval-card-waiting {
   font-size: 12px;
-  color: #888;
+  color: var(--text-muted);
 }
 
 .approval-card-done {
   background: transparent;
   border-style: dashed;
+  border-color: var(--border-strong);
   font-size: 12px;
-  color: #888;
-}
-
-.app-layout.dark .approval-card {
-  background: #3e3d32;
-  border-color: #75715e;
-  color: #f8f8f2;
-}
-
-.app-layout.dark .approval-card-done {
-  color: #a6e22e;
-  border-color: #49483e;
+  color: var(--success);
 }
 
 .approval-card-reason {
   width: 100%;
   box-sizing: border-box;
   font-size: 12px;
-  padding: 6px 8px;
+  padding: 7px 10px;
   margin-top: 6px;
-  border: 1px solid #d0d0d0;
-  border-radius: 6px;
-}
-
-.app-layout.dark .approval-card-reason {
-  background: #272822;
-  border-color: #75715e;
-  color: #f8f8f2;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
 }
 
 .agent-settings {
@@ -401,12 +452,8 @@ body {
   gap: 8px;
   font-size: 12px;
   padding-bottom: 4px;
-  border-bottom: 1px solid #e2e2e2;
+  border-bottom: 1px solid var(--border);
   margin-bottom: 4px;
-}
-
-.app-layout.dark .agent-settings {
-  border-bottom-color: #49483e;
 }
 
 .agent-settings-row {
@@ -423,7 +470,7 @@ body {
 }
 
 .agent-settings-label {
-  color: #888;
+  color: var(--text-muted);
   font-size: 11px;
 }
 
@@ -431,26 +478,25 @@ body {
 .agent-settings-number {
   font-size: 12px;
   padding: 4px 6px;
-  border-radius: 6px;
-  border: 1px solid #d0d0d0;
-  background: white;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
 }
 
 .agent-settings-refresh {
   font-size: 11px;
-  padding: 3px 8px;
-  border-radius: 6px;
-  border: 1px solid #d0d0d0;
-  background: white;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
   cursor: pointer;
 }
 
-.app-layout.dark .agent-settings-select,
-.app-layout.dark .agent-settings-number,
-.app-layout.dark .agent-settings-refresh {
-  background: #272822;
-  border-color: #75715e;
-  color: #f8f8f2;
+.agent-settings-refresh:hover {
+  border-color: var(--accent);
+  color: var(--accent-strong);
 }
 
 .swarm-rail {
@@ -468,6 +514,8 @@ body {
   padding: 90px 14px 16px;
   border-left: 1px solid var(--border);
   background: var(--surface-alt);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
 }
 
 .swarm-rail-header {
@@ -539,7 +587,10 @@ body {
   position: fixed;
   inset: 0;
   z-index: 40;
-  background: var(--surface);
+  /* Same sky backdrop the whole app sits on (.app-layout), not a flat
+     surface fill — this panel is glass over it too, at full viewport size,
+     rather than an opaque takeover. */
+  background: var(--sky-bg);
   display: flex;
   flex-direction: column;
   padding: 20px 28px;
@@ -615,7 +666,7 @@ body {
 
 .swarm-rail-progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, var(--accent), var(--accent-strong));
+  background: linear-gradient(90deg, var(--accent-bright), var(--accent) 60%, var(--accent-strong));
   border-radius: 999px;
   transition: width 0.4s ease;
 }
@@ -649,9 +700,11 @@ body {
   gap: 6px;
   width: 100%;
   padding: 8px 10px;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   border: 1px solid var(--border-strong);
   background: var(--surface);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
   color: var(--text);
   font-size: 12px;
   text-align: left;
@@ -692,11 +745,11 @@ body {
 @keyframes swarm-rail-pulse {
   0%, 100% {
     opacity: 1;
-    box-shadow: 0 0 0 0 rgba(59, 116, 246, 0.35);
+    box-shadow: 0 0 0 0 rgba(6, 182, 212, 0.35);
   }
   50% {
     opacity: 0.6;
-    box-shadow: 0 0 0 4px rgba(59, 116, 246, 0);
+    box-shadow: 0 0 0 4px rgba(6, 182, 212, 0);
   }
 }
 
@@ -746,7 +799,7 @@ body {
   padding: 2px;
   margin-bottom: 6px;
   background: var(--surface-sunken);
-  border-radius: var(--radius-sm);
+  border-radius: 999px;
   width: fit-content;
 }
 
@@ -756,8 +809,8 @@ body {
   color: var(--text-muted);
   font-size: 11px;
   font-weight: 600;
-  padding: 4px 10px;
-  border-radius: 5px;
+  padding: 4px 12px;
+  border-radius: 999px;
   cursor: pointer;
 }
 
