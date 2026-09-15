@@ -45,8 +45,23 @@ if (typeof window !== "undefined") {
   });
 }
 
+// How often to resend the same request (same requestId) while waiting.
+// open_game's own state push lands the instant file_write's response comes
+// back, but the game's <iframe> then still has to fetch, parse, and execute
+// its own script before its `message` listener exists — live testing showed
+// the agent's very next tool call (get_game_state, per SKILL.md's own
+// "playing it yourself" flow) reliably beat that by a few hundred ms, and a
+// single fire-and-forget postMessage sent into that gap is just lost (no
+// listener yet to catch it) — not a broken game, but every one still
+// reliably timed out anyway on the very first call after open_game.
+// Resending on an interval means a later retry lands after the listener is
+// up; resending the *same* requestId keeps it safe (the reply handler below
+// deletes the pending entry on first match, so a stray extra reply from an
+// earlier retry the listener happened to also catch is just ignored).
+const RETRY_INTERVAL_MS = 300;
+
 /**
- * Sends one request to the named game's iframe and waits for its reply,
+ * Sends a request to the named game's iframe and waits for its reply,
  * matched by a fresh requestId — see GameTools.tsx for the two callers
  * (get_game_state/apply_game_move) and backend/skills/build-a-game/SKILL.md
  * for the postMessage contract every agent-built game must implement to
@@ -58,10 +73,20 @@ export async function postToGame(gameId: string, message: Record<string, unknown
   if (!iframe || !iframe.contentWindow) {
     throw new Error(`Error: game '${gameId}' isn't open right now.`);
   }
+  const contentWindow = iframe.contentWindow;
 
   const requestId = crypto.randomUUID();
+  // targetOrigin "*": the frame's own origin is the opaque "null" described
+  // above, so there is no real origin string to target — every game iframe
+  // this registry talks to is one this app itself just wrote and loaded via
+  // open_game, not a third-party frame, so a broadened target here isn't
+  // handing anything to an untrusted party.
+  const send = () => contentWindow.postMessage({ ...message, requestId }, "*");
+
+  let retry: ReturnType<typeof setInterval>;
   const result = new Promise<unknown>((resolve, reject) => {
     pending.set(requestId, { resolve, iframe });
+    retry = setInterval(send, RETRY_INTERVAL_MS);
     setTimeout(() => {
       if (pending.delete(requestId)) {
         reject(new Error(`Error: game '${gameId}' didn't respond within ${timeoutMs}ms.`));
@@ -69,11 +94,10 @@ export async function postToGame(gameId: string, message: Record<string, unknown
     }, timeoutMs);
   });
 
-  // targetOrigin "*": the frame's own origin is the opaque "null" described
-  // above, so there is no real origin string to target — every game iframe
-  // this registry talks to is one this app itself just wrote and loaded via
-  // open_game, not a third-party frame, so a broadened target here isn't
-  // handing anything to an untrusted party.
-  iframe.contentWindow.postMessage({ ...message, requestId }, "*");
-  return result;
+  send();
+  // Stops the retry loop the moment the promise settles either way (a real
+  // reply, or the timeout above) — not just on success, so a permanently
+  // closed/never-opening game doesn't leave a stray interval resending into
+  // the void after this call has already rejected.
+  return result.finally(() => clearInterval(retry));
 }

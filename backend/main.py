@@ -18,6 +18,8 @@ CWD of backend/workspace/, but nothing stops an absolute path from leaving
 it. Don't expose this beyond localhost.
 """
 
+import uuid
+
 from ag_ui_strands import StrandsAgent, StrandsAgentConfig, ToolBehavior, create_strands_app
 from fastapi import HTTPException
 from pydantic import BaseModel
@@ -124,7 +126,15 @@ def _game_state(ctx) -> dict:
     game_id, title = tool_input.get("game_id"), tool_input.get("title")
     if not game_id or not title:
         return {}
-    return {"active_game": {"game_id": game_id, "title": title}}
+    # version: a fresh uuid every call, not derived from game_id/content — a
+    # model re-announcing the *same* game_id (e.g. retrying after fixing a
+    # validation error from open_game, or the human asking it to rebuild the
+    # same game) needs GameSandbox.tsx's <iframe> to actually reload the new
+    # file, not keep showing whatever it already rendered. React only
+    # remounts an element when its `key` changes, and `key={game_id}` alone
+    # is unchanged across such a retry — this makes every open_game call a
+    # guaranteed fresh iframe regardless of whether game_id repeats.
+    return {"active_game": {"game_id": game_id, "title": title, "version": uuid.uuid4().hex}}
 
 
 def _style_context_builder(input_data, user_message: str) -> str:

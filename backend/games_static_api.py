@@ -4,6 +4,24 @@ frontend/app/api/games/[...path]/route.ts (a GET-only pass-through relaying
 the real content-type — see that file's own comment for why, unlike
 api/sandbox/[...path]/route.ts, it can't fall back to JSON).
 
+Note for anyone debugging a blank game panel while testing through Claude's
+own Browser-pane tool specifically (not a real browser): that tool's iframe
+loading is unreliable for *any* real-network `<iframe src>`, same-origin or
+not — confirmed live by testing three separate controls: (1) this exact URL
+via `fetch()` succeeded (200) while the identical URL as an `<iframe src>`
+failed with net::ERR_BLOCKED_BY_CLIENT; (2) an `<iframe src="/">` pointed at
+this app's own homepage failed identically; (3) an `<iframe src=
+"https://example.com">` never even produced a network request. Renaming
+this route (tried /play, reverted — same failure, ruling out a URL-keyword
+filter) didn't help, confirming it's not about this route specifically. The
+one iframe that *does* render in that tool is the pre-existing
+generateSandboxedUi feature, whose content is inline (srcdoc/blob) rather
+than a real network fetch — the tool's restriction is specifically on
+real-network subframe loads. A real browser has no such restriction; this
+route, its content-type handling, and the traversal guard below were all
+separately confirmed correct by loading this exact URL directly in a plain
+browser tab.
+
 Not app.mount(..., StaticFiles(...)): a Mount delegates straight to a raw
 ASGI app with no `dependencies=` parameter at all (confirmed:
 `inspect.signature(FastAPI.mount)` is `(self, path, app, name=None)`), so

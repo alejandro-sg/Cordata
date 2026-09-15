@@ -26,6 +26,7 @@ export default function Page() {
   const [dark, toggleDark] = useLocalStorageToggle("sierralab-agents:dark", false);
   const [enableInspector, toggleInspector] = useLocalStorageToggle("sierralab-agents:inspector", true);
   const [subAgentsOn, toggleSubAgents] = useLocalStorageToggle("sierralab-agents:subagents", true);
+  const [gamesOn, toggleGames] = useLocalStorageToggle("sierralab-agents:games", true);
   const { sandboxFunctions, approvalUi } = useSandboxFunctionBridge();
 
   return (
@@ -69,11 +70,13 @@ export default function Page() {
             onToggleInspector={toggleInspector}
             subAgentsOn={subAgentsOn}
             onToggleSubAgents={toggleSubAgents}
+            gamesOn={gamesOn}
+            onToggleGames={toggleGames}
           />
           <div className="chat-pane">
             <ChatPane threadId={threadId} hasExplicitThreadId={isExplicit} />
           </div>
-          <GameSandbox />
+          {gamesOn && <GameSandbox onHide={toggleGames} />}
           {subAgentsOn && <SwarmProgress onHide={toggleSubAgents} />}
         </div>
       </CopilotChatConfigurationProvider>

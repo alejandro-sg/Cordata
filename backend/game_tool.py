@@ -10,6 +10,19 @@ and tells the frontend which game_id/title to render. See
 backend/skills/build-a-game/SKILL.md for the full write-then-announce
 sequence and the postMessage contract the written file must implement for
 get_game_state/apply_game_move to actually work against it.
+
+Live testing found the local model reliably ignores that contract unless
+forced: asked for "a tic-tac-toe game" twice, it wrote two complete,
+polished, human-playable games — neither came within a mile of the
+sierralab:getState/sierralab:applyMove bridge or a getState()/applyMove()
+function, both times inventing its own unrelated function names instead.
+A silently-"ready" game that can never actually answer get_game_state/
+apply_game_move is worse than an error: it looks like a bug in *this*
+capability rather than what it is. _validate_bridge below is a loud,
+cheap, static check for exactly the pieces the bridge in SKILL.md's
+boilerplate needs to exist — it can't verify the JS actually works, only
+that the model didn't skip writing it, which is the failure actually
+observed.
 """
 
 import re
@@ -17,6 +30,20 @@ import re
 from strands import tool
 
 _GAME_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+
+# One pattern per required piece of SKILL.md's boilerplate, permissive about
+# declaration style (function decl vs. arrow/function-expression assigned to
+# a var) since the model reproduces the contract, not this exact regex.
+_REQUIRED_PATTERNS = {
+    "the sierralab:getState message handler": re.compile(r"sierralab:getState"),
+    "the sierralab:applyMove message handler": re.compile(r"sierralab:applyMove"),
+    "a getState() function": re.compile(r"function\s+getState\s*\(|(?:const|let|var)\s+getState\s*="),
+    "an applyMove() function": re.compile(r"function\s+applyMove\s*\(|(?:const|let|var)\s+applyMove\s*="),
+}
+
+
+def _missing_bridge_pieces(html: str) -> list[str]:
+    return [label for label, pattern in _REQUIRED_PATTERNS.items() if not pattern.search(html)]
 
 
 @tool
@@ -58,6 +85,17 @@ def open_game(game_id: str, title: str) -> str:
         return (
             f"Error: games/{game_id}/index.html doesn't exist yet — call file_write "
             "to create it first, then call open_game again."
+        )
+
+    missing = _missing_bridge_pieces(index_path.read_text(encoding="utf-8", errors="replace"))
+    if missing:
+        return (
+            f"Error: games/{game_id}/index.html is missing {', '.join(missing)} — "
+            "the game would open but get_game_state/apply_game_move could never talk "
+            "to it. Copy the postMessage bridge boilerplate from backend/skills/"
+            "build-a-game/SKILL.md verbatim into this file's <script>, keep your own "
+            "game logic, and implement getState()/applyMove() to match it — then "
+            "call file_write again with the corrected content and open_game once more."
         )
 
     return f"Game '{title}' ({game_id}) is ready — opening it now."
