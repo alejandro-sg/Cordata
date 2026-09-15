@@ -22,26 +22,38 @@ import { useEffect } from "react";
  * *same* game_id and actually see the new content) — real, observed churn
  * this MutationObserver was never written to expect.
  *
- * Two separate "Element is not connected" crashes were reported live, at
- * two different times relative to this button's own lifecycle:
- * 1. During addButton itself — scan() reads querySelectorAll("iframe")
- *    synchronously but the observer callback runs async, so a fast remount
- *    could detach the node before addButton got to it. isConnected checks
- *    right before mutating, plus try/catch around the mutation and the scan
- *    loop, close that window.
- * 2. Later, from a genuine user click — the button's onclick closure holds
- *    the *iframe* reference, not just the parent, and that iframe can go
- *    stale between button creation and the actual click (the sandboxed-UI
- *    iframe it was made for got replaced by a newer generateSandboxedUi
- *    call, or removed some other way) — calling `.requestFullscreen()` on a
- *    disconnected element throws synchronously in some browsers (Safari,
- *    matching the reported stack) and returns a rejected Promise in others,
- *    so the click handler below guards both: an isConnected check first, a
- *    try/catch around the call itself, and a .catch() on what it returns.
+ * The real bug behind three separate live "Element is not connected"
+ * reports, each seemingly surviving its own fix: this effect appends
+ * buttons to the DOM *imperatively* (outside React's own tree), but its
+ * cleanup only ever did `observer.disconnect()` — it never removed the
+ * buttons themselves. Every dev-mode edit to this file makes Next's Fast
+ * Refresh re-run the effect; each re-run's fresh `seen` WeakSet has no idea
+ * a button already exists from the *previous* run, so it adds a second one
+ * on top, and the first one — with whatever onclick closure that older
+ * version of the code built — is never removed and stays clickable
+ * forever. Every "fix" to the click handler's body only changed what *new*
+ * buttons do; it did nothing for the stale one(s) already sitting in the
+ * DOM from before the edit, which is almost certainly what kept getting
+ * clicked. `buttons` below is what actually closes this: the cleanup
+ * function now removes every button this effect run added, so a fresh
+ * effect run (from HMR, or a real remount) never leaves an orphaned one
+ * behind with a closure from a stale module version. This is also a
+ * correctness fix independent of dev-mode HMR: React 18 Strict Mode
+ * double-invokes effects in dev for exactly this class of bug, and any
+ * future real remount of this component would have hit the identical
+ * accumulation without a cleanup that undoes its own DOM mutations.
+ *
+ * requestFullscreen() on a disconnected element doesn't throw synchronously
+ * in every browser — confirmed live (Chromium here returns a *rejected
+ * Promise* with message "Element is not connected"; Safari reportedly
+ * throws synchronously for the same case) — so the click handler still
+ * guards both forms: an isConnected check first, try/catch around the call,
+ * and .catch() on what it returns.
  */
 export default function SandboxedUiFullscreen() {
   useEffect(() => {
     const seen = new WeakSet<HTMLIFrameElement>();
+    const buttons: HTMLButtonElement[] = [];
 
     const addButton = (iframe: HTMLIFrameElement) => {
       if (seen.has(iframe)) return;
@@ -82,6 +94,7 @@ export default function SandboxedUiFullscreen() {
           }
         };
         parent.appendChild(button);
+        buttons.push(button);
       } catch {
         // Whatever's left of the TOCTOU window above (isConnected was true a
         // moment ago, node detached since) — a missing fullscreen button is
@@ -102,7 +115,13 @@ export default function SandboxedUiFullscreen() {
     scan();
     const observer = new MutationObserver(scan);
     observer.observe(document.body, { childList: true, subtree: true });
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      // Undo this run's own DOM mutations, not just the observer — see this
+      // file's own module comment on why leaving these behind is the actual
+      // bug every earlier fix here missed.
+      for (const button of buttons) button.remove();
+    };
   }, []);
 
   return null;
