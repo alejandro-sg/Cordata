@@ -24,6 +24,7 @@ from strands_tools import calculator, current_time, editor, file_read, file_writ
 from agent_memory_tool import agent_memory
 from local_graph_tool import local_graph
 from local_swarm_tool import local_swarm
+from prompt_security import UNTRUSTED_CONTEXT_POLICY, UntrustedToolResultHooks
 from settings import OMLX_BASE_URL, OMLX_MODEL_ID
 
 # Runtime agent config, all mutated live by model_control_tool.py's tools
@@ -197,7 +198,7 @@ SYSTEM_PROMPT = (
     "You are a local research agent running entirely on-device via oMLX. "
     f"Your shell, file, and code tools default to the working directory {WORKSPACE_DIR}; "
     "use relative paths to stay inside it. shell, python_repl, file_write, and editor "
-    "each require the user's approval before they run."
+    "each require the user's approval before they run. " + UNTRUSTED_CONTEXT_POLICY
 )
 
 
@@ -246,14 +247,15 @@ def build_agent_for_session(
     ``backend/workspace/`` framing this defaults to would be actively wrong
     there).
 
-    ``hooks=[SkillValidationHooks()]`` — main.py gets this via StrandsAgent's
-    own ``hooks=`` kwarg (a real wrapper-level mechanism there, unlike
-    ``plugins=``: confirmed reading ag_ui_strands/agent.py, StrandsAgent
-    stores it on self._hooks and it survives per-thread agent derivation).
-    ACP has no such wrapper — this function builds the one real Agent a
-    session gets directly — so it has to go on the Agent constructor itself.
-    Before this, a skills_generated/*.py tool reached through the ACP/Zed
-    front door skipped the AST/banned-import/dry-run gate entirely; only the
+    ``hooks=[SkillValidationHooks(), UntrustedToolResultHooks()]`` — main.py
+    gets both via StrandsAgent's own ``hooks=`` kwarg (a real wrapper-level
+    mechanism there, unlike ``plugins=``: confirmed reading
+    ag_ui_strands/agent.py, StrandsAgent stores it on self._hooks and it
+    survives per-thread agent derivation). ACP has no such wrapper — this
+    function builds the one real Agent a session gets directly — so both
+    have to go on the Agent constructor itself. Before this, a
+    skills_generated/*.py tool reached through the ACP/Zed front door
+    skipped the AST/banned-import/dry-run gate entirely; only the
     human-approval interrupt (ACP's own APPROVAL_REQUIRED_TOOLS) protected
     it there, never the second, independent check the web path always had.
 
@@ -275,7 +277,7 @@ def build_agent_for_session(
         system_prompt=system_prompt or SYSTEM_PROMPT,
         tools=[*_STATIC_TOOLS, *discover_generated_tools()],
         plugins=build_plugins(),
-        hooks=[SkillValidationHooks()],
+        hooks=[SkillValidationHooks(), UntrustedToolResultHooks()],
         conversation_manager=build_conversation_manager(),
         session_manager=FileSessionManager(session_id=session_id, storage_dir=str(SESSIONS_DIR)),
         interventions=interventions,

@@ -43,6 +43,8 @@ from pathlib import Path
 from strands import Agent, tool
 from strands_tools import file_read, http_request, python_repl, think
 
+from prompt_security import UntrustedToolResultHooks
+
 # The one directory every relative path in this file's own comments/prompts
 # means "relative to" — computed from this file's own location, not the
 # process's current working directory. That distinction matters here
@@ -94,10 +96,16 @@ _VALIDATOR_PROMPT = (
 
 
 def _run_debugger(build_model, stack_trace: str, failing_tool: str, attempted_args: str) -> str:
+    # The only one of skill_forge's three sub-agents with http_request — it
+    # may fetch arbitrary web content while diagnosing (docs, error message
+    # lookups). hooks=[UntrustedToolResultHooks()] wraps whatever it fetches
+    # before this agent's own model reads it, same as every other tool
+    # construction path in this codebase — see prompt_security.py.
     agent = Agent(
         model=build_model(),
         system_prompt=_DEBUGGER_PROMPT,
         tools=[think, file_read, http_request],
+        hooks=[UntrustedToolResultHooks()],
         callback_handler=None,
     )
     prompt = f"Failing tool: {failing_tool}\nAttempted args: {attempted_args}\nStack trace:\n{stack_trace}"

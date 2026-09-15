@@ -15,6 +15,7 @@ from strands import Agent
 from strands.agent.conversation_manager import SummarizingConversationManager
 from strands.models.openai import OpenAIModel
 
+from prompt_security import UNTRUSTED_CONTEXT_POLICY, UntrustedToolResultHooks
 from settings import OMLX_BASE_URL, OMLX_MODEL_ID
 
 DEFAULT_SYSTEM_PROMPT = "You are a helpful AI assistant specializing in collaborative problem solving."
@@ -189,12 +190,21 @@ def build_agent_nodes(agent_specs: list[dict[str, Any]], caller: Agent, tool_lab
         while name in nodes:
             name = f"{name}_2"
 
+        # Appended regardless of whether spec supplies its own system_prompt
+        # (the common case per this file's own sub-agent-team docs) or falls
+        # back to DEFAULT_SYSTEM_PROMPT — a custom task prompt would
+        # otherwise silently skip this reinforcement entirely. The real
+        # defense is UntrustedToolResultHooks below, which works regardless
+        # of system prompt content; this is the same secondary reinforcement
+        # agent_common.py's own SYSTEM_PROMPT carries for the top-level agent.
+        base_prompt = spec.get("system_prompt") or DEFAULT_SYSTEM_PROMPT
         nodes[name] = Agent(
             name=name,
-            system_prompt=spec.get("system_prompt") or DEFAULT_SYSTEM_PROMPT,
+            system_prompt=f"{base_prompt} {UNTRUSTED_CONTEXT_POLICY}",
             model=build_local_model(),
             tools=resolve_tools(spec.get("tools"), caller, tool_label),
             conversation_manager=build_conversation_manager(),
+            hooks=[UntrustedToolResultHooks()],
             callback_handler=None,
         )
     return nodes

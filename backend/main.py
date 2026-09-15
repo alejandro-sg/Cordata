@@ -38,6 +38,8 @@ from pydantic import BaseModel
 # agent_common's own import here breaks with exactly the ModuleNotFoundError
 # this comment warns about, even though both look equally "early".
 from skill_validation_hooks import SkillValidationHooks
+from prompt_security import UntrustedToolResultHooks
+from security_headers import register_security_headers
 from model_control_tool import _context_window_limit, _fetch_available_models
 # games_static_api before sandbox_functions_api, not just before it in this
 # file's own read order: games_static_api's own import of sandbox_functions_
@@ -197,7 +199,7 @@ agui_agent = StrandsAgent(
     # AST-checks, dry-runs, and (on failure) rejects any tool call selected
     # from backend/skills_generated/ before it executes — the second,
     # independent gate on generated tools, on top of the approval below.
-    hooks=[SkillValidationHooks()],
+    hooks=[SkillValidationHooks(), UntrustedToolResultHooks()],
     config=StrandsAgentConfig(
         session_manager_provider=session_manager_provider,
         # Deterministic, tool-call-free config: applied to every turn's
@@ -227,6 +229,7 @@ app = create_strands_app(
     # see settings.py's EXTRA_CORS_ORIGINS comment.
     origins=["http://localhost:3000", *EXTRA_CORS_ORIGINS],
 )
+register_security_headers(app)
 
 
 @app.get("/models")
