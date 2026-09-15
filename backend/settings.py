@@ -12,6 +12,7 @@ there first, removes the ordering dependency entirely.
 """
 
 import os
+import secrets
 
 from dotenv import load_dotenv
 
@@ -35,18 +36,34 @@ MEMORY_DUPLICATE_THRESHOLD = float(os.getenv("MEMORY_DUPLICATE_THRESHOLD", "0.97
 MEMORY_SUPERSEDE_THRESHOLD = float(os.getenv("MEMORY_SUPERSEDE_THRESHOLD", "0.90"))
 
 # sandbox_functions_api.py: shared secret the Next.js proxy
-# (frontend/app/api/sandbox/[...path]/route.ts) must present on every
-# /sandbox/* request. main.py binds uvicorn to 0.0.0.0, not 127.0.0.1 — this
-# deployment genuinely runs frontend and backend on different LAN machines
-# (see frontend/.env.local.example's BACKEND_URL comment), so "don't expose
-# this beyond localhost" was never actually true; anything on the LAN could
-# already reach runSnippet directly, with no gate at all beyond a client-
-# side approval card. Empty by default (matches this repo's current
-# unconfigured state — no existing single-machine dev setup breaks), but
-# set SANDBOX_API_TOKEN the same way on both backend/.env and
-# frontend/.env.local to close that off; sandbox_functions_api.py logs a
-# warning at import time when it's unset, once, so the gap isn't silent.
-SANDBOX_API_TOKEN = os.getenv("SANDBOX_API_TOKEN", "")
+# (frontend/app/api/sandbox/[...path]/route.ts, frontend/app/api/games/
+# [...path]/route.ts) must present on every /sandbox/* and /games/* request.
+# main.py binds uvicorn to 0.0.0.0, not 127.0.0.1 — this deployment genuinely
+# runs frontend and backend on different LAN machines (see
+# frontend/.env.local.example's BACKEND_URL comment), so "don't expose this
+# beyond localhost" was never actually true even for a single-machine setup:
+# anything else on the same LAN could already reach runSnippet directly,
+# with no gate at all beyond a client-side approval card.
+#
+# Auto-generated (not empty) when SANDBOX_API_TOKEN isn't set: a fresh
+# `secrets.token_hex(32)` every process start, matching the reasoning
+# odysseus-dev/odysseus uses for its own same-process loopback token —
+# never persisted, never sent to a client directly. The frontend proxy
+# routes don't need this value handed to them via env at all in that case;
+# they fetch it themselves from GET /sandbox/_local-token, which
+# _require_localhost below only answers to a caller on this same machine —
+# see that function's own docstring for why that's still a real boundary
+# even though the token it hands back is otherwise unauthenticated. This
+# closes the "gap isn't silent, but it's still a gap" state the old empty-
+# by-default value left every single-machine checkout in: with this, even a
+# `curl` from another device on the LAN needs a token it has no way to
+# obtain, not just a token it happens not to have been given. Set
+# SANDBOX_API_TOKEN explicitly instead once frontend and backend really are
+# on separate machines — _local-token's own localhost-only check means the
+# auto-generated path can never reach across that hop on its own.
+_env_sandbox_token = os.getenv("SANDBOX_API_TOKEN", "")
+SANDBOX_API_TOKEN = _env_sandbox_token or secrets.token_hex(32)
+SANDBOX_API_TOKEN_AUTO_GENERATED = not _env_sandbox_token
 
 # main.py: extra allowed CORS origins for the AG-UI frontend, beyond
 # http://localhost:3000 (always allowed, so a fresh single-machine checkout

@@ -51,44 +51,63 @@ import logging
 from pathlib import Path
 
 import strands_tools.python_repl as python_repl_module
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel
 
 import sandbox_mode_tool
 from agent_common import WORKSPACE_DIR
-from settings import SANDBOX_API_TOKEN
+from settings import SANDBOX_API_TOKEN, SANDBOX_API_TOKEN_AUTO_GENERATED
 
 router = APIRouter(prefix="/sandbox")
 
 _MAX_READ_BYTES = 200_000
 
 _logger = logging.getLogger(__name__)
-if not SANDBOX_API_TOKEN:
-    _logger.warning(
-        "SANDBOX_API_TOKEN is unset — /sandbox/* routes have no network-level gate beyond the "
-        "frontend's client-side approval card. Set SANDBOX_API_TOKEN (same value in backend/.env "
-        "and frontend/.env.local) once this backend is reachable from more than your own machine."
+if SANDBOX_API_TOKEN_AUTO_GENERATED:
+    _logger.info(
+        "SANDBOX_API_TOKEN not set — auto-generated one for this process. /sandbox/* and /games/* "
+        "still require it (frontend fetches it from GET /sandbox/_local-token, which only answers "
+        "same-machine callers); set SANDBOX_API_TOKEN explicitly in backend/.env and "
+        "frontend/.env.local instead once this backend is reachable from a different machine than "
+        "the frontend's own."
     )
 
 
 def _require_sandbox_token(x_sandbox_token: str | None = Header(default=None)) -> None:
-    """FastAPI dependency: reject any /sandbox/* request that doesn't carry
-    the shared secret, when one is configured.
+    """FastAPI dependency: reject any /sandbox/* or /games/* request that
+    doesn't carry the shared secret.
 
-    Deliberately fails open (allows the request through) when
-    SANDBOX_API_TOKEN is unset, matching this repo's existing "no config
-    file needed to run it locally" default — see settings.py's own comment.
-    Once set, this is a real network-edge check, independent of the
-    frontend's approval card: it stops a request that skips the card
-    entirely (a raw curl, another device on the LAN), which the card alone
-    never could. It does not, and isn't meant to, prove a human actually
-    clicked approve on a request the legitimate frontend proxy makes —
-    that's still enforced client-side only, same as before.
+    SANDBOX_API_TOKEN is never empty (settings.py auto-generates one when
+    unconfigured), so this always enforces — a real network-edge check,
+    independent of the frontend's approval card: it stops a request that
+    skips the card entirely (a raw curl, another device on the LAN), which
+    the card alone never could. It does not, and isn't meant to, prove a
+    human actually clicked approve on a request the legitimate frontend
+    proxy makes — that's still enforced client-side only, same as before.
     """
-    if not SANDBOX_API_TOKEN:
-        return
     if x_sandbox_token != SANDBOX_API_TOKEN:
         raise HTTPException(status_code=403, detail="missing or invalid X-Sandbox-Token")
+
+
+def _require_localhost(request: Request) -> None:
+    """FastAPI dependency for GET /_local-token: only a caller on this same
+    machine may retrieve the current (possibly auto-generated) sandbox
+    token.
+
+    Deliberately not gated by _require_sandbox_token itself — that would be
+    circular, a caller needs this route precisely because it doesn't have
+    the token yet. The localhost check is the real boundary here instead,
+    same reasoning odysseus-dev/odysseus's own INTERNAL_TOOL_TOKEN loopback
+    uses: a same-machine caller (the Next.js server process, when frontend
+    and backend share a host) could already read backend/.env directly if
+    it wanted to, so handing back the live token to that same trust tier
+    isn't a new exposure — a different machine on the LAN, which is exactly
+    who SANDBOX_API_TOKEN exists to keep out, gets a plain 403 here with no
+    token revealed, same as every other /sandbox/* route without one.
+    """
+    client_host = request.client.host if request.client else None
+    if client_host not in ("127.0.0.1", "::1"):
+        raise HTTPException(status_code=403, detail="local-token is only reachable from localhost")
 
 
 def _resolve_in_workspace(raw_path: str) -> Path:
@@ -126,6 +145,10 @@ def register_sandbox_routes(app, agent_config_payload) -> None:
     main.py (which imports agent_common at module scope) and main.py doesn't
     need to import this module before `app` exists.
     """
+
+    @router.get("/_local-token", dependencies=[Depends(_require_localhost)])
+    def get_local_token() -> dict:
+        return {"token": SANDBOX_API_TOKEN}
 
     @router.get("/agent-config", dependencies=[Depends(_require_sandbox_token)])
     def query_backend() -> dict:
