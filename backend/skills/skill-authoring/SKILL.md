@@ -36,6 +36,29 @@ yet — that's how `sub-agent-team`'s `local_swarm` guidance came to exist: afte
 `swarm` tool's config requirement kept getting narrated instead of called, the fix (a
 simpler wrapper tool) got written up as a skill so the lesson isn't rediscovered every time.
 
+**Before writing, check two things explicitly** (both cheap — the first uses context you
+already have, the second is just honest self-assessment):
+
+1. **Does something close already exist?** Your own system prompt already carries the full
+   `<available_skills>` list (name + one-line description each) — skim it for a name or
+   description covering the same ground before assuming this is new. If one's close,
+   *extend that skill* (another `file_write` to its existing `SKILL.md`) instead of adding
+   a second, near-duplicate skill nobody will reliably pick between — two skills half-
+   covering the same thing is worse than one skill that's slightly broader than its name
+   suggests.
+2. **Would this genuinely help a future, memory-less instance of you, reading it cold, on a
+   real recurrence** — not "this seems generally useful," but "I actually hit this, solved
+   it the hard way once already, and it'll come up again"? If you're unsure, it's not ready
+   yet — wait for a second real occurrence rather than writing it from a single data point.
+
+Neither check is a hard gate enforced by code — `file_write`'s own human approval is the
+real review step (the human sees the full content and can decline it), which is *earlier*
+than it sounds like it needs to be: you're asking a human to read and approve unproven,
+self-authored guidance before it's ever added, not after it's already influencing behavior.
+Treat that approval prompt as the moment to actually make the case for 1 and 2 above, not a
+formality to get past — a human skimming a padded justification is worse than one told
+plainly "not fully sure this recurs, flagging for your judgment."
+
 This is real self-improvement in a narrow, honest sense — you can turn a hard-won pattern
 into something your future self reads automatically. It is not closed-loop self-healing:
 you cannot detect that you're wrong, diagnose why, patch your own tool code, and verify the
