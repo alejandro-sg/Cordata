@@ -18,6 +18,7 @@ CWD of backend/workspace/, but nothing stops an absolute path from leaving
 it. Don't expose this beyond localhost.
 """
 
+import hashlib
 import uuid
 
 from ag_ui_strands import StrandsAgent, StrandsAgentConfig, ToolBehavior, create_strands_app
@@ -126,15 +127,30 @@ def _game_state(ctx) -> dict:
     game_id, title = tool_input.get("game_id"), tool_input.get("title")
     if not game_id or not title:
         return {}
-    # version: a fresh uuid every call, not derived from game_id/content — a
-    # model re-announcing the *same* game_id (e.g. retrying after fixing a
-    # validation error from open_game, or the human asking it to rebuild the
-    # same game) needs GameSandbox.tsx's <iframe> to actually reload the new
-    # file, not keep showing whatever it already rendered. React only
-    # remounts an element when its `key` changes, and `key={game_id}` alone
-    # is unchanged across such a retry — this makes every open_game call a
-    # guaranteed fresh iframe regardless of whether game_id repeats.
-    return {"active_game": {"game_id": game_id, "title": title, "version": uuid.uuid4().hex}}
+    # version: a hash of the file's own bytes, not a fresh uuid every call.
+    # Live-reported regression from the first cut of this (a fresh uuid on
+    # every open_game): a human who had already been clicking through a real
+    # game themselves lost all of it the moment the agent re-announced the
+    # *same*, *unchanged* game_id for an unrelated reason (here, "check its
+    # state") — a fresh uuid forces GameSandbox.tsx's <iframe> key to change
+    # regardless of whether anything on disk actually did, wiping its live
+    # JS state (the board) back to whatever the freshly-reloaded script
+    # starts with. Hashing the content instead means the *only* thing that
+    # still forces a remount is the file genuinely changing (e.g. a model
+    # fixing a validation error and calling file_write again before retrying
+    # open_game) — re-announcing identical content is now a no-op key-wise,
+    # so an in-progress human game survives being "reopened".
+    import agent_common
+
+    index_path = agent_common.WORKSPACE_DIR / "games" / game_id / "index.html"
+    try:
+        version = hashlib.sha256(index_path.read_bytes()).hexdigest()[:16]
+    except OSError:
+        # Shouldn't happen — open_game already confirmed this file exists
+        # before ever returning success — but a remount is the safe default
+        # over crashing this callback if it somehow did.
+        version = uuid.uuid4().hex
+    return {"active_game": {"game_id": game_id, "title": title, "version": version}}
 
 
 def _style_context_builder(input_data, user_message: str) -> str:

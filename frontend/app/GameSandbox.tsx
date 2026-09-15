@@ -50,10 +50,12 @@ export default function GameSandbox({ onHide }: { onHide: () => void }) {
     const iframe = iframeRef.current;
     if (!activeGame || !iframe) return;
     return registerGameFrame(activeGame.game_id, iframe);
-    // The <iframe> below is keyed by game_id+version, so *every* open_game
-    // call remounts it fresh (even re-announcing the same game_id — see
-    // main.py's own comment on why) and this effect re-runs to register the
-    // new node — never left pointing at a previous game's stale frame.
+    // The <iframe> below is keyed by game_id+version, where version is a
+    // hash of the file's own content (main.py's _game_state) — re-announcing
+    // an unchanged game_id keeps the same key (no remount, no lost in-
+    // progress state), while a genuinely edited file gets a fresh one. This
+    // effect re-runs whenever that key would change, so it's never left
+    // pointing at a previous game's stale frame.
   }, [activeGame?.game_id, activeGame?.version]);
 
   if (!activeGame) return null;
