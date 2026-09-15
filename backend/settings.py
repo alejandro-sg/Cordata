@@ -47,3 +47,10 @@ MEMORY_SUPERSEDE_THRESHOLD = float(os.getenv("MEMORY_SUPERSEDE_THRESHOLD", "0.90
 # frontend/.env.local to close that off; sandbox_functions_api.py logs a
 # warning at import time when it's unset, once, so the gap isn't silent.
 SANDBOX_API_TOKEN = os.getenv("SANDBOX_API_TOKEN", "")
+
+# main.py: extra allowed CORS origins for the AG-UI frontend, beyond
+# http://localhost:3000 (always allowed, so a fresh single-machine checkout
+# works with no config). Comma-separated, e.g. "https://agent.example.com,
+# https://agent.local" once you're hosting the frontend somewhere other than
+# the machine running this backend.
+EXTRA_CORS_ORIGINS = [origin.strip() for origin in os.getenv("EXTRA_CORS_ORIGINS", "").split(",") if origin.strip()]

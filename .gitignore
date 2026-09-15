@@ -12,3 +12,10 @@ backend/repl_state/
 frontend/tsconfig.tsbuildinfo
 .memsearch/
 **/.DS_Store
+
+# scripts/dev-*.sh PID/log files — see scripts/README.md.
+.dev/
+
+# Claude Code's own per-checkout local state — personal settings/permissions,
+# never something a clone should inherit from whoever committed it.
+.claude/settings.local.json

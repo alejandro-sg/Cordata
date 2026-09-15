@@ -50,6 +50,7 @@ from model_control_tool import _context_window_limit, _fetch_available_models
 from games_static_api import register_game_routes
 from sandbox_functions_api import register_sandbox_routes
 from agent_common import GENERATED_TOOL_NAMES, build_plugins, build_template_agent
+from settings import EXTRA_CORS_ORIGINS
 
 # Tools whose real-world impact (arbitrary shell/code execution, overwriting
 # files) is worth a human confirming before they actually run. `editor` is
@@ -221,7 +222,10 @@ agui_agent = StrandsAgent(
 app = create_strands_app(
     agui_agent,
     "/",
-    origins=["http://localhost:3000", "https://agent.home", "https://agent.sierralab.net"],
+    # localhost:3000 always allowed (a fresh single-machine checkout needs no
+    # config); anything past that is your own deployment's own origin(s) —
+    # see settings.py's EXTRA_CORS_ORIGINS comment.
+    origins=["http://localhost:3000", *EXTRA_CORS_ORIGINS],
 )
 
 
