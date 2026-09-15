@@ -3,6 +3,7 @@ backend/__pycache__/
 backend/.env
 frontend/node_modules/
 frontend/.next/
+frontend/.env.local
 
 # Runtime/local state, not source — regenerates or accumulates per machine.
 backend/sessions/

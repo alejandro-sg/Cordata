@@ -8,21 +8,28 @@ plain HTTP requests a `sandboxFunction` handler makes from the host page, not
 agent tool_use. That means none of the existing gating applies here:
 ToolBehavior(interrupt_on_call=True) (main.py) and
 strands.interventions.InterventionHandler (acp_server.py) both hook the
-agent's before_tool_call event, which nothing here ever raises. The
-approval card the frontend shows before calling these routes (see
-SandboxFunctions.tsx) is not a UI nicety layered on top of a real gate — for
-this surface, it IS the gate. Don't add a fourth route here without adding
-the matching client-side confirmation first.
+agent's before_tool_call event, which nothing here ever raises. The approval
+card the frontend shows before calling these routes (see
+useSandboxFunctionBridge.tsx) is real, but it is client-side state — it
+cannot, by itself, stop a request that doesn't go through that client at
+all. main.py binds uvicorn to 0.0.0.0 (this deployment genuinely runs
+frontend and backend on separate LAN machines — see
+frontend/.env.local.example), so "these routes are only reachable from
+localhost" was never actually true: anything on the LAN could call
+runSnippet directly and skip the approval card entirely, same class of gap
+main.py's own comment says was the reason a raw /shell endpoint was refused
+elsewhere. _require_sandbox_token below closes that at the network edge —
+see its own docstring.
 
 Three functions, deliberately not one general "run a command" hatch — see
 sub_agent_common.py's DENIED_TOOLS comment for the same reasoning applied to
 sub-agents: a closed, narrow vocabulary is checkable; an open one isn't.
 
-  queryBackend        — read-only, always available. Same payload /models
-                        already serves the chat UI.
-  readWorkspaceFile   — read-only, always available, contained to
-                        agent_common.WORKSPACE_DIR (the same directory every
-                        other tool's relative paths already resolve against).
+  queryBackend        — read-only. Same payload /models already serves the
+                        chat UI.
+  readWorkspaceFile   — read-only, contained to agent_common.WORKSPACE_DIR
+                        (the same directory every other tool's relative
+                        paths already resolve against).
   runSnippet          — the only one that executes anything. Reuses
                         strands_tools.python_repl directly, the same
                         already-audited call convention
@@ -33,20 +40,55 @@ sub-agents: a closed, narrow vocabulary is checkable; an open one isn't.
                         Gated on sandbox_mode_tool's mode being at least
                         workspace-write, on top of the client-side approval
                         card.
+
+All three now also require _require_sandbox_token — not just runSnippet:
+queryBackend/readWorkspaceFile were "always available" before with no gate
+of any kind, which is exactly backwards for a route enumerable and callable
+by anything on the LAN.
 """
 
+import logging
 from pathlib import Path
 
 import strands_tools.python_repl as python_repl_module
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 
 import sandbox_mode_tool
 from agent_common import WORKSPACE_DIR
+from settings import SANDBOX_API_TOKEN
 
 router = APIRouter(prefix="/sandbox")
 
 _MAX_READ_BYTES = 200_000
+
+_logger = logging.getLogger(__name__)
+if not SANDBOX_API_TOKEN:
+    _logger.warning(
+        "SANDBOX_API_TOKEN is unset — /sandbox/* routes have no network-level gate beyond the "
+        "frontend's client-side approval card. Set SANDBOX_API_TOKEN (same value in backend/.env "
+        "and frontend/.env.local) once this backend is reachable from more than your own machine."
+    )
+
+
+def _require_sandbox_token(x_sandbox_token: str | None = Header(default=None)) -> None:
+    """FastAPI dependency: reject any /sandbox/* request that doesn't carry
+    the shared secret, when one is configured.
+
+    Deliberately fails open (allows the request through) when
+    SANDBOX_API_TOKEN is unset, matching this repo's existing "no config
+    file needed to run it locally" default — see settings.py's own comment.
+    Once set, this is a real network-edge check, independent of the
+    frontend's approval card: it stops a request that skips the card
+    entirely (a raw curl, another device on the LAN), which the card alone
+    never could. It does not, and isn't meant to, prove a human actually
+    clicked approve on a request the legitimate frontend proxy makes —
+    that's still enforced client-side only, same as before.
+    """
+    if not SANDBOX_API_TOKEN:
+        return
+    if x_sandbox_token != SANDBOX_API_TOKEN:
+        raise HTTPException(status_code=403, detail="missing or invalid X-Sandbox-Token")
 
 
 def _resolve_in_workspace(raw_path: str) -> Path:
@@ -85,11 +127,11 @@ def register_sandbox_routes(app, agent_config_payload) -> None:
     need to import this module before `app` exists.
     """
 
-    @router.get("/agent-config")
+    @router.get("/agent-config", dependencies=[Depends(_require_sandbox_token)])
     def query_backend() -> dict:
         return agent_config_payload()
 
-    @router.get("/workspace-file")
+    @router.get("/workspace-file", dependencies=[Depends(_require_sandbox_token)])
     def read_workspace_file(path: str) -> dict:
         resolved = _resolve_in_workspace(path)
         if not resolved.is_file():
@@ -100,7 +142,7 @@ def register_sandbox_routes(app, agent_config_payload) -> None:
         text = data[:_MAX_READ_BYTES].decode("utf-8", errors="replace")
         return {"path": path, "content": text, "truncated": truncated}
 
-    @router.post("/run-snippet")
+    @router.post("/run-snippet", dependencies=[Depends(_require_sandbox_token)])
     def run_snippet(body: RunSnippetRequest) -> dict:
         if not sandbox_mode_tool.sandbox_mode_allows_write():
             raise HTTPException(

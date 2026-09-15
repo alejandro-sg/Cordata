@@ -33,3 +33,17 @@ QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
 MEMORY_MAX_ACTIVE_ENTRIES = int(os.getenv("MEMORY_MAX_ACTIVE_ENTRIES", "300"))
 MEMORY_DUPLICATE_THRESHOLD = float(os.getenv("MEMORY_DUPLICATE_THRESHOLD", "0.97"))
 MEMORY_SUPERSEDE_THRESHOLD = float(os.getenv("MEMORY_SUPERSEDE_THRESHOLD", "0.90"))
+
+# sandbox_functions_api.py: shared secret the Next.js proxy
+# (frontend/app/api/sandbox/[...path]/route.ts) must present on every
+# /sandbox/* request. main.py binds uvicorn to 0.0.0.0, not 127.0.0.1 — this
+# deployment genuinely runs frontend and backend on different LAN machines
+# (see frontend/.env.local.example's BACKEND_URL comment), so "don't expose
+# this beyond localhost" was never actually true; anything on the LAN could
+# already reach runSnippet directly, with no gate at all beyond a client-
+# side approval card. Empty by default (matches this repo's current
+# unconfigured state — no existing single-machine dev setup breaks), but
+# set SANDBOX_API_TOKEN the same way on both backend/.env and
+# frontend/.env.local to close that off; sandbox_functions_api.py logs a
+# warning at import time when it's unset, once, so the gap isn't silent.
+SANDBOX_API_TOKEN = os.getenv("SANDBOX_API_TOKEN", "")
