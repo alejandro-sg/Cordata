@@ -17,6 +17,8 @@ answer instead of an ever-growing pile of near-restatements of the same
 fact.
 """
 
+import functools
+import logging
 import time
 import uuid
 from dataclasses import dataclass
@@ -51,7 +53,23 @@ _DEFAULT_KIND = "fact"
 _VALID_KINDS = {"fact", "lesson", "strategy", "preference"}
 
 _embedder = SentenceTransformer(_MODEL_NAME)
-_client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
+# timeout=5: qdrant-client's own default is no timeout at all, which is what
+# turned a LAN-hosted Qdrant's occasional unreachability into an observed
+# 15s+ hang per call rather than a fast, visible failure — see
+# MemoryStore's own _memory_op wrapper below for what happens once a call
+# actually does fail within this window.
+#
+# check_compatibility=False: without it, the client's first real call also
+# makes a separate lazy "GET server version" request to compare against its
+# own client version — under the same timeout, so an unreachable Qdrant paid
+# for *two* full 5s timeouts back to back (confirmed live: ~10s to the first
+# degraded response, not ~5s). qdrant-client and the server version this
+# deployment runs are both pinned in requirements.txt / the container image
+# below, so there's nothing this check would catch that a hard version
+# mismatch wouldn't already surface directly as request failures.
+_client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, timeout=5, check_compatibility=False)
+
+_logger = logging.getLogger(__name__)
 
 _ACTIVE_FILTER = Filter(must=[FieldCondition(key="status", match=MatchValue(value="active"))])
 _DEPRECATED_FILTER = Filter(must=[FieldCondition(key="status", match=MatchValue(value="deprecated"))])
@@ -75,6 +93,42 @@ def _format(entry_id: str, payload: dict, score: float | None = None) -> str:
     kind = payload.get("kind", _DEFAULT_KIND)
     score_part = f" (score {score:.2f})" if score is not None else ""
     return f"[{entry_id}]{score_part} ({kind}){tag} {payload.get('text', '')}"
+
+
+def _memory_op(is_write: bool):
+    """Degrades a Qdrant connectivity failure to a clear message instead of
+    an uncaught exception reaching the agent turn.
+
+    Distinguishes "the store is unreachable" from "there's genuinely
+    nothing here" — the same reasoning Odysseus's own MemoryStoreUnreadable
+    applies to its JSON-backed memory store ("the contents are unknown is
+    categorically different from there are no memories"): a caller (human
+    or model) that can't tell the two apart may act on an empty result as
+    if it were a real answer.
+
+    Not a transaction boundary: store()'s own supersede-marking and
+    curate()'s bulk sweep are each more than one Qdrant call, and a failure
+    partway through one of those still leaves whatever writes already
+    landed — that was already true before this wrapper existed (Qdrant
+    offers no multi-document transaction for how this client uses it);
+    this only changes what the caller sees when a call fails, from an
+    uncaught exception to a clear, actionable message.
+    """
+
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(self, *args, **kwargs):
+            try:
+                return fn(self, *args, **kwargs)
+            except Exception as e:
+                _logger.warning("agent_memory: %s failed (Qdrant at %s:%s): %s", fn.__name__, QDRANT_HOST, QDRANT_PORT, e)
+                if is_write:
+                    return "Error: memory store is currently unreachable — nothing was stored or changed. Try again shortly."
+                return 'Error: memory store is currently unreachable (this is not the same as "no results found") — try again shortly.'
+
+        return wrapper
+
+    return decorator
 
 
 class MemoryStore:
@@ -114,6 +168,7 @@ class MemoryStore:
 
     # -- writes ---------------------------------------------------------
 
+    @_memory_op(is_write=True)
     def store(self, content: str, kind: str = _DEFAULT_KIND) -> str:
         self._ensure()
         kind = kind if kind in _VALID_KINDS else _DEFAULT_KIND
@@ -156,6 +211,7 @@ class MemoryStore:
             return f"Stored memory [{new_id}] (supersedes [{supersedes}]): {content}"
         return f"Stored memory [{new_id}]: {content}"
 
+    @_memory_op(is_write=True)
     def update(self, memory_id: str, content: str) -> str:
         self._ensure()
         records = _client.retrieve(self._collection, ids=[memory_id])
@@ -173,6 +229,7 @@ class MemoryStore:
         )
         return f"Updated memory [{memory_id}]: {content}"
 
+    @_memory_op(is_write=True)
     def deprecate(self, memory_id: str) -> str:
         self._ensure()
         records = _client.retrieve(self._collection, ids=[memory_id])
@@ -183,6 +240,7 @@ class MemoryStore:
         )
         return f"Deprecated memory [{memory_id}]"
 
+    @_memory_op(is_write=True)
     def delete(self, memory_id: str) -> str:
         self._ensure()
         _client.delete(self._collection, points_selector=[memory_id])
@@ -190,6 +248,7 @@ class MemoryStore:
 
     # -- reads ------------------------------------------------------------
 
+    @_memory_op(is_write=False)
     def retrieve(self, query: str, limit: int = 5, include_deprecated: bool = False) -> str:
         self._ensure()
         vector = _embedder.encode(query).tolist()
@@ -199,6 +258,7 @@ class MemoryStore:
             return "No matching memories found."
         return "\n".join(_format(str(p.id), p.payload, p.score) for p in result.points)
 
+    @_memory_op(is_write=False)
     def list(self, limit: int = 5, include_deprecated: bool = False) -> str:
         self._ensure()
         scroll_filter = None if include_deprecated else _ACTIVE_FILTER
@@ -209,6 +269,7 @@ class MemoryStore:
 
     # -- maintenance --------------------------------------------------------
 
+    @_memory_op(is_write=True)
     def curate(self) -> str:
         """Bulk dedup sweep across all active entries.
 
