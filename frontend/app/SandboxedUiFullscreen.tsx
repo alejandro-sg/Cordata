@@ -20,16 +20,24 @@ import { useEffect } from "react";
  * that iframe is deliberately remounted on every open_game call (a fresh
  * `key={game_id}:{version}`, so a human can reopen or fix-and-retry the
  * *same* game_id and actually see the new content) — real, observed churn
- * this MutationObserver was never written to expect. Live-reported crash:
- * "Element is not connected" thrown from addButton, because scan() reads
- * document.querySelectorAll("iframe") synchronously but the observer
- * callback itself runs async (a microtask after the mutation record), so a
- * fast remount can have already detached the exact node addButton is about
- * to touch by the time it runs. isConnected checks right before mutating
- * (not just at addButton's own entry, which raced the same way) close that
- * window; try/catch below is defense in depth for whatever's left, since
- * a floating cosmetic button crashing the whole app is strictly worse than
- * it silently not appearing once.
+ * this MutationObserver was never written to expect.
+ *
+ * Two separate "Element is not connected" crashes were reported live, at
+ * two different times relative to this button's own lifecycle:
+ * 1. During addButton itself — scan() reads querySelectorAll("iframe")
+ *    synchronously but the observer callback runs async, so a fast remount
+ *    could detach the node before addButton got to it. isConnected checks
+ *    right before mutating, plus try/catch around the mutation and the scan
+ *    loop, close that window.
+ * 2. Later, from a genuine user click — the button's onclick closure holds
+ *    the *iframe* reference, not just the parent, and that iframe can go
+ *    stale between button creation and the actual click (the sandboxed-UI
+ *    iframe it was made for got replaced by a newer generateSandboxedUi
+ *    call, or removed some other way) — calling `.requestFullscreen()` on a
+ *    disconnected element throws synchronously in some browsers (Safari,
+ *    matching the reported stack) and returns a rejected Promise in others,
+ *    so the click handler below guards both: an isConnected check first, a
+ *    try/catch around the call itself, and a .catch() on what it returns.
  */
 export default function SandboxedUiFullscreen() {
   useEffect(() => {
@@ -64,7 +72,14 @@ export default function SandboxedUiFullscreen() {
           cursor: "pointer",
         } satisfies Partial<CSSStyleDeclaration>);
         button.onclick = () => {
-          void iframe.requestFullscreen?.();
+          if (!iframe.isConnected) return;
+          try {
+            iframe.requestFullscreen?.()?.catch(() => {});
+          } catch {
+            // Synchronous throw (Safari) for the same disconnected-element
+            // case the .catch() above handles for browsers that reject
+            // instead — see this file's own module comment.
+          }
         };
         parent.appendChild(button);
       } catch {
