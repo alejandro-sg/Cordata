@@ -31,12 +31,14 @@ Open `http://localhost:3000`.
 Same commands via `make setup` / `make up` / `make down` / `make restart` / `make status`.
 Details, including what each script actually does, in `scripts/README.md`.
 
-Nothing here binds beyond localhost by default and there's no confirmation gate at the
-process level (`BYPASS_TOOL_CONSENT` — a headless server has no TTY to prompt on) — the
-real safety net is per-tool human-in-the-loop approval for anything destructive (`shell`,
-`python_repl`, `file_write`; see "AG-UI frontend tools & human-in-the-loop" below). Keep it
-that way: don't expose either front door beyond your own machine/LAN without also setting
-`SANDBOX_API_TOKEN` (see `backend/.env.example`).
+There's no confirmation gate at the process level (`BYPASS_TOOL_CONSENT` — a headless
+server has no TTY to prompt on) — the real safety net is per-tool human-in-the-loop
+approval for anything destructive (`shell`, `python_repl`, `file_write`; see "AG-UI
+frontend tools & human-in-the-loop" below), plus a network-edge token gate on the routes
+that bypass the agent's own tool-call loop entirely (`SANDBOX_API_TOKEN` — auto-generated
+per process start when you don't set one, so this is never actually open even with zero
+config; see `backend/.env.example`). Full reasoning, including what's *not* covered, in
+[`THREAT_MODEL.md`](THREAT_MODEL.md).
 
 ## What the agent can do
 
