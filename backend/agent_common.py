@@ -67,6 +67,7 @@ from proposer_tool import proposer  # noqa: E402
 from skill_validation_hooks import SkillValidationHooks  # noqa: E402
 from model_control_tool import context_usage, list_models, set_active_model, set_memory_window, set_temperature  # noqa: E402
 from sandbox_mode_tool import set_sandbox_mode  # noqa: E402
+from game_tool import open_game  # noqa: E402
 
 # No TTY in either server process: let these tools run without a confirmation
 # prompt instead of hanging forever waiting on stdin.
@@ -138,6 +139,7 @@ _STATIC_TOOLS = [
     set_memory_window,
     context_usage,
     set_sandbox_mode,
+    open_game,
 ]
 
 TOOLS = [*_STATIC_TOOLS, *_GENERATED_TOOLS]

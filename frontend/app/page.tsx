@@ -5,6 +5,8 @@ import "@copilotkit/react-core/v2/styles.css";
 import { useState } from "react";
 import AgentTools from "./AgentTools";
 import ChatPane from "./ChatPane";
+import GameSandbox from "./GameSandbox";
+import GameTools from "./GameTools";
 import SandboxedUiFullscreen from "./SandboxedUiFullscreen";
 import SwarmProgress from "./SwarmProgress";
 import ThreadSidebar from "./ThreadSidebar";
@@ -48,6 +50,7 @@ export default function Page() {
         }}
       >
         <AgentTools onToggleDark={toggleDark} />
+        <GameTools />
         <SandboxedUiFullscreen />
         <div className={"app-layout" + (dark ? " dark" : "")}>
           <ThreadSidebar
@@ -70,6 +73,7 @@ export default function Page() {
           <div className="chat-pane">
             <ChatPane threadId={threadId} hasExplicitThreadId={isExplicit} />
           </div>
+          <GameSandbox />
           {subAgentsOn && <SwarmProgress onHide={toggleSubAgents} />}
         </div>
       </CopilotChatConfigurationProvider>

@@ -10,6 +10,7 @@ duplicated across the two tool files.
 import logging
 from typing import Any
 
+from ag_ui_strands.client_proxy_tool import registered_proxy_names
 from strands import Agent
 from strands.agent.conversation_manager import SummarizingConversationManager
 from strands.models.openai import OpenAIModel
@@ -82,6 +83,12 @@ ORCHESTRATOR_ONLY_TOOLS = {
     "set_memory_window",
     "context_usage",
     "set_sandbox_mode",
+    # Not unsafe by itself (open_game writes nothing — see game_tool.py) but
+    # its ToolBehavior(state_from_result=...) push only reaches the
+    # top-level agui_agent's StrandsAgentConfig (main.py); a sub-agent has
+    # no such config, so it calling this would silently do nothing while
+    # looking like it worked — excluded so that failure mode can't happen.
+    "open_game",
 }
 
 
@@ -116,7 +123,32 @@ def resolve_tools(tool_names: list[str] | None, caller: Agent, tool_label: str) 
     # (skill_validation_hooks.py's hot_reload_generated_skill) exactly as
     # strictly as one that's been there since process start, not just
     # whatever existed when this process launched.
-    denied = DENIED_TOOLS | agent_common.current_generated_tool_names() | ORCHESTRATOR_ONLY_TOOLS
+    #
+    # registered_proxy_names(caller.tool_registry) — every useFrontendTool
+    # the browser has registered (toggle_theme today; get_game_state/
+    # apply_game_move once game_tool.py lands) becomes a real entry in
+    # caller.tool_registry.registry via ag_ui_strands' own sync_proxy_tools
+    # (confirmed reading ag_ui_strands/agent.py — it runs on the *live*
+    # top-level agent, which is exactly `caller` here for the orchestrator's
+    # own tool set). The registered proxy tool's body
+    # (ag_ui_strands/client_proxy_tool.py's create_proxy_tool._proxy_func)
+    # is a synchronous no-op that *unconditionally* returns
+    # {"status": "success", "content": [{"text": "Forwarded to client"}]} —
+    # the real browser round-trip only happens because ag_ui_strands' own
+    # outer loop separately intercepts it for the top-level agent. A
+    # sub-agent given one of these would get that same fake success back
+    # with no effect at all: for apply_game_move specifically, it would
+    # report "I played cell 4" with no move ever applied, silently — worse
+    # than a missing tool, since nothing signals the failure. Excluded by
+    # the library's own proxy marker (registered_proxy_names), not a
+    # per-name list, so this never needs updating when a new frontend tool
+    # is added later.
+    denied = (
+        DENIED_TOOLS
+        | agent_common.current_generated_tool_names()
+        | ORCHESTRATOR_ONLY_TOOLS
+        | registered_proxy_names(caller.tool_registry)
+    )
     available = caller.tool_registry.registry
 
     if tool_names is None:

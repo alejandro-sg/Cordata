@@ -874,3 +874,80 @@ body {
 .swarm-rail-dot-pending {
   background: var(--pending);
 }
+
+/* GameSandbox.tsx: docked by default (same width/border/background family
+   as .swarm-rail), a single fixed-inset overlay in fullscreen — see that
+   component's own comment for why this is one element whose class toggles,
+   not two separately-rendered trees the way .swarm-fullscreen is (the
+   <iframe> inside must never remount on the switch). */
+.game-sandbox {
+  width: 420px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  background: var(--surface-alt);
+  padding: 14px;
+}
+
+.game-sandbox-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  width: auto;
+  border-left: none;
+  background: var(--surface);
+  padding: 20px 28px;
+}
+
+.game-sandbox-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.game-sandbox-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.game-sandbox-fullscreen .game-sandbox-title {
+  font-size: 13px;
+}
+
+.game-sandbox-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.game-sandbox-icon-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 5px;
+  border-radius: var(--radius-sm);
+  display: flex;
+}
+
+.game-sandbox-icon-btn:hover {
+  background: var(--surface-sunken);
+  color: var(--text);
+}
+
+.game-sandbox-frame {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: #fff;
+}
