@@ -7,6 +7,7 @@ import AgentTools from "./AgentTools";
 import ChatPane from "./ChatPane";
 import GameSandbox from "./GameSandbox";
 import GameTools from "./GameTools";
+import { randomId } from "./randomId";
 import SandboxedUiFullscreen from "./SandboxedUiFullscreen";
 import SwarmProgress from "./SwarmProgress";
 import ThreadSidebar from "./ThreadSidebar";
@@ -14,7 +15,7 @@ import { useLocalStorageToggle } from "./useLocalStorageToggle";
 import { useSandboxFunctionBridge } from "./useSandboxFunctionBridge";
 
 export default function Page() {
-  const [threadId, setThreadId] = useState(() => crypto.randomUUID());
+  const [threadId, setThreadId] = useState(() => randomId());
   // true = "resume this specific existing thread" (sidebar selection) vs
   // false = "brand new, no history to fetch" (New chat). Real fix for New
   // chat not clearing lived in useQueueingAgentInput, not this flag — see
@@ -61,7 +62,7 @@ export default function Page() {
               setIsExplicit(true);
             }}
             onNew={() => {
-              setThreadId(crypto.randomUUID());
+              setThreadId(randomId());
               setIsExplicit(false);
             }}
             dark={dark}

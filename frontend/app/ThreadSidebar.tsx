@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import AgentSettings from "./AgentSettings";
+import SettingsModal from "./SettingsModal";
 
 interface Thread {
   id: string;
@@ -44,6 +44,7 @@ export default function ThreadSidebar({
   onToggleGames: () => void;
 }) {
   const [threads, setThreads] = useState<Thread[]>([]);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const refresh = () => {
     fetch("/api/copilotkit/threads")
@@ -81,7 +82,9 @@ export default function ThreadSidebar({
         ))}
       </div>
       <div className="thread-sidebar-footer">
-        <AgentSettings />
+        <button className="thread-sidebar-settings-button" onClick={() => setSettingsOpen(true)}>
+          ⚙ Settings
+        </button>
         <label className="thread-sidebar-toggle">
           <input type="checkbox" checked={dark} onChange={onToggleDark} />
           Dark theme
@@ -99,6 +102,7 @@ export default function ThreadSidebar({
           Game panel
         </label>
       </div>
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
     </aside>
   );
 }

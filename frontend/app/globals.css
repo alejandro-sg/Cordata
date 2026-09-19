@@ -453,6 +453,176 @@ body {
   color: #f8f8f2;
 }
 
+.thread-sidebar-settings-button {
+  padding: 7px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+}
+
+.thread-sidebar-settings-button:hover {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+/* Same fixed, full-viewport overlay convention as .swarm-fullscreen/
+   .game-sandbox-fullscreen — CSS vars throughout, so no separate dark-mode
+   block is needed here the way the older .agent-settings-select etc. above
+   (hardcoded colors) require one. */
+.settings-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  padding: 20px 28px;
+}
+
+.settings-modal-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.settings-modal-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.settings-modal-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.settings-modal-tab {
+  border: 1px solid var(--border);
+  background: var(--surface-alt);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 6px 14px;
+  border-radius: var(--radius-md);
+}
+
+.settings-modal-tab.active {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.settings-modal-close {
+  margin-left: auto;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 6px 12px;
+  border-radius: var(--radius-md);
+}
+
+.settings-modal-close:hover {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.settings-modal-body {
+  flex: 1;
+  overflow: auto;
+  padding-top: 6px;
+}
+
+.settings-modal-section {
+  max-width: 480px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-modal-subsection-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-top: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.settings-modal-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.settings-modal-notice {
+  font-size: 12px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  margin: 0;
+}
+
+.settings-modal-error {
+  font-size: 12px;
+  color: var(--danger);
+  margin: 0;
+}
+
+.settings-modal-list-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.settings-modal-list-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.settings-modal-list-detail {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-modal-remove {
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--danger);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.settings-modal-textarea {
+  font-family: inherit;
+  font-size: 12px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  resize: vertical;
+}
+
 .swarm-rail {
   width: 272px;
   flex-shrink: 0;

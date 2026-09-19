@@ -9,6 +9,7 @@ conversation history and whatever the agent has learned persist across
 backend restarts regardless of which door was used.
 """
 
+import asyncio
 import importlib.util
 import os
 from pathlib import Path
@@ -24,8 +25,18 @@ from strands_tools import calculator, current_time, editor, file_read, file_writ
 from agent_memory_tool import agent_memory
 from local_graph_tool import local_graph
 from local_swarm_tool import local_swarm
+from mcp_manager import load_configured_mcp_clients
 from prompt_security import UNTRUSTED_CONTEXT_POLICY, UntrustedToolResultHooks
-from settings import OMLX_BASE_URL, OMLX_MODEL_ID
+from settings import (
+    ANTHROPIC_API_KEY,
+    ANTHROPIC_MODEL_ID,
+    CLOUD_OPENAI_API_KEY,
+    CLOUD_OPENAI_BASE_URL,
+    CLOUD_OPENAI_MODEL_ID,
+    MODEL_PROVIDER,
+    OMLX_BASE_URL,
+    OMLX_MODEL_ID,
+)
 
 # Runtime agent config, all mutated live by model_control_tool.py's tools
 # (`agent_common.ACTIVE_* = ...`) when the agent switches them mid-session,
@@ -35,6 +46,39 @@ ACTIVE_MODEL_ID = OMLX_MODEL_ID
 ACTIVE_TEMPERATURE: float | None = None  # None = provider default
 ACTIVE_MEMORY_WINDOW = 10  # SummarizingConversationManager.preserve_recent_messages
 
+# Same runtime-mutable-global shape as the three above, but mutated by
+# provider_settings.py's set_provider_config (a plain REST call from the
+# settings UI, not a chat tool call — no ToolContext to reach through, so
+# provider_settings.py writes these module globals directly instead of the
+# tool_context.agent.model.update_config() dance model_control_tool.py's
+# tools use). "local" | "anthropic" | "openai_compatible".
+ACTIVE_PROVIDER = MODEL_PROVIDER
+ACTIVE_ANTHROPIC_API_KEY = ANTHROPIC_API_KEY
+ACTIVE_ANTHROPIC_MODEL_ID = ANTHROPIC_MODEL_ID
+ACTIVE_CLOUD_BASE_URL = CLOUD_OPENAI_BASE_URL
+ACTIVE_CLOUD_API_KEY = CLOUD_OPENAI_API_KEY
+ACTIVE_CLOUD_MODEL_ID = CLOUD_OPENAI_MODEL_ID
+
+# oMLX's /v1/models introspection (model_control_tool._context_window_limit)
+# has no cloud equivalent — neither Anthropic nor an arbitrary OpenAI-
+# compatible endpoint expose max context length over their API. Prefix-
+# matched fallback so the context-usage display (main.py's _context_state)
+# still shows a "/ limit" for known model families; an unrecognized model id
+# just shows usage with no limit rather than a guessed-wrong number.
+_KNOWN_CONTEXT_LIMITS = {
+    "claude-": 200_000,
+    "gpt-": 128_000,
+    "o1": 128_000,
+    "o3": 128_000,
+}
+
+
+def _known_context_limit(model_id: str) -> int | None:
+    for prefix, limit in _KNOWN_CONTEXT_LIMITS.items():
+        if model_id.startswith(prefix):
+            return limit
+    return None
+
 # Well above oMLX's own server-side default — without this, a genuinely
 # long reply hits MaxTokensReachedException mid-generation and gets
 # silently truncated, leaving only a partial message in history (observed
@@ -43,12 +87,39 @@ ACTIVE_MEMORY_WINDOW = 10  # SummarizingConversationManager.preserve_recent_mess
 _DEFAULT_MAX_TOKENS = 16384
 
 
-def build_model() -> OpenAIModel:
-    from model_control_tool import _context_window_limit
+def build_model():
+    # Anthropic's own AnthropicConfig wants max_tokens as a top-level,
+    # required kwarg, not inside params (unlike OpenAIModel below, which
+    # takes it as a regular sampling param) — confirmed reading
+    # strands/models/anthropic.py's AnthropicConfig TypedDict directly. Kept
+    # as its own branch instead of trying to unify the two shapes.
+    if ACTIVE_PROVIDER == "anthropic":
+        from strands.models.anthropic import AnthropicModel
+
+        anthropic_params: dict = {}
+        if ACTIVE_TEMPERATURE is not None:
+            anthropic_params["temperature"] = ACTIVE_TEMPERATURE
+        return AnthropicModel(
+            client_args={"api_key": ACTIVE_ANTHROPIC_API_KEY},
+            model_id=ACTIVE_ANTHROPIC_MODEL_ID,
+            max_tokens=_DEFAULT_MAX_TOKENS,
+            params=anthropic_params,
+            context_window_limit=_known_context_limit(ACTIVE_ANTHROPIC_MODEL_ID),
+        )
 
     params: dict = {"max_tokens": _DEFAULT_MAX_TOKENS}
     if ACTIVE_TEMPERATURE is not None:
         params["temperature"] = ACTIVE_TEMPERATURE
+
+    if ACTIVE_PROVIDER == "openai_compatible":
+        return OpenAIModel(
+            client_args={"api_key": ACTIVE_CLOUD_API_KEY, "base_url": ACTIVE_CLOUD_BASE_URL},
+            model_id=ACTIVE_CLOUD_MODEL_ID,
+            params=params,
+            context_window_limit=_known_context_limit(ACTIVE_CLOUD_MODEL_ID),
+        )
+
+    from model_control_tool import _context_window_limit
 
     return OpenAIModel(
         client_args={"api_key": "not-needed", "base_url": OMLX_BASE_URL},
@@ -114,6 +185,57 @@ def discover_generated_tools() -> list:
 
 _GENERATED_TOOLS = discover_generated_tools()
 
+# One MCPClient (a ToolProvider — Agent(tools=...) loads its real tools
+# directly, no manual extraction) per configured, enabled server in
+# backend/mcp_servers.json. Computed once at process start, same as
+# _GENERATED_TOOLS — unlike skills_generated/*.py, an MCP server list has no
+# "changed mid-process by a hot-reload" case to stay fresh against
+# (mcp_manager.add_server/remove_server only edit the on-disk config; see
+# their own docstrings), so both front doors below share this one snapshot
+# rather than build_agent_for_session re-running discover_generated_tools()
+# style freshness for it too.
+_MCP_CLIENTS = load_configured_mcp_clients()
+
+
+def _mcp_tool_names() -> frozenset[str]:
+    """Every tool name across all configured MCP clients, for
+    UntrustedToolResultHooks' extra_untrusted_tools (prompt_security.py)
+    and _APPROVAL_REQUIRED_TOOLS (main.py/acp_server.py) — a user-configured
+    MCP server can be literally anything, so its tools default to both
+    untrusted-output-wrapped and approval-gated, same reasoning
+    GENERATED_TOOL_NAMES already applies to skills_generated/*.py.
+
+    Deliberately calls load_tools() — the real ToolProvider entrypoint
+    Strands itself calls when Agent(tools=[client, ...]) below consumes
+    these same client objects — not start()/list_tools_sync() directly.
+    MCPClient.start() isn't idempotent (a second call raises "the client
+    session is currently running"), and load_tools() tracks its own
+    _tool_provider_started flag rather than checking session state, so a
+    direct start() here would desync that flag from the real session and
+    make Strands' own later load_tools() call try to start an
+    already-running client and fail — for every tool that server provides,
+    not just its name-list entry, breaking the actual agent, not just this
+    approval/wrapping metadata. load_tools() is documented as caching its
+    result for reuse instead, so calling it here once and letting the Agent
+    call it again later on the same object is the intended, safe path — a
+    server with its own continue_on_error already returns [] from
+    load_tools() on a connection failure rather than raising; the try/except
+    below only catches the remaining case (no continue_on_error set, or a
+    non-connection failure), consistent with the load_servers() call above
+    not being the only place a bad server needs to not take the rest down.
+    """
+    names: set[str] = set()
+    for client in _MCP_CLIENTS:
+        try:
+            tools = asyncio.run(client.load_tools())
+        except Exception:
+            continue
+        names.update(tool.tool_name for tool in tools)
+    return frozenset(names)
+
+
+MCP_TOOL_NAMES = _mcp_tool_names()
+
 # Everything but skills_generated/*.py — split out so build_agent_for_session
 # (below) can rebuild the generated portion fresh per call instead of reusing
 # this module's one process-start snapshot; TOOLS itself (and everything
@@ -143,7 +265,7 @@ _STATIC_TOOLS = [
     open_game,
 ]
 
-TOOLS = [*_STATIC_TOOLS, *_GENERATED_TOOLS]
+TOOLS = [*_STATIC_TOOLS, *_GENERATED_TOOLS, *_MCP_CLIENTS]
 
 # Tool names loaded from skills_generated/ at process start — main.py and
 # acp_server.py extend their approval-required gating with this, same as
@@ -275,9 +397,9 @@ def build_agent_for_session(
     return Agent(
         model=build_model(),
         system_prompt=system_prompt or SYSTEM_PROMPT,
-        tools=[*_STATIC_TOOLS, *discover_generated_tools()],
+        tools=[*_STATIC_TOOLS, *discover_generated_tools(), *_MCP_CLIENTS],
         plugins=build_plugins(),
-        hooks=[SkillValidationHooks(), UntrustedToolResultHooks()],
+        hooks=[SkillValidationHooks(), UntrustedToolResultHooks(extra_untrusted_tools=MCP_TOOL_NAMES)],
         conversation_manager=build_conversation_manager(),
         session_manager=FileSessionManager(session_id=session_id, storage_dir=str(SESSIONS_DIR)),
         interventions=interventions,

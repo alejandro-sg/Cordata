@@ -1,5 +1,7 @@
 "use client";
 
+import { randomId } from "./randomId";
+
 /**
  * Module-level (not React state): GameTools.tsx's useFrontendTool handlers
  * run outside any component's render tree and need synchronous access to
@@ -75,7 +77,7 @@ export async function postToGame(gameId: string, message: Record<string, unknown
   }
   const contentWindow = iframe.contentWindow;
 
-  const requestId = crypto.randomUUID();
+  const requestId = randomId();
   // targetOrigin "*": the frame's own origin is the opaque "null" described
   // above, so there is no real origin string to target — every game iframe
   // this registry talks to is one this app itself just wrote and loaded via

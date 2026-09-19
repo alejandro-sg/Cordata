@@ -8,7 +8,7 @@
  * against the installed strands.vended_plugins.skills source: activation is
  * exactly one tool call, `skills(skill_name)` — so the rewritten text is a
  * blunt, imperative instruction to call it, the same idiom
- * AgentSettings.tsx's runInstruction already relies on for this local
+ * SettingsModal.tsx's runInstruction already relies on for this local
  * model's documented tool-calling reliability (a longer or softer prompt
  * measurably hurts it — see agent_common.SYSTEM_PROMPT's own comment).
  *

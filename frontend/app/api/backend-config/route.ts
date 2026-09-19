@@ -1,4 +1,4 @@
-// Server-side proxy for the backend's /models config endpoint. AgentSettings
+// Server-side proxy for the backend's /models config endpoint. SettingsModal
 // (a client component) needs this at load time before any tool has run, but
 // it must never fetch the backend directly from the browser — the backend is
 // meant to stay reachable only from this Next.js server (see backend/main.py:
@@ -20,7 +20,7 @@ export async function GET() {
   }
 }
 
-// Silent restore path for AgentSettings.tsx's persisted model/temperature/
+// Silent restore path for SettingsModal.tsx's persisted model/temperature/
 // memory-window — proxies to the backend's POST /models (see main.py's
 // set_agent_defaults), same reason GET proxies instead of a direct browser
 // fetch: the backend is only meant to be reachable from this Next.js server.

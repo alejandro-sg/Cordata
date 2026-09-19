@@ -9,6 +9,10 @@ frontend/.env.local
 backend/sessions/
 backend/workspace/
 backend/repl_state/
+
+# MCP server config — can carry secrets in a server's own env/headers
+# fields (mcp_manager.py), same reasoning backend/.env is gitignored for.
+backend/mcp_servers.json
 frontend/tsconfig.tsbuildinfo
 .memsearch/
 **/.DS_Store

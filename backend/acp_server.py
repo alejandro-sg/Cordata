@@ -32,13 +32,14 @@ import acp
 import acp.stdio
 from strands.interventions import Confirm, Deny, InterventionHandler, Proceed
 
-from agent_common import GENERATED_TOOL_NAMES, build_agent_for_session
+from agent_common import GENERATED_TOOL_NAMES, MCP_TOOL_NAMES, build_agent_for_session
 from model_control_tool import _context_window_limit, _fetch_available_models
 
 # Set-identical to main.py's _APPROVAL_REQUIRED_TOOLS — both gate `editor`
-# too (main.py added it; this repo has no shared source for the two lists,
-# so keep them in sync by hand when either changes).
-APPROVAL_REQUIRED_TOOLS = {"shell", "python_repl", "file_write", "editor", *GENERATED_TOOL_NAMES}
+# and every MCP-server-provided tool too (main.py's own comment on
+# MCP_TOOL_NAMES explains why); this repo has no shared source for the two
+# lists, so keep them in sync by hand when either changes.
+APPROVAL_REQUIRED_TOOLS = {"shell", "python_repl", "file_write", "editor", *GENERATED_TOOL_NAMES, *MCP_TOOL_NAMES}
 
 _TOOL_KIND: dict[str, str] = {
     "shell": "execute",

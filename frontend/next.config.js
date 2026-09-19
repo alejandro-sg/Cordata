@@ -27,6 +27,19 @@ const nextConfig = {
   // instead of needing node_modules copied into the image separately.
   output: "standalone",
 
+  // Dev-server-only (next dev) protection Next.js 16 added: a request whose
+  // Origin header isn't localhost/the hostname the server was started with
+  // gets blocked, even though main.py's backend and this frontend's own dev
+  // server both already bind 0.0.0.0 and are otherwise reachable — this was
+  // the actual cause of "backend/frontend are on 0.0.0.0 but another device
+  // on the LAN still can't load the page," not a firewall or bind-address
+  // issue. Wildcarded to the whole /24 rather than one hardcoded IP, since
+  // this machine's LAN address is DHCP-assigned and can change. Irrelevant
+  // to the standalone production build (output: "standalone" above) this
+  // app also ships as a Docker image on the mini — allowedDevOrigins only
+  // applies to `next dev`.
+  allowedDevOrigins: ["192.168.10.*"],
+
   async headers() {
     return [
       { source: "/((?!api/games|api/sandbox).*)", headers: [...GENERAL_HEADERS, ...FRAME_ANCESTORS_NONE_HEADERS] },

@@ -19,6 +19,7 @@ it. Don't expose this beyond localhost.
 """
 
 import hashlib
+import re
 import uuid
 
 from ag_ui_strands import StrandsAgent, StrandsAgentConfig, ToolBehavior, create_strands_app
@@ -41,6 +42,8 @@ from skill_validation_hooks import SkillValidationHooks
 from prompt_security import UntrustedToolResultHooks
 from security_headers import register_security_headers
 from model_control_tool import _context_window_limit, _fetch_available_models
+import mcp_manager
+import provider_settings
 # games_static_api before sandbox_functions_api, not just before it in this
 # file's own read order: games_static_api's own import of sandbox_functions_
 # api (which is what actually triggers agent_common's chdir, transitively —
@@ -51,7 +54,7 @@ from model_control_tool import _context_window_limit, _fetch_available_models
 # No module named 'games_static_api'" at this exact line.
 from games_static_api import register_game_routes
 from sandbox_functions_api import register_sandbox_routes
-from agent_common import GENERATED_TOOL_NAMES, build_plugins, build_template_agent
+from agent_common import GENERATED_TOOL_NAMES, MCP_TOOL_NAMES, build_plugins, build_template_agent
 from settings import EXTRA_CORS_ORIGINS
 
 # Tools whose real-world impact (arbitrary shell/code execution, overwriting
@@ -63,8 +66,14 @@ from settings import EXTRA_CORS_ORIGINS
 # not-yet-actioned gap; this closes it. Extended with every tool name loaded
 # from skills_generated/ — the self-healing loop's own output is exactly as
 # untrusted as shell/python_repl/file_write until a human has approved its
-# first real call (docs/self-healing-architecture.md §4, hand-off #2).
-_APPROVAL_REQUIRED_TOOLS = ["shell", "python_repl", "file_write", "editor", *GENERATED_TOOL_NAMES]
+# first real call (docs/self-healing-architecture.md §4, hand-off #2). Also
+# extended with every MCP-server-provided tool name (agent_common.py's
+# MCP_TOOL_NAMES) — a user-configured MCP server (mcp_manager.py) can call
+# out to anything (send a message, delete a resource), and the fixed name
+# list above has no way to know its real-world impact ahead of time; until
+# this repo can classify a specific server's tools as safe, every one of
+# them defaults to the same pause as shell/python_repl.
+_APPROVAL_REQUIRED_TOOLS = ["shell", "python_repl", "file_write", "editor", *GENERATED_TOOL_NAMES, *MCP_TOOL_NAMES]
 
 
 def _agent_config_payload() -> dict:
@@ -199,7 +208,7 @@ agui_agent = StrandsAgent(
     # AST-checks, dry-runs, and (on failure) rejects any tool call selected
     # from backend/skills_generated/ before it executes — the second,
     # independent gate on generated tools, on top of the approval below.
-    hooks=[SkillValidationHooks(), UntrustedToolResultHooks()],
+    hooks=[SkillValidationHooks(), UntrustedToolResultHooks(extra_untrusted_tools=MCP_TOOL_NAMES)],
     config=StrandsAgentConfig(
         session_manager_provider=session_manager_provider,
         # Deterministic, tool-call-free config: applied to every turn's
@@ -296,6 +305,78 @@ def set_agent_defaults(patch: AgentDefaultsPatch) -> dict:
     return _agent_config_payload()
 
 
+@app.get("/provider-config")
+def get_provider_config() -> dict:
+    """Redacted provider state for the settings modal's Model tab — see
+    provider_settings.get_provider_state's own docstring for why this never
+    carries a raw API key.
+    """
+    return provider_settings.get_provider_state()
+
+
+class ProviderConfigPatch(BaseModel):
+    provider: str | None = None
+    anthropic_api_key: str | None = None
+    anthropic_model_id: str | None = None
+    openai_base_url: str | None = None
+    openai_api_key: str | None = None
+    openai_model_id: str | None = None
+
+
+@app.post("/provider-config")
+def set_provider_config(patch: ProviderConfigPatch) -> dict:
+    """Switch provider and/or save credentials from the settings modal.
+
+    Same trust level as /models (set_agent_defaults) — a human acting
+    directly through a settings form, no approval-card gate needed on top.
+    Takes effect immediately for any thread built after this call; an
+    already-running thread keeps whatever Model it was constructed with.
+    """
+    try:
+        return provider_settings.set_provider_config(**patch.model_dump(exclude_unset=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/mcp-servers")
+def list_mcp_servers() -> list[dict]:
+    """Every configured server from backend/mcp_servers.json, for the
+    settings modal's MCP tab. See mcp_manager.list_servers's own docstring
+    for why this isn't redacted the way /provider-config is.
+    """
+    return mcp_manager.list_servers()
+
+
+class McpServerConfig(BaseModel):
+    name: str
+    config: dict
+
+
+@app.post("/mcp-servers")
+def add_mcp_server(body: McpServerConfig) -> dict:
+    """Add or replace one server entry. Same trust level as /models and
+    /provider-config — a human acting directly through the settings form.
+
+    restart_required=True always: mcp_manager.load_configured_mcp_clients()
+    only runs once, at process start (agent_common.py's TOOLS) — see that
+    module's own docstring for why this isn't hot-reloaded into an
+    already-running agent.
+    """
+    try:
+        mcp_manager.add_server(body.name, body.config)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"servers": mcp_manager.list_servers(), "restart_required": True}
+
+
+@app.delete("/mcp-servers/{name}")
+def delete_mcp_server(name: str) -> dict:
+    """Remove one server entry. 404s if it wasn't there to begin with."""
+    if not mcp_manager.remove_server(name):
+        raise HTTPException(status_code=404, detail=f"No MCP server named '{name}'.")
+    return {"servers": mcp_manager.list_servers(), "restart_required": True}
+
+
 @app.get("/skills")
 def list_skills() -> list[dict]:
     """Every skill under backend/skills/, for the frontend's `/` command menu
@@ -315,6 +396,70 @@ def list_skills() -> list[dict]:
     from agent_common import SKILLS_DIR
 
     return [{"name": skill.name, "description": skill.description} for skill in Skill.from_directory(SKILLS_DIR)]
+
+
+# skill-authoring/SKILL.md's own naming rule, enforced here too so a skill
+# created through the settings UI is discoverable the same way one the agent
+# writes itself is — lowercase/digits/hyphens, must start and end with a
+# letter or digit.
+_SKILL_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+
+
+class SkillCreate(BaseModel):
+    name: str
+    description: str
+    body: str
+
+
+@app.post("/skills")
+def create_skill(skill: SkillCreate) -> dict:
+    """Write a new backend/skills/<name>/SKILL.md from the settings modal's
+    Skills tab, same frontmatter shape skill-authoring/SKILL.md documents
+    for the agent's own file_write path. Refuses to overwrite an existing
+    skill directory — no accidental clobber from the UI.
+
+    Takes effect starting the *next* conversation, same constraint
+    skill-authoring/SKILL.md already documents for an agent-authored skill:
+    AgentSkills only discovers SKILL.md files once, at session start.
+    """
+    from agent_common import SKILLS_DIR
+
+    if not _SKILL_NAME_RE.match(skill.name):
+        raise HTTPException(
+            status_code=400,
+            detail="name must be lowercase letters, digits, and hyphens only, starting and ending with a letter or digit.",
+        )
+    skill_dir = SKILLS_DIR / skill.name
+    if skill_dir.exists():
+        raise HTTPException(status_code=400, detail=f"Skill '{skill.name}' already exists.")
+
+    skill_dir.mkdir(parents=True)
+    content = f"---\nname: {skill.name}\ndescription: {skill.description}\n---\n\n{skill.body}\n"
+    (skill_dir / "SKILL.md").write_text(content)
+    return {"name": skill.name, "description": skill.description}
+
+
+@app.delete("/skills/{name}")
+def delete_skill(name: str) -> dict:
+    """Remove a skill directory. The frontend shows a native confirm()
+    first — directory deletion has no undo — but that's a client-side
+    courtesy, not a server-side gate; same trust level as every other
+    settings-UI route in this file.
+    """
+    import shutil
+
+    from agent_common import SKILLS_DIR
+
+    skill_dir = SKILLS_DIR / name
+    # Reject a name that would resolve outside SKILLS_DIR (e.g. "../../etc")
+    # before ever touching the filesystem — unlike the create path, `name`
+    # here comes from the URL path, not a value already checked against
+    # _SKILL_NAME_RE at creation time.
+    if skill_dir.resolve().parent != SKILLS_DIR.resolve() or not skill_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"No skill named '{name}'.")
+
+    shutil.rmtree(skill_dir)
+    return {"name": name, "deleted": True}
 
 
 _WORKSPACE_FILES_LIMIT = 500

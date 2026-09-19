@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useAgent, useCopilotKit } from "@copilotkit/react-core/v2";
 import { rewriteInputTrigger } from "./chatInputTriggers";
+import { randomId } from "./randomId";
 
 /**
  * Claude Code-style chat input: keep typing enabled while the agent is
@@ -114,7 +115,7 @@ export function useQueueingAgentInput(
   }, [threadId, hasExplicitThreadId, agent, copilotkit]);
 
   const runNow = async (text: string) => {
-    agent.addMessage({ id: crypto.randomUUID(), role: "user", content: text });
+    agent.addMessage({ id: randomId(), role: "user", content: text });
     try {
       await copilotkit.runAgent({ agent });
     } catch (error) {

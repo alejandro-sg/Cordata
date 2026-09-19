@@ -20,6 +20,22 @@ load_dotenv()
 
 OMLX_BASE_URL = os.getenv("OMLX_BASE_URL", "http://127.0.0.1:8000/v1")
 OMLX_MODEL_ID = os.getenv("OMLX_MODEL_ID", "Ternary-Bonsai-27B-mlx-2bit")
+
+# provider_settings.py: which model backend agent_common.build_model() talks
+# to. "local" (default, oMLX via OMLX_BASE_URL/OMLX_MODEL_ID above) |
+# "anthropic" | "openai_compatible". These four ANTHROPIC_*/CLOUD_OPENAI_*
+# values are the *env-derived defaults* only — provider_settings.py's own
+# set_provider_config() mutates the corresponding agent_common.ACTIVE_*
+# globals at runtime (same "changed live, resets on restart unless also
+# written to .env" shape as ACTIVE_MODEL_ID already has), so a value changed
+# via the settings UI takes effect immediately without needing this module
+# reloaded.
+MODEL_PROVIDER = os.getenv("MODEL_PROVIDER", "local")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+ANTHROPIC_MODEL_ID = os.getenv("ANTHROPIC_MODEL_ID", "claude-sonnet-5")
+CLOUD_OPENAI_BASE_URL = os.getenv("CLOUD_OPENAI_BASE_URL", "")
+CLOUD_OPENAI_API_KEY = os.getenv("CLOUD_OPENAI_API_KEY", "")
+CLOUD_OPENAI_MODEL_ID = os.getenv("CLOUD_OPENAI_MODEL_ID", "")
 # 127.0.0.1, not "localhost" (same reasoning as OMLX_BASE_URL above): on
 # this machine, "localhost" resolves to ::1 first and nothing answers
 # there, so every qdrant-client call through the hostname hangs for 15s (3
