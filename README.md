@@ -270,15 +270,47 @@ npm run dev
 
 Open `http://localhost:3000` — sidebar (threads + dark/inspector toggles) + chat.
 
-### Running frontend + Qdrant on a separate machine
+### Running the whole stack on a separate always-on machine
 
-Optional, for a small always-on LAN deployment: keep the backend (and your model server) on
-whichever machine actually has the GPU/NPU, and run the frontend + Qdrant on a separate
-always-on box. `deploy/mini/` has example Docker Compose files for both — point
-`frontend/.env.local`'s `BACKEND_URL` at the backend machine (mDNS hostname or LAN IP) and
-`backend/.env`'s `QDRANT_HOST` at wherever Qdrant ends up. Put a reverse proxy in front if
-you want a real domain instead of a bare IP/mDNS hostname; set `EXTRA_CORS_ORIGINS`
-(`backend/.env.example`) to match once you do.
+Optional, for a small always-on LAN deployment (this repo's own setup, referred to below as
+"the mini"): keep only the model server (oMLX or equivalent) on whichever machine actually
+has the GPU/NPU, and run everything else — frontend, backend/agent loop, and Qdrant — as
+Docker containers on a separate always-on box. This decouples uptime of the web UI from that
+inference machine being awake; the inference machine only needs to be reachable when an agent
+turn is actually running, not for the UI or memory store to be up.
+
+`deploy/mini/` has example Docker Compose files for all three (`frontend/`, `backend/`,
+`qdrant/`). `scripts/deploy-mini.sh` (or `make deploy-mini`) syncs `backend/` and `frontend/`
+to the always-on box and rebuilds both containers there — `scripts/deploy-mini-backend.sh` /
+`scripts/deploy-mini-frontend.sh` deploy just one side. First run on a fresh box bootstraps
+each `docker-compose.yml` from the `deploy/mini/` template and stops so you can fill in:
+
+- `backend`'s `OMLX_BASE_URL` — the inference machine (mDNS hostname or LAN IP), **not**
+  the always-on box itself
+- `backend`'s `QDRANT_HOST` — normally the always-on box's own hostname, since Qdrant lives
+  there too by default
+- `frontend`'s `BACKEND_URL` — the always-on box's own hostname, since the backend now lives
+  there too
+- **`SANDBOX_API_TOKEN`**, set to the same value in both `backend`'s and `frontend`'s compose
+  files — required as soon as frontend and backend are different containers (even on the same
+  host): the frontend's normal same-machine auto-discovery
+  (`GET /sandbox/_local-token`, localhost-only) can't cross a container boundary. Generate one
+  with `openssl rand -hex 32`.
+
+Every redeploy after the first leaves each box's own `docker-compose.yml` alone, so these
+customized values survive; only the source under them gets synced and rebuilt. Backend state
+(`sessions/`, `workspace/`, `repl_state/`, `skills_generated/`, `mcp_servers.json`) lives in
+bind-mounted `state/` dirs next to `docker-compose.yml` on the box itself, and persists across
+redeploys the same way.
+
+Put a reverse proxy in front of the frontend if you want a real domain instead of a bare
+IP/mDNS hostname; set `EXTRA_CORS_ORIGINS` (`backend/.env.example`) to match once you do.
+
+Note this is separate from local development: `scripts/dev-up.sh` (`make up`) still runs
+backend + frontend + Qdrant directly on your own machine for coding/testing, unaffected by
+whatever's deployed on the always-on box. The ACP (Zed) front door below is also unaffected —
+Zed spawns `acp_server.py` locally on whichever machine is running the editor, always, regardless
+of where the web deployment lives.
 
 ### ACP (editor) front door
 
