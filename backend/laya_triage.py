@@ -269,6 +269,8 @@ class _Turn:
         self.hint: str | None = None
         self.waited_ms: float | None = None
         self.base_prompt: str | None = None  # the system prompt to restore
+        self.decision_emitted = False
+        self.timed_out = False
 
 
 # The turn in flight per agent object, so a tool running inside that turn (the
@@ -305,8 +307,14 @@ class LayaTriageHooks(HookProvider):
         mode: str | None = None,
         log_path: str | Path | None = None,
         predict: Callable[[str], dict[str, Any]] = run_triage,
+        notify: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.mode = mode or settings.LAYA_TRIAGE_MODE
+        # Live monitoring: called with a small JSON-able dict when Laya decides
+        # ("decision") and when the turn ends ("outcome"). From either the agent's
+        # thread or the classifier's worker thread, so it must be thread-safe
+        # (acp_server forwards it to the client as an extension notification).
+        self._notify = notify
         self._log_path = Path(log_path or settings.LAYA_TRIAGE_LOG)
         self._predict = predict
         # One worker: Laya serializes forward passes anyway (prompt_security's
@@ -318,6 +326,47 @@ class LayaTriageHooks(HookProvider):
         registry.add_callback(BeforeInvocationEvent, self._on_start)
         registry.add_callback(BeforeToolCallEvent, self._on_tool)
         registry.add_callback(AfterInvocationEvent, self._on_end)
+
+    def _emit(self, payload: dict[str, Any]) -> None:
+        """Tell the live monitor; never lets a monitoring problem touch a turn."""
+        if self._notify is None:
+            return
+        try:
+            self._notify({**payload, "mode": self.mode})
+        except Exception as error:
+            logger.warning("laya triage: live notification failed: %s", error)
+
+    def _emit_decision(self, turn: _Turn, laya: dict[str, Any] | None, *, late: bool = False, why: str = "") -> None:
+        """Report Laya's decision once. A "no decision yet" notice (the timeout
+        case, ``laya`` None) does not use up the one report: the real answer,
+        if it ever lands, is still reported — marked late."""
+        if laya is None:
+            self._emit({"event": "decision", "error": why or "no decision"})
+            return
+        with turn.lock:
+            if turn.decision_emitted:
+                return
+            turn.decision_emitted = True
+        if "route" not in laya:
+            self._emit({"event": "decision", "error": laya.get("error") or why or "no decision"})
+            return
+        decision = Decision(laya)
+        self._emit(
+            {
+                "event": "decision",
+                "route": laya["route"],
+                "route_confidence": laya["route_confidence"],
+                "needs_team": laya["needs_team"],
+                "complexity": laya["complexity"],
+                "complexity_confidence": laya["complexity_confidence"],
+                "latency_ms": laya.get("latency_ms"),
+                "gate": settings.LAYA_TRIAGE_THRESHOLD,
+                "hint": turn.hint,  # None unless route mode actually applied one
+                "tier": decision.tier() if self.mode == "route" else None,
+                "waited_ms": turn.waited_ms,
+                "late": late,
+            }
+        )
 
     # --- hook callbacks (agent thread) -----------------------------------
 
@@ -352,24 +401,33 @@ class LayaTriageHooks(HookProvider):
             laya = future.result(timeout=settings.LAYA_TRIAGE_TIMEOUT)
         except FutureTimeout:
             laya = None  # it will still be logged when it lands
-        except Exception:
-            laya = None
+        except Exception as error:  # a classifier that raised: an error, not a timeout
+            laya = {"error": f"{type(error).__name__}: {error}"}
         turn.waited_ms = round((time.perf_counter() - started) * 1000, 1)
         if not laya or "route" not in laya:
+            if laya:  # a classifier error: report it now
+                self._emit_decision(turn, laya)
+                return
+            with turn.lock:
+                turn.timed_out = True
+                landed = turn.laya  # may have arrived between the timeout and here
+            self._emit_decision(turn, None, why=f"timed out after {settings.LAYA_TRIAGE_TIMEOUT:g}s — the LLM decides alone")
+            if landed is not None:
+                self._emit_decision(turn, landed, late=True)
             return
         decision = Decision(laya)
         with turn.lock:
             turn.decision = decision
         hint = decision.hint()
-        if not hint:
-            return
-        try:
-            base = turn.agent.system_prompt or ""
-            turn.agent.system_prompt = f"{base}\n\n{hint}" if base else hint
-            turn.base_prompt = base
-            turn.hint = hint
-        except Exception as error:  # an agent whose prompt can't be set just goes without a hint
-            logger.warning("laya triage: could not apply hint: %s", error)
+        if hint:
+            try:
+                base = turn.agent.system_prompt or ""
+                turn.agent.system_prompt = f"{base}\n\n{hint}" if base else hint
+                turn.base_prompt = base
+                turn.hint = hint
+            except Exception as error:  # an agent whose prompt can't be set just goes without a hint
+                logger.warning("laya triage: could not apply hint: %s", error)
+        self._emit_decision(turn, laya)
 
     def _on_tool(self, event: BeforeToolCallEvent) -> None:
         turn = _ACTIVE.get(id(event.agent))
@@ -420,6 +478,13 @@ class LayaTriageHooks(HookProvider):
             laya = {"error": f"{type(error).__name__}: {error}"}
         with turn.lock:
             turn.laya = laya
+            # Shadow mode reports here. Route mode reports from _route (which owns
+            # the hint) — except after a timeout, when this is the late answer the
+            # user would otherwise never see. Decided under the lock so it can't
+            # interleave with _route setting timed_out.
+            report = self.mode != "route" or turn.timed_out
+        if report:
+            self._emit_decision(turn, laya, late=self.mode == "route")
         self._maybe_write(turn)
 
     def _maybe_write(self, turn: _Turn) -> None:
@@ -446,6 +511,18 @@ class LayaTriageHooks(HookProvider):
                 "hint": turn.hint,
                 "waited_ms": turn.waited_ms,
             }
+        laya_route = (record["laya"] or {}).get("route")
+        self._emit(
+            {
+                "event": "outcome",
+                "actual_route": record["actual"]["route"],
+                "agreed": (laya_route == record["actual"]["route"]) if laya_route else None,
+                "tools": record["actual"]["tools"],
+                "tiers": record["actual"]["tiers"],
+                "stop_reason": record["actual"]["stop_reason"],
+                "turn_ms": record["actual"]["turn_ms"],
+            }
+        )
         try:
             line = json.dumps(record, ensure_ascii=False)
             with self._write_lock:
@@ -460,14 +537,14 @@ class LayaTriageHooks(HookProvider):
 LayaTriageShadowHooks = LayaTriageHooks
 
 
-def triage_hooks() -> list[HookProvider]:
+def triage_hooks(notify: Callable[[dict[str, Any]], None] | None = None) -> list[HookProvider]:
     """The hooks to add to an orchestrator Agent: ``route`` (default) or
     ``shadow`` mode returns one, ``off`` returns none. Also starts loading
     Laya's weights in the background so the first turn isn't the one to pay."""
     mode = settings.LAYA_TRIAGE_MODE
     if mode in ("route", "shadow"):
         warm_up_laya()
-        return [LayaTriageHooks(mode=mode)]
+        return [LayaTriageHooks(mode=mode, notify=notify)]
     if mode not in ("", "off"):
         logger.warning("LAYA_TRIAGE_MODE=%r not recognised (use 'route', 'shadow' or 'off'); triage stays off", mode)
     return []

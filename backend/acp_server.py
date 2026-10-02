@@ -76,7 +76,11 @@ def _permission_approved(outcome, options: list) -> bool:
     return selected is not None and selected.kind in _ALLOW_KINDS
 
 
-def _render_swarm_progress(entries: list) -> str:
+# How much of a running sub-agent's latest reasoning one progress update carries.
+_REASONING_TAIL_CHARS = 120
+
+
+def _render_swarm_progress(entries: list, reasoning: dict | None = None) -> str:
     """Render local_swarm/local_graph's cumulative progress log (the same
     node_start/node_stop/handoff shape sub_agent_common.progress_entry
     builds for both tools) into plain text for one ACP tool-call update.
@@ -105,6 +109,19 @@ def _render_swarm_progress(entries: list) -> str:
             frm = ", ".join(entry.get("from") or [])
             to = ", ".join(entry.get("to") or [])
             lines.append(f"handoff: {frm} -> {to} - {entry.get('message', '')}")
+
+    # Live "what is each running sub-agent thinking right now": the tail of the
+    # reasoning each node has streamed so far (sub_agent_common.reasoning_delta
+    # feeds it). Only nodes that have started and not finished get a line, so a
+    # finished node's long reasoning never lingers. Without this the ACP client
+    # saw the orchestrator's own thoughts but nothing of the sub-agents'.
+    finished = {e.get("node") for e in entries if e.get("type") == "node_stop"}
+    for entry in entries:
+        node = entry.get("node") if entry.get("type") == "node_start" else None
+        text = (reasoning or {}).get(node) if node and node not in finished else None
+        if text:
+            tail = " ".join(text.split())[-_REASONING_TAIL_CHARS:]
+            lines.append(f"thinking: {node} - {tail}")
     return "\n".join(lines)
 
 
@@ -310,6 +327,33 @@ class SierraLabAcpAgent:
             agentCapabilities=acp.schema.AgentCapabilities(load_session=True),
         )
 
+    def _laya_notifier(self, session_id: str):
+        """A thread-safe callback that forwards Laya's live triage events to the
+        client as an ACP *extension notification* (method ``_sierralab/laya``).
+        The ACP spec says a client that doesn't understand an extension
+        notification must ignore it, so Zed and other clients are unaffected;
+        acp-tui renders it as the live "⚡ laya" line.
+
+        Hooks run on the event loop's thread and the classifier's callbacks on
+        a worker thread, so the send is scheduled with call_soon_threadsafe.
+        """
+        loop = asyncio.get_running_loop()
+
+        def notify(payload: dict) -> None:
+            conn = self._conn
+            if conn is None:
+                return
+
+            async def send() -> None:
+                try:
+                    await conn.ext_notification("sierralab/laya", {"sessionId": session_id, **payload})
+                except Exception:
+                    logging.getLogger(__name__).debug("laya notification not delivered", exc_info=True)
+
+            loop.call_soon_threadsafe(lambda: loop.create_task(send()))
+
+        return notify
+
     def _build_session(self, session_id: str, cwd: str) -> tuple:
         # Process-wide, not per-agent: strands_tools' file_read/file_write/
         # editor have no per-call working-directory parameter at all (only
@@ -325,7 +369,12 @@ class SierraLabAcpAgent:
         except OSError as error:
             logging.getLogger(__name__).warning("cwd=<%s> | failed to chdir, tools will use the previous cwd: %s", cwd, error)
         handler = _ApprovalHandler()
-        agent = build_agent_for_session(session_id, interventions=[handler], system_prompt=_project_system_prompt(cwd))
+        agent = build_agent_for_session(
+            session_id,
+            interventions=[handler],
+            system_prompt=_project_system_prompt(cwd),
+            triage_notify=self._laya_notifier(session_id),
+        )
         self._sessions[session_id] = (agent, handler)
         return agent, handler
 
@@ -469,6 +518,7 @@ class SierraLabAcpAgent:
 
         agent_input: object = text
         seen_tool_calls: set[str] = set()
+        last_progress: dict[str, str] = {}
 
         self._cancelled.discard(session_id)
 
@@ -528,10 +578,15 @@ class SierraLabAcpAgent:
                 if event_type == "tool_stream":
                     stream_event = event.get("tool_stream_event") or {}
                     tool_use_id = (stream_event.get("tool_use") or {}).get("toolUseId")
-                    entries = ((stream_event.get("data") or {}).get("state") or {}).get("swarm_progress")
+                    state = (stream_event.get("data") or {}).get("state") or {}
+                    entries = state.get("swarm_progress")
                     if tool_use_id and entries:
-                        rendered = _render_swarm_progress(entries)
-                        if rendered:
+                        rendered = _render_swarm_progress(entries, state.get("reasoning"))
+                        # The swarm/graph tools re-yield their whole state every
+                        # ~24 reasoning characters; a client only needs to hear
+                        # when the rendered text actually changed.
+                        if rendered and last_progress.get(tool_use_id) != rendered:
+                            last_progress[tool_use_id] = rendered
                             await self._conn.session_update(
                                 session_id=session_id,
                                 update=acp.update_tool_call(
@@ -580,12 +635,68 @@ class SierraLabAcpAgent:
             agent_input = await self._resolve_interrupts(session_id, pending_interrupts)
 
 
+class _ProtocolStdout:
+    """``sys.stdout`` while serving ACP: text writes (``print`` — Strands'
+    default PrintingCallbackHandler, strands_tools' rich panels, a stray debug
+    line) go to stderr; only the binary ``.buffer`` is the real stdout, which
+    acp.stdio's transport writes JSON-RPC frames to.
+
+    Why this exists: ACP frames and ``print()`` shared one stream, so streamed
+    reply text printed *without a newline* glued itself onto the next frame
+    (``pong{"jsonrpc":...}``). The client could not parse that line, answered
+    ``-32700 Parse error`` and dropped the frame — every agent_message_chunk
+    could vanish, deterministically with PYTHONUNBUFFERED=1 and at random
+    (whenever the 8 KB pipe buffer flushed) without it.
+    """
+
+    def __init__(self, protocol_file, stray) -> None:
+        # `.buffer` is what acp.stdio's Windows transport writes to;
+        # `.fileno()` is what its POSIX path hands to loop.connect_write_pipe —
+        # both must be the protocol stream, never stderr.
+        self.buffer = protocol_file
+        self._protocol = protocol_file
+        self._stray = stray
+
+    def fileno(self) -> int:
+        return self._protocol.fileno()
+
+    def close(self) -> None:
+        self._protocol.close()
+
+    def write(self, text: str) -> int:
+        return self._stray.write(text)
+
+    def flush(self) -> None:
+        self._stray.flush()
+
+    def isatty(self) -> bool:
+        return False
+
+    def __getattr__(self, name):
+        return getattr(self._stray, name)
+
+
+def _protect_protocol_stdout() -> None:
+    """Reserve the real stdout for ACP frames and send everything else to stderr.
+
+    fd 1 is re-pointed at stderr too, so a child process that inherits stdout
+    (or any C-level write) can't reach the protocol stream either.
+    """
+    import sys
+
+    sys.stdout.flush()
+    protocol_fd = os.dup(1)
+    os.dup2(2, 1)
+    sys.stdout = _ProtocolStdout(os.fdopen(protocol_fd, "wb", buffering=0), sys.stderr)
+
+
 async def _main() -> None:
     # Runs inside this process's one real, long-running event loop — see
     # start_mcp_clients' own docstring for why that matters: whichever
     # SierraLabAcpAgent session first calls build_agent_for_session already
     # tries to start these same MCP clients itself, from a throwaway
     # thread/loop that doesn't survive to serve a real tool call afterward.
+    _protect_protocol_stdout()
     await start_mcp_clients()
     reader, writer = await acp.stdio.stdio_streams()
     # acp.run_agent's params are misleadingly named: the first stream must be

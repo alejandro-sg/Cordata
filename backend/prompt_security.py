@@ -285,7 +285,13 @@ class UntrustedToolResultHooks(HookProvider):
             return
         for block in content:
             if isinstance(block, dict) and isinstance(block.get("text"), str) and block["text"]:
-                risk_score = score_injection_risk(block["text"])
+                # A team's result is model-written prose/JSON; the classifier
+                # (65% on its own injection benchmark) flagged benign team
+                # output in a live run, which would put a false alarm on every
+                # result. The wrap alone marks it derived-from-untrusted; the
+                # sub-agents' own http_request/memory/MCP reads were already
+                # scored inside their contexts.
+                risk_score = None if name in _SUBAGENT_TOOLS else score_injection_risk(block["text"])
                 block["text"] = wrap_untrusted(label, block["text"], risk_score)
 
 

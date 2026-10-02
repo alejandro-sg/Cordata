@@ -162,7 +162,14 @@ are, in four ways: `shell` children inherit the process environment,
 startup environment, and module globals are one `import` from `python_repl`.
 `secret_guard.py` + `prompt_security.SecretRedactionHooks` close those:
 
-- **Sourced from the shell environment only.** `settings.py` reads each key
+- **Sourced from the shell environment or the macOS Keychain — never a file.**
+  An exported variable wins; otherwise, only for the active provider, the
+  Keychain item `sierralab-ollama-api-key` / `sierralab-anthropic-api-key` is
+  read once at startup (`secret_guard._keychain_get`; a missing item or
+  non-macOS just means "no key", and the ACP session fails with the fix in the
+  message instead of a bare 401). The Keychain is not an agent boundary: `shell`
+  can run `security find-generic-password -w` as the same user, and what saves
+  you there is the output masking below, not the Keychain. `settings.py` reads each key
   once via `take_secret`, wraps it in a `Secret` (prints `Secret(****)`; only
   `reveal()` returns it, called at the one place a model client is built) and
   removes it from `os.environ`, so a `shell` child never inherits it. The

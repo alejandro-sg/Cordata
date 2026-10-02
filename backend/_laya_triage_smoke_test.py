@@ -184,7 +184,7 @@ def predictor(**fixed):
     return predict
 
 
-def run_agent(mode: str, predict, prompts: list[str], plan: list[str | None], tools=None):
+def run_agent(mode: str, predict, prompts: list[str], plan: list[str | None], tools=None, notify=None):
     tmp = tempfile.TemporaryDirectory()
     log = Path(tmp.name) / "triage.jsonl"
     model = Scripted(plan)
@@ -192,7 +192,7 @@ def run_agent(mode: str, predict, prompts: list[str], plan: list[str | None], to
         model=model,
         system_prompt=BASE_PROMPT,
         tools=tools or [calculator, http_request],
-        hooks=[lt.LayaTriageHooks(mode=mode, log_path=log, predict=predict)],
+        hooks=[lt.LayaTriageHooks(mode=mode, log_path=log, predict=predict, notify=notify)],
         callback_handler=None,
     )
 
@@ -273,6 +273,110 @@ def test_route_mode_fallbacks() -> None:
             check("local_graph" in model.system_prompts[0], "with the threshold enabled, a high P(needs team) hints at the team tools")
     finally:
         settings.LAYA_TRIAGE_TEAM_THRESHOLD = None
+
+
+def wait_for(predicate, timeout: float = 10.0) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if predicate():
+            return
+        time.sleep(0.02)
+    raise AssertionError("FAIL: condition not met in time")
+
+
+def test_live_notifications() -> None:
+    """Laya's decision is pushed the moment it is made, and the outcome when the
+    turn ends — what acp-tui renders as the live "⚡ laya" line."""
+    events: list[dict] = []
+    agent, model, rows, tmp = run_agent("route", predictor(), ["please research strands"], ["http_request"], notify=events.append)
+    with tmp:
+        wait_for(lambda: [e["event"] for e in events] == ["decision", "outcome"])
+        decision, outcome = events
+        check(decision["route"] == "web_research" and decision["route_confidence"] == 0.95 and decision["gate"] == settings.LAYA_TRIAGE_THRESHOLD, "the decision carries the route, its confidence and the gate")
+        check(decision["hint"] and "http_request" in decision["hint"] and decision["mode"] == "route" and decision["late"] is False, "…the hint that was actually applied, and the mode")
+        check(decision["latency_ms"] == 5.0 and decision["waited_ms"] is not None, "…and how long Laya took and how long the turn waited")
+        check(outcome["actual_route"] == "web_research" and outcome["agreed"] is True and outcome["tools"] == ["http_request"], "the outcome says what the LLM did and that it agreed")
+        check(outcome["stop_reason"] == "end_turn" and outcome["turn_ms"] is not None, "…with the stop reason and turn time")
+
+    events.clear()
+    agent, model, rows, tmp = run_agent("route", predictor(route_confidence=0.5, route="web_research"), ["research low"], [None], notify=events.append)
+    with tmp:
+        wait_for(lambda: len(events) == 2)
+        check(events[0]["hint"] is None and events[0]["route_confidence"] == 0.5, "below the gate: the decision is still reported, with no hint")
+        check(events[1]["agreed"] is False and events[1]["actual_route"] == "chat", "a disagreement with the LLM is reported as agreed=False")
+
+    events.clear()
+    agent, model, rows, tmp = run_agent("route", predictor(sleep=0.6), ["research but slow"], [None], notify=events.append)
+    settings_timeout = settings.LAYA_TRIAGE_TIMEOUT
+    # (the timeout is applied in run_agent only if set before; set it for this case)
+    with tmp:
+        wait_for(lambda: any(e["event"] == "outcome" for e in events))
+    events.clear()
+    settings.LAYA_TRIAGE_TIMEOUT = 0.05
+    try:
+        agent, model, rows, tmp = run_agent("route", predictor(sleep=0.5), ["research but slow"], [None], notify=events.append)
+        with tmp:
+            wait_for(lambda: [e["event"] for e in events].count("decision") == 2 and any(e["event"] == "outcome" for e in events))
+    finally:
+        settings.LAYA_TRIAGE_TIMEOUT = settings_timeout
+    first, late = [e for e in events if e["event"] == "decision"]
+    check("timed out" in first["error"], "a classifier slower than the timeout is reported as a timeout, immediately")
+    check(late["late"] is True and late["route"] == "web_research" and late["hint"] is None, "…and its late answer is reported too, marked late, with no hint")
+
+    events.clear()
+    agent, model, rows, tmp = run_agent("route", predictor(), ["boom: raise"], [None], notify=events.append)
+    with tmp:
+        wait_for(lambda: any(e["event"] == "outcome" for e in events))
+        check("classifier exploded" in events[0]["error"] and events[-1]["agreed"] is None, "a classifier error is reported, and the outcome has no agreement to judge")
+
+    events.clear()
+    agent, model, rows, tmp = run_agent("shadow", predictor(), ["research it"], [None], notify=events.append)
+    with tmp:
+        wait_for(lambda: len(events) == 2)
+        check(events[0]["hint"] is None and events[0]["tier"] is None and events[0]["mode"] == "shadow", "shadow mode reports the decision but applies and promises nothing")
+
+    def broken(_payload):
+        raise RuntimeError("monitor exploded")
+
+    agent, model, rows, tmp = run_agent("route", predictor(), ["research it"], [None], notify=broken)
+    with tmp:
+        check(rows[0]["actual"]["stop_reason"] == "end_turn" and all(p.startswith(BASE_PROMPT) for p in model.system_prompts), "a failing monitor never touches the turn")
+
+    # tiers show up in the outcome
+    events.clear()
+    tier_seen.clear()
+    agent, model, rows, tmp = run_agent("route", predictor(complexity=1.8, complexity_confidence=0.85), ["hard"], ["spawn_team"], tools=[spawn_team], notify=events.append)
+    with tmp:
+        wait_for(lambda: len(events) == 2)
+        check(events[0]["tier"] == "strong" and events[1]["tiers"] == {"researcher": "strong"}, "the suggested tier is announced, and the tiers actually used are in the outcome")
+
+
+def test_acp_forwards_events_as_extension_notifications() -> None:
+    import threading
+
+    import acp_server
+
+    sent: list[tuple[str, dict]] = []
+
+    class Conn:
+        async def ext_notification(self, method, params):
+            sent.append((method, params))
+
+    async def main() -> None:
+        server = acp_server.SierraLabAcpAgent()
+        server._conn = Conn()
+        notify = server._laya_notifier("sess-1")
+        # from a worker thread, as the classifier's done-callback does
+        worker = threading.Thread(target=lambda: notify({"event": "decision", "route": "chat"}))
+        worker.start()
+        worker.join()
+        for _ in range(100):
+            if sent:
+                break
+            await asyncio.sleep(0.01)
+
+    asyncio.run(main())
+    check(sent == [("sierralab/laya", {"sessionId": "sess-1", "event": "decision", "route": "chat"})], "events become `_sierralab/laya` extension notifications carrying the session id, even from another thread")
 
 
 def test_tier_suggestion() -> None:
@@ -381,6 +485,8 @@ def main() -> None:
     test_shadow_mode()
     test_route_mode_hint()
     test_route_mode_fallbacks()
+    test_live_notifications()
+    test_acp_forwards_events_as_extension_notifications()
     test_tier_suggestion()
     test_secrets_and_modes()
     test_report()

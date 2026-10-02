@@ -399,10 +399,79 @@ def build_template_agent() -> Agent:
     )
 
 
+def _cloud_key_rejection() -> str | None:
+    """Ask the cloud endpoint whether it accepts the key, at no token cost.
+
+    POST {base}/chat/completions with an empty body: a valid key gets 400 (bad
+    request), a bad or missing one 401/403 — verified against Ollama Cloud. Only
+    a 401/403 counts; a network error, timeout or any other status says nothing
+    about the key, so the session just proceeds.
+    """
+    import urllib.error
+    import urllib.request
+
+    key = reveal(ACTIVE_CLOUD_API_KEY)
+    request = urllib.request.Request(
+        f"{ACTIVE_CLOUD_BASE_URL.rstrip('/')}/chat/completions",
+        data=b"{}",
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        urllib.request.urlopen(request, timeout=5)
+    except urllib.error.HTTPError as error:
+        if error.code in (401, 403):
+            source = getattr(ACTIVE_CLOUD_API_KEY, "source", "") or "an unknown source"
+            return (
+                f"the model endpoint rejected the API key (HTTP {error.code}). The key the backend loaded came "
+                f"from {source} and is {len(key)} characters long (real keys are ~60). A stale exported "
+                "OLLAMA_API_KEY beats the Keychain; otherwise re-store it with `make key` and check it with "
+                "`scripts/check-key.sh`."
+            )
+    except Exception:
+        return None
+    return None
+
+
+def ensure_provider_ready() -> None:
+    """Fail fast, with the fix, when the active cloud provider has no credentials.
+
+    Without this the first prompt dies with a bare "401" or "Connection error"
+    from deep inside the model client. Raised at ACP session creation, where it
+    reaches the client as an error it can show.
+    """
+    if ACTIVE_PROVIDER == "openai_compatible":
+        missing = [
+            name
+            for name, value in (
+                ("an API key", reveal(ACTIVE_CLOUD_API_KEY)),
+                ("CLOUD_OPENAI_BASE_URL", ACTIVE_CLOUD_BASE_URL),
+                ("CLOUD_OPENAI_MODEL_ID", ACTIVE_CLOUD_MODEL_ID),
+            )
+            if not value
+        ]
+        if missing:
+            raise RuntimeError(
+                f"MODEL_PROVIDER=openai_compatible but {', '.join(missing)} is not set. For the key: export "
+                "OLLAMA_API_KEY in the shell that starts the client, or store it once in the macOS Keychain "
+                '(it prompts for the value):  security add-generic-password -a "$USER" -s sierralab-ollama-api-key -w   '
+                "— or set MODEL_PROVIDER=local in backend/.env to use oMLX."
+            )
+        rejection = _cloud_key_rejection()
+        if rejection:
+            raise RuntimeError(f"MODEL_PROVIDER=openai_compatible: {rejection}")
+    elif ACTIVE_PROVIDER == "anthropic" and not reveal(ACTIVE_ANTHROPIC_API_KEY):
+        raise RuntimeError(
+            "MODEL_PROVIDER=anthropic but no API key was found. Export ANTHROPIC_API_KEY, or store it in the macOS "
+            'Keychain:  security add-generic-password -a "$USER" -s sierralab-anthropic-api-key -w'
+        )
+
+
 def build_agent_for_session(
     session_id: str,
     interventions: list | None = None,
     system_prompt: str | None = None,
+    triage_notify=None,
 ) -> Agent:
     """A fully session-bound Agent, for front doors that manage their own
     per-session instances (the ACP server — nothing derives this one for us).
@@ -416,6 +485,9 @@ def build_agent_for_session(
     shell/python_repl/file_write/etc. that main.py gets for free from
     ag_ui_strands's ``ToolBehavior(interrupt_on_call=True)`` — see
     acp_server.py's ``_ApprovalHandler``.
+
+    ``triage_notify`` receives Laya's live decision/outcome events (see
+    laya_triage.LayaTriageHooks) — acp_server forwards them to the client.
 
     ``system_prompt`` overrides the default WORKSPACE_DIR-scoped prompt —
     needed by the ACP server, whose sessions operate on whatever project the
@@ -448,6 +520,7 @@ def build_agent_for_session(
     restart or not) is available to every session opened after it, not just
     ones started after the next restart.
     """
+    ensure_provider_ready()
     return Agent(
         model=build_model(),
         system_prompt=system_prompt or SYSTEM_PROMPT,
@@ -457,9 +530,13 @@ def build_agent_for_session(
             SkillValidationHooks(),
             UntrustedToolResultHooks(extra_untrusted_tools=MCP_TOOL_NAMES),
             SecretRedactionHooks(),
-            *triage_hooks(),
+            *triage_hooks(notify=triage_notify),
         ],
         conversation_manager=build_conversation_manager(),
         session_manager=FileSessionManager(session_id=session_id, storage_dir=str(SESSIONS_DIR)),
         interventions=interventions,
+        # The default handler prints the streamed reply to stdout — which for the
+        # ACP front door is the protocol channel (see acp_server._ProtocolStdout).
+        # Events reach the client through stream_async, not through printing.
+        callback_handler=None,
     )

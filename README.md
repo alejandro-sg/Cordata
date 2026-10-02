@@ -105,8 +105,12 @@ estimate. See [`docs/laya-triage.md`](docs/laya-triage.md).
 - **Provider.** `MODEL_PROVIDER` = `local` (oMLX, default) | `anthropic` |
   `openai_compatible` (`CLOUD_OPENAI_BASE_URL` / `CLOUD_OPENAI_MODEL_ID`; e.g. Ollama
   Cloud at `https://ollama.com/v1`). Set in the environment or `backend/.env`.
-- **API keys go in your shell, not in `.env`:** `export OLLAMA_API_KEY=...` (or
-  `CLOUD_OPENAI_API_KEY` / `ANTHROPIC_API_KEY`). The backend reads the key once, removes it
+- **API keys never go in `.env`** (the agent's file tools can read it). Store one once in the
+  macOS Keychain with `make key` (hidden prompt, then verifies the key against Ollama;
+  the Keychain service is `sierralab-ollama-api-key`, or `sierralab-anthropic-api-key` for
+  Anthropic) — or export
+  `OLLAMA_API_KEY` / `CLOUD_OPENAI_API_KEY` / `ANTHROPIC_API_KEY` (an exported variable wins).
+  The Keychain is only consulted when that provider is the active one. The backend reads the key once, removes it
   from its own environment, and masks it in every tool result so no agent can read it
   back — `THREAT_MODEL.md` ("Provider API keys") says exactly what that covers and what it
   doesn't (`python_repl` in `auto` mode).

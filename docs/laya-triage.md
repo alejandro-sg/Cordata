@@ -41,6 +41,17 @@ It never blocks a tool and never forces one. That is deliberate — see "Why adv
 
 `shadow` mode logs only (no hint, no tier). `off` does nothing and loads nothing.
 
+### Watching it live
+
+- **In `acp-tui`:** nothing to turn on. A dim `◆ laya` line appears under each prompt ~70 ms
+  after you send it — route and confidence, and whether a hint was sent or why not — and a second
+  line when the turn ends says what the LLM actually did and whether it agreed. `/laya off` hides
+  it. The backend pushes these as an ACP extension notification (`_sierralab/laya`, emitted by
+  `LayaTriageHooks(notify=…)`); clients that don't know it ignore it.
+- **Any front door** (the web UI, Zed, scripts): `make laya-watch` follows the log and prints
+  one line per turn as it ends. It lags the TUI line by one turn, because the log is written when
+  a turn finishes.
+
 ### The log
 
 Every mode but `off` appends one JSON line per turn to `LAYA_TRIAGE_LOG`

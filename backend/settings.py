@@ -39,13 +39,20 @@ MODEL_PROVIDER = os.getenv("MODEL_PROVIDER", "local")
 # os.environ so `shell` children and environment dumps don't carry it. Source
 # them from an exported shell variable, not backend/.env: that file is on disk
 # where the agent's file tools can read it (take_secret warns if it finds one
-# there). OLLAMA_API_KEY is accepted as an alias for CLOUD_OPENAI_API_KEY so
+# there), or the macOS Keychain (see secret_guard._keychain_get). OLLAMA_API_KEY is accepted as an alias for CLOUD_OPENAI_API_KEY so
 # an existing `export OLLAMA_API_KEY=...` works against
 # CLOUD_OPENAI_BASE_URL=https://ollama.com/v1 unchanged.
-ANTHROPIC_API_KEY = take_secret("ANTHROPIC_API_KEY")
+ANTHROPIC_API_KEY = take_secret(
+    "ANTHROPIC_API_KEY", keychain="sierralab-anthropic-api-key" if MODEL_PROVIDER == "anthropic" else None
+)
 ANTHROPIC_MODEL_ID = os.getenv("ANTHROPIC_MODEL_ID", "claude-sonnet-5")
 CLOUD_OPENAI_BASE_URL = os.getenv("CLOUD_OPENAI_BASE_URL", "")
-CLOUD_OPENAI_API_KEY = take_secret("CLOUD_OPENAI_API_KEY", "OLLAMA_API_KEY")
+# With nothing exported, the macOS Keychain item "sierralab-ollama-api-key" is
+# used — but only when the cloud provider is the active one, so a local-model
+# run never touches the keychain.
+CLOUD_OPENAI_API_KEY = take_secret(
+    "CLOUD_OPENAI_API_KEY", "OLLAMA_API_KEY", keychain="sierralab-ollama-api-key" if MODEL_PROVIDER == "openai_compatible" else None
+)
 # Any other credential-looking variable (HF_TOKEN, ...) stays in the
 # environment — libraries read some lazily — but its value is masked in tool
 # output (prompt_security.SecretRedactionHooks).

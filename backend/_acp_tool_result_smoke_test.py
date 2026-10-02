@@ -93,7 +93,26 @@ def tool_updates(updates: list) -> list:
     return [u for u in updates if type(u).__name__ in ("ToolCallStart", "ToolCallProgress")]
 
 
+def test_swarm_progress_rendering() -> None:
+    entries = [
+        {"type": "node_start", "node": "cat_agent"},
+        {"type": "node_start", "node": "dog_agent"},
+        {"type": "node_stop", "node": "dog_agent", "summary": "dogs are loyal"},
+        {"type": "handoff", "from": ["a"], "to": ["b"], "message": "go"},
+    ]
+    reasoning = {"cat_agent": "  I should write\n one short sentence about cats ", "dog_agent": "long finished reasoning"}
+    text = acp_server._render_swarm_progress(entries, reasoning)
+    lines = text.splitlines()
+    check(lines[:4] == ["started: cat_agent", "started: dog_agent", "finished: dog_agent - dogs are loyal", "handoff: a -> b - go"], "the progress log renders in order as before")
+    check("thinking: cat_agent - I should write one short sentence about cats" in lines, "a running sub-agent's latest reasoning is shown (whitespace collapsed)")
+    check(not any(line.startswith("thinking: dog_agent") for line in lines), "a finished sub-agent's reasoning is not shown")
+    check(acp_server._render_swarm_progress(entries) == "\n".join(lines[:4]), "without reasoning the output is unchanged")
+    long = acp_server._render_swarm_progress(entries[:1], {"cat_agent": "x" * 500})
+    check(len(long.splitlines()[-1]) <= len("thinking: cat_agent - ") + acp_server._REASONING_TAIL_CHARS, "reasoning is cut to its tail")
+
+
 def main() -> None:
+    test_swarm_progress_rendering()
     updates = asyncio.run(run("good_tool"))
     calls = tool_updates(updates)
     check([type(u).__name__ for u in calls][:1] == ["ToolCallStart"], "the tool call is announced (ToolCallStart)")

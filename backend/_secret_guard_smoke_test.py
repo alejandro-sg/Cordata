@@ -108,6 +108,121 @@ def test_take_and_redact() -> None:
     del os.environ["XDG_NOTHING"]
 
 
+def test_keychain_fallback() -> None:
+    """A key stored in the macOS Keychain is used when the environment has none —
+    exercised against the real `security` tool with a throwaway dummy item."""
+    import secret_guard as sg
+
+    if sys.platform != "darwin" or subprocess.run(["which", "security"], capture_output=True).returncode != 0:
+        print("skip keychain test (not macOS)")
+        return
+    service = f"sierralab-smoke-{os.getpid()}"
+    value = "keychain-dummy-0123456789-abcdef"
+    subprocess.run(["security", "add-generic-password", "-a", "smoke", "-s", service, "-w", value], check=True, capture_output=True)
+    try:
+        check(sg._keychain_get(service) == value, "_keychain_get reads a stored item")
+        os.environ.pop("SMOKE_KC_KEY", None)
+        taken = sg.take_secret("SMOKE_KC_KEY", keychain=service)
+        check(taken.reveal() == value and repr(taken) == "Secret(****)", "take_secret falls back to the keychain and wraps it in a Secret")
+        check(value not in sg.redact(f"x {value} y"), "a keychain-sourced key is registered for output masking")
+        os.environ["SMOKE_KC_KEY"] = "environment-wins-0123456789"
+        check(sg.take_secret("SMOKE_KC_KEY", keychain=service).reveal() == "environment-wins-0123456789", "an exported variable takes precedence over the keychain")
+        check(sg.take_secret("SMOKE_KC_KEY_UNSET", keychain=None).reveal() == "", "no environment and no keychain service -> unset (and the keychain is not consulted)")
+    finally:
+        subprocess.run(["security", "delete-generic-password", "-s", service], capture_output=True)
+        os.environ.pop("SMOKE_KC_KEY", None)
+    check(sg._keychain_get(service) == "", "a missing keychain item gives '' (no exception)")
+
+
+def test_provider_ready_error_is_actionable() -> None:
+    import agent_common
+
+    saved = (agent_common.ACTIVE_PROVIDER, agent_common.ACTIVE_CLOUD_API_KEY, agent_common.ACTIVE_ANTHROPIC_API_KEY, agent_common.ACTIVE_CLOUD_BASE_URL)
+    try:
+        agent_common.ACTIVE_PROVIDER = "openai_compatible"
+        agent_common.ACTIVE_CLOUD_API_KEY = __import__("secret_guard").Secret("")
+        try:
+            agent_common.ensure_provider_ready()
+            check(False, "a cloud provider with no key fails fast")
+        except RuntimeError as error:
+            text = str(error)
+            check("OLLAMA_API_KEY" in text and "security add-generic-password" in text and "MODEL_PROVIDER=local" in text, "…with the three ways to fix it in the message")
+        agent_common.ACTIVE_CLOUD_API_KEY = __import__("secret_guard").Secret("some-key-0123456789")
+        # Hermetic: an unreachable port, so the key probe never reaches a real endpoint
+        # (it only treats a 401/403 as a key problem; a refused connection proceeds).
+        agent_common.ACTIVE_CLOUD_BASE_URL = "http://127.0.0.1:1/v1"
+        agent_common.ACTIVE_CLOUD_MODEL_ID = agent_common.ACTIVE_CLOUD_MODEL_ID or "m"
+        agent_common.ensure_provider_ready()
+        check(True, "a configured cloud provider passes")
+        agent_common.ACTIVE_PROVIDER = "local"
+        agent_common.ensure_provider_ready()
+        check(True, "the local provider never needs a key")
+    finally:
+        agent_common.ACTIVE_PROVIDER, agent_common.ACTIVE_CLOUD_API_KEY, agent_common.ACTIVE_ANTHROPIC_API_KEY, agent_common.ACTIVE_CLOUD_BASE_URL = saved
+
+
+def test_cloud_key_probe() -> None:
+    """ensure_provider_ready asks the endpoint whether it accepts the key (no tokens
+    spent) and says why not — against a stand-in server that behaves like Ollama Cloud:
+    empty POST to /chat/completions -> 400 with a valid key, 401 otherwise."""
+    import http.server
+    import threading
+
+    import agent_common
+    import secret_guard as sg
+
+    seen = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            seen.append((self.path, self.headers.get("Authorization")))
+            code = 400 if self.headers.get("Authorization") == "Bearer good-key-0123456789-abcdef-GOOD" else 401
+            self.send_response(code)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}/v1"
+    saved = (agent_common.ACTIVE_PROVIDER, agent_common.ACTIVE_CLOUD_API_KEY, agent_common.ACTIVE_CLOUD_BASE_URL, agent_common.ACTIVE_CLOUD_MODEL_ID)
+    try:
+        agent_common.ACTIVE_PROVIDER = "openai_compatible"
+        agent_common.ACTIVE_CLOUD_BASE_URL = base
+        agent_common.ACTIVE_CLOUD_MODEL_ID = "m"
+
+        agent_common.ACTIVE_CLOUD_API_KEY = sg.Secret("good-key-0123456789-abcdef-GOOD", "environment variable OLLAMA_API_KEY")
+        agent_common.ensure_provider_ready()
+        check(seen and seen[-1][0] == "/v1/chat/completions", "the probe hits {base}/chat/completions (no tokens: empty body)")
+        check(True, "a key the endpoint accepts (400) passes")
+
+        agent_common.ACTIVE_CLOUD_API_KEY = sg.Secret("abc1234", "macOS Keychain item sierralab-ollama-api-key")
+        try:
+            agent_common.ensure_provider_ready()
+            check(False, "a rejected key fails fast")
+        except RuntimeError as error:
+            text = str(error)
+            check("rejected the API key (HTTP 401)" in text, "a rejected key (401) fails at session start with that reason")
+            check("macOS Keychain item sierralab-ollama-api-key" in text and "7 characters" in text, "…naming where the key came from and its length (the usual truncated-paste clue)")
+            check("make key" in text and "check-key" in text, "…and how to fix it")
+            check("abc1234" not in text, "…without ever including the key")
+    finally:
+        server.shutdown()
+        (agent_common.ACTIVE_PROVIDER, agent_common.ACTIVE_CLOUD_API_KEY, agent_common.ACTIVE_CLOUD_BASE_URL, agent_common.ACTIVE_CLOUD_MODEL_ID) = saved
+
+    # An unreachable endpoint says nothing about the key: the session proceeds.
+    agent_common.ACTIVE_PROVIDER = "openai_compatible"
+    agent_common.ACTIVE_CLOUD_BASE_URL = "http://127.0.0.1:1/v1"
+    agent_common.ACTIVE_CLOUD_MODEL_ID = "m"
+    agent_common.ACTIVE_CLOUD_API_KEY = sg.Secret("good-key-0123456789-abcdef-GOOD")
+    try:
+        agent_common.ensure_provider_ready()
+        check(True, "a network error is not a key problem: the session proceeds")
+    finally:
+        (agent_common.ACTIVE_PROVIDER, agent_common.ACTIVE_CLOUD_API_KEY, agent_common.ACTIVE_CLOUD_BASE_URL, agent_common.ACTIVE_CLOUD_MODEL_ID) = saved
+
+
 def test_settings_scrubs_environment_for_children() -> None:
     """The whole startup path: key exported in the shell → settings.py →
     a `shell`-style child process must not inherit it."""
@@ -180,6 +295,21 @@ def test_hooks_with_events() -> None:
     graph = {"status": "success", "content": [{"text": "x"}]}
     ps.UntrustedToolResultHooks()._wrap_result(types.SimpleNamespace(result=graph, tool_use={"name": "local_graph", "input": {}}))
     check(ps._GUARD_OPEN in graph["content"][0]["text"], "local_graph output is wrapped as untrusted")
+    # …and is not handed to the injection classifier (it false-alarmed on benign team JSON in a live run)
+    import prompt_security as _ps
+
+    scored = []
+    real_score = _ps.score_injection_risk
+    _ps.score_injection_risk = lambda text: scored.append(text) or 0.99
+    try:
+        flagged_team = {"status": "success", "content": [{"text": '{"results": {"a": "fine"}}'}]}
+        _ps.UntrustedToolResultHooks()._wrap_result(types.SimpleNamespace(result=flagged_team, tool_use={"name": "local_graph", "input": {}}))
+        check(scored == [] and "classifier flagged" not in flagged_team["content"][0]["text"], "team output is wrapped but never scored by the injection classifier")
+        fetched = {"status": "success", "content": [{"text": "page"}]}
+        _ps.UntrustedToolResultHooks()._wrap_result(types.SimpleNamespace(result=fetched, tool_use={"name": "http_request", "input": {"url": "u"}}))
+        check(scored == ["page"] and "classifier flagged" in fetched["content"][0]["text"], "fetched content still is scored")
+    finally:
+        _ps.score_injection_risk = real_score
     plain = {"status": "success", "content": [{"text": "hello"}]}
     ps.UntrustedToolResultHooks()._wrap_result(types.SimpleNamespace(result=plain, tool_use={"name": "calculator", "input": {}}))
     check(plain["content"][0]["text"] == "hello", "other tools' results are untouched by the untrusted wrap")
@@ -251,6 +381,9 @@ async def _run(agent) -> None:
 def main() -> None:
     test_secret_type()
     test_take_and_redact()
+    test_keychain_fallback()
+    test_provider_ready_error_is_actionable()
+    test_cloud_key_probe()
     test_settings_scrubs_environment_for_children()
     test_hooks_with_events()
     test_real_agent_model_never_sees_key()

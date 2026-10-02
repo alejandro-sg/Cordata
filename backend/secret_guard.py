@@ -33,6 +33,8 @@ program.
 import logging
 import os
 import re
+import subprocess
+import sys
 import threading
 from collections.abc import Iterable, Mapping
 from typing import Any
@@ -68,11 +70,21 @@ class Secret:
     API key is an explicit ``reveal()`` at the one place a client is built.
     """
 
-    __slots__ = ("_value",)
+    __slots__ = ("_value", "_source")
 
-    def __init__(self, value: str = "") -> None:
+    def __init__(self, value: str = "", source: str = "") -> None:
         object.__setattr__(self, "_value", value or "")
+        # Where it was loaded from ("environment OLLAMA_API_KEY", "macOS Keychain …") —
+        # metadata for error messages, not the secret.
+        object.__setattr__(self, "_source", source)
         register_secret(self._value)
+
+    @property
+    def source(self) -> str:
+        return self._source
+
+    def __len__(self) -> int:
+        return len(self._value)
 
     def reveal(self) -> str:
         return self._value
@@ -117,18 +129,47 @@ def _dotenv_keys() -> set[str]:
         return set()
 
 
-def take_secret(*names: str) -> Secret:
+def _keychain_get(service: str) -> str:
+    """The password stored under ``service`` in the macOS login Keychain, or ''.
+
+    The one place a key can live that is neither the process environment nor a
+    project file: ``security add-generic-password -a "$USER" -s <service> -w``
+    stores it once (it prompts for the value; nothing is echoed or written to
+    disk in plain text). Read at startup only, into a ``Secret``. Best effort:
+    not macOS, no such item, a locked keychain, or a timeout all give ''.
+    """
+    if sys.platform != "darwin":
+        return ""
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password", "-s", service, "-w"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def take_secret(*names: str, keychain: str | None = None) -> Secret:
     """The first non-empty value among ``names`` as a ``Secret``, with *every*
     listed variable removed from ``os.environ`` (an alias set to the same key
     must not survive just because the primary name won).
+
+    ``keychain`` names a macOS Keychain service to fall back to when none of
+    ``names`` is set in the environment (see ``_keychain_get``).
 
     Warns when a name is defined in backend/.env: unlike an exported shell
     variable, that file sits on disk where the agent's file tools can read it.
     """
     in_dotenv = _dotenv_keys()
     value = ""
+    source = ""
     for name in names:
         candidate = os.environ.pop(name, "")
+        if candidate and not value:
+            source = f"environment variable {name}"
         if name in in_dotenv and candidate:
             logger.warning(
                 "%s is set in backend/.env, which the agent's file tools can read. "
@@ -136,7 +177,11 @@ def take_secret(*names: str) -> Secret:
                 name,
             )
         value = value or candidate
-    return Secret(value)
+    if not value and keychain:
+        value = _keychain_get(keychain)
+        if value:
+            source = f"macOS Keychain item {keychain}"
+    return Secret(value, source)
 
 
 def register_env_secrets(environ: Mapping[str, str] | None = None) -> int:
