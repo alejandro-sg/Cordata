@@ -23,3 +23,9 @@ frontend/tsconfig.tsbuildinfo
 # Claude Code's own per-checkout local state — personal settings/permissions,
 # never something a clone should inherit from whoever committed it.
 .claude/settings.local.json
+
+# Rust ACP TUI build output
+tui/target/
+
+# Shadow-mode triage log (laya_triage.py) — holds user prompts, local only.
+backend/laya_triage.jsonl

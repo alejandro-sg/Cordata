@@ -1,0 +1,31 @@
+{
+  "scenarios": [
+    {
+      "name": "plain-reply",
+      "prompts": ["Reply with exactly the word: pong"],
+      "approval_policy": "auto_allow"
+    },
+    {
+      "name": "gated-tool-approved",
+      "prompts": ["Call the shell tool to run exactly: echo acp-approved-marker"],
+      "mode": "build",
+      "approval_policy": "auto_allow"
+    },
+    {
+      "name": "gated-tool-denied",
+      "prompts": ["Call the shell tool to run exactly: echo should-not-run"],
+      "mode": "build",
+      "approval_policy": "auto_reject"
+    },
+    {
+      "name": "plan-mode-blocks",
+      "prompts": ["Call the shell tool to run exactly: echo should-be-blocked-by-plan-mode"],
+      "mode": "plan"
+    },
+    {
+      "name": "auto-mode-no-card",
+      "prompts": ["Call the shell tool to run exactly: echo auto-mode-marker"],
+      "mode": "auto"
+    }
+  ]
+}
