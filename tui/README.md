@@ -33,37 +33,73 @@ status bar shows `connecting` at first.
 
 ### Using a cloud model (and keeping its key from the agent)
 
-Export the provider settings in the shell that launches the client — the
-backend inherits them. The API key goes in the environment, never in
-`backend/.env` (the agent's file tools can read that file):
+The backend is wired to Ollama Cloud (`gpt-oss:20b`, the cheapest model verified to call tools
+reliably) in `backend/.env` — plain `cargo run -p acp-tui` uses it, nothing to export. The only
+thing that can't live in a project file is the key (the agent's file tools can read `.env`), so
+store it **once** in the macOS Keychain. `make key` prompts for it (hidden — never echoed, never
+on a command line, never in a file), stores it, and then *verifies* Ollama accepts it, so a bad
+paste is caught immediately:
 
 ```sh
-export MODEL_PROVIDER=openai_compatible
-export CLOUD_OPENAI_BASE_URL=https://ollama.com/v1
-export CLOUD_OPENAI_MODEL_ID=gpt-oss:20b
-export OLLAMA_API_KEY=...        # or CLOUD_OPENAI_API_KEY
-cargo run -p acp-tui
+make key
 ```
 
-The backend reads the key once, removes it from its own environment, and masks
-it in every tool result, so `env`, `ps eww` or `cat .env` can't surface it —
-see `THREAT_MODEL.md`, "Provider API keys" (including what that does *not*
-cover: `python_repl` in `auto` mode). Neither client ever reads the key
-itself, and `--debug-log` records ACP traffic and the server's stderr, neither of which carries it.
+`make check-key` re-checks later: it shows where the backend finds the key (an exported variable
+beats the Keychain), its length and a short fingerprint — never the key — and whether Ollama
+accepts it. At startup the backend does the same check itself and reports a rejected key with the
+cause, instead of a bare `401` mid-conversation.
 
-## acp-tui keys
+The backend reads it from there at startup (or from `OLLAMA_API_KEY` / `CLOUD_OPENAI_API_KEY` if
+you export one, which wins), removes it from its own environment, and masks it in every tool
+result — see `THREAT_MODEL.md`, "Provider API keys", including what that does *not* cover
+(`python_repl` in `auto` mode). With no key you get the fix on screen instead of a mystery error.
+Back to local oMLX: set `MODEL_PROVIDER=local` in `backend/.env`. Neither client ever reads the
+key itself, and `--debug-log` records ACP traffic and the server's stderr, neither of which
+carries it.
+
+## acp-tui
+
+What's on screen, top to bottom: a status bar (connection, session, mode, model, directory),
+the conversation, the prompt box, and a hint line (key reminders — or, while the agent works,
+`working 12s · 3 tool calls · Esc cancels`).
+
+- **Reasoning** is shown as a live two-line tail while the model thinks, then collapses to
+  `· reasoned (304 words) — Ctrl+R expands`. Ctrl+R (or `/thinking`) expands all of it.
+- **Tool calls** are bordered cards: status glyph, the command or input, and a collapsed result
+  (Ctrl+E / `/tools` expands). `shell`, `python_repl`, `file_write` ask first in `build` mode.
+- **Sub-agent teams** (`local_swarm` / `local_graph`) get one row per agent, live: `⠙ cat_agent
+  thinking: …` while it runs, `✓ dog_agent <its summary>` when done, `→ a → b` for hand-offs, and
+  the team's final result under `result`. The agents' own system prompts aren't dumped into the card.
+- **Replies** render basic markdown: headings, bullets, numbered lists, quotes, `code`, **bold**
+  and fenced code blocks.
+- **Laya, live.** The moment you send a prompt, a dim `◆ laya` line appears under it (~70 ms):
+  the route Laya picked and how sure it is, and whether a routing hint was sent to the model —
+  `files_and_code 98% ▸ hint sent`, or why not (`below the 85% gate, no hint`, `no hint for this
+  route`, `no decision — timed out…`). When the turn ends a second line says what the LLM then
+  actually did and whether it agreed (`↳ LLM used files_and_code (file_read) ✓ agreed`, plus the
+  tiers any sub-agents used). `/laya off` hides it. It is pushed by the backend as an ACP extension
+  notification (`_sierralab/laya`), which other clients (Zed) ignore.
+- **Untrusted content** (web pages, memory recalls, MCP tools, sub-agent output) gets a magenta
+  double border, `⚠ UNTRUSTED CONTENT`, and its source — the backend's guard boilerplate is
+  stripped for display; a classifier flag, if any, is shown.
 
 | key | action |
 |---|---|
 | Enter | send · `Ctrl+J` / `Alt+Enter` newline |
 | `a` / `r` (or Esc) | allow / reject a pending tool call (modal) |
-| Ctrl+C | cancel the running turn (see below) · clears the input when idle |
+| Esc / Ctrl+C | cancel the running turn (not while the approval modal is open) · Esc/Ctrl+C clears the box when idle |
+| Up / Down | earlier / later prompts (on the first / last line of the box) |
 | Tab / Shift+Tab | cycle mode forward / back: plan → build → auto |
 | Ctrl+O (also Ctrl+M where the terminal distinguishes it) | model picker |
-| Ctrl+T | temperature picker (3 presets) |
-| Ctrl+E / Ctrl+R | expand all tool results / hide reasoning |
+| Ctrl+T | temperature picker |
+| Ctrl+R / Ctrl+E | expand reasoning / tool results |
+| `?` (empty box) or F1 | help overlay (all keys and commands) |
 | PgUp / PgDn | scroll |
-| Ctrl+Q | quit (always works) |
+| Ctrl+Q | quit |
+
+**Slash commands** (type in the prompt box; they never reach the model): `/help`,
+`/mode [plan|build|auto]`, `/model [name]`, `/temp [focused|balanced|creative]`, `/thinking`,
+`/tools`, `/laya [on|off]`, `/clear`, `/quit`. A path like `/usr/bin/env is missing` is still a normal prompt.
 
 Deliberate behaviours worth knowing:
 

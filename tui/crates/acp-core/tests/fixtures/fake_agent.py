@@ -15,6 +15,10 @@ Prompt triggers (substring match):
   "slow"        -> streams for ~10s, honouring session/cancel between chunks
   "error"       -> raises (JSON-RPC error response)
   "crash"       -> exits the process mid-turn
+  "laya"        -> sends the backend's live Laya triage as `_sierralab/laya`
+                   extension notifications (a decision, then an outcome), then "ok"
+  "burst"       -> 300 one-char chunks back to back, then returns at once (the
+                   response immediately follows the last chunk on the wire)
 """
 
 import asyncio
@@ -131,6 +135,21 @@ class FakeAgent:
         self.cancelled.discard(session_id)
         self.history.setdefault(session_id, []).append(("user", text))
 
+        if "laya" in text:
+            await self._conn.ext_notification("sierralab/laya", {
+                "sessionId": session_id, "event": "decision", "mode": "route", "route": "files_and_code",
+                "route_confidence": 0.98, "gate": 0.85, "needs_team": 0.1, "complexity": 1.2,
+                "complexity_confidence": 0.7, "latency_ms": 64.0, "waited_ms": 64.0,
+                "hint": "use the file and code tools", "tier": None, "late": False})
+            await self._say(session_id, "ok")
+            await self._conn.ext_notification("sierralab/laya", {
+                "sessionId": session_id, "event": "outcome", "actual_route": "files_and_code", "agreed": True,
+                "tools": ["file_read"], "tiers": {}, "stop_reason": "end_turn", "turn_ms": 900.0})
+            return acp.PromptResponse(stopReason="end_turn")
+        if "burst" in text:
+            for _ in range(300):
+                await self._say(session_id, "x")
+            return acp.PromptResponse(stopReason="end_turn")
         if "crash" in text:
             os._exit(3)
         if "error" in text:

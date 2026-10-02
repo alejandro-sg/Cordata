@@ -4,7 +4,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::{text::wrap, tool_card};
+use super::{laya, markdown, text::wrap, tool_card};
 use crate::app::{App, Message};
 
 fn prefixed(
@@ -35,12 +35,49 @@ fn prefixed(
         .collect()
 }
 
+/// Reasoning: collapsed by default — a live two-line tail while it streams, a
+/// one-line summary once it's done — and in full when expanded (Ctrl+R).
+fn thought_lines(text: &str, width: usize, expanded: bool, live: bool) -> Vec<Line<'static>> {
+    let dim = Style::new().fg(Color::DarkGray);
+    let italic = dim.add_modifier(Modifier::ITALIC);
+    if expanded {
+        return prefixed(text, width, "· ", "  ", italic, dim);
+    }
+    if live {
+        let rows = wrap(
+            &text.split_whitespace().collect::<Vec<_>>().join(" "),
+            width.saturating_sub(2).max(1),
+        );
+        let tail = &rows[rows.len().saturating_sub(2)..];
+        let mut lines = vec![Line::styled("· thinking…", dim)];
+        lines.extend(
+            tail.iter()
+                .map(|row| Line::styled(format!("  {row}"), italic)),
+        );
+        return lines;
+    }
+    let words = text.split_whitespace().count();
+    vec![Line::styled(
+        format!("· reasoned ({words} words) — Ctrl+R expands"),
+        dim,
+    )]
+}
+
 pub fn build_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let w = width as usize;
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut previous_was_tool = false;
 
-    for message in &app.messages {
+    for (index, message) in app.messages.iter().enumerate() {
+        // The Laya line belongs to the prompt right above it: no blank line in
+        // between, and nothing at all when hidden (`/laya off`).
+        if let Message::Laya(note) = message {
+            if app.show_laya {
+                lines.extend(laya::render(note, width));
+            }
+            previous_was_tool = false;
+            continue;
+        }
         let is_tool = matches!(message, Message::Tool(_));
         if !lines.is_empty() && !(is_tool && previous_was_tool) {
             lines.push(Line::raw(""));
@@ -56,27 +93,11 @@ pub fn build_lines(app: &App, width: u16) -> Vec<Line<'static>> {
                 Style::new().add_modifier(Modifier::BOLD),
                 Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
             )),
-            Message::Agent(text) => {
-                lines.extend(prefixed(text, w, "", "", Style::new(), Style::new()))
-            }
+            Message::Laya(_) => {}
+            Message::Agent(text) => lines.extend(markdown::render(text, w)),
             Message::Thought(text) => {
-                if app.show_thoughts {
-                    lines.extend(prefixed(
-                        text,
-                        w,
-                        "· ",
-                        "  ",
-                        Style::new()
-                            .fg(Color::DarkGray)
-                            .add_modifier(Modifier::ITALIC),
-                        Style::new().fg(Color::DarkGray),
-                    ));
-                } else {
-                    lines.push(Line::styled(
-                        "· thinking hidden (Ctrl+R)",
-                        Style::new().fg(Color::DarkGray),
-                    ));
-                }
+                let live = app.turn_active && index + 1 == app.messages.len();
+                lines.extend(thought_lines(text, w, app.thoughts_expanded, live));
             }
             Message::Tool(card) => lines.extend(tool_card::render(
                 card,
@@ -129,6 +150,11 @@ fn welcome() -> Vec<Line<'static>> {
         ),
         Line::styled(
             "Tab cycles plan → build → auto · Ctrl+O model · Ctrl+T temperature",
+            dim,
+        ),
+        Line::raw(""),
+        Line::styled(
+            "? or /help for every key and command · Esc cancels a running turn · Up recalls prompts",
             dim,
         ),
     ]

@@ -12,12 +12,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut mode = None;
     let mut policy: Option<ApprovalDecision> = None;
     let mut prompt = None;
+    let mut debug_log: Option<std::path::PathBuf> = None;
+    let mut linger = false; // keep listening briefly after TurnComplete (diagnostics)
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--mode" => mode = args.next(),
             "--yes" => policy = Some(ApprovalDecision::Allow),
             "--no" => policy = Some(ApprovalDecision::Reject),
+            "--debug-log" => debug_log = args.next().map(Into::into),
+            "--linger" => linger = true,
             _ => prompt = Some(arg),
         }
     }
@@ -28,7 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         backend,
         cwd: std::env::current_dir()?,
         resume: None,
-        debug_log: None,
+        debug_log,
     });
 
     let mut permission_cards = 0;
@@ -113,6 +117,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "[done] stop_reason={} permission_cards={permission_cards}",
                     reason.as_str()
                 );
+                if linger {
+                    eprintln!("[linger] listening 3s for events after TurnComplete…");
+                    let end = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+                    while let Ok(Some(late)) = tokio::time::timeout_at(end, events.recv()).await {
+                        match late {
+                            AppEvent::AgentText(text) => {
+                                eprintln!("[LATE agent text after TurnComplete] {text:?}")
+                            }
+                            other => eprintln!("[late event] {other:?}"),
+                        }
+                    }
+                }
                 break;
             }
             AppEvent::TurnFailed(error) => {

@@ -12,8 +12,9 @@ pub mod session;
 pub use config::BackendConfig;
 pub use error::{Error, Result};
 pub use events::{
-    AppEvent, ConfigChoice, ConfigOptionInfo, ModeInfo, SessionInfo, StopReason, ToolCallInfo,
-    ToolCallPatch, ToolKind, ToolStatus,
+    AppEvent, ConfigChoice, ConfigOptionInfo, LAYA_METHOD, LayaDecision, LayaEvent, LayaOutcome,
+    ModeInfo, SessionInfo, StopReason, ToolCallInfo, ToolCallPatch, ToolKind, ToolStatus,
+    parse_laya,
 };
-pub use permission::{ApprovalDecision, PermissionInfo};
+pub use permission::{ApprovalDecision, PermissionInfo, Unwrapped, unwrap_untrusted};
 pub use session::{SessionHandle, SessionOptions};

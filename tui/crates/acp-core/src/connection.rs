@@ -320,6 +320,15 @@ async fn handle_message(
             Dispatch::Request(_, responder) => {
                 responder.respond_with_error(agent_client_protocol::Error::method_not_found())
             }
+            // The backend's live Laya triage: an ACP extension notification.
+            Dispatch::Notification(notification) if notification.method == events::LAYA_METHOD => {
+                if let Some(event) = events::parse_laya(&notification.params)
+                    && events.send(AppEvent::Laya(event)).is_err()
+                {
+                    alive.store(false, Ordering::Relaxed);
+                }
+                Ok(())
+            }
             _ => Ok(()),
         })
         .await?;

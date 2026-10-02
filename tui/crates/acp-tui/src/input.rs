@@ -25,6 +25,22 @@ impl Input {
         self.cursor = 0;
     }
 
+    /// Replace the whole text and put the cursor at the end (history recall).
+    pub fn set_text(&mut self, text: &str) {
+        self.text = text.to_owned();
+        self.cursor = self.text.len();
+    }
+
+    /// No newline before the cursor: Up should walk history, not move a line.
+    pub fn on_first_line(&self) -> bool {
+        !self.text[..self.cursor].contains('\n')
+    }
+
+    /// No newline after the cursor: Down should walk history.
+    pub fn on_last_line(&self) -> bool {
+        !self.text[self.cursor..].contains('\n')
+    }
+
     pub fn take(&mut self) -> String {
         self.cursor = 0;
         std::mem::take(&mut self.text)

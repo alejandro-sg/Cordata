@@ -2,15 +2,18 @@
 //! key's effect lives here so it can be unit-tested without a terminal.
 
 use std::collections::VecDeque;
+use std::time::Instant;
 
 use acp_core::{
-    AppEvent, ApprovalDecision, ConfigChoice, ConfigOptionInfo, ModeInfo, PermissionInfo,
-    SessionInfo, StopReason, ToolCallInfo, ToolKind, ToolStatus,
+    AppEvent, ApprovalDecision, ConfigChoice, ConfigOptionInfo, LayaDecision, LayaEvent,
+    LayaOutcome, ModeInfo, PermissionInfo, SessionInfo, StopReason, ToolCallInfo, ToolKind,
+    ToolStatus,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use serde_json::Value;
 use tokio::sync::oneshot;
 
+use crate::commands::{self, Command};
 use crate::input::Input;
 
 #[derive(Debug)]
@@ -20,15 +23,28 @@ pub struct ToolCard {
     pub kind: ToolKind,
     pub status: ToolStatus,
     pub raw_input: Option<Value>,
+    /// The tool's result (what it returned).
     pub content: String,
+    /// Live progress streamed while it runs (a sub-agent team's activity log);
+    /// kept apart from `content` so the final result doesn't erase who did what.
+    pub progress: String,
     /// Result text carries the backend's untrusted-output guard markers.
     pub untrusted: bool,
     /// Tool whose output the backend wraps as untrusted (a hint, pre-result).
     pub untrusted_source: bool,
 }
 
+/// Laya's live triage for one turn: what it decided when the prompt was sent,
+/// and — once the turn ends — what the LLM then actually did.
+#[derive(Debug)]
+pub struct LayaNote {
+    pub decision: LayaDecision,
+    pub outcome: Option<LayaOutcome>,
+}
+
 #[derive(Debug)]
 pub enum Message {
+    Laya(LayaNote),
     User(String),
     Agent(String),
     Thought(String),
@@ -95,7 +111,18 @@ pub struct App {
     pub cancelling: bool,
     pub hint: Option<String>,
     pub expand_tools: bool,
-    pub show_thoughts: bool,
+    /// Reasoning shows as a one-line preview unless expanded (Ctrl+R, /thinking).
+    pub thoughts_expanded: bool,
+    /// Show the live "◆ laya" lines (`/laya off` hides them; they are kept).
+    pub show_laya: bool,
+    pub help_open: bool,
+    /// Prompts sent this run, oldest first, for Up/Down recall.
+    history: Vec<String>,
+    history_idx: Option<usize>,
+    /// What was typed before the first Up, restored when Down walks past the newest.
+    draft: String,
+    pub turn_started: Option<Instant>,
+    pub turn_tools: usize,
     /// Lines scrolled up from the bottom; 0 follows new output.
     pub scroll: usize,
     pub last_total_lines: usize,
@@ -120,7 +147,14 @@ impl App {
             cancelling: false,
             hint: None,
             expand_tools: false,
-            show_thoughts: true,
+            thoughts_expanded: false,
+            show_laya: true,
+            help_open: false,
+            history: Vec::new(),
+            history_idx: None,
+            draft: String::new(),
+            turn_started: None,
+            turn_tools: 0,
             scroll: 0,
             last_total_lines: 0,
             spinner: 0,
@@ -167,14 +201,37 @@ impl App {
                     "resumed — earlier tool calls not shown (the backend replays text only); mode reset to build".into(),
                 ));
             }
-            AppEvent::ToolCallStarted(info) => self.messages.push(Message::Tool(card_from(info))),
+            AppEvent::Laya(LayaEvent::Decision(decision)) => self.on_laya_decision(decision),
+            AppEvent::Laya(LayaEvent::Outcome(outcome)) => {
+                if let Some(note) = self
+                    .messages
+                    .iter_mut()
+                    .rev()
+                    .find_map(|message| match message {
+                        Message::Laya(note) if note.outcome.is_none() => Some(note),
+                        _ => None,
+                    })
+                {
+                    note.outcome = Some(outcome);
+                }
+            }
+            AppEvent::ToolCallStarted(info) => {
+                self.turn_tools += 1;
+                self.messages.push(Message::Tool(card_from(info)));
+            }
             AppEvent::ToolCallUpdated(patch) => {
                 if let Some(card) = self.card_mut(&patch.id) {
                     if let Some(status) = patch.status {
                         card.status = status;
                     }
                     if let Some(content) = patch.content {
-                        card.content = sanitize(&content);
+                        // An in-progress update is a live log (replacing the
+                        // last one); only a terminal update is the result.
+                        if matches!(patch.status, Some(ToolStatus::InProgress)) {
+                            card.progress = sanitize(&content);
+                        } else {
+                            card.content = sanitize(&content);
+                        }
                     }
                     card.untrusted |= patch.untrusted;
                 }
@@ -183,6 +240,11 @@ impl App {
             AppEvent::ModeChanged(mode) => {
                 if self.pending_mode.as_deref() == Some(mode.as_str()) {
                     self.pending_mode = None;
+                }
+                // The one mode with no safety net: say so every time it is entered,
+                // so a stray Tab can't leave you there unnoticed.
+                if mode == "auto" && self.mode != "auto" {
+                    self.info("AUTO mode: tools run WITHOUT asking for approval — Tab (or /mode build) goes back");
                 }
                 self.mode = mode;
             }
@@ -234,8 +296,35 @@ impl App {
         }
     }
 
+    fn on_laya_decision(&mut self, decision: LayaDecision) {
+        // A decision that arrives late (after a timeout notice) replaces that
+        // notice instead of adding a second line for the same turn.
+        if decision.late
+            && let Some(note) = self
+                .messages
+                .iter_mut()
+                .rev()
+                .find_map(|message| match message {
+                    Message::Laya(note)
+                        if note.outcome.is_none() && note.decision.error.is_some() =>
+                    {
+                        Some(note)
+                    }
+                    _ => None,
+                })
+        {
+            note.decision = decision;
+            return;
+        }
+        self.messages.push(Message::Laya(LayaNote {
+            decision,
+            outcome: None,
+        }));
+    }
+
     fn end_turn(&mut self) {
         self.turn_active = false;
+        self.turn_started = None;
         self.cancelling = false;
         self.hint = None;
     }
@@ -292,6 +381,16 @@ impl App {
             return Some(Effect::Quit);
         }
 
+        // The help overlay swallows the next key (any key closes it).
+        if self.help_open {
+            self.help_open = false;
+            return None;
+        }
+        if key.code == KeyCode::F(1) && self.pending.is_empty() {
+            self.help_open = true;
+            return None;
+        }
+
         // Scrolling works everywhere, including under a modal.
         match key.code {
             KeyCode::PageUp => {
@@ -331,7 +430,7 @@ impl App {
                     None
                 }
                 KeyCode::Char('r') => {
-                    self.show_thoughts = !self.show_thoughts;
+                    self.thoughts_expanded = !self.thoughts_expanded;
                     None
                 }
                 KeyCode::Char('u') => {
@@ -353,10 +452,16 @@ impl App {
         match key.code {
             KeyCode::Tab => return self.cycle_mode(true),
             KeyCode::BackTab => return self.cycle_mode(false),
+            KeyCode::Esc => return self.on_escape(),
             _ => {}
         }
 
         if !self.input_enabled() {
+            return None;
+        }
+        // An empty prompt box + `?` is "help", not a question mark.
+        if key.code == KeyCode::Char('?') && self.input.is_empty() {
+            self.help_open = true;
             return None;
         }
         match key.code {
@@ -366,14 +471,25 @@ impl App {
             KeyCode::Enter => {
                 let text = self.input.take();
                 let text = text.trim_end().to_owned();
+                self.history_idx = None;
                 if text.is_empty() {
                     return None;
                 }
+                if self.history.last() != Some(&text) {
+                    self.history.push(text.clone());
+                }
+                if let Some(command) = commands::parse(&text) {
+                    return self.run_command(command);
+                }
                 self.messages.push(Message::User(sanitize(&text)));
                 self.turn_active = true;
+                self.turn_started = Some(Instant::now());
+                self.turn_tools = 0;
                 self.scroll = 0;
                 return Some(Effect::SendPrompt(text));
             }
+            KeyCode::Up if self.input.on_first_line() => self.history_back(),
+            KeyCode::Down if self.input.on_last_line() => self.history_forward(),
             KeyCode::Char(c) => self.input.insert(c),
             KeyCode::Backspace => self.input.backspace(),
             KeyCode::Delete => self.input.delete(),
@@ -384,6 +500,163 @@ impl App {
             _ => {}
         }
         None
+    }
+
+    /// Esc: interrupt a running turn (like Ctrl+C), else clear what's typed.
+    fn on_escape(&mut self) -> Option<Effect> {
+        if self.turn_active {
+            return self.on_ctrl_c();
+        }
+        if self.input_enabled() {
+            self.input.clear();
+            self.history_idx = None;
+        }
+        None
+    }
+
+    fn history_back(&mut self) {
+        if self.history.is_empty() {
+            return;
+        }
+        let next = match self.history_idx {
+            None => {
+                self.draft = self.input.text().to_owned();
+                self.history.len() - 1
+            }
+            Some(index) => index.saturating_sub(1),
+        };
+        self.history_idx = Some(next);
+        self.input.set_text(&self.history[next]);
+    }
+
+    fn history_forward(&mut self) {
+        let Some(index) = self.history_idx else {
+            return;
+        };
+        if index + 1 < self.history.len() {
+            self.history_idx = Some(index + 1);
+            self.input.set_text(&self.history[index + 1]);
+        } else {
+            self.history_idx = None;
+            let draft = std::mem::take(&mut self.draft);
+            self.input.set_text(&draft);
+        }
+    }
+
+    fn info(&mut self, text: impl Into<String>) {
+        self.messages.push(Message::Info(text.into()));
+    }
+
+    /// Run a `/command` typed into the input box. Nothing here is sent to the
+    /// model: commands change the client or the session's settings only.
+    fn run_command(&mut self, command: Command) -> Option<Effect> {
+        match command {
+            Command::Help => self.help_open = true,
+            Command::Quit => return Some(Effect::Quit),
+            Command::Clear => {
+                self.messages.clear();
+                self.scroll = 0;
+            }
+            Command::Thinking => {
+                self.thoughts_expanded = !self.thoughts_expanded;
+                self.info(if self.thoughts_expanded {
+                    "reasoning expanded"
+                } else {
+                    "reasoning collapsed"
+                });
+            }
+            Command::Laya(arg) => {
+                self.show_laya = match arg.as_deref() {
+                    Some("on") => true,
+                    Some("off") => false,
+                    None => !self.show_laya,
+                    Some(other) => {
+                        self.info(format!("/laya takes 'on' or 'off', not '{other}'"));
+                        return None;
+                    }
+                };
+                self.info(if self.show_laya {
+                    "laya line shown"
+                } else {
+                    "laya line hidden (still logged by the backend)"
+                });
+            }
+            Command::Tools => {
+                self.expand_tools = !self.expand_tools;
+                self.info(if self.expand_tools {
+                    "tool results expanded"
+                } else {
+                    "tool results collapsed"
+                });
+            }
+            Command::Mode(None) => {
+                let ids: Vec<&str> = self.modes.iter().map(|m| m.id.as_str()).collect();
+                self.info(format!("mode: {} ({})", self.mode, ids.join(" | ")));
+            }
+            Command::Mode(Some(wanted)) => {
+                let wanted = wanted.to_ascii_lowercase();
+                if self.modes.iter().any(|mode| mode.id == wanted) {
+                    self.pending_mode = Some(wanted.clone());
+                    return Some(Effect::SetMode(wanted));
+                }
+                let ids: Vec<&str> = self.modes.iter().map(|m| m.id.as_str()).collect();
+                self.info(format!(
+                    "unknown mode '{wanted}' — choose one of: {}",
+                    ids.join(", ")
+                ));
+            }
+            Command::Model(None) => self.open_picker("model", "Model"),
+            Command::Temp(None) => self.open_picker("temperature", "Temperature"),
+            Command::Model(Some(query)) => return self.set_config_by_name("model", &query),
+            Command::Temp(Some(query)) => return self.set_config_by_name("temperature", &query),
+            Command::Unknown(name) => self.info(format!("unknown command /{name} — try /help")),
+        }
+        None
+    }
+
+    /// Set a select option by the value or display name the user typed
+    /// (exact match first, then a unique substring).
+    fn set_config_by_name(&mut self, config_id: &str, query: &str) -> Option<Effect> {
+        let query = query.to_ascii_lowercase();
+        let Some(option) = self.config(config_id) else {
+            self.info(format!("no {config_id} option available"));
+            return None;
+        };
+        let matches = |choice: &ConfigChoice| {
+            choice.value.to_ascii_lowercase().contains(&query)
+                || choice.name.to_ascii_lowercase().contains(&query)
+        };
+        let exact = option.choices.iter().find(|c| {
+            c.value.to_ascii_lowercase() == query || c.name.to_ascii_lowercase() == query
+        });
+        let candidates: Vec<&ConfigChoice> = option.choices.iter().filter(|c| matches(c)).collect();
+        let choice = exact.or(if candidates.len() == 1 {
+            Some(candidates[0])
+        } else {
+            None
+        });
+        match choice {
+            Some(choice) => Some(Effect::SetConfig {
+                id: config_id.to_owned(),
+                value: choice.value.clone(),
+            }),
+            None => {
+                let names: Vec<&str> = option.choices.iter().map(|c| c.value.as_str()).collect();
+                let message = if candidates.is_empty() {
+                    format!(
+                        "no {config_id} matches '{query}' — choices: {}",
+                        names.join(", ")
+                    )
+                } else {
+                    format!(
+                        "'{query}' matches several {config_id} options — be more specific: {}",
+                        names.join(", ")
+                    )
+                };
+                self.info(message);
+                None
+            }
+        }
     }
 
     fn on_key_permission(&mut self, key: KeyEvent) -> Option<Effect> {
@@ -492,6 +765,7 @@ fn card_from(info: ToolCallInfo) -> ToolCard {
         status: info.status,
         raw_input: info.raw_input,
         content: sanitize(&info.content),
+        progress: String::new(),
         untrusted: info.untrusted,
         untrusted_source: info.untrusted_source,
     }
@@ -712,6 +986,125 @@ mod tests {
         assert_eq!(app.pending_mode, None);
     }
 
+    fn laya_decision(route: &str, late: bool, error: Option<&str>) -> AppEvent {
+        AppEvent::Laya(LayaEvent::Decision(LayaDecision {
+            mode: "route".into(),
+            route: error.is_none().then(|| route.to_owned()),
+            route_confidence: 0.9,
+            gate: 0.85,
+            needs_team: 0.1,
+            complexity: 1.0,
+            complexity_confidence: 0.7,
+            latency_ms: Some(60.0),
+            waited_ms: Some(60.0),
+            hint: None,
+            tier: None,
+            late,
+            error: error.map(Into::into),
+        }))
+    }
+
+    fn laya_outcome(actual: &str) -> AppEvent {
+        AppEvent::Laya(LayaEvent::Outcome(LayaOutcome {
+            actual_route: actual.into(),
+            agreed: Some(true),
+            tools: vec![],
+            tiers: vec![],
+            stop_reason: Some("end_turn".into()),
+            turn_ms: Some(1.0),
+        }))
+    }
+
+    fn laya_notes(app: &App) -> Vec<&LayaNote> {
+        app.messages
+            .iter()
+            .filter_map(|m| {
+                if let Message::Laya(n) = m {
+                    Some(n)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_laya_decision_then_its_outcome_become_one_note_per_turn() {
+        let mut app = connected();
+        submit(&mut app, "first");
+        app.on_event(laya_decision("chat", false, None));
+        app.on_event(laya_outcome("chat"));
+        app.on_event(AppEvent::TurnComplete(StopReason::EndTurn));
+        submit(&mut app, "second");
+        app.on_event(laya_decision("memory", false, None));
+        app.on_event(laya_outcome("memory"));
+        let notes = laya_notes(&app);
+        assert_eq!(notes.len(), 2);
+        assert!(
+            notes.iter().all(|n| n.outcome.is_some()),
+            "each outcome attached to its own turn's decision"
+        );
+        assert_eq!(notes[1].decision.route.as_deref(), Some("memory"));
+    }
+
+    #[test]
+    fn a_late_decision_replaces_the_timeout_notice_for_the_same_turn() {
+        let mut app = connected();
+        submit(&mut app, "slow");
+        app.on_event(laya_decision(
+            "",
+            false,
+            Some("timed out after 2s — the LLM decides alone"),
+        ));
+        app.on_event(laya_decision("web_research", true, None));
+        let notes = laya_notes(&app);
+        assert_eq!(
+            notes.len(),
+            1,
+            "one line per turn, not a notice plus an answer"
+        );
+        assert_eq!(notes[0].decision.route.as_deref(), Some("web_research"));
+        assert!(notes[0].decision.late && notes[0].decision.error.is_none());
+    }
+
+    #[test]
+    fn an_outcome_without_a_decision_is_harmless() {
+        let mut app = connected();
+        app.on_event(laya_outcome("chat"));
+        assert!(laya_notes(&app).is_empty());
+    }
+
+    #[test]
+    fn slash_laya_toggles_and_validates() {
+        let mut app = connected();
+        assert!(app.show_laya);
+        submit(&mut app, "/laya off");
+        assert!(!app.show_laya);
+        submit(&mut app, "/laya");
+        assert!(app.show_laya, "no argument toggles");
+        submit(&mut app, "/laya maybe");
+        assert_info(&app, "takes 'on' or 'off'");
+        assert!(app.show_laya);
+    }
+
+    #[test]
+    fn entering_auto_mode_warns_once_and_other_modes_do_not() {
+        let mut app = connected();
+        app.on_event(AppEvent::ModeChanged("plan".into()));
+        assert!(app.messages.is_empty());
+        app.on_event(AppEvent::ModeChanged("auto".into()));
+        assert_info(&app, "WITHOUT asking");
+        let count = app.messages.len();
+        app.on_event(AppEvent::ModeChanged("auto".into()));
+        assert_eq!(
+            app.messages.len(),
+            count,
+            "a repeat confirmation doesn't repeat the warning"
+        );
+        app.on_event(AppEvent::ModeChanged("build".into()));
+        assert_eq!(app.messages.len(), count);
+    }
+
     #[test]
     fn failed_mode_change_clears_the_pending_request() {
         let mut app = connected();
@@ -788,6 +1181,207 @@ mod tests {
             "sender dropped => receiver sees closure (deny)"
         );
         assert!(!app.input_enabled());
+    }
+
+    fn submit(app: &mut App, text: &str) -> Option<Effect> {
+        type_text(app, text);
+        app.on_key(key(KeyCode::Enter))
+    }
+
+    fn assert_info(app: &App, needle: &str) {
+        assert!(
+            app.messages
+                .iter()
+                .any(|m| matches!(m, Message::Info(text) if text.contains(needle))),
+            "no info containing {needle:?}: {:?}",
+            app.messages
+        );
+    }
+
+    #[test]
+    fn in_progress_updates_are_a_live_log_and_the_terminal_update_is_the_result() {
+        let mut app = connected();
+        app.on_event(AppEvent::ToolCallStarted(ToolCallInfo {
+            id: "t".into(),
+            name: "local_graph".into(),
+            kind: ToolKind::Other,
+            status: ToolStatus::Pending,
+            raw_input: None,
+            content: String::new(),
+            untrusted_source: false,
+            untrusted: false,
+        }));
+        for log in ["started: a", "started: a\nfinished: a - ok"] {
+            app.on_event(AppEvent::ToolCallUpdated(ToolCallPatch {
+                id: "t".into(),
+                status: Some(ToolStatus::InProgress),
+                content: Some(log.into()),
+                untrusted: false,
+            }));
+        }
+        app.on_event(AppEvent::ToolCallUpdated(ToolCallPatch {
+            id: "t".into(),
+            status: Some(ToolStatus::Completed),
+            content: Some("final answer".into()),
+            untrusted: false,
+        }));
+        let Message::Tool(card) = &app.messages[0] else {
+            panic!()
+        };
+        assert_eq!(
+            card.progress, "started: a\nfinished: a - ok",
+            "the last progress log is kept, not replaced by the result"
+        );
+        assert_eq!(card.content, "final answer");
+        assert_eq!(app.turn_tools, 1);
+    }
+
+    #[test]
+    fn slash_commands_run_locally_and_are_never_sent_to_the_model() {
+        let mut app = connected();
+        assert_eq!(
+            submit(&mut app, "/mode plan"),
+            Some(Effect::SetMode("plan".into()))
+        );
+        assert_eq!(app.pending_mode.as_deref(), Some("plan"));
+        assert!(!app.turn_active && app.messages.iter().all(|m| !matches!(m, Message::User(_))));
+
+        assert_eq!(submit(&mut app, "/mode yolo"), None);
+        assert_info(&app, "unknown mode 'yolo'");
+        submit(&mut app, "/mode");
+        assert_info(&app, "plan | build | auto");
+
+        assert_eq!(
+            submit(&mut app, "/model b"),
+            Some(Effect::SetConfig {
+                id: "model".into(),
+                value: "b".into()
+            })
+        );
+        assert_eq!(submit(&mut app, "/model zzz"), None);
+        assert_info(&app, "no model matches 'zzz'");
+
+        submit(&mut app, "/model");
+        assert!(app.picker.is_some(), "/model with no name opens the picker");
+        app.on_key(key(KeyCode::Esc));
+
+        submit(&mut app, "/thinking");
+        assert!(app.thoughts_expanded);
+        submit(&mut app, "/tools");
+        assert!(app.expand_tools);
+        submit(&mut app, "/frobnicate");
+        assert_info(&app, "unknown command /frobnicate");
+        submit(&mut app, "/clear");
+        assert!(app.messages.is_empty());
+        assert_eq!(submit(&mut app, "/quit"), Some(Effect::Quit));
+    }
+
+    #[test]
+    fn a_path_in_a_prompt_is_still_a_prompt() {
+        let mut app = connected();
+        assert_eq!(
+            submit(&mut app, "/usr/bin/env is missing"),
+            Some(Effect::SendPrompt("/usr/bin/env is missing".into()))
+        );
+    }
+
+    #[test]
+    fn help_opens_with_question_mark_f1_and_slash_help_and_any_key_closes_it() {
+        let mut app = connected();
+        app.on_key(key(KeyCode::Char('?')));
+        assert!(
+            app.help_open && app.input.is_empty(),
+            "'?' on an empty box opens help instead of typing"
+        );
+        app.on_key(key(KeyCode::Char('x')));
+        assert!(
+            !app.help_open && app.input.is_empty(),
+            "the closing key is swallowed"
+        );
+
+        app.on_key(key(KeyCode::F(1)));
+        assert!(app.help_open);
+        app.on_key(key(KeyCode::Esc));
+        submit(&mut app, "/help");
+        assert!(app.help_open);
+        app.on_key(key(KeyCode::Enter));
+
+        type_text(&mut app, "why?");
+        assert_eq!(
+            app.input.text(),
+            "why?",
+            "a '?' inside a prompt is just a character"
+        );
+        assert_eq!(
+            app.on_key(ctrl('q')),
+            Some(Effect::Quit),
+            "Ctrl+Q still quits with help open"
+        );
+    }
+
+    #[test]
+    fn up_and_down_walk_prompt_history_and_restore_the_draft() {
+        let mut app = connected();
+        for prompt in ["first", "second"] {
+            submit(&mut app, prompt);
+            app.on_event(AppEvent::TurnComplete(StopReason::EndTurn));
+        }
+        type_text(&mut app, "draft");
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(app.input.text(), "second");
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(app.input.text(), "first");
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(app.input.text(), "first", "stops at the oldest");
+        app.on_key(key(KeyCode::Down));
+        assert_eq!(app.input.text(), "second");
+        app.on_key(key(KeyCode::Down));
+        assert_eq!(
+            app.input.text(),
+            "draft",
+            "walking past the newest restores what was being typed"
+        );
+    }
+
+    #[test]
+    fn up_inside_a_multiline_prompt_does_not_hijack_the_cursor() {
+        let mut app = connected();
+        submit(&mut app, "old");
+        app.on_event(AppEvent::TurnComplete(StopReason::EndTurn));
+        type_text(&mut app, "line one");
+        app.on_key(ctrl('j'));
+        type_text(&mut app, "line two");
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(
+            app.input.text(),
+            "line one\nline two",
+            "Up on line 2 is not history"
+        );
+    }
+
+    #[test]
+    fn escape_cancels_a_running_turn_or_clears_the_box() {
+        let mut app = connected();
+        submit(&mut app, "go");
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Some(Effect::Cancel));
+        assert_eq!(
+            app.on_key(key(KeyCode::Esc)),
+            None,
+            "a second Esc doesn't re-send"
+        );
+        app.on_event(AppEvent::TurnComplete(StopReason::Cancelled));
+        type_text(&mut app, "half typed");
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn the_turn_timer_and_tool_count_reset_each_turn() {
+        let mut app = connected();
+        submit(&mut app, "go");
+        assert!(app.turn_started.is_some());
+        app.on_event(AppEvent::TurnComplete(StopReason::EndTurn));
+        assert!(app.turn_started.is_none());
     }
 
     #[test]

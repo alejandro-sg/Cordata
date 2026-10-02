@@ -42,6 +42,7 @@ async fn connect(events: &mut UnboundedReceiver<AppEvent>) -> acp_core::SessionI
 
 #[derive(Default, Debug)]
 struct Turn {
+    laya: Vec<acp_core::LayaEvent>,
     text: String,
     thought: String,
     tool_statuses: Vec<ToolStatus>,
@@ -59,6 +60,7 @@ async fn run_turn(events: &mut UnboundedReceiver<AppEvent>, policy: ApprovalDeci
         match next(events).await {
             AppEvent::AgentText(text) => turn.text.push_str(&text),
             AppEvent::AgentThought(text) => turn.thought.push_str(&text),
+            AppEvent::Laya(event) => turn.laya.push(event),
             AppEvent::ToolCallStarted(call) => turn.tool_statuses.push(call.status),
             AppEvent::ToolCallUpdated(patch) => {
                 turn.tool_statuses.extend(patch.status);
@@ -321,6 +323,59 @@ async fn agent_crash_reports_connection_error_then_closed() {
     assert!(
         saw_error,
         "a dead backend must surface as an error, not a hang"
+    );
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn every_chunk_arrives_before_turn_complete_even_when_the_response_overtakes_them() {
+    // The prompt response callback can run while notifications that preceded it
+    // on the wire are still queued inside the SDK; TurnComplete must still be the
+    // last event of the turn, with all the text before it. Repeated: the race is
+    // timing-dependent.
+    for round in 0..8 {
+        let (session, mut events) = start(None);
+        connect(&mut events).await;
+        session.send_prompt("burst").unwrap();
+        let turn = run_turn(&mut events, ApprovalDecision::Allow).await;
+        assert_eq!(
+            turn.text.len(),
+            300,
+            "round {round}: lost {} chunk(s) to the response",
+            300 - turn.text.len()
+        );
+        session.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn laya_extension_notifications_arrive_as_events_before_the_turn_completes() {
+    let (session, mut events) = start(None);
+    connect(&mut events).await;
+    session.send_prompt("laya").unwrap();
+    let turn = run_turn(&mut events, ApprovalDecision::Allow).await;
+    assert_eq!(turn.text, "ok");
+    assert_eq!(
+        turn.laya.len(),
+        2,
+        "a decision and an outcome: {:?}",
+        turn.laya
+    );
+    let acp_core::LayaEvent::Decision(decision) = &turn.laya[0] else {
+        panic!("{:?}", turn.laya)
+    };
+    assert_eq!(decision.route.as_deref(), Some("files_and_code"));
+    assert_eq!((decision.route_confidence, decision.gate), (0.98, 0.85));
+    assert_eq!(
+        decision.hint.as_deref(),
+        Some("use the file and code tools")
+    );
+    let acp_core::LayaEvent::Outcome(outcome) = &turn.laya[1] else {
+        panic!()
+    };
+    assert_eq!(
+        (outcome.agreed, outcome.tools.as_slice()),
+        (Some(true), ["file_read".to_owned()].as_slice())
     );
     session.shutdown().await;
 }
