@@ -32,7 +32,7 @@ import acp
 import acp.stdio
 from strands.interventions import Confirm, Deny, InterventionHandler, Proceed
 
-from agent_common import GENERATED_TOOL_NAMES, MCP_TOOL_NAMES, build_agent_for_session
+from agent_common import GENERATED_TOOL_NAMES, MCP_TOOL_NAMES, build_agent_for_session, start_mcp_clients
 from model_control_tool import _context_window_limit, _fetch_available_models
 
 # Set-identical to main.py's _APPROVAL_REQUIRED_TOOLS — both gate `editor`
@@ -57,6 +57,23 @@ _TOOL_KIND: dict[str, str] = {
 
 def _tool_kind(tool_name: str) -> str:
     return _TOOL_KIND.get(tool_name, "other")
+
+
+_ALLOW_KINDS = {"allow_once", "allow_always"}
+
+
+def _permission_approved(outcome, options: list) -> bool:
+    """True only when the client selected an option we offered as an allow kind.
+
+    AllowedOutcome just means outcome == "selected" — it is also what a client
+    sends when the user picks "Reject" — so the selected option_id has to be
+    looked up in what we offered. Cancelled, unknown option ids, and reject
+    kinds all deny.
+    """
+    if not isinstance(outcome, acp.schema.AllowedOutcome):
+        return False
+    selected = next((o for o in options if o.option_id == outcome.option_id), None)
+    return selected is not None and selected.kind in _ALLOW_KINDS
 
 
 def _render_swarm_progress(entries: list) -> str:
@@ -395,6 +412,10 @@ class SierraLabAcpAgent:
 
             approved = False
             if self._conn is not None:
+                options = [
+                    acp.schema.PermissionOption(option_id="allow", name="Allow", kind="allow_once"),
+                    acp.schema.PermissionOption(option_id="reject", name="Reject", kind="reject_once"),
+                ]
                 result = await self._conn.request_permission(
                     session_id=session_id,
                     tool_call=acp.schema.ToolCallUpdate(
@@ -403,15 +424,28 @@ class SierraLabAcpAgent:
                         kind=_tool_kind(tool_name),
                         raw_input=tool_input,
                     ),
-                    options=[
-                        acp.schema.PermissionOption(option_id="allow", name="Allow", kind="allow_once"),
-                        acp.schema.PermissionOption(option_id="reject", name="Reject", kind="reject_once"),
-                    ],
+                    options=options,
                 )
-                approved = isinstance(result.outcome, acp.schema.AllowedOutcome)
+                approved = _permission_approved(result.outcome, options)
 
             responses.append({"interruptResponse": {"interruptId": interrupt.id, "response": approved}})
         return responses
+
+    async def _send_tool_result(self, session_id: str, result: dict) -> None:
+        """One finished tool call as a terminal ACP tool-call update."""
+        tool_use_id = result.get("toolUseId")
+        if not tool_use_id or self._conn is None:
+            return
+        status = "completed" if result.get("status") == "success" else "failed"
+        content = [
+            acp.tool_content(acp.text_block(block["text"]))
+            for block in result.get("content") or []
+            if isinstance(block, dict) and block.get("text")
+        ]
+        await self._conn.session_update(
+            session_id=session_id,
+            update=acp.update_tool_call(tool_use_id, status=status, content=content or None),
+        )
 
     async def prompt(self, session_id: str, prompt: list, **kwargs) -> acp.PromptResponse:
         entry = self._sessions.get(session_id)
@@ -509,20 +543,24 @@ class SierraLabAcpAgent:
                     continue
 
                 if event_type == "tool_result":
-                    result = event.get("tool_result") or {}
-                    tool_use_id = result.get("toolUseId")
-                    if not tool_use_id:
-                        continue
-                    status = "completed" if result.get("status") == "success" else "failed"
-                    content = [
-                        acp.tool_content(acp.text_block(block["text"]))
-                        for block in result.get("content") or []
-                        if isinstance(block, dict) and block.get("text")
-                    ]
-                    await self._conn.session_update(
-                        session_id=session_id,
-                        update=acp.update_tool_call(tool_use_id, status=status, content=content or None),
-                    )
+                    await self._send_tool_result(session_id, event.get("tool_result") or {})
+                    continue
+
+                # Strands >= 1.5x no longer yields a "tool_result" event from
+                # stream_async (confirmed against the installed 1.55.1: the
+                # only events are tool_use_stream, "message", and "result") —
+                # the finished tool's result arrives inside the user-role
+                # "message" event that carries it into the next model call.
+                # Without this branch every ToolCallStart stayed "pending"
+                # forever in the client. Both branches stay: an older Strands
+                # that emits both just sends the same terminal update twice.
+                if "message" in event:
+                    message = event["message"]
+                    if isinstance(message, dict) and message.get("role") == "user":
+                        for block in message.get("content") or []:
+                            tool_result = block.get("toolResult") if isinstance(block, dict) else None
+                            if tool_result:
+                                await self._send_tool_result(session_id, tool_result)
                     continue
 
                 if "data" in event:
@@ -543,6 +581,12 @@ class SierraLabAcpAgent:
 
 
 async def _main() -> None:
+    # Runs inside this process's one real, long-running event loop — see
+    # start_mcp_clients' own docstring for why that matters: whichever
+    # SierraLabAcpAgent session first calls build_agent_for_session already
+    # tries to start these same MCP clients itself, from a throwaway
+    # thread/loop that doesn't survive to serve a real tool call afterward.
+    await start_mcp_clients()
     reader, writer = await acp.stdio.stdio_streams()
     # acp.run_agent's params are misleadingly named: the first stream must be
     # a StreamWriter (what the connection writes outgoing messages to), the

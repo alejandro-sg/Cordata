@@ -13,10 +13,10 @@ from typing import Any
 from ag_ui_strands.client_proxy_tool import registered_proxy_names
 from strands import Agent
 from strands.agent.conversation_manager import SummarizingConversationManager
-from strands.models.openai import OpenAIModel
 
-from prompt_security import UNTRUSTED_CONTEXT_POLICY, UntrustedToolResultHooks
-from settings import OMLX_BASE_URL, OMLX_MODEL_ID
+import laya_triage
+from prompt_security import UNTRUSTED_CONTEXT_POLICY, SecretRedactionHooks, UntrustedToolResultHooks
+import settings
 
 DEFAULT_SYSTEM_PROMPT = "You are a helpful AI assistant specializing in collaborative problem solving."
 
@@ -93,15 +93,38 @@ ORCHESTRATOR_ONLY_TOOLS = {
 }
 
 
-def build_local_model() -> OpenAIModel:
-    from model_control_tool import _context_window_limit
+# Model tiers: "fast" < "standard" < "strong". Each maps to a model id on the
+# ACTIVE provider (settings.MODEL_TIER_*); an unset tier means "the provider's
+# own model", so nothing changes until a tier is configured.
+TIERS = ("fast", "standard", "strong")
 
-    return OpenAIModel(
-        client_args={"api_key": "not-needed", "base_url": OMLX_BASE_URL},
-        model_id=OMLX_MODEL_ID,
-        params={"max_tokens": DEFAULT_MAX_TOKENS},
-        context_window_limit=_context_window_limit(OMLX_MODEL_ID),
-    )
+
+def tier_model_id(tier: str | None) -> str | None:
+    configured = {
+        "fast": settings.MODEL_TIER_FAST,
+        "standard": settings.MODEL_TIER_STANDARD,
+        "strong": settings.MODEL_TIER_STRONG,
+    }.get(tier or "")
+    return configured or None
+
+
+def build_sub_agent_model(tier: str | None = None):
+    """A sub-agent's model: the SAME provider the orchestrator runs on (local
+    oMLX, Anthropic, or an OpenAI-compatible cloud endpoint such as Ollama
+    Cloud), at the requested tier.
+
+    Used to be hardwired to local oMLX regardless of MODEL_PROVIDER, so with a
+    cloud provider active the orchestrator ran on the cloud model while every
+    sub-agent silently still needed the local server. Going through
+    agent_common.build_model reuses the one place the provider's client — and
+    its API key, via secret_guard — is built, so a sub-agent needs no key of
+    its own and never receives one: the key never enters its tools, prompts or
+    environment. Imported lazily: agent_common imports the tool modules that
+    import this one.
+    """
+    import agent_common
+
+    return agent_common.build_model(model_id=tier_model_id(tier))
 
 
 def build_conversation_manager() -> SummarizingConversationManager:
@@ -198,13 +221,18 @@ def build_agent_nodes(agent_specs: list[dict[str, Any]], caller: Agent, tool_lab
         # of system prompt content; this is the same secondary reinforcement
         # agent_common.py's own SYSTEM_PROMPT carries for the top-level agent.
         base_prompt = spec.get("system_prompt") or DEFAULT_SYSTEM_PROMPT
+        # A spec's own "tier" wins; otherwise Laya's complexity estimate for
+        # this turn (laya_triage), else None = the provider's own model.
+        requested = spec.get("tier")
+        tier = requested if requested in TIERS else laya_triage.suggested_tier(caller)
+        laya_triage.record_team_tier(caller, name, tier)
         nodes[name] = Agent(
             name=name,
             system_prompt=f"{base_prompt} {UNTRUSTED_CONTEXT_POLICY}",
-            model=build_local_model(),
+            model=build_sub_agent_model(tier),
             tools=resolve_tools(spec.get("tools"), caller, tool_label),
             conversation_manager=build_conversation_manager(),
-            hooks=[UntrustedToolResultHooks()],
+            hooks=[UntrustedToolResultHooks(), SecretRedactionHooks()],
             callback_handler=None,
         )
     return nodes

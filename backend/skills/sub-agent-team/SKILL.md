@@ -3,9 +3,11 @@ name: sub-agent-team
 description: Spin up a team of specialized Strands sub-agents for a task that genuinely benefits from multiple roles (e.g. research + writing + review, or independent parallel research).
 ---
 
-Two tools, not `swarm` directly — both already point every sub-agent at this
-deployment's local model, so you never write `model_provider` or `model_settings`
-yourself, and you should not try to. Default to `local_graph` when you're breaking a
+Two tools, not `swarm` directly — both already point every sub-agent at the same
+model provider you run on, so you never write `model_provider` or `model_settings`
+yourself, and you should not try to. A spec may add `"tier": "fast" | "standard" |
+"strong"` to pick a smaller or larger model for that specialist; leave it out unless the
+sub-task is clearly trivial or unusually hard — a default is chosen for you. Default to `local_graph` when you're breaking a
 task into distinct roles: it runs every role with no unmet dependency at the same time
 (genuine concurrency, not a queue), so it finishes faster than `local_swarm` whenever
 the roles don't actually need each other's output first. Only reach for `local_swarm`

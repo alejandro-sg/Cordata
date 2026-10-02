@@ -19,6 +19,13 @@ strands-agents-tools==0.8.8
 agent-client-protocol==0.12.1
 qdrant-client==1.19.0
 sentence-transformers==6.0.1
+# prompt_security.py's optional injection-risk classifier (settings.
+# LAYA_GUARD_ENABLED, default off). Installing it here costs nothing at
+# build time beyond its own small wheel — torch/transformers are already
+# required above for sentence-transformers, and laya only downloads its
+# ~650MB checkpoint the first time LAYA_GUARD_ENABLED=true actually calls
+# laya.load(), not at import or install time.
+laya==0.3.21
 python-dotenv==1.2.3
 uvicorn==0.52.4
 fastapi==0.141.1

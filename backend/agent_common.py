@@ -26,7 +26,9 @@ from agent_memory_tool import agent_memory
 from local_graph_tool import local_graph
 from local_swarm_tool import local_swarm
 from mcp_manager import load_configured_mcp_clients
-from prompt_security import UNTRUSTED_CONTEXT_POLICY, UntrustedToolResultHooks
+from laya_triage import triage_hooks
+from prompt_security import UNTRUSTED_CONTEXT_POLICY, SecretRedactionHooks, UntrustedToolResultHooks
+from secret_guard import reveal
 from settings import (
     ANTHROPIC_API_KEY,
     ANTHROPIC_MODEL_ID,
@@ -87,7 +89,13 @@ def _known_context_limit(model_id: str) -> int | None:
 _DEFAULT_MAX_TOKENS = 16384
 
 
-def build_model():
+def build_model(model_id: str | None = None):
+    """The orchestrator's model for the ACTIVE provider. ``model_id`` overrides
+    that provider's configured model id — how sub-agents get a cheaper or
+    stronger tier (sub_agent_common) while still using the same provider, the
+    same endpoint and the same API key (read via secret_guard.reveal here and
+    nowhere an agent tool can reach).
+    """
     # Anthropic's own AnthropicConfig wants max_tokens as a top-level,
     # required kwarg, not inside params (unlike OpenAIModel below, which
     # takes it as a regular sampling param) — confirmed reading
@@ -100,11 +108,11 @@ def build_model():
         if ACTIVE_TEMPERATURE is not None:
             anthropic_params["temperature"] = ACTIVE_TEMPERATURE
         return AnthropicModel(
-            client_args={"api_key": ACTIVE_ANTHROPIC_API_KEY},
-            model_id=ACTIVE_ANTHROPIC_MODEL_ID,
+            client_args={"api_key": reveal(ACTIVE_ANTHROPIC_API_KEY)},
+            model_id=model_id or ACTIVE_ANTHROPIC_MODEL_ID,
             max_tokens=_DEFAULT_MAX_TOKENS,
             params=anthropic_params,
-            context_window_limit=_known_context_limit(ACTIVE_ANTHROPIC_MODEL_ID),
+            context_window_limit=_known_context_limit(model_id or ACTIVE_ANTHROPIC_MODEL_ID),
         )
 
     params: dict = {"max_tokens": _DEFAULT_MAX_TOKENS}
@@ -113,19 +121,19 @@ def build_model():
 
     if ACTIVE_PROVIDER == "openai_compatible":
         return OpenAIModel(
-            client_args={"api_key": ACTIVE_CLOUD_API_KEY, "base_url": ACTIVE_CLOUD_BASE_URL},
-            model_id=ACTIVE_CLOUD_MODEL_ID,
+            client_args={"api_key": reveal(ACTIVE_CLOUD_API_KEY), "base_url": ACTIVE_CLOUD_BASE_URL},
+            model_id=model_id or ACTIVE_CLOUD_MODEL_ID,
             params=params,
-            context_window_limit=_known_context_limit(ACTIVE_CLOUD_MODEL_ID),
+            context_window_limit=_known_context_limit(model_id or ACTIVE_CLOUD_MODEL_ID),
         )
 
     from model_control_tool import _context_window_limit
 
     return OpenAIModel(
         client_args={"api_key": "not-needed", "base_url": OMLX_BASE_URL},
-        model_id=ACTIVE_MODEL_ID,
+        model_id=model_id or ACTIVE_MODEL_ID,
         params=params,
-        context_window_limit=_context_window_limit(ACTIVE_MODEL_ID),
+        context_window_limit=_context_window_limit(model_id or ACTIVE_MODEL_ID),
     )
 
 
@@ -198,43 +206,89 @@ _MCP_CLIENTS = load_configured_mcp_clients()
 
 
 def _mcp_tool_names() -> frozenset[str]:
-    """Every tool name across all configured MCP clients, for
+    """Every tool name across all configured MCP servers, for
     UntrustedToolResultHooks' extra_untrusted_tools (prompt_security.py)
     and _APPROVAL_REQUIRED_TOOLS (main.py/acp_server.py) — a user-configured
     MCP server can be literally anything, so its tools default to both
     untrusted-output-wrapped and approval-gated, same reasoning
     GENERATED_TOOL_NAMES already applies to skills_generated/*.py.
 
-    Deliberately calls load_tools() — the real ToolProvider entrypoint
-    Strands itself calls when Agent(tools=[client, ...]) below consumes
-    these same client objects — not start()/list_tools_sync() directly.
-    MCPClient.start() isn't idempotent (a second call raises "the client
-    session is currently running"), and load_tools() tracks its own
-    _tool_provider_started flag rather than checking session state, so a
-    direct start() here would desync that flag from the real session and
-    make Strands' own later load_tools() call try to start an
-    already-running client and fail — for every tool that server provides,
-    not just its name-list entry, breaking the actual agent, not just this
-    approval/wrapping metadata. load_tools() is documented as caching its
-    result for reuse instead, so calling it here once and letting the Agent
-    call it again later on the same object is the intended, safe path — a
-    server with its own continue_on_error already returns [] from
-    load_tools() on a connection failure rather than raising; the try/except
-    below only catches the remaining case (no continue_on_error set, or a
-    non-connection failure), consistent with the load_servers() call above
-    not being the only place a bad server needs to not take the rest down.
+    Builds and connects its own throwaway MCPClient objects (a fresh
+    load_configured_mcp_clients() call) rather than reusing _MCP_CLIENTS —
+    an earlier version of this function called load_tools() directly on
+    _MCP_CLIENTS's own client objects, reasoning that load_tools()'s
+    documented caching meant a later, real call on the same object would
+    just reuse the cached result. Confirmed live in production that this
+    was wrong: every real pihole tool call afterward failed with
+    MCPClientInitializationError("the client session is not running"),
+    even though the priming call itself had appeared to succeed and cache
+    the tool names correctly. load_tools()/start()'s session and
+    add_consumer/remove_consumer bookkeeping isn't meant to be driven by
+    anything other than the real Agent's own ToolProvider usage — an
+    additional untracked caller against the same object corrupts state
+    that later real usage depends on. Using independent client objects
+    here, then stopping them immediately after listing, means this
+    function can never affect the objects _MCP_CLIENTS/TOOLS below actually
+    hand to Agent(tools=...), at the cost of connecting to each configured
+    server twice at process start (once here, once for real).
     """
     names: set[str] = set()
-    for client in _MCP_CLIENTS:
+    for client in load_configured_mcp_clients():
         try:
             tools = asyncio.run(client.load_tools())
+            names.update(tool.tool_name for tool in tools)
         except Exception:
             continue
-        names.update(tool.tool_name for tool in tools)
+        finally:
+            try:
+                client.stop(None, None, None)
+            except Exception:
+                pass
     return frozenset(names)
 
 
 MCP_TOOL_NAMES = _mcp_tool_names()
+
+_MCP_CLIENTS_STARTED = False
+
+
+async def start_mcp_clients() -> None:
+    """Establishes each configured MCP client's real session, from inside
+    whichever asyncio event loop actually serves tool calls afterward.
+
+    Necessary despite Agent(tools=TOOLS) below already trying to do exactly
+    this itself: Strands' own tool registry resolves a ToolProvider like
+    MCPClient via strands._async.run_async() — which runs the async
+    load_tools() call in a *separate* thread, inside *its own* throwaway
+    asyncio.run() loop, torn down immediately after. Confirmed live in
+    production: every real MCP tool call afterward failed with
+    MCPClientInitializationError("the client session is not running") — not
+    after some later teardown, on the very first tool call this process
+    ever attempted, right after that construction-time resolution. Calling
+    client.stop() first, defensively, resets whatever partial/broken state
+    that attempt left (stop() is documented as safe against partial-init
+    states); the load_tools() call right after runs inside the real,
+    persistent event loop request handling actually uses — main.py calls
+    this from a FastAPI startup event (its own event loop, not a throwaway
+    one), acp_server.py from inside its own long-running asyncio.run(_main()).
+
+    Idempotent — a no-op after the first successful call, since both front
+    doors share _MCP_CLIENTS and both need to call this once at startup.
+    """
+    global _MCP_CLIENTS_STARTED
+    if _MCP_CLIENTS_STARTED or not _MCP_CLIENTS:
+        return
+    for client in _MCP_CLIENTS:
+        try:
+            client.stop(None, None, None)
+        except Exception:
+            pass
+        try:
+            await client.load_tools()
+        except Exception:
+            continue  # one bad server shouldn't block the rest — same reasoning continue_on_error already applies
+    _MCP_CLIENTS_STARTED = True
+
 
 # Everything but skills_generated/*.py — split out so build_agent_for_session
 # (below) can rebuild the generated portion fresh per call instead of reusing
@@ -399,7 +453,12 @@ def build_agent_for_session(
         system_prompt=system_prompt or SYSTEM_PROMPT,
         tools=[*_STATIC_TOOLS, *discover_generated_tools(), *_MCP_CLIENTS],
         plugins=build_plugins(),
-        hooks=[SkillValidationHooks(), UntrustedToolResultHooks(extra_untrusted_tools=MCP_TOOL_NAMES)],
+        hooks=[
+            SkillValidationHooks(),
+            UntrustedToolResultHooks(extra_untrusted_tools=MCP_TOOL_NAMES),
+            SecretRedactionHooks(),
+            *triage_hooks(),
+        ],
         conversation_manager=build_conversation_manager(),
         session_manager=FileSessionManager(session_id=session_id, storage_dir=str(SESSIONS_DIR)),
         interventions=interventions,

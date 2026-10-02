@@ -50,9 +50,11 @@ config; see `backend/.env.example`). Full reasoning, including what's *not* cove
 - `agent_memory` (`backend/agent_memory_tool.py`) — durable semantic memory, see below.
 - `local_swarm` (`backend/local_swarm_tool.py`) — spins up specialized **Strands
   sub-agents** on demand (a real supervisor → specialist-tool-agents pattern; each
-  sub-agent is a full Strands `Agent` with its own system prompt, tools, and model). Wraps
-  `strands_tools.swarm` and injects the local-oMLX model config server-side, in code — see
-  "Why `local_swarm` and not `swarm`" below for why that's not just a style choice.
+  sub-agent is a full Strands `Agent` with its own system prompt, tools, and model). Builds
+  each sub-agent on the *same model provider as the orchestrator* (local oMLX by default;
+  a cloud provider if `MODEL_PROVIDER` says so), server-side, in code — see "Why
+  `local_swarm` and not `swarm`" below for why that's not just a style choice. `local_graph`
+  is its parallel counterpart for independent sub-tasks.
 - `skills` — Strands' native [Agent Skills](https://agentskills.io) plugin
   (`strands.vended_plugins.skills.AgentSkills`), loaded from `backend/skills/`. Each skill
   is a directory with a `SKILL.md` (YAML frontmatter + markdown instructions) — same shape
@@ -87,10 +89,38 @@ The raw `strands_tools.swarm` tool needs every sub-agent spec to carry a
 `model_provider`/`model_settings` block pointing at oMLX — a nested JSON structure the
 small local model reliably failed to reproduce (it would narrate the JSON as a code block
 instead of calling the tool). `local_swarm` takes a simpler schema (`name`, `system_prompt`,
-optional `tools`) and injects the fixed local-model config in Python, where it can't be
+optional `tools`, optional `tier`) and injects the model config in Python, where it can't be
 gotten wrong — `swarm` is itself a real `@tool`-decorated function, directly callable as
 plain Python, so `local_swarm` just calls it with the completed specs. The
 `sub-agent-team` skill documents the simplified schema for the model.
+
+Sub-agents follow the active **model provider** (`backend/sub_agent_common.py`): with
+`MODEL_PROVIDER=openai_compatible` (e.g. Ollama Cloud) they run on the cloud too, with the
+same API key — none of their own — and each can run at a model **tier** (`fast` /
+`standard` / `strong`, `MODEL_TIER_*`), chosen by the spec or by Laya's complexity
+estimate. See [`docs/laya-triage.md`](docs/laya-triage.md).
+
+## Model providers, API keys, and Laya
+
+- **Provider.** `MODEL_PROVIDER` = `local` (oMLX, default) | `anthropic` |
+  `openai_compatible` (`CLOUD_OPENAI_BASE_URL` / `CLOUD_OPENAI_MODEL_ID`; e.g. Ollama
+  Cloud at `https://ollama.com/v1`). Set in the environment or `backend/.env`.
+- **API keys go in your shell, not in `.env`:** `export OLLAMA_API_KEY=...` (or
+  `CLOUD_OPENAI_API_KEY` / `ANTHROPIC_API_KEY`). The backend reads the key once, removes it
+  from its own environment, and masks it in every tool result so no agent can read it
+  back — `THREAT_MODEL.md` ("Provider API keys") says exactly what that covers and what it
+  doesn't (`python_repl` in `auto` mode).
+- **Laya** (`LAYA_TRIAGE_MODE`, default `route`; `LAYA_GUARD_ENABLED`) is a fast local
+  classifier: it triages each turn (an advisory routing hint above a confidence gate, and a
+  model tier for sub-agents) and optionally scores untrusted tool output for injection.
+  The LLM still does all generation and tool use. Full design, tuning, the log/report,
+  and the fine-tuning loop: [`docs/laya-triage.md`](docs/laya-triage.md).
+
+## Terminal clients (Rust)
+
+`tui/` holds an interactive terminal client (`acp-tui`, a Claude-Code-style UI over ACP)
+and a concurrent stress runner (`acp-stress`) for this backend — see
+[`tui/README.md`](tui/README.md). `make tui`, `make tui-test`, `make stress`.
 
 ## Ported skills
 

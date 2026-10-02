@@ -39,7 +39,8 @@ from pydantic import BaseModel
 # agent_common's own import here breaks with exactly the ModuleNotFoundError
 # this comment warns about, even though both look equally "early".
 from skill_validation_hooks import SkillValidationHooks
-from prompt_security import UntrustedToolResultHooks
+from laya_triage import triage_hooks
+from prompt_security import SecretRedactionHooks, UntrustedToolResultHooks
 from security_headers import register_security_headers
 from model_control_tool import _context_window_limit, _fetch_available_models
 import mcp_manager
@@ -54,7 +55,7 @@ import provider_settings
 # No module named 'games_static_api'" at this exact line.
 from games_static_api import register_game_routes
 from sandbox_functions_api import register_sandbox_routes
-from agent_common import GENERATED_TOOL_NAMES, MCP_TOOL_NAMES, build_plugins, build_template_agent
+from agent_common import GENERATED_TOOL_NAMES, MCP_TOOL_NAMES, build_plugins, build_template_agent, start_mcp_clients
 from settings import EXTRA_CORS_ORIGINS
 
 # Tools whose real-world impact (arbitrary shell/code execution, overwriting
@@ -208,7 +209,12 @@ agui_agent = StrandsAgent(
     # AST-checks, dry-runs, and (on failure) rejects any tool call selected
     # from backend/skills_generated/ before it executes — the second,
     # independent gate on generated tools, on top of the approval below.
-    hooks=[SkillValidationHooks(), UntrustedToolResultHooks(extra_untrusted_tools=MCP_TOOL_NAMES)],
+    hooks=[
+        SkillValidationHooks(),
+        UntrustedToolResultHooks(extra_untrusted_tools=MCP_TOOL_NAMES),
+        SecretRedactionHooks(),
+        *triage_hooks(),
+    ],
     config=StrandsAgentConfig(
         session_manager_provider=session_manager_provider,
         # Deterministic, tool-call-free config: applied to every turn's
@@ -239,6 +245,17 @@ app = create_strands_app(
     origins=["http://localhost:3000", *EXTRA_CORS_ORIGINS],
 )
 register_security_headers(app)
+
+
+@app.on_event("startup")
+async def _start_mcp_clients() -> None:
+    """Runs inside uvicorn's own real event loop — see start_mcp_clients'
+    own docstring for why that's the whole point: Agent(tools=TOOLS) above
+    already tried to start these same clients itself, from a throwaway
+    thread/loop that doesn't survive to serve the real request this event
+    loop will actually handle.
+    """
+    await start_mcp_clients()
 
 
 @app.get("/models")

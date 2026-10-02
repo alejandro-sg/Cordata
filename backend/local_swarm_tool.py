@@ -12,8 +12,9 @@ already-constructed BedrockModel is what actually runs. In this environment
 that crashes immediately on AWS credential discovery ("Missing Dependency:
 ... botocore[crt]") before ever reaching oMLX — installing that dependency
 would not fix anything, it would just let a real cloud model provider get
-further, which this deployment explicitly never wants (100% local, no cloud
-calls). A version-skew bug between strands-agents and strands-agents-tools,
+further, which this deployment explicitly never wants (with MODEL_PROVIDER=local,
+the default: 100% local, no cloud calls; sub-agents now follow whichever
+provider is active — see sub_agent_common.build_sub_agent_model). A version-skew bug between strands-agents and strands-agents-tools,
 the same class of issue that made agent_memory_tool.py replace the broken
 mem0_memory instead of patching it (see README) — not something to
 hand-patch inside the installed package.
@@ -44,7 +45,7 @@ _TOOL_LABEL = "local_swarm"
 async def local_swarm(task: str, agents: list[dict[str, Any]], tool_context: ToolContext) -> dict[str, Any]:
     """Spin up a team of specialized Strands sub-agents to collaborate on one task.
 
-    Every sub-agent automatically runs on this deployment's local model — you
+    Every sub-agent automatically runs on the same model provider as you — you
     never specify model_provider or model_settings, this tool fills them in.
     Just describe each specialist by name, role, and (optionally) which of
     your own tools they should have.
@@ -63,7 +64,9 @@ async def local_swarm(task: str, agents: list[dict[str, Any]], tool_context: Too
     Args:
         task: The overall task for the team to accomplish together.
         agents: One entry per specialist: {"name": str, "system_prompt": str,
-            "tools": list[str] (optional, tool names from your own toolset)}.
+            "tools": list[str] (optional, tool names from your own toolset),
+            "tier": "fast"|"standard"|"strong" (optional model size; omit unless
+            the sub-task is clearly trivial or unusually hard)}.
     """
     if not agents:
         raise ValueError("At least one agent specification is required")

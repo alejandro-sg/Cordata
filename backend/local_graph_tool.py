@@ -29,7 +29,7 @@ _TOOL_LABEL = "local_graph"
 async def local_graph(task: str, agents: list[dict[str, Any]], tool_context: ToolContext) -> dict[str, Any]:
     """Spin up a team of specialized Strands sub-agents that run in parallel.
 
-    Every sub-agent automatically runs on this deployment's local model,
+    Every sub-agent automatically runs on the same model provider as you,
     same as local_swarm. Unlike local_swarm's sequential hand-off, nodes
     with no unmet dependency run concurrently — use this when sub-tasks are
     genuinely independent (e.g. researching three unrelated things at
@@ -45,6 +45,8 @@ async def local_graph(task: str, agents: list[dict[str, Any]], tool_context: Too
         task: The overall task for the team to accomplish together.
         agents: One entry per specialist: {"name": str, "system_prompt": str,
             "tools": list[str] (optional, tool names from your own toolset),
+            "tier": "fast"|"standard"|"strong" (optional model size; omit unless
+            the sub-task is clearly trivial or unusually hard),
             "depends_on": list[str] (optional, names of other agents in this
             same list whose result this one needs first — omit for an agent
             that can start immediately, in parallel with any other agent

@@ -34,6 +34,7 @@ from strands import Agent, tool
 from strands_tools import file_read, think
 
 import skill_validation_hooks as svh
+from prompt_security import SecretRedactionHooks
 
 _BACKEND_DIR = Path(__file__).resolve().parent
 
@@ -43,6 +44,8 @@ _BACKEND_DIR = Path(__file__).resolve().parent
 # decision to include it here.
 _REGRESSION_SMOKE_TESTS = [
     "_subagent_denylist_smoke_test.py",
+    "_secret_guard_smoke_test.py",
+    "_sub_agent_model_smoke_test.py",
     "_agent_memory_smoke_test.py",
     "_local_graph_structure_smoke_test.py",
 ]
@@ -97,7 +100,13 @@ def _run_analyst(build_model, observation: str) -> str:
 
 def _run_writer(build_model, proposal: str) -> str:
     # No file_write/editor here — see module docstring.
-    agent = Agent(model=build_model(), system_prompt=_WRITER_PROMPT, tools=[think, file_read], callback_handler=None)
+    agent = Agent(
+        model=build_model(),
+        system_prompt=_WRITER_PROMPT,
+        tools=[think, file_read],
+        hooks=[SecretRedactionHooks()],
+        callback_handler=None,
+    )
     return str(agent(proposal))
 
 

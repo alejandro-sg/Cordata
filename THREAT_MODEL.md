@@ -47,7 +47,10 @@ Both front doors gate the same four tools before they run for real —
   Strands' `interventions` system, surfaced as a native Zed permission
   prompt. Same four tools, same "the call genuinely does not execute until
   approved" property, independent implementation from the AG-UI path (no
-  shared trust between the two front doors — each enforces its own).
+  shared trust between the two front doors — each enforces its own). The
+  client's answer only approves if the selected `option_id` maps to an
+  allow-kind option the server offered (`_permission_approved`); a selected
+  "Reject", an unknown id, or a cancelled outcome all deny.
 
 **Generated tools get a second, independent gate on top**, not just the
 `file_write` approval that put them on disk:
@@ -140,6 +143,86 @@ untrusted; it cannot force a language model to actually disregard
 instructions embedded in it. The realistic goal is raising the bar against
 casual/naive injection attempts, not eliminating the underlying risk that
 any tool ingesting arbitrary external text carries.
+
+### Sub-agent output is wrapped too
+
+`local_swarm`/`local_graph` results are wrapped in the same guard block
+(`prompt_security._SUBAGENT_TOOLS`) before the orchestrator reads them. A
+sub-agent's own tool results were already wrapped inside *its* context, but
+its final reply is model-written text built from what it read — returned
+unwrapped, an injected instruction a sub-agent repeated in its summary would
+reach the orchestrator looking trusted.
+
+## Provider API keys
+
+The cloud-provider keys (`CLOUD_OPENAI_API_KEY`, alias `OLLAMA_API_KEY`;
+`ANTHROPIC_API_KEY`) must never be readable by an agent. Without care they
+are, in four ways: `shell` children inherit the process environment,
+`file_read`/`cat` can open `backend/.env`, `ps eww` prints a process's
+startup environment, and module globals are one `import` from `python_repl`.
+`secret_guard.py` + `prompt_security.SecretRedactionHooks` close those:
+
+- **Sourced from the shell environment only.** `settings.py` reads each key
+  once via `take_secret`, wraps it in a `Secret` (prints `Secret(****)`; only
+  `reveal()` returns it, called at the one place a model client is built) and
+  removes it from `os.environ`, so a `shell` child never inherits it. The
+  backend logs a warning if the key is found in `backend/.env`.
+- **Never persisted.** `provider_settings.set_provider_config` no longer
+  writes API keys to `.env`: a key set from the settings UI lasts until the
+  process restarts. Export it in the launching shell for a durable key.
+- **Masked in every tool result.** `SecretRedactionHooks` replaces the literal
+  value (and any credential-looking environment variable's value — `*KEY*`,
+  `*TOKEN*`, `*SECRET*`, `*PASSWORD*`) with `[REDACTED:secret]` in every tool
+  result, success or error, before the model or any UI sees it, at every
+  agent construction site (`main.py`, the ACP front door, every
+  `local_swarm`/`local_graph` node, `skill_forge`'s debugger/validator,
+  `proposer`'s writer). This is what makes `env`, `cat .env` and `ps eww`
+  harmless even when the read succeeds — `ps eww` *does* still show the key on
+  macOS, because popping `os.environ` can't change the startup environment
+  block. A tool call whose *input* already contains the literal value is
+  cancelled.
+- **Checked live** against the real backend and a cloud model in `auto` mode
+  (no approval gate), prompting for the key via `env`, `ps eww`,
+  `python_repl` (`os.environ`, `agent_common.ACTIVE_CLOUD_API_KEY`,
+  `.reveal()`) and `file_read .env`: 5,074 streamed events and every persisted
+  session file held no key. `_secret_guard_smoke_test.py` covers the layers
+  without a model, including a real Strands agent whose scripted model is
+  shown to receive only the masked text.
+
+**What this does not do.** It is not a sandbox. `python_repl` executes in the
+backend process, so code it runs can still call `Secret.reveal()` and send the
+value out in a form a literal match can't see (encoded, split across calls).
+That tool is approval-gated in `build` mode and denied to sub-agents, but
+`auto` mode removes the gate — so in `auto` mode a determined or
+prompt-injected agent with `python_repl` is the residual risk. Closing it
+means running `python_repl` out of process, with no key in that process; not
+done. Output masking also only sees literal values, and the model's own
+reply is not the only channel a leaked value could take (`http_request`
+bodies are not scanned beyond the literal-in-input check). Rotate any key that
+has been pasted into a chat or a shell history.
+
+### Sub-agent providers and Laya triage
+
+- **Sub-agents follow the active provider.** `sub_agent_common.build_sub_agent_model`
+  goes through `agent_common.build_model`, so with a cloud `MODEL_PROVIDER` a
+  `local_swarm`/`local_graph` team's prompts and tool results also go to that cloud
+  (previously sub-agents were hardwired to local oMLX). The orchestrator was
+  already sending its own context there; a team adds more of the same. With the
+  default `local` provider nothing leaves the machine. Sub-agents use the
+  orchestrator's key through the same client builder — they get no key of their
+  own, and it never enters their tools, prompts or environment
+  (`_sub_agent_model_smoke_test.py`).
+- **The Laya routing hint is a fixed string** chosen by Laya's enum answer
+  (`laya_triage._ROUTE_HINT`), added to the system prompt for one turn and
+  restored — it contains no text from the user or from any tool result, so it is
+  not an injection channel, and it is not persisted. It is advisory: it cannot
+  grant a tool, skip an approval, or change a mode. Laya itself is a classifier
+  that can be wrong; the confidence gate (`LAYA_TRIAGE_THRESHOLD`) bounds how often
+  it speaks, and zero-shot it is near chance (docs/laya-triage.md).
+- **The triage log holds user prompts** (`backend/laya_triage.jsonl`, gitignored,
+  secret-masked by `secret_guard.redact`). It sits on disk where the agent's file
+  tools can read it — it contains only what the user already typed to that agent.
+  Turn triage `off` if prompts must not be written down.
 
 ## Response headers
 

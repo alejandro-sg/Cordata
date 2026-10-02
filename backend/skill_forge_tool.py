@@ -43,7 +43,7 @@ from pathlib import Path
 from strands import Agent, tool
 from strands_tools import file_read, http_request, python_repl, think
 
-from prompt_security import UntrustedToolResultHooks
+from prompt_security import SecretRedactionHooks, UntrustedToolResultHooks
 
 # The one directory every relative path in this file's own comments/prompts
 # means "relative to" — computed from this file's own location, not the
@@ -105,7 +105,7 @@ def _run_debugger(build_model, stack_trace: str, failing_tool: str, attempted_ar
         model=build_model(),
         system_prompt=_DEBUGGER_PROMPT,
         tools=[think, file_read, http_request],
-        hooks=[UntrustedToolResultHooks()],
+        hooks=[UntrustedToolResultHooks(), SecretRedactionHooks()],
         callback_handler=None,
     )
     prompt = f"Failing tool: {failing_tool}\nAttempted args: {attempted_args}\nStack trace:\n{stack_trace}"
@@ -151,6 +151,7 @@ def _run_validator(build_model, draft: str) -> str:
         model=build_model(),
         system_prompt=_VALIDATOR_PROMPT,
         tools=[python_repl],
+        hooks=[SecretRedactionHooks()],
         callback_handler=None,
     )
     return str(agent(draft))

@@ -13,12 +13,16 @@ import acp
 
 
 class RecordingClient:
-    def __init__(self, auto_approve: bool = True):
+    """decision: "allow" selects the allow option, "reject" selects the reject
+    option via a spec-conformant AllowedOutcome(outcome="selected") — what Zed
+    sends on Reject — and "cancel" sends a cancelled outcome."""
+
+    def __init__(self, decision: str = "allow"):
         self.chunks = []
         self.tool_calls = []
         self.permission_requests = []
         self.titles = []
-        self.auto_approve = auto_approve
+        self.decision = decision
 
     async def session_update(self, session_id, update, **kwargs):
         kind = type(update).__name__
@@ -31,16 +35,16 @@ class RecordingClient:
 
     async def request_permission(self, session_id, tool_call, options, **kwargs):
         self.permission_requests.append(tool_call)
-        if self.auto_approve:
-            outcome = acp.schema.AllowedOutcome(outcome="selected", option_id="allow")
-        else:
+        if self.decision == "cancel":
             outcome = acp.schema.DeniedOutcome(outcome="cancelled")
+        else:
+            outcome = acp.schema.AllowedOutcome(outcome="selected", option_id=self.decision)
         return acp.schema.RequestPermissionResponse(outcome=outcome)
 
 
-async def run_case(label: str, auto_approve: bool, prompt_text: str, mode: str | None = None, cwd: str = "."):
+async def run_case(label: str, decision: str, prompt_text: str, mode: str | None = None, cwd: str = "."):
     print(f"\n=== {label} ===")
-    client = RecordingClient(auto_approve=auto_approve)
+    client = RecordingClient(decision=decision)
     async with acp.spawn_agent_process(lambda _agent: client, sys.executable, "acp_server.py") as (conn, proc):
         init = await conn.initialize(protocol_version=acp.PROTOCOL_VERSION)
         print("agentCapabilities.loadSession ->", init.agentCapabilities.load_session)
@@ -62,7 +66,47 @@ async def run_case(label: str, auto_approve: bool, prompt_text: str, mode: str |
         print("final text chunks ->", [c for c in client.chunks if c[0] == "AgentMessageChunk" and c[1]])
 
         proc.terminate()
-        return session.sessionId
+        return client
+
+
+def test_permission_outcome_mapping():
+    """No LLM needed: only an allow-kind option we offered approves."""
+    from acp_server import _permission_approved
+
+    print("\n=== permission outcome mapping ===")
+    options = [
+        acp.schema.PermissionOption(option_id="allow", name="Allow", kind="allow_once"),
+        acp.schema.PermissionOption(option_id="reject", name="Reject", kind="reject_once"),
+    ]
+    selected = lambda option_id: acp.schema.AllowedOutcome(outcome="selected", option_id=option_id)
+    assert _permission_approved(selected("allow"), options)
+    assert not _permission_approved(selected("reject"), options), "selected Reject must deny"
+    assert not _permission_approved(selected("bogus"), options), "unknown option_id must deny"
+    assert not _permission_approved(acp.schema.DeniedOutcome(outcome="cancelled"), options)
+    print("ok")
+
+
+async def test_reject_selected_does_not_run_tool():
+    """Regression: a client that answers by *selecting* Reject (AllowedOutcome
+    with option_id="reject") must not run the gated tool. The marker is
+    computed by the shell ($((6*7)) -> 42), so it appears in output only if the
+    command actually ran, never in the command text echoed in the request."""
+    client = await run_case(
+        "gated tool, Reject selected (AllowedOutcome option_id=reject)",
+        decision="reject",
+        prompt_text='Call the shell tool to run exactly: echo reject-marker-$((6*7))',
+    )
+    assert client.permission_requests, "expected a permission request"
+    progress = [tc for tc in client.tool_calls if type(tc).__name__ == "ToolCallProgress"]
+    output = " ".join(
+        getattr(getattr(c, "content", None), "text", "") or ""
+        for tc in progress
+        for c in (tc.content or [])
+    )
+    assert "reject-marker-42" not in output, f"tool ran despite Reject: {output!r}"
+    assert not any(tc.status == "completed" for tc in progress), "tool completed despite Reject"
+    assert any(tc.status == "failed" for tc in progress), "expected tool status failed"
+    print("ok: tool did not run")
 
 
 async def test_config_option_change():
@@ -82,22 +126,26 @@ async def test_config_option_change():
 
 
 async def main():
-    await run_case("plain reply, no tools (build mode default)", auto_approve=True, prompt_text="Reply with exactly the word: pong")
+    test_permission_outcome_mapping()
 
-    await run_case("gated tool, approved", auto_approve=True, prompt_text='Call the shell tool to run exactly: echo acp-approved-marker')
+    await run_case("plain reply, no tools (build mode default)", decision="allow", prompt_text="Reply with exactly the word: pong")
 
-    await run_case("gated tool, denied", auto_approve=False, prompt_text='Call the shell tool to run exactly: echo should-not-run')
+    await run_case("gated tool, approved", decision="allow", prompt_text='Call the shell tool to run exactly: echo acp-approved-marker')
+
+    await run_case("gated tool, denied", decision="cancel", prompt_text='Call the shell tool to run exactly: echo should-not-run')
+
+    await test_reject_selected_does_not_run_tool()
 
     await run_case(
         "plan mode blocks tool entirely",
-        auto_approve=True,
+        decision="allow",
         prompt_text='Call the shell tool to run exactly: echo should-be-blocked-by-plan-mode',
         mode="plan",
     )
 
     await run_case(
         "auto mode skips approval prompt",
-        auto_approve=True,
+        decision="allow",
         prompt_text='Call the shell tool to run exactly: echo auto-mode-marker',
         mode="auto",
     )

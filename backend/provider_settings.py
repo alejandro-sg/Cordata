@@ -22,6 +22,8 @@ pre-chdir block as model_control_tool/games_static_api/sandbox_functions_api
 import os
 from pathlib import Path
 
+from secret_guard import Secret
+
 _ENV_PATH = Path(__file__).resolve().parent / ".env"
 
 _VALID_PROVIDERS = {"local", "anthropic", "openai_compatible"}
@@ -96,10 +98,13 @@ def set_provider_config(
     error" tradeoff set_active_model already accepts for an unreachable
     oMLX server).
 
-    Persists every touched field to backend/.env (survives a restart) in
-    addition to the immediate in-memory agent_common.ACTIVE_* mutation
-    (takes effect with no restart) — same two-layer tradeoff
-    SANDBOX_API_TOKEN already carries in settings.py.
+    Persists every touched field *except API keys* to backend/.env (survives
+    a restart) in addition to the immediate in-memory agent_common.ACTIVE_*
+    mutation (takes effect with no restart). An API key is held in memory
+    only: backend/.env is on disk where the agent's file tools can read it, so
+    a key set here lasts until the process restarts — for a durable key,
+    export CLOUD_OPENAI_API_KEY / ANTHROPIC_API_KEY (or OLLAMA_API_KEY) in
+    the shell that launches the backend. See secret_guard.py.
 
     Raises ValueError for an unrecognized provider string; main.py's route
     turns that into a 400.
@@ -115,8 +120,7 @@ def set_provider_config(
         agent_common.ACTIVE_PROVIDER = provider
         env_updates["MODEL_PROVIDER"] = provider
     if anthropic_api_key is not None:
-        agent_common.ACTIVE_ANTHROPIC_API_KEY = anthropic_api_key
-        env_updates["ANTHROPIC_API_KEY"] = anthropic_api_key
+        agent_common.ACTIVE_ANTHROPIC_API_KEY = Secret(anthropic_api_key)
     if anthropic_model_id is not None:
         agent_common.ACTIVE_ANTHROPIC_MODEL_ID = anthropic_model_id
         env_updates["ANTHROPIC_MODEL_ID"] = anthropic_model_id
@@ -124,8 +128,7 @@ def set_provider_config(
         agent_common.ACTIVE_CLOUD_BASE_URL = openai_base_url
         env_updates["CLOUD_OPENAI_BASE_URL"] = openai_base_url
     if openai_api_key is not None:
-        agent_common.ACTIVE_CLOUD_API_KEY = openai_api_key
-        env_updates["CLOUD_OPENAI_API_KEY"] = openai_api_key
+        agent_common.ACTIVE_CLOUD_API_KEY = Secret(openai_api_key)
     if openai_model_id is not None:
         agent_common.ACTIVE_CLOUD_MODEL_ID = openai_model_id
         env_updates["CLOUD_OPENAI_MODEL_ID"] = openai_model_id

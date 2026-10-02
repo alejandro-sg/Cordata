@@ -1,0 +1,145 @@
+# Laya triage — a fast decision layer around the orchestrator
+
+[Laya](https://github.com/NandhaKishorM/laya) is a non-autoregressive "System 1"
+model: typed answers (`choice`, `noul` = P(yes), `score`) with confidence, in one
+forward pass (~30–150 ms warm), no text generation and no tool calls. The LLM is
+the opposite: slow, generative, tool-calling. This backend uses each where it is
+strong.
+
+| layer | who | does |
+|---|---|---|
+| orchestrator control plane | **Laya** (`backend/laya_triage.py`) | per user turn: what kind of work is this, how hard is it |
+| orchestrator | **LLM** (the active provider) | generates replies, decides and calls tools, spawns teams |
+| sub-agents / specialists | **LLM**, one model **tier** each | do the delegated work (`local_swarm` / `local_graph`) |
+| content guard | **Laya** (`prompt_security.py`) | advisory injection score on untrusted tool output |
+
+Both Laya features share **one** loaded checkpoint (`LAYA_MODEL`), warmed in a
+background thread at startup.
+
+## What `route` mode does (default)
+
+`LAYA_TRIAGE_MODE=route`, per user turn:
+
+1. Laya classifies the request in a worker thread, with a timeout
+   (`LAYA_TRIAGE_TIMEOUT`, default 2 s; the first call can be slower while weights load).
+2. **Routing hint.** If the route's confidence is ≥ `LAYA_TRIAGE_THRESHOLD` (0.85) and
+   the route has a clear tool affinity — `files_and_code`, `web_research`, `memory`,
+   `team` — **one short advisory line** is appended to the orchestrator's system
+   prompt *for that turn only*. It is restored afterwards and is never in the
+   conversation messages or the persisted session. The text is a fixed string per
+   Laya enum answer; nothing from the user's message is interpolated, so a prompt
+   cannot steer the agent through it. `chat` and `other_tools` never produce a hint
+   (don't discourage tool use on a guess).
+3. **Model tier for sub-agents.** Laya's complexity estimate, if it is at least
+   moderately sure (confidence ≥ 0.6), is the default tier — `fast` / `standard` /
+   `strong` — for the sub-agents the orchestrator spawns that turn. A sub-agent spec's
+   own `"tier"` always wins.
+4. **Below the gate, on timeout, on error: nothing changes.** The LLM decides exactly
+   as it did before Laya existed.
+
+It never blocks a tool and never forces one. That is deliberate — see "Why advisory".
+
+`shadow` mode logs only (no hint, no tier). `off` does nothing and loads nothing.
+
+### The log
+
+Every mode but `off` appends one JSON line per turn to `LAYA_TRIAGE_LOG`
+(`backend/laya_triage.jsonl`, gitignored — it holds user prompts, secret-masked):
+Laya's decision beside the route the LLM *actually* took (derived from the tools it
+called), the hint applied, how long the turn waited, and the tier each sub-agent got.
+
+```bash
+backend/.venv/bin/python backend/_laya_triage_report.py            # agreement by confidence
+```
+
+It prints agreement with the orchestrator, the majority-class baseline, per-route
+precision/recall, the most common disagreements, and a confidence-gate table
+(coverage / agreement / how many would be misrouted at each threshold). "Agreement"
+is with what the LLM did, not with ground truth — the LLM is the policy being
+measured and makes mistakes too.
+
+## Sub-agents use the same provider, tiers, and key
+
+`local_swarm` / `local_graph` sub-agents are built by
+`sub_agent_common.build_sub_agent_model`, which goes through the same
+`agent_common.build_model` as the orchestrator. So with `MODEL_PROVIDER=openai_compatible`
+(e.g. Ollama Cloud) sub-agents run on the cloud too, with the **same API key — no second
+key is needed** (they are the same process and the key never enters their tools,
+prompts or environment; see `THREAT_MODEL.md`, "Provider API keys"). Before this they
+were hardwired to local oMLX.
+
+Tiers are model ids on the active provider, set in the environment; an unset tier
+means "the provider's own model", so nothing changes until you configure them:
+
+```bash
+export MODEL_TIER_FAST=gpt-oss:20b MODEL_TIER_STANDARD=gpt-oss:120b MODEL_TIER_STRONG=glm-5.3
+```
+
+Mind your provider's concurrency limit: `local_graph` runs its nodes in parallel, and
+the orchestrator plus N sub-agents are N+1 simultaneous requests on one account. A
+second key on the same account would not raise that limit.
+
+## Why advisory — and what the live runs showed
+
+Laya's README is explicit that the shipped checkpoints are **near chance zero-shot** on
+typed decisions (0.36 against a 0.46 majority-class baseline) and only become useful
+after fine-tuning on your own decisions. A live run here confirmed it:
+
+- It got most obvious prompts right (a `file_read` request → `files_and_code`, 0.98).
+- It routed a request that used `local_graph` to `memory` at 0.67 — below the gate, so
+  the LLM decided alone, which is the gate doing its job.
+- Its `needs_team` (`noul`) scored **0.90 on "Reply with exactly the word: pong"**. So
+  `needs_team` alone does **not** produce a team hint by default; only a *confident team
+  route* does. Enable the independent trigger with `LAYA_TRIAGE_TEAM_THRESHOLD=0.8` only
+  after the report shows `needs_team` separating team turns from the rest on your data.
+
+Hence: hint above a confidence gate, never block, always log. Tune
+`LAYA_TRIAGE_THRESHOLD` from the report's gate table, not from this document.
+
+## Improving it: collect → export → fine-tune → swap
+
+1. Run normally (or with `acp-stress` scenarios) so the log accumulates real turns.
+2. `backend/.venv/bin/python backend/_laya_triage_export.py --out ./laya_data --validate`
+   writes `train.jsonl` / `eval.jsonl` in the row schema of Laya's own training set
+   (`state`, `questions`, `gold` as JSON-string columns). Labels are what the LLM did,
+   one-hot — a behaviour-cloning target, mistakes included, so review before training.
+   `--validate` feeds every question through Laya's own `build_sequence` with the
+   loaded tokenizer, the call its training script makes.
+3. Fine-tune with Laya's script (`notebooks/laya_finetune_typed_decisions_mps.py` in its
+   repo — Apple Silicon; a Kaggle 2×T4 notebook also exists). Its dataset loader calls
+   `load_dataset("LocalLLaMA/typed-decisions", ...)`; replace that call with
+   `datasets.load_dataset("json", data_files={"train": "laya_data/train.jsonl"})["train"]`.
+   Laya's own run used ~30k questions and took hours on 2×T4; a few hundred rows will
+   mostly memorise, so treat early runs as a way to exercise the loop.
+4. Point the backend at the result: `LAYA_MODEL=/path/to/laya_finetuned_typed_decisions`
+   (`LAYA_MODEL_SUBFOLDER` empty). Re-run the report on fresh traffic and compare the
+   confidence-gate table with the stock model's before raising the threshold or routing
+   anything harder.
+
+I have **not** run step 3 end to end here (hours of training); steps 1–2 and the
+format validation are tested, and `LAYA_MODEL` loading goes through `laya.load`, which
+accepts a local path.
+
+## Settings
+
+| variable | default | meaning |
+|---|---|---|
+| `LAYA_TRIAGE_MODE` | `route` | `route` / `shadow` / `off` |
+| `LAYA_TRIAGE_THRESHOLD` | `0.85` | route confidence needed for a hint |
+| `LAYA_TRIAGE_TEAM_THRESHOLD` | *(off)* | P(needs team) that hints a team on its own |
+| `LAYA_TRIAGE_TIMEOUT` | `2.0` | seconds a turn waits for Laya before going without a hint |
+| `LAYA_TRIAGE_LOG` | `backend/laya_triage.jsonl` | the log |
+| `LAYA_MODEL` / `LAYA_MODEL_SUBFOLDER` | `convaiinnovations/laya` / `multilingual` | checkpoint (repo id or local dir) |
+| `MODEL_TIER_FAST` / `_STANDARD` / `_STRONG` | *(unset)* | sub-agent model ids on the active provider |
+| `LAYA_GUARD_ENABLED` / `LAYA_GUARD_THRESHOLD` | `false` / `0.75` | the separate injection guard on untrusted tool output |
+
+## Costs and caveats
+
+- **Memory.** One Laya checkpoint (~650 MB) per backend process. `acp-stress` starts a
+  process per session, so a large `-c` multiplies that; for pure harness stress runs set
+  `LAYA_TRIAGE_MODE=off LAYA_GUARD_ENABLED=false`.
+- **Latency.** Warm calls were 60–230 ms in live runs; the very first turn after startup
+  waited ~1.5 s while weights finished loading.
+- **Privacy.** The log holds your prompts (masked for secrets). Delete it freely.
+- **Not a security boundary.** The hint is advisory and the classifier is
+  fallible; nothing here changes what the approval gates allow.
