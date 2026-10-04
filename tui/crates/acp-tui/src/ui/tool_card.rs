@@ -34,7 +34,9 @@ fn laya_badge(card: &ToolCard) -> Option<(String, Color)> {
     let p = card.p_ok?;
     let pct = (p * 100.0).round() as i64;
     Some(match card.outcome {
-        Some((ok, _)) if ok != (p >= 0.5) => (format!(" laya p(ok) {pct}% ✗ surprised "), Color::Yellow),
+        Some((ok, _)) if ok != (p >= 0.5) => {
+            (format!(" laya p(ok) {pct}% ✗ surprised "), Color::Yellow)
+        }
         Some(_) => (format!(" laya p(ok) {pct}% ✓ "), Color::DarkGray),
         None => (format!(" laya p(ok) {pct}% "), Color::DarkGray),
     })
@@ -264,7 +266,10 @@ pub fn render_in(
     let (flag, flag_color) = if card.untrusted {
         (" ⚠ UNTRUSTED CONTENT ".to_owned(), Color::Magenta)
     } else if card.untrusted_source {
-        (" ⚠ may return untrusted content ".to_owned(), Color::Magenta)
+        (
+            " ⚠ may return untrusted content ".to_owned(),
+            Color::Magenta,
+        )
     } else if let Some((text, color)) = badge {
         (text, color)
     } else {
@@ -301,19 +306,29 @@ pub fn render_in(
     let dim = Style::new().fg(Color::Gray);
     // Edits: the diff viewer instead of the raw input.
     let patch_text = (card.name == "apply_patch")
-        .then(|| card.raw_input.as_ref()?.get("patch")?.as_str().map(str::to_owned))
+        .then(|| {
+            card.raw_input
+                .as_ref()?
+                .get("patch")?
+                .as_str()
+                .map(str::to_owned)
+        })
         .flatten();
     let cap = (!expanded).then_some(COLLAPSED_DIFF_ROWS);
     if is_edit_tool(&card.name) && !card.diffs.is_empty() && awaiting {
         // The approval panel right below shows this diff in full; one line here.
         for file in &card.diffs {
-            let lines_ = super::diff::line_diff(file.old_text.as_deref().unwrap_or(""), &file.new_text);
+            let lines_ =
+                super::diff::line_diff(file.old_text.as_deref().unwrap_or(""), &file.new_text);
             let (added, removed) = super::diff::stats(&lines_);
             let path = super::diff::short(&file.path, cwd);
             lines.push(boxed(
                 vec![
                     Span::styled("✎ ", Style::new().fg(Color::Cyan)),
-                    Span::styled(truncate(&path, inner.saturating_sub(34)), Style::new().add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        truncate(&path, inner.saturating_sub(34)),
+                        Style::new().add_modifier(Modifier::BOLD),
+                    ),
                     Span::styled(format!("  +{added}"), Style::new().fg(Color::Green)),
                     Span::styled(format!(" −{removed}"), Style::new().fg(Color::Red)),
                     Span::styled("  — review it below", dim.add_modifier(Modifier::ITALIC)),
@@ -504,14 +519,21 @@ mod tests {
         assert!(lines.iter().any(|l| l.contains("✎ src/a.rs")));
         assert!(lines.iter().any(|l| l.contains("   2 − let b = 2;")));
         assert!(lines.iter().any(|l| l.contains("   2 + let b = 3;")));
-        assert!(!lines.iter().any(|l| l.contains("old_str")), "the raw input is replaced by the diff");
+        assert!(
+            !lines.iter().any(|l| l.contains("old_str")),
+            "the raw input is replaced by the diff"
+        );
     }
 
     #[test]
     fn while_awaiting_approval_the_card_defers_the_diff_to_the_panel() {
         let mut edit = card("", false);
         edit.name = "file_write".into();
-        edit.diffs = vec![acp_core::FileDiff { path: "/p/a.txt".into(), old_text: None, new_text: "x\ny\n".into() }];
+        edit.diffs = vec![acp_core::FileDiff {
+            path: "/p/a.txt".into(),
+            old_text: None,
+            new_text: "x\ny\n".into(),
+        }];
         let lines = plain(&render_in(&edit, 60, false, true, 0, "/p"));
         assert_eq!(lines.len(), 3, "{lines:#?}");
         assert!(lines[1].contains("✎ a.txt  +2 −0  — review it below"));
@@ -521,7 +543,8 @@ mod tests {
     fn a_patch_without_a_preview_is_still_coloured() {
         let mut patch = card("", false);
         patch.name = "apply_patch".into();
-        patch.raw_input = Some(serde_json::json!({"patch": "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n"}));
+        patch.raw_input =
+            Some(serde_json::json!({"patch": "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n"}));
         let lines = render(&patch, 40, false, false, 0);
         assert!(plain(&lines).iter().any(|l| l.contains("+b")));
     }

@@ -237,6 +237,81 @@ pub const SCHEMA: &[Entry] = &[
         applies: Applies::NextSession,
         help: "start the project's language servers for diagnostics after edits",
     },
+    // Mirror of backend/settings_store.py's SCHEMA. Both front doors reject an
+    // unknown key with a warning, so a key added on one side and not the other
+    // shows up as a spurious warning in whichever door is behind.
+    Entry {
+        key: "laya.riskSafe",
+        kind: Kind::Float(0.0, 1.0),
+        applies: Applies::NextSession,
+        help: "destructiveness score below which a turn counts as safe (0.2)",
+    },
+    Entry {
+        key: "laya.riskDestroy",
+        kind: Kind::Float(0.0, 1.0),
+        applies: Applies::NextSession,
+        help: "destructiveness score above which a turn counts as destructive (0.8)",
+    },
+    Entry {
+        key: "laya.riskAutoApprove",
+        kind: Kind::Bool,
+        applies: Applies::NextSession,
+        help: "let a confidently safe turn skip the approval prompt (off unless you set it)",
+    },
+    Entry {
+        key: "memory.traces",
+        kind: Kind::Bool,
+        applies: Applies::NextSession,
+        help: "record execution traces to the local LanceDB corpus (needs lancedb)",
+    },
+    Entry {
+        key: "vault.enabled",
+        kind: Kind::Bool,
+        applies: Applies::NextSession,
+        help: "run tool subprocesses through the Agent Vault credential proxy",
+    },
+    Entry {
+        key: "vault.addr",
+        kind: Kind::Str,
+        applies: Applies::NextSession,
+        help: "Agent Vault proxy address, e.g. http://127.0.0.1:14322",
+    },
+    Entry {
+        key: "vault.vault",
+        kind: Kind::Str,
+        applies: Applies::NextSession,
+        help: "Agent Vault vault name to draw credentials from",
+    },
+    Entry {
+        key: "vault.egressPolicy",
+        kind: Kind::Enum(&["deny", "proxy"]),
+        applies: Applies::NextSession,
+        help: "refuse egress when the vault is unreachable, or fall back to a plain proxy",
+    },
+    Entry {
+        key: "observer.enabled",
+        kind: Kind::Bool,
+        applies: Applies::NextSession,
+        help: "run the read-only workspace observer while no task is active",
+    },
+    Entry {
+        key: "observer.intervalMinutes",
+        kind: Kind::Float(1.0, 1440.0),
+        applies: Applies::NextSession,
+        help: "how often the observer wakes up",
+    },
+    Entry {
+        key: "kg.enabled",
+        kind: Kind::Bool,
+        applies: Applies::NextSession,
+        help: "record graph entities and edges from each turn (needs lancedb for the queryable store)",
+    },
+    Entry {
+        key: "kg.sink",
+        kind: Kind::Enum(&["lance", "cognee"]),
+        applies: Applies::NextSession,
+        help: "which knowledge-graph backend keeps the rows",
+    },
 ];
 
 pub fn entry(key: &str) -> Option<&'static Entry> {

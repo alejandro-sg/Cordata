@@ -11,7 +11,6 @@ use acp_core::{LayaDecision, LayaOutcome};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-
 fn pct(value: f64) -> String {
     format!("{}%", (value * 100.0).round() as i64)
 }
@@ -36,7 +35,10 @@ fn decision_line(decision: &LayaDecision, width: usize) -> Line<'static> {
         if let Some(calibrated) = decision.calibrated
             && (calibrated - decision.route_confidence).abs() >= 0.005
         {
-            spans.push(Span::styled(format!(" (calibrated {})", pct(calibrated)), dim));
+            spans.push(Span::styled(
+                format!(" (calibrated {})", pct(calibrated)),
+                dim,
+            ));
         }
         let strong = |text: String, color: Color| {
             Span::styled(text, Style::new().fg(color).add_modifier(Modifier::BOLD))
@@ -45,12 +47,21 @@ fn decision_line(decision: &LayaDecision, width: usize) -> Line<'static> {
             (true, "escalate") => strong(
                 format!(
                     " ⛔ abstained → escalated to {}",
-                    decision.escalate_model.as_deref().unwrap_or("the frontier tier")
+                    decision
+                        .escalate_model
+                        .as_deref()
+                        .unwrap_or("the frontier tier")
                 ),
                 Color::Yellow,
             ),
-            (true, _) => strong(" ⛔ abstained → the LLM decides alone".to_owned(), Color::Yellow),
-            (false, "dispatch") => strong(format!(" ▸ dispatched to the {route} specialist"), Color::Cyan),
+            (true, _) => strong(
+                " ⛔ abstained → the LLM decides alone".to_owned(),
+                Color::Yellow,
+            ),
+            (false, "dispatch") => strong(
+                format!(" ▸ dispatched to the {route} specialist"),
+                Color::Cyan,
+            ),
             (false, "scope") => strong(
                 format!(" ▸ tools scoped to {}", route.trim_start_matches("plugin_")),
                 Color::Cyan,
@@ -59,9 +70,15 @@ fn decision_line(decision: &LayaDecision, width: usize) -> Line<'static> {
             _ => Span::styled(" · confident, nothing to change".to_owned(), dim),
         });
         if decision.armed {
-            spans.push(strong(" ⚠ destructive: approvals armed".to_owned(), Color::Red));
+            spans.push(strong(
+                " ⚠ destructive: approvals armed".to_owned(),
+                Color::Red,
+            ));
         } else if let Some(risk) = decision.risk.as_deref().filter(|r| *r != "read_only") {
-            spans.push(Span::styled(format!(" · risk {}", risk.replace('_', " ")), dim));
+            spans.push(Span::styled(
+                format!(" · risk {}", risk.replace('_', " ")),
+                dim,
+            ));
         }
         if let Some(ms) = decision.latency_ms {
             spans.push(Span::styled(format!(" · {ms:.0} ms"), dim));
@@ -125,7 +142,10 @@ fn outcome_line(outcome: &LayaOutcome, width: usize) -> Line<'static> {
         None => {}
     }
     match outcome.clean {
-        Some(false) => spans.push(Span::styled(" · unresolved failure", Style::new().fg(Color::Red))),
+        Some(false) => spans.push(Span::styled(
+            " · unresolved failure",
+            Style::new().fg(Color::Red),
+        )),
         Some(true) => spans.push(Span::styled(" · clean", dim)),
         None => {}
     }
@@ -185,7 +205,8 @@ mod tests {
             abstained,
             calibrated: Some(confidence),
             reason: Some(if abstained {
-                "Laya abstained (answer_confidence 0.43 < min_confidence 0.50) — escalated to big".into()
+                "Laya abstained (answer_confidence 0.43 < min_confidence 0.50) — escalated to big"
+                    .into()
             } else {
                 "dispatched".into()
             }),
@@ -197,11 +218,24 @@ mod tests {
     #[test]
     fn router_v2_lines_say_what_the_policy_did() {
         let dispatch = plain(&render(v2("debugger", 0.97, "dispatch", false), None, 120));
-        assert_eq!(dispatch[0], "◆ laya  debugger 97% ▸ dispatched to the debugger specialist · 64 ms");
+        assert_eq!(
+            dispatch[0],
+            "◆ laya  debugger 97% ▸ dispatched to the debugger specialist · 64 ms"
+        );
         let abstain = plain(&render(v2("code", 0.43, "escalate", true), None, 160));
-        assert!(abstain[0].contains("⛔ abstained → escalated to big"), "{abstain:?}");
-        assert!(abstain[0].contains("Laya abstained (answer_confidence 0.43"), "{abstain:?}");
-        let scope = plain(&render(v2("plugin_pihole", 0.95, "scope", false), None, 120));
+        assert!(
+            abstain[0].contains("⛔ abstained → escalated to big"),
+            "{abstain:?}"
+        );
+        assert!(
+            abstain[0].contains("Laya abstained (answer_confidence 0.43"),
+            "{abstain:?}"
+        );
+        let scope = plain(&render(
+            v2("plugin_pihole", 0.95, "scope", false),
+            None,
+            120,
+        ));
         assert!(scope[0].contains("▸ tools scoped to pihole"));
         let mut armed = v2("code", 0.9, "hint", false);
         armed.armed = true;

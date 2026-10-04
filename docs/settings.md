@@ -44,6 +44,15 @@ other value is replaced by the higher scope.
 | `selfHeal.verify` | `sandbox` · `workspace` · `off` | next session | verify patches in a throwaway copy first, or only in the workspace |
 | `selfHeal.autoApply` | `true` · `false` | next session | apply sandbox-verified fixes without asking (needs a trusted folder; see `THREAT_MODEL.md`) |
 | `lsp.enabled` | `true` · `false` | next session | start the project's language servers for diagnostics after edits |
+| `vault.enabled` | `true` · `false` | next session | run tool subprocesses through the Agent Vault credential proxy (see below) |
+| `vault.addr` | url | next session | where the vault's proxy listens (default `http://127.0.0.1:14322`) |
+| `vault.vault` | name | next session | which vault credentials are drawn from |
+| `vault.egressPolicy` | `deny` · `proxy` | next session | vault unreachable: refuse egress, or route through the address without credentials |
+| `observer.enabled` | `true` · `false` | next cycle | the daemon's background observer (see below); off by default |
+| `observer.intervalMinutes` | 1–1440 | next cycle | how long between observations (default 30) |
+| `memory.traces` | `true` · `false` | next session | record execution traces to the local LanceDB corpus |
+| `kg.enabled` | `true` · `false` | next session | record graph entities and edges from each turn (see below) |
+| `kg.sink` | `lance` · `cognee` | next session | which graph backend keeps the rows (default `lance`) |
 | `tiers.fast` / `standard` / `strong` | model id | next session | sub-agent model tiers |
 | `tui.thinking` | `collapsed` · `expanded` | now | reasoning as one line or in full |
 | `tui.toolOutput` | `collapsed` · `expanded` | now | tool results trimmed or in full |
@@ -183,8 +192,78 @@ file write). `/memory` lists what's being read. Changes apply to the next sessio
 | permission rules, trust | backend (`_ApprovalHandler`) | every tool call |
 | `defaultMode`, `model`, `temperature` | backend (`new_session` / `load_session`) | session start; `/config` also sets model/temperature on the running session |
 | `laya.*`, `tiers.*` | backend (`_apply_startup_preferences`) | session start |
+| `vault.*` | backend (`vault_proxy.install`) | session start |
+| `observer.*` | daemon (`Observer`) | every cycle, so a change lands without a restart |
+| `memory.traces`, `kg.*` | backend (`_ingest_turn`) | session start, applied when the turn finishes |
 | instruction files | backend (system prompt) | session start |
 | `tui.*` | acp-tui | startup and on change |
+
+## Agent Vault (`vault.*`)
+
+Off by default. Turned on, tool subprocesses do not hold real credentials —
+they hold placeholders (`OPENAI_API_KEY=__openai_api_key__`) and the process is
+pointed at the vault's local proxy, which substitutes the real value on the way
+out. The vault token lives in the Keychain (`sierralab-agent-vault-token`),
+never in a settings file, and the vault's CA is named by `SIERRALAB_VAULT_CA`
+when one has been exported.
+
+With `vault.egressPolicy: "deny"` (the default), a vault that cannot be reached
+at `vault.addr` means `shell`, `python_repl` and `http_request` are *refused*
+for the session — in `auto` mode too, with no prompt offered — and no proxy
+variable is left set, so nothing can quietly egress directly. `"proxy"` keeps
+work going through the configured address without vault credentials. This closes
+credential exposure on egress; it is **not** a filesystem sandbox — see
+`THREAT_MODEL.md`, "Agent Vault is egress-only". Tests:
+`backend/_vault_proxy_smoke_test.py`.
+
+## Knowledge graph (`kg.*`)
+
+Off by default. Turned on, the turn that just finished is fed to a graph as
+entities and edges: the project and session, each tool that ran, each file a
+path-bearing tool named, and each error signature. It is **derived, not
+summarised** — no model is asked what the entities were, so the same turn always
+produces the same graph, and a node id is stable across turns so a file touched
+fifty times is one node.
+
+No prompts and no command lines are stored: those are `state.db`'s and
+`memory.traces`' job, and the graph is the structure over them (which tool
+touched which file, what failed where). Storage is `backend/memory.kg/`
+(gitignored, `SIERRALAB_KG_DIR` moves it): `graph.lance` for queries, plus
+`nodes.jsonl` / `edges.jsonl` mirrors written even when `lancedb` is not
+installed — so a checkout without it still has a graph readable with `jq`.
+
+`kg.sink` picks the backend. `lance` is the default and needs nothing beyond the
+pinned `lancedb`. `cognee` hands the same rows to Cognee and is for a machine
+that has it installed; **Cognee is not in `requirements.txt` and this path has
+not been run against a real Cognee install** — with it missing, `kg.sink:
+"cognee"` logs once and still writes the mirrors. Reads: `LanceGraphSink.search`
+(substring over labels) and `.neighbours` (the edges touching a node). Tests:
+`backend/_kg_smoke_test.py`.
+
+## Observer (`observer.*`)
+
+Off by default, and only meaningful under `make daemon`: it is the one part of
+the harness that runs with no user turn behind it. Turned on, the daemon reads
+each known project (the newest five in `backend/sessions/index.json`) with a
+fixed `git` command list — `status`, `diff --stat`, `log`, `diff` — plus the
+tails of any log files named by `SIERRALAB_OBSERVER_LOGS`, hands that to a
+read-only agent, and writes `nightly_briefing.md` (override:
+`SIERRALAB_OBSERVER_BRIEFING`) in `~/.sierralab/`.
+
+The observer holds `file_read` and `think`, and nothing else: the daemon runs
+the commands, not the model, and the briefing is written by the daemon from the
+text the child prints. A client attaching kills any cycle in flight, and no
+cycle starts while one is attached — a briefing written over a project someone
+is working in is the one thing this must not do. `SIERRALAB_OBSERVER_QUIET`
+(`22:00-07:00`) stops it running at night; `SIERRALAB_OBSERVER_TIER` picks the
+model tier.
+
+Proposals are staged on the ledger with status `proposed`, not `staged` — they
+are not approvals somebody is waiting on, so they never appear in the
+`--resume` pending-approval notice. The briefing is the thing to read; the
+ledger keeps the record (`interventions.kind = 'observation'` plus an
+`observation` event, readable with `state_store.recent_events(kind="observation")`).
+Tests: `backend/_observer_smoke_test.py`.
 
 ## Checking the result
 

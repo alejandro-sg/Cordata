@@ -11,7 +11,7 @@ use std::panic;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use acp_core::{AppEvent, BackendConfig, SessionHandle, SessionOptions};
+use acp_core::{AppEvent, BackendConfig, BackendTransport, SessionHandle, SessionOptions};
 use anyhow::{Context, Result};
 use clap::Parser;
 use crossterm::cursor::Show;
@@ -54,6 +54,25 @@ struct Args {
     /// Run a different ACP server script with the backend's python (testing).
     #[arg(long, hide = true)]
     server_script: Option<PathBuf>,
+
+    /// How to reach the agent: `stdio` spawns a backend process for this
+    /// terminal; `ws` attaches to the always-on daemon, which keeps the
+    /// session alive across a dropped terminal and lets several clients
+    /// reattach to it.
+    #[arg(long, value_enum, default_value_t = Transport::Stdio)]
+    transport: Transport,
+
+    /// Daemon URL, overriding the one built from ~/.sierralab/daemon.json
+    /// (which supplies the port and the token). Only meaningful with
+    /// `--transport ws`.
+    #[arg(long, value_name = "URL")]
+    daemon_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum Transport {
+    Stdio,
+    Ws,
 }
 
 /// One session the user can switch to: its backend process and its UI state.
@@ -73,6 +92,7 @@ struct Workspace {
     next_number: usize,
     backend: BackendConfig,
     cwd: PathBuf,
+    transport: BackendTransport,
     debug_log: Option<PathBuf>,
     events: mpsc::UnboundedSender<(usize, AppEvent)>,
 }
@@ -82,6 +102,7 @@ impl Workspace {
         let (handle, mut rx) = SessionHandle::spawn(SessionOptions {
             backend: self.backend.clone(),
             cwd: self.cwd.clone(),
+            transport: self.transport.clone(),
             resume,
             debug_log: self.debug_log.clone(),
             continue_latest,
@@ -162,15 +183,17 @@ impl Workspace {
         let next = match target {
             SwitchTarget::Next => (self.active + 1) % len,
             SwitchTarget::Prev => (self.active + len - 1) % len,
-            SwitchTarget::Slot(number) => match self.slots.iter().position(|s| s.number == number) {
-                Some(index) => index,
-                None => {
-                    self.app()
-                        .messages
-                        .push(Message::Info(format!("no session {number} — /sessions lists them")));
-                    return false;
+            SwitchTarget::Slot(number) => {
+                match self.slots.iter().position(|s| s.number == number) {
+                    Some(index) => index,
+                    None => {
+                        self.app().messages.push(Message::Info(format!(
+                            "no session {number} — /sessions lists them"
+                        )));
+                        return false;
+                    }
                 }
-            },
+            }
         };
         let changed = next != self.active;
         self.active = next;
@@ -214,13 +237,32 @@ async fn main() -> Result<()> {
     if let Some(script) = args.server_script {
         backend = backend.with_server_script(script);
     }
-    backend.validate()?;
+    // With `--transport ws` the daemon spawns the child, not this process, so a
+    // missing local backend is the daemon's problem to report — and it does, as
+    // a `ConnectionError` naming the directory it tried.
+    if args.transport == Transport::Stdio {
+        backend.validate()?;
+    }
 
     let cwd = match args.cwd {
         Some(cwd) => cwd
             .canonicalize()
             .with_context(|| format!("--cwd {}", cwd.display()))?,
         None => std::env::current_dir()?,
+    };
+
+    let transport = match (args.transport, args.daemon_url) {
+        (Transport::Stdio, None) => BackendTransport::Stdio,
+        // A flag that is accepted and then ignored is worse than one that
+        // complains: `--daemon-url` with stdio means the user thinks they are
+        // talking to the daemon.
+        (Transport::Stdio, Some(_)) => anyhow::bail!("--daemon-url needs --transport ws"),
+        (Transport::Ws, Some(url)) => BackendTransport::Ws { url },
+        // Built here rather than in the session task: the token file is read
+        // once, and a missing daemon config should fail before the terminal is
+        // taken over, not inside the alternate screen where the message would
+        // be hard to see.
+        (Transport::Ws, None) => BackendTransport::daemon(&cwd)?,
     };
 
     let (tx, rx) = mpsc::unbounded_channel();
@@ -230,6 +272,7 @@ async fn main() -> Result<()> {
         next_number: 1,
         backend,
         cwd,
+        transport,
         debug_log: args.debug_log,
         events: tx,
     };
@@ -398,7 +441,11 @@ async fn run(
                     workspace.list();
                     let cwd = workspace.cwd.display().to_string();
                     match workspace.handle() {
-                        Some(handle) => handle.ext("session/list", serde_json::json!({ "cwd": cwd }), "sessions"),
+                        Some(handle) => handle.ext(
+                            "session/list",
+                            serde_json::json!({ "cwd": cwd }),
+                            "sessions",
+                        ),
                         None => Ok(()),
                     }
                 }

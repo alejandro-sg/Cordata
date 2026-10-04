@@ -34,7 +34,8 @@ pub struct TaskView {
 
 impl TaskView {
     pub fn visible(&self, now: Instant) -> bool {
-        self.finished.is_none_or(|at| now.duration_since(at) < LINGER)
+        self.finished
+            .is_none_or(|at| now.duration_since(at) < LINGER)
     }
 }
 
@@ -61,13 +62,22 @@ fn row(task: &TaskView, width: usize, spinner: usize, now: Instant) -> Line<'sta
     let title = crate::app::sanitize(&task.info.title);
     let mut spans = vec![
         Span::styled(format!("{glyph} "), Style::new().fg(color)),
-        Span::styled(truncate(&title, 38), Style::new().add_modifier(Modifier::BOLD)),
+        Span::styled(
+            truncate(&title, 38),
+            Style::new().add_modifier(Modifier::BOLD),
+        ),
     ];
     match (task.info.state, task.info.fraction()) {
         (TaskState::Running, Some(fraction)) => {
             spans.push(Span::raw("  "));
-            spans.push(Span::styled(bar(fraction, BAR_CELLS), Style::new().fg(Color::Cyan)));
-            spans.push(Span::styled(format!(" {:>3}%", (fraction * 100.0).round() as i64), Style::new().fg(Color::Cyan)));
+            spans.push(Span::styled(
+                bar(fraction, BAR_CELLS),
+                Style::new().fg(Color::Cyan),
+            ));
+            spans.push(Span::styled(
+                format!(" {:>3}%", (fraction * 100.0).round() as i64),
+                Style::new().fg(Color::Cyan),
+            ));
         }
         (TaskState::Running, None) => {
             let secs = now.duration_since(task.started).as_secs();
@@ -82,8 +92,15 @@ fn row(task: &TaskView, width: usize, spinner: usize, now: Instant) -> Line<'sta
         let used: usize = spans.iter().map(|s| display_width(&s.content)).sum();
         let room = width.saturating_sub(used + 2);
         if room > 6 {
-            let style = if task.info.state == TaskState::Failed { Style::new().fg(Color::Red) } else { dim };
-            spans.push(Span::styled(format!("  {}", truncate(&message, room)), style));
+            let style = if task.info.state == TaskState::Failed {
+                Style::new().fg(Color::Red)
+            } else {
+                dim
+            };
+            spans.push(Span::styled(
+                format!("  {}", truncate(&message, room)),
+                style,
+            ));
         }
     }
     fit_spans(spans, width)
@@ -145,7 +162,10 @@ mod tests {
     #[test]
     fn determinate_running_tasks_show_a_bar_and_percent() {
         let text = plain(&lines(&[task(TaskState::Running, 52.0, Some(100.0))], 100, 0)[0]);
-        assert!(text.contains("lsp: indexing") && text.contains("52%") && text.contains('█'), "{text}");
+        assert!(
+            text.contains("lsp: indexing") && text.contains("52%") && text.contains('█'),
+            "{text}"
+        );
         assert!(text.contains("crates/acp-core"));
     }
 
@@ -155,7 +175,9 @@ mod tests {
         assert_eq!(lines(std::slice::from_ref(&done), 80, 0).len(), 1);
         done.finished = Some(Instant::now() - LINGER - Duration::from_millis(1));
         assert!(lines(&[done], 80, 0).is_empty());
-        let many: Vec<TaskView> = (0..8).map(|_| task(TaskState::Running, 0.0, None)).collect();
+        let many: Vec<TaskView> = (0..8)
+            .map(|_| task(TaskState::Running, 0.0, None))
+            .collect();
         let rows = lines(&many, 80, 0);
         assert_eq!(rows.len(), MAX_ROWS + 1);
         assert!(plain(rows.last().unwrap()).contains("+3 more"));

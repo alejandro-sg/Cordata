@@ -43,6 +43,7 @@ pub fn welcome_lines(info: &SessionInfo, width: u16) -> Vec<Line<'static>> {
     for (key, value) in [
         ("session", format!("{session}{resumed}")),
         ("cwd    ", footer::short_path(&info.cwd)),
+        ("link   ", info.transport.clone()),
     ] {
         lines.push(Line::from(vec![
             Span::styled(format!("  {key}  "), label),
@@ -157,6 +158,7 @@ mod tests {
         app.on_event(AppEvent::Connected(SessionInfo {
             session_id: "abcdef12-3456".into(),
             cwd: "/proj".into(),
+            transport: "stdio".into(),
             resumed: false,
             current_mode: "build".into(),
             modes: vec![ModeInfo {
@@ -574,12 +576,12 @@ mod tests {
         )
         .unwrap();
         let mut app = connected();
-        app.attach_store(store);
+        app.attach_store(store.clone());
         app.input.set_text("/config");
         app.on_key(crossterm::event::KeyEvent::from(
             crossterm::event::KeyCode::Enter,
         ));
-        let screen = screen(&mut app, 100, 30);
+        let rendered = screen(&mut app, 100, 30);
         for needle in [
             "Settings → user file",
             "permissions.defaultMode",
@@ -591,14 +593,68 @@ mod tests {
             "m1",
             "session",
             "default",
-            "applies to the next session",
+            "next session",
             "Enter change",
         ] {
-            assert!(screen.contains(needle), "missing {needle:?} in\n{screen}");
+            assert!(
+                rendered.contains(needle),
+                "missing {needle:?} in\n{rendered}"
+            );
         }
         assert!(
-            !screen.contains("› "),
-            "the panel replaces the prompt box:\n{screen}"
+            !rendered.contains("› "),
+            "the panel replaces the prompt box:\n{rendered}"
+        );
+
+        // The schema is taller than this terminal, so the list scrolls. The key
+        // hints and the selected entry's help must not scroll with it: as list
+        // items they were only visible when the selection happened to be near
+        // the bottom, which is every row except the ones a user actually lands
+        // on first.
+        for top in [true, false] {
+            let mut app = connected();
+            app.attach_store(store.clone());
+            app.input.set_text("/config");
+            app.on_key(crossterm::event::KeyEvent::from(
+                crossterm::event::KeyCode::Enter,
+            ));
+            if !top {
+                for _ in 0..crate::settings::SCHEMA.len() {
+                    app.on_key(crossterm::event::KeyEvent::from(
+                        crossterm::event::KeyCode::Down,
+                    ));
+                }
+            }
+            let rendered = screen(&mut app, 100, 30);
+            let where_ = if top { "top" } else { "bottom" };
+            assert!(
+                rendered.contains("Enter change"),
+                "the hints stay visible at the {where_} of the list:\n{rendered}"
+            );
+            assert!(
+                rendered.contains("next session"),
+                "the help line follows the selection at the {where_} of the list:\n{rendered}"
+            );
+        }
+
+        // And the row the selection moved to is on screen, not scrolled past.
+        let mut app = connected();
+        app.attach_store(store.clone());
+        app.input.set_text("/config");
+        app.on_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        for _ in 0..crate::settings::SCHEMA.len() {
+            app.on_key(crossterm::event::KeyEvent::from(
+                crossterm::event::KeyCode::Down,
+            ));
+        }
+        let rendered = screen(&mut app, 100, 30);
+        let last = crate::settings::SCHEMA.last().unwrap();
+        assert!(
+            rendered.contains(last.key),
+            "the last setting {:?} is reachable:\n{rendered}",
+            last.key
         );
     }
 
@@ -697,10 +753,22 @@ mod tests {
         edit_card(&mut app, "e1");
         let _rx = ask(&mut app, "e1");
         let shown = screen(&mut app, 90, 30);
-        for needle in ["Permission required", "✎ src/a.rs", "+1 −1", "  20 − line 20", "  20 + LINE TWENTY", " a ", " r ", " d "] {
+        for needle in [
+            "Permission required",
+            "✎ src/a.rs",
+            "+1 −1",
+            "  20 − line 20",
+            "  20 + LINE TWENTY",
+            " a ",
+            " r ",
+            " d ",
+        ] {
             assert!(shown.contains(needle), "missing {needle:?} in\n{shown}");
         }
-        assert!(!shown.contains("\"old_str\""), "the raw JSON is replaced by the diff:\n{shown}");
+        assert!(
+            !shown.contains("\"old_str\""),
+            "the raw JSON is replaced by the diff:\n{shown}"
+        );
     }
 
     #[test]
@@ -710,109 +778,186 @@ mod tests {
         // A long multi-hunk change in a 14-row terminal.
         if let Some(Message::Tool(card)) = app.messages.last_mut() {
             let old: String = (1..=80).map(|i| format!("l{i}\n")).collect();
-            let new: String = (1..=80).map(|i| if i % 9 == 0 { format!("CHANGED {i}\n") } else { format!("l{i}\n") }).collect();
-            card.diffs[0] = acp_core::FileDiff { path: "/proj/b.txt".into(), old_text: Some(old), new_text: new };
+            let new: String = (1..=80)
+                .map(|i| {
+                    if i % 9 == 0 {
+                        format!("CHANGED {i}\n")
+                    } else {
+                        format!("l{i}\n")
+                    }
+                })
+                .collect();
+            card.diffs[0] = acp_core::FileDiff {
+                path: "/proj/b.txt".into(),
+                old_text: Some(old),
+                new_text: new,
+            };
         }
         let _rx = ask(&mut app, "e1");
         let shown = screen(&mut app, 80, 14);
-        assert!(shown.contains(" a ") && shown.contains("Allow") && shown.contains("Reject"), "keys visible:\n{shown}");
+        assert!(
+            shown.contains(" a ") && shown.contains("Allow") && shown.contains("Reject"),
+            "keys visible:\n{shown}"
+        );
         assert!(shown.contains("more rows"), "the cut is marked:\n{shown}");
-        app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char('d')));
+        app.on_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Char('d'),
+        ));
         assert!(app.diff_expanded, "d toggles the whole diff");
     }
 
     #[test]
     fn background_tasks_render_as_progress_bars_above_the_prompt() {
         let mut app = connected();
-        app.on_event(AppEvent::Harness(acp_core::HarnessEvent::Task(acp_core::TaskInfo {
-            id: "t1".into(),
-            title: "rust: indexing".into(),
-            done: 30.0,
-            total: Some(120.0),
-            message: "crates/acp-core".into(),
-            state: acp_core::TaskState::Running,
-            source: "lsp".into(),
-        })));
-        app.on_event(AppEvent::Harness(acp_core::HarnessEvent::Task(acp_core::TaskInfo {
-            id: "t2".into(),
-            title: "self-heal: verifying in sandbox (1/3)".into(),
-            done: 0.0,
-            total: None,
-            message: String::new(),
-            state: acp_core::TaskState::Running,
-            source: "heal".into(),
-        })));
+        app.on_event(AppEvent::Harness(acp_core::HarnessEvent::Task(
+            acp_core::TaskInfo {
+                id: "t1".into(),
+                title: "rust: indexing".into(),
+                done: 30.0,
+                total: Some(120.0),
+                message: "crates/acp-core".into(),
+                state: acp_core::TaskState::Running,
+                source: "lsp".into(),
+            },
+        )));
+        app.on_event(AppEvent::Harness(acp_core::HarnessEvent::Task(
+            acp_core::TaskInfo {
+                id: "t2".into(),
+                title: "self-heal: verifying in sandbox (1/3)".into(),
+                done: 0.0,
+                total: None,
+                message: String::new(),
+                state: acp_core::TaskState::Running,
+                source: "heal".into(),
+            },
+        )));
         let shown = screen(&mut app, 100, 20);
-        assert!(shown.contains("rust: indexing") && shown.contains(" 25%") && shown.contains("█████"), "{shown}");
-        assert!(shown.contains("self-heal: verifying in sandbox (1/3)"), "{shown}");
+        assert!(
+            shown.contains("rust: indexing") && shown.contains(" 25%") && shown.contains("█████"),
+            "{shown}"
+        );
+        assert!(
+            shown.contains("self-heal: verifying in sandbox (1/3)"),
+            "{shown}"
+        );
         let lines: Vec<&str> = shown.lines().collect();
-        let bar = lines.iter().position(|l| l.contains("rust: indexing")).unwrap();
+        let bar = lines
+            .iter()
+            .position(|l| l.contains("rust: indexing"))
+            .unwrap();
         let prompt = lines.iter().rposition(|l| l.starts_with('╭')).unwrap();
         assert!(bar < prompt, "bars sit above the prompt box");
         // finishing it leaves a ✓ that lingers, never in scrollback
-        app.on_event(AppEvent::Harness(acp_core::HarnessEvent::Task(acp_core::TaskInfo {
-            id: "t1".into(),
-            title: "rust: indexing".into(),
-            done: 120.0,
-            total: Some(120.0),
-            message: String::new(),
-            state: acp_core::TaskState::Completed,
-            source: "lsp".into(),
-        })));
+        app.on_event(AppEvent::Harness(acp_core::HarnessEvent::Task(
+            acp_core::TaskInfo {
+                id: "t1".into(),
+                title: "rust: indexing".into(),
+                done: 120.0,
+                total: Some(120.0),
+                message: String::new(),
+                state: acp_core::TaskState::Completed,
+                source: "lsp".into(),
+            },
+        )));
         assert!(screen(&mut app, 100, 20).contains("✓ rust: indexing"));
-        assert!(app.messages.iter().all(|m| !matches!(m, Message::Info(t) if t.contains("indexing"))));
+        assert!(
+            app.messages
+                .iter()
+                .all(|m| !matches!(m, Message::Info(t) if t.contains("indexing")))
+        );
     }
 
     #[test]
     fn self_heal_phases_land_in_the_transcript_with_the_patch_coloured() {
         let mut app = connected();
-        let heal = |phase: &str| AppEvent::Harness(acp_core::HarnessEvent::Heal(acp_core::HealInfo {
-            phase: phase.into(),
-            attempt: Some(1),
-            max: Some(3),
-            command: Some("cargo test".into()),
-            root_cause: Some("add() subtracts".into()),
-            patch: Some("--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-a - b\n+a + b\n".into()),
-            verify: Some("cargo test".into()),
-            ..Default::default()
-        }));
-        for phase in ["detected", "diagnosing", "proposed", "verifying", "verified", "healed"] {
+        let heal = |phase: &str| {
+            AppEvent::Harness(acp_core::HarnessEvent::Heal(acp_core::HealInfo {
+                phase: phase.into(),
+                attempt: Some(1),
+                max: Some(3),
+                command: Some("cargo test".into()),
+                root_cause: Some("add() subtracts".into()),
+                patch: Some(
+                    "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-a - b\n+a + b\n".into(),
+                ),
+                verify: Some("cargo test".into()),
+                ..Default::default()
+            }))
+        };
+        for phase in [
+            "detected",
+            "diagnosing",
+            "proposed",
+            "verifying",
+            "verified",
+            "healed",
+        ] {
             app.on_event(heal(phase));
         }
         let shown = screen(&mut app, 100, 30);
-        for needle in ["⟲ self-heal · `cargo test` failed", "attempt 1/3 · root cause: add() subtracts", "+a + b", "verified in a sandbox copy", "✓ self-heal · `cargo test` passes now"] {
+        for needle in [
+            "⟲ self-heal · `cargo test` failed",
+            "attempt 1/3 · root cause: add() subtracts",
+            "+a + b",
+            "verified in a sandbox copy",
+            "✓ self-heal · `cargo test` passes now",
+        ] {
             assert!(shown.contains(needle), "missing {needle:?}:\n{shown}");
         }
-        let blocks = app.messages.iter().filter(|m| matches!(m, Message::Heal(_))).count();
-        assert_eq!(blocks, 4, "diagnosing/verifying are progress bars, not blocks");
+        let blocks = app
+            .messages
+            .iter()
+            .filter(|m| matches!(m, Message::Heal(_)))
+            .count();
+        assert_eq!(
+            blocks, 4,
+            "diagnosing/verifying are progress bars, not blocks"
+        );
     }
 
     #[test]
     fn the_footer_shows_a_tab_strip_with_sessions_needing_approval() {
         let mut app = connected();
         app.tabs = vec![
-            crate::app::TabBadge { number: 1, active: true, state: crate::app::TabState::Idle },
-            crate::app::TabBadge { number: 2, active: false, state: crate::app::TabState::NeedsApproval },
-            crate::app::TabBadge { number: 3, active: false, state: crate::app::TabState::Working },
+            crate::app::TabBadge {
+                number: 1,
+                active: true,
+                state: crate::app::TabState::Idle,
+            },
+            crate::app::TabBadge {
+                number: 2,
+                active: false,
+                state: crate::app::TabState::NeedsApproval,
+            },
+            crate::app::TabBadge {
+                number: 3,
+                active: false,
+                state: crate::app::TabState::Working,
+            },
         ];
         let shown = screen(&mut app, 100, 12);
         let footer = shown.lines().last().unwrap();
-        assert!(footer.contains("[1]") && footer.contains(" 2⚠ ") && footer.contains(" 3● "), "{footer}");
+        assert!(
+            footer.contains("[1]") && footer.contains(" 2⚠ ") && footer.contains(" 3● "),
+            "{footer}"
+        );
     }
 
     #[test]
     fn laya_v2_decisions_and_command_predictions_render() {
         let mut app = connected();
         app.on_event(AppEvent::UserText("fix the test".into()));
-        app.on_event(AppEvent::Laya(acp_core::LayaEvent::Decision(acp_core::LayaDecision {
-            mode: "route".into(),
-            route: Some("debugger".into()),
-            route_confidence: 0.97,
-            calibrated: Some(0.97),
-            action: Some("dispatch".into()),
-            latency_ms: Some(29.0),
-            ..Default::default()
-        })));
+        app.on_event(AppEvent::Laya(acp_core::LayaEvent::Decision(
+            acp_core::LayaDecision {
+                mode: "route".into(),
+                route: Some("debugger".into()),
+                route_confidence: 0.97,
+                calibrated: Some(0.97),
+                action: Some("dispatch".into()),
+                latency_ms: Some(29.0),
+                ..Default::default()
+            },
+        )));
         app.on_event(AppEvent::ToolCallStarted(ToolCallInfo {
             id: "s1".into(),
             name: "shell".into(),
@@ -824,7 +969,10 @@ mod tests {
             untrusted: false,
             diffs: vec![],
         }));
-        app.on_event(AppEvent::Laya(acp_core::LayaEvent::Command { tool_use_id: "s1".into(), p_ok: 0.88 }));
+        app.on_event(AppEvent::Laya(acp_core::LayaEvent::Command {
+            tool_use_id: "s1".into(),
+            p_ok: 0.88,
+        }));
         app.on_event(AppEvent::Laya(acp_core::LayaEvent::CommandOutcome {
             tool_use_id: "s1".into(),
             ok: false,
@@ -832,7 +980,10 @@ mod tests {
             log_loss: Some(2.1),
         }));
         let shown = screen(&mut app, 100, 24);
-        assert!(shown.contains("◆ laya  debugger 97% ▸ dispatched to the debugger specialist · 29 ms"), "{shown}");
+        assert!(
+            shown.contains("◆ laya  debugger 97% ▸ dispatched to the debugger specialist · 29 ms"),
+            "{shown}"
+        );
         assert!(shown.contains("laya p(ok) 88% ✗ surprised"), "{shown}");
     }
 }

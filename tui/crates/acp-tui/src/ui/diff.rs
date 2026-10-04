@@ -186,13 +186,22 @@ pub fn stats(lines: &[DiffLine]) -> (usize, usize) {
 /// A path relative to the session's directory when it is inside it.
 pub fn short(path: &str, cwd: &str) -> String {
     let cwd = cwd.trim_end_matches('/');
-    match path.strip_prefix(cwd).and_then(|rest| rest.strip_prefix('/')) {
+    match path
+        .strip_prefix(cwd)
+        .and_then(|rest| rest.strip_prefix('/'))
+    {
         Some(rel) if !cwd.is_empty() => rel.to_owned(),
         _ => crate::ui::footer::short_path(path),
     }
 }
 
-fn header(path: &str, new_file: bool, added: usize, removed: usize, width: usize) -> Vec<Span<'static>> {
+fn header(
+    path: &str,
+    new_file: bool,
+    added: usize,
+    removed: usize,
+    width: usize,
+) -> Vec<Span<'static>> {
     let label = if new_file { "  (new file)" } else { "" };
     let counts = format!("  +{added} −{removed}");
     let room = width.saturating_sub(2 + display_width(&counts) + display_width(label));
@@ -231,12 +240,26 @@ fn row(line: &DiffLine, width: usize) -> Vec<Span<'static>> {
 
 /// Rows (spans, unbordered) for one file's change. `max_rows` caps the body;
 /// the remainder becomes a "+N more" row.
-pub fn file_rows(diff: &FileDiff, cwd: &str, width: usize, max_rows: Option<usize>) -> Vec<Vec<Span<'static>>> {
+pub fn file_rows(
+    diff: &FileDiff,
+    cwd: &str,
+    width: usize,
+    max_rows: Option<usize>,
+) -> Vec<Vec<Span<'static>>> {
     let lines = line_diff(diff.old_text.as_deref().unwrap_or(""), &diff.new_text);
     let (added, removed) = stats(&lines);
-    let mut rows = vec![header(&short(&diff.path, cwd), diff.old_text.is_none(), added, removed, width)];
+    let mut rows = vec![header(
+        &short(&diff.path, cwd),
+        diff.old_text.is_none(),
+        added,
+        removed,
+        width,
+    )];
     if added + removed == 0 {
-        rows.push(vec![Span::styled("  (no changes)", Style::new().fg(Color::Gray))]);
+        rows.push(vec![Span::styled(
+            "  (no changes)",
+            Style::new().fg(Color::Gray),
+        )]);
         return rows;
     }
     let body = hunk_rows(&lines);
@@ -249,7 +272,10 @@ pub fn file_rows(diff: &FileDiff, cwd: &str, width: usize, max_rows: Option<usiz
     }
     if body.len() > limit {
         rows.push(vec![Span::styled(
-            format!("     … +{} more diff lines (Ctrl+E expands)", body.len() - limit),
+            format!(
+                "     … +{} more diff lines (Ctrl+E expands)",
+                body.len() - limit
+            ),
             Style::new().fg(Color::Gray).add_modifier(Modifier::ITALIC),
         )]);
     }
@@ -339,7 +365,10 @@ mod tests {
             .collect();
         let lines = line_diff(&old, &new);
         let rows = hunk_rows(&lines);
-        assert!(rows.iter().any(Option::is_none), "a gap between the two hunks");
+        assert!(
+            rows.iter().any(Option::is_none),
+            "a gap between the two hunks"
+        );
         let shown: Vec<&str> = rows.iter().flatten().map(|l| l.text.as_str()).collect();
         assert!(shown.contains(&"5") && !shown.contains(&"10"), "{shown:?}");
     }
@@ -356,7 +385,9 @@ mod tests {
             .iter()
             .map(|r| r.iter().map(|s| s.content.as_ref()).collect())
             .collect();
-        assert!(text[0].starts_with("✎ src/lib.rs") && text[0].contains("+1") && text[0].contains("−1"));
+        assert!(
+            text[0].starts_with("✎ src/lib.rs") && text[0].contains("+1") && text[0].contains("−1")
+        );
         assert!(text.iter().any(|t| t.starts_with("   2 −")));
         assert!(text.iter().any(|t| t.starts_with("   2 +")));
         assert!(text.iter().all(|t| display_width(t) <= 40), "{text:#?}");
@@ -371,7 +402,12 @@ mod tests {
             new_text: new,
         };
         let rows = file_rows(&diff, "/p", 60, Some(10));
-        let last: String = rows.last().unwrap().iter().map(|s| s.content.as_ref()).collect();
+        let last: String = rows
+            .last()
+            .unwrap()
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
         assert!(last.contains("+40 more diff lines"), "{last}");
         let first: String = rows[0].iter().map(|s| s.content.as_ref()).collect();
         assert!(first.contains("(new file)") && first.contains("+50"));

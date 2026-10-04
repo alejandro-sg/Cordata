@@ -9,6 +9,12 @@ frontend/.env.local
 backend/sessions/
 backend/workspace/
 backend/repl_state/
+# The trace corpus (trace_store.py): per-checkout, accumulated, and it records
+# prompts, tool inputs and command output, so it must not land in a clone.
+backend/memory.lance/
+# The knowledge graph (kg/): same reasoning, and it names the files a checkout
+# touched and the errors it hit, which is not something to publish by accident.
+backend/memory.kg/
 
 # MCP server config — can carry secrets in a server's own env/headers
 # fields (mcp_manager.py), same reasoning backend/.env is gitignored for.

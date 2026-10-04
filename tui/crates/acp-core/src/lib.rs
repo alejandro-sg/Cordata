@@ -8,8 +8,9 @@ pub mod error;
 pub mod events;
 pub mod permission;
 pub mod session;
+pub mod transport;
 
-pub use config::BackendConfig;
+pub use config::{BackendConfig, DaemonConfig};
 pub use error::{Error, Result};
 pub use events::{
     AppEvent, ConfigChoice, ConfigOptionInfo, FileDiff, HEAL_METHOD, HarnessEvent, HealInfo,
@@ -19,3 +20,4 @@ pub use events::{
 };
 pub use permission::{ApprovalDecision, PermissionInfo, Unwrapped, unwrap_untrusted};
 pub use session::{SessionHandle, SessionOptions};
+pub use transport::{BackendTransport, WsTransport};

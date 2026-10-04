@@ -30,11 +30,20 @@ pub struct Panel {
     /// Lines from this index on are never cut when the panel doesn't fit (the
     /// key hints); rows just above them are dropped instead.
     pub pinned_from: Option<usize>,
+    /// Rows drawn under the list, outside it. A `List` scrolls to follow its
+    /// selection, so anything that must stay readable — the selected entry's
+    /// help and the key hints — cannot be a list item: it scrolls away as soon
+    /// as the selection leaves the bottom of the panel.
+    pub footer: Vec<Line<'static>>,
 }
 
 /// Fit `lines` into `rows`, keeping everything from `pinned_from` and the
 /// first line, dropping from the middle with a marker.
-fn fit_lines(mut lines: Vec<Line<'static>>, rows: usize, pinned_from: Option<usize>) -> Vec<Line<'static>> {
+fn fit_lines(
+    mut lines: Vec<Line<'static>>,
+    rows: usize,
+    pinned_from: Option<usize>,
+) -> Vec<Line<'static>> {
     let Some(pinned) = pinned_from.filter(|p| *p <= lines.len()) else {
         return lines;
     };
@@ -85,9 +94,19 @@ fn permission_panel(app: &App, width: u16) -> Option<Panel> {
     let card = app.card(&info.tool_call_id);
     let diffs = card.map(|c| c.diffs.as_slice()).unwrap_or_default();
     let patch = (info.tool_name == "apply_patch")
-        .then(|| info.raw_input.as_ref()?.get("patch")?.as_str().map(str::to_owned))
+        .then(|| {
+            info.raw_input
+                .as_ref()?
+                .get("patch")?
+                .as_str()
+                .map(str::to_owned)
+        })
         .flatten();
-    let cap = Some(if app.diff_expanded { 400 } else { MAX_DIFF_ROWS });
+    let cap = Some(if app.diff_expanded {
+        400
+    } else {
+        MAX_DIFF_ROWS
+    });
     let cwd = app.session.as_ref().map_or("", |s| s.cwd.as_str());
     let shows_diff = !diffs.is_empty() || patch.is_some();
     if !diffs.is_empty() {
@@ -106,7 +125,9 @@ fn permission_panel(app: &App, width: u16) -> Option<Panel> {
         }
     } else {
         let rendered_input = match &info.raw_input {
-            Some(value) => serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string()),
+            Some(value) => {
+                serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+            }
             None => "(none)".to_owned(),
         };
         let rows = wrap(&sanitize(&rendered_input), inner_width.saturating_sub(2));
@@ -136,7 +157,11 @@ fn permission_panel(app: &App, width: u16) -> Option<Panel> {
     if shows_diff {
         keys.push(Span::raw("     "));
         keys.push(key(" d ", Color::Blue));
-        keys.push(Span::raw(if app.diff_expanded { " shorter diff" } else { " whole diff" }));
+        keys.push(Span::raw(if app.diff_expanded {
+            " shorter diff"
+        } else {
+            " whole diff"
+        }));
     }
     let pinned_from = lines.len();
     lines.push(Line::from(keys));
@@ -168,6 +193,7 @@ fn permission_panel(app: &App, width: u16) -> Option<Panel> {
         lines,
         selected: None,
         pinned_from: Some(pinned_from),
+        footer: Vec::new(),
     })
 }
 
@@ -194,6 +220,7 @@ fn picker_panel(app: &App) -> Option<Panel> {
         lines,
         selected: Some(picker.selected),
         pinned_from: None,
+        footer: Vec::new(),
     })
 }
 
@@ -203,7 +230,7 @@ fn config_panel(app: &App, width: u16) -> Option<Panel> {
     let panel = app.config.as_ref()?;
     let inner = (width as usize).saturating_sub(4);
     let dim = Style::new().fg(Color::DarkGray);
-    let mut lines: Vec<Line<'static>> = SCHEMA
+    let lines: Vec<Line<'static>> = SCHEMA
         .iter()
         .map(|entry| {
             let (value, source) = match app.settings.get(entry.key) {
@@ -244,15 +271,15 @@ fn config_panel(app: &App, width: u16) -> Option<Panel> {
             ])
         })
         .collect();
+    // The selected entry's help goes in the *title*, not the list: the list
+    // scrolls to follow the selection, so a help row at the end of it would be
+    // unreadable for every entry above the last screenful. The title is drawn
+    // by the block and never scrolls.
     let entry = &SCHEMA[panel.selected.min(SCHEMA.len() - 1)];
     let when = match entry.applies {
         Applies::Now => "applies now",
-        Applies::NextSession => "applies to the next session",
+        Applies::NextSession => "next session",
     };
-    lines.push(Line::styled(
-        truncate(&format!(" {} — {when}", entry.help), inner),
-        dim,
-    ));
     let status = if panel.status.is_empty() {
         format!(
             " ↑↓ select · Enter change · ⌫ reset · Tab file: {} · Esc close",
@@ -261,16 +288,23 @@ fn config_panel(app: &App, width: u16) -> Option<Panel> {
     } else {
         format!(" {}", panel.status)
     };
-    lines.push(Line::styled(
-        truncate(&status, inner),
-        Style::new().fg(Color::Gray),
-    ));
     Some(Panel {
-        title: format!(" Settings → {} file ", panel.scope.name()),
+        title: truncate(
+            &format!(
+                " Settings → {} file · {} · {when} ",
+                panel.scope.name(),
+                entry.help
+            ),
+            width as usize,
+        ),
         border: Color::Cyan,
         lines,
         selected: Some(panel.selected),
         pinned_from: None,
+        footer: vec![Line::styled(
+            truncate(&status, inner),
+            Style::new().fg(Color::Gray),
+        )],
     })
 }
 
@@ -282,7 +316,7 @@ pub fn current(app: &App, width: u16) -> Option<Panel> {
 
 /// Total rows a panel needs, bordered, capped at `max`.
 pub fn height(panel: &Panel, max: u16) -> u16 {
-    (panel.lines.len() as u16 + 2).min(max.max(3))
+    (panel.lines.len() as u16 + panel.footer.len() as u16 + 2).min(max.max(3))
 }
 
 pub fn render(buffer: &mut Buffer, area: Rect, panel: Panel) {
@@ -290,25 +324,36 @@ pub fn render(buffer: &mut Buffer, area: Rect, panel: Panel) {
         .border_type(BorderType::Rounded)
         .title(panel.title)
         .border_style(Style::new().fg(panel.border).add_modifier(Modifier::BOLD));
+    // The footer is carved out of the inner area before the scrolling body gets
+    // it, so `footer.len()` rows stay put however the body scrolls.
+    let inner = block.inner(area);
+    let footer_rows = (panel.footer.len() as u16).min(inner.height);
+    let body = Rect {
+        height: inner.height - footer_rows,
+        ..inner
+    };
+    block.render(area, buffer);
     match panel.selected {
         Some(selected) => {
             // Keep the highlighted row visible when the list is taller than the panel.
             let items: Vec<ListItem> = panel.lines.into_iter().map(ListItem::new).collect();
             let mut state = ListState::default().with_selected(Some(selected));
             StatefulWidget::render(
-                List::new(items)
-                    .block(block)
-                    .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
-                area,
+                List::new(items).highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
+                body,
                 buffer,
                 &mut state,
             );
         }
         None => {
-            let rows = area.height.saturating_sub(2) as usize;
-            Paragraph::new(fit_lines(panel.lines, rows, panel.pinned_from))
-                .block(block)
-                .render(area, buffer)
+            let rows = body.height as usize;
+            Paragraph::new(fit_lines(panel.lines, rows, panel.pinned_from)).render(body, buffer);
+        }
+    }
+    for (row, line) in panel.footer.into_iter().enumerate() {
+        let y = body.bottom() + row as u16;
+        if y < inner.bottom() {
+            buffer.set_line(inner.x, y, &line, inner.width);
         }
     }
 }

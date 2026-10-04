@@ -42,9 +42,19 @@ pub fn lines(info: &HealInfo, width: u16, expanded: bool) -> Vec<Line<'static>> 
     let dim = Style::new().fg(Color::Gray);
     let good = Style::new().fg(Color::Green).add_modifier(Modifier::BOLD);
     let bad = Style::new().fg(Color::Red).add_modifier(Modifier::BOLD);
-    let command = info.command.as_deref().map(code).unwrap_or_else(|| "the command".into());
+    let command = info
+        .command
+        .as_deref()
+        .map(code)
+        .unwrap_or_else(|| "the command".into());
     let head = |glyph: &str, style: Style, text: String| {
-        fit_spans(vec![Span::styled(format!("{glyph} "), style), Span::styled(text, dim)], w)
+        fit_spans(
+            vec![
+                Span::styled(format!("{glyph} "), style),
+                Span::styled(text, dim),
+            ],
+            w,
+        )
     };
     let mut out = Vec::new();
     match info.phase.as_str() {
@@ -163,7 +173,10 @@ mod tests {
     use super::*;
 
     fn plain(lines: &[Line<'_>]) -> Vec<String> {
-        lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect()).collect()
+        lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
     }
 
     fn info(phase: &str) -> HealInfo {
@@ -183,7 +196,9 @@ mod tests {
     #[test]
     fn each_phase_reads_as_one_story() {
         let detected = plain(&lines(&info("detected"), 90, false));
-        assert!(detected[0].contains("`cargo test` failed") && detected[0].contains("up to 3 attempts"));
+        assert!(
+            detected[0].contains("`cargo test` failed") && detected[0].contains("up to 3 attempts")
+        );
         assert!(detected.iter().any(|l| l.contains("assertion failed")));
         let proposed = plain(&lines(&info("proposed"), 90, false));
         assert!(proposed[0].contains("attempt 1/3") && proposed[0].contains("add() subtracts"));
@@ -196,9 +211,21 @@ mod tests {
 
     #[test]
     fn heal_rows_fit_the_width() {
-        for phase in ["detected", "proposed", "verified", "verify_failed", "healed", "escalated", "no_patch", "continuing"] {
+        for phase in [
+            "detected",
+            "proposed",
+            "verified",
+            "verify_failed",
+            "healed",
+            "escalated",
+            "no_patch",
+            "continuing",
+        ] {
             for row in plain(&lines(&info(phase), 40, false)) {
-                assert!(super::super::text::display_width(&row) <= 40, "{phase}: {row}");
+                assert!(
+                    super::super::text::display_width(&row) <= 40,
+                    "{phase}: {row}"
+                );
             }
         }
     }

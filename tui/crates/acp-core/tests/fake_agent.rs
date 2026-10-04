@@ -21,6 +21,7 @@ fn start(resume: Option<&str>) -> (SessionHandle, UnboundedReceiver<AppEvent>) {
     SessionHandle::spawn(SessionOptions {
         backend: fake_backend(),
         cwd: std::env::temp_dir(),
+        transport: acp_core::BackendTransport::Stdio,
         resume: resume.map(str::to_owned),
         debug_log: None,
         continue_latest: false,

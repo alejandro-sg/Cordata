@@ -114,6 +114,14 @@ estimate. See [`docs/laya-triage.md`](docs/laya-triage.md).
   from its own environment, and masks it in every tool result so no agent can read it
   back — `THREAT_MODEL.md` ("Provider API keys") says exactly what that covers and what it
   doesn't (`python_repl` in `auto` mode).
+- **Tool subprocesses can be routed through the Agent Vault** (`vault.enabled`, default off):
+  they hold placeholder credentials (`OPENAI_API_KEY=__openai_api_key__`) and reach the network
+  through a local proxy that substitutes the real value on the way out, so a command that prints
+  or exports its environment leaks a marker. The vault token comes from the Keychain
+  (`sierralab-agent-vault-token`), never a settings file. If the vault is enabled and unreachable,
+  the default `vault.egressPolicy: deny` refuses `shell`/`python_repl`/`http_request` in **every**
+  mode rather than falling through to direct egress — `docs/settings.md` ("Agent Vault") and
+  `THREAT_MODEL.md` ("Agent Vault is egress-only"; it is not a filesystem sandbox).
 - **Laya** (`LAYA_TRIAGE_MODE`, default `route`; `LAYA_GUARD_ENABLED`) is a fast local
   classifier: it triages each turn (an advisory routing hint above a confidence gate, and a
   model tier for sub-agents) and optionally scores untrusted tool output for injection.
@@ -137,6 +145,34 @@ in [`docs/agentic-harness.md`](docs/agentic-harness.md) and [`THREAT_MODEL.md`](
 into your terminal's own scrollback, so you scroll with the wheel as usual)
 and a concurrent stress runner (`acp-stress`) for this backend — see
 [`tui/README.md`](tui/README.md). `make tui`, `make tui-test`, `make stress`.
+
+### The daemon (sessions that outlive the terminal)
+
+By default `acp-tui` spawns `backend/acp_server.py` itself and the session ends with the terminal.
+`make daemon` runs the supervisor daemon (`backend/daemon/`) instead: it spawns **one child per
+project directory**, keeps it alive when a client disconnects, and replays what the client missed —
+including an approval prompt the child is already blocked on. Attach to one with:
+
+```bash
+make daemon                                    # foreground; make daemon-install for a LaunchAgent
+make tui ARGS="--transport ws"                 # attaches by cwd, or starts a session there
+```
+
+The daemon binds loopback only, requires the token in `~/.sierralab/daemon.json` (0600), and rejects
+any WebSocket handshake carrying a browser `Origin`. It proxies ACP frames **verbatim** — it never
+parses and re-encodes them — so `--transport ws` and the default `--transport stdio` are
+semantically identical, and no protocol change here needs a matching change there. If the *child*
+died rather than the client, the approval it was parked on is gone with it: `--resume` says so from
+the ledger (`state.db`) instead of quietly dropping the question. See
+[`THREAT_MODEL.md`](THREAT_MODEL.md).
+
+While nobody is attached the daemon can watch the projects itself (`observer.enabled`, off by
+default): it reads each one with a fixed `git` command list, hands that to a read-only agent, and
+writes `~/.sierralab/nightly_briefing.md`. The agent holds `file_read` and `think` and nothing
+else, so the zero-write rule is structural rather than a prompt — and a client attaching kills a
+cycle in flight. A deploy hook or CI job can feed it with `POST /observe`. Keys and limits:
+[`docs/settings.md`](docs/settings.md); what it can and can't do:
+[`THREAT_MODEL.md`](THREAT_MODEL.md), "The background observer writes nothing".
 
 Preferences work the way Claude Code's and Kilo's do: layered `settings.json` files (user / project /
 local), `allow` / `ask` / `deny` permission rules, "always allow" from the approval prompt, and
@@ -380,7 +416,10 @@ door, with real parity on the things that matter for using it day to day:
   `editor`, and any `skills_generated/*` tool pause for a real Zed permission prompt
   before running, via Strands' own `strands.interventions` system (`_ApprovalHandler` in
   `acp_server.py`) translated into ACP's native `session/request_permission` — the same
-  tools main.py gates behind an approval card on the web.
+  tools main.py gates behind an approval card on the web. Each prompt is staged in
+  `~/.sierralab/state.db` before it is shown and closed with the answer, with Laya's risk
+  score and band alongside it, so "what was asked, who approved it, under which rule" is
+  answerable later and a turn that resumes does not ask the same call twice.
 - **Model & temperature as native config-option dropdowns** (`session/set_config_option`)
   — reuses the exact same live model-swap mechanism `model_control_tool.py`'s
   `set_active_model`/`set_temperature` tools use, just surfaced as a picker in Zed's UI

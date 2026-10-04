@@ -22,6 +22,19 @@ strands-agents-tools==0.8.8
 agent-client-protocol==0.12.1
 qdrant-client==1.19.0
 sentence-transformers==6.0.1
+# trace_store.py's embedded trace corpus (memory.traces, default off), and the
+# queryable half of kg/'s knowledge graph (kg.enabled, default off). Pulls in
+# pylance and pyarrow; both are lancedb's own pins, not ours to freeze — the
+# only API trace_store uses is connect/create_table/search/where/add, which has
+# been stable across the 0.1x line. `pip install --upgrade lancedb` still wants
+# a full regression pass including _trace_store_smoke_test.py and
+# _kg_smoke_test.py, per the header.
+lancedb==0.17.0
+# kg.sink="cognee" is deliberately NOT pinned here: cognee is not a dependency
+# of this harness. The CogneeGraphSink slots behind kg/__init__.py's interface
+# for a machine that has it, and a checkout without it still gets kg/'s JSONL
+# mirrors — but install cognee yourself if you want that backend, and expect to
+# re-verify _kg_smoke_test.py against whatever version you land on.
 # prompt_security.py's optional injection-risk classifier (settings.
 # LAYA_GUARD_ENABLED, default off). Installing it here costs nothing at
 # build time beyond its own small wheel — torch/transformers are already

@@ -151,6 +151,30 @@ Deliberate behaviours worth knowing:
 `--debug-log FILE` appends the raw JSON-RPC traffic and the server's stderr to a
 file (never stdout — the TUI owns the terminal).
 
+### `--transport ws`: attaching to the daemon
+
+`--transport stdio` (the default) spawns `backend/acp_server.py` for this
+terminal, and the session ends with it. `--transport ws` attaches to the
+always-on daemon instead (`make daemon`, or `make daemon-install` for a
+LaunchAgent):
+
+```bash
+make daemon                          # foreground supervisor
+make tui ARGS="--transport ws"       # attaches to the session in this cwd, or starts one
+make tui ARGS='--transport ws --continue'
+```
+
+The daemon takes the **directory**, not a session id: the id is the daemon's to
+mint, and a client that just started does not have one. Attaching to a directory
+that already has a live session reattaches to it and replays what you missed —
+including an approval prompt the child is already blocked on, which it will not
+re-emit. The banner's `link` row says which transport you are on.
+
+The token and port come from `~/.sierralab/daemon.json` (0600); `--daemon-url`
+overrides the URL, for a daemon whose config you don't have on disk. Nothing
+else changes: the daemon proxies ACP frames verbatim, so `--resume`,
+`--continue`, permissions and Laya behave identically either way.
+
 ## acp-stress
 
 ```jsonc

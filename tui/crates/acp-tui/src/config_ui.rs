@@ -55,6 +55,19 @@ pub(crate) fn default_value(entry: &Entry) -> Value {
         "tui.showLaya" => true.into(),
         "laya.mode" => "route".into(),
         "laya.threshold" => 0.85.into(),
+        // Destructiveness scoring: the 0.2 / 0.8 the directive names. Shown
+        // here so `/config` reads as "what is in effect", not as blank rows.
+        "laya.riskSafe" => 0.2.into(),
+        "laya.riskDestroy" => 0.8.into(),
+        "laya.riskAutoApprove" => false.into(),
+        // Off by default: the trace store needs lancedb, and the proxy and the
+        // observer are the two settings that change what runs unattended.
+        "memory.traces" => false.into(),
+        "vault.enabled" => false.into(),
+        "vault.addr" => "http://127.0.0.1:14322".into(),
+        "vault.egressPolicy" => "deny".into(),
+        "observer.enabled" => false.into(),
+        "observer.intervalMinutes" => 30.0.into(),
         _ => Value::Null,
     }
 }
@@ -655,6 +668,7 @@ mod tests {
         app.on_event(AppEvent::Connected(SessionInfo {
             session_id: "s1".into(),
             cwd: store.cwd.display().to_string(),
+            transport: "stdio".into(),
             resumed: false,
             current_mode: "build".into(),
             modes: ["plan", "build", "auto"]

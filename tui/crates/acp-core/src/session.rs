@@ -14,16 +14,22 @@ use crate::config::BackendConfig;
 use crate::connection;
 use crate::error::{Error, Result};
 use crate::events::AppEvent;
+use crate::transport::BackendTransport;
 
 #[derive(Debug, Clone)]
 pub struct SessionOptions {
     pub backend: BackendConfig,
     /// Project directory the agent works in (sent as the session's `cwd`).
     pub cwd: PathBuf,
+    /// How to reach the agent. `Stdio` spawns `backend/acp_server.py` here;
+    /// `Ws` attaches to the always-on daemon instead, which is what lets a
+    /// session outlive the terminal that started it.
+    pub transport: BackendTransport,
     /// Resume an existing session id via `session/load` instead of creating one.
     pub resume: Option<String>,
     /// Append raw JSON-RPC lines + server stderr here. Never stdout/stdin —
-    /// the TUI owns those.
+    /// the TUI owns those. With `--transport ws` this records only what the
+    /// client sent and received; the child's stderr stays on the daemon's.
     pub debug_log: Option<PathBuf>,
     /// With no `resume`, ask the backend (`session/list`) for the newest session
     /// in `cwd` and load that one; a fresh session when there is none.
@@ -35,7 +41,10 @@ pub(crate) enum Command {
     Prompt(String),
     Cancel,
     SetMode(String),
-    SetConfigOption { id: String, value: String },
+    SetConfigOption {
+        id: String,
+        value: String,
+    },
     /// An extension request (`_sierralab/...`, or a standard method the typed
     /// API doesn't cover); the answer arrives as `AppEvent::ExtResult { tag }`.
     Ext {

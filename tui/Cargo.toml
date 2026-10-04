@@ -22,9 +22,15 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 regex = "1"
 textwrap = "0.16"
+# The daemon's transport. Default features only (connect + handshake): wss
+# would pull a TLS stack this never uses, since daemon/server.py binds loopback.
+tokio-tungstenite = "0.28"
 tempfile = "3"
 thiserror = "2"
 unicode-width = "0.2"
 vt100 = "0.16"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "io-std", "signal"] }
+# "net" is for the WebSocket client transport (crates/acp-core/src/transport.rs);
+# stdio-only builds do not need it, but feature-gating one dependency to save a
+# compile is not worth two build configurations to keep correct.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "io-std", "signal", "net"] }
 acp-core = { path = "crates/acp-core" }

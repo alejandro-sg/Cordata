@@ -58,12 +58,17 @@ from strands.interventions import Confirm, Deny, InterventionHandler, Proceed
 
 import edit_preview
 import harness_events
+import kg
+import laya_risk
 import lsp_bridge
 import patch_tool
 import settings as app_settings
 import settings_store
 import specialists
+import state_store
 import team_pipeline
+import trace_store
+import vault_proxy
 import workspace_context
 from laya_router import BASE_TARGETS, LayaRouter, Policy, RouteDecision, RouterHooks, plugin_targets, summarize_stats
 from plugin_host import PluginHost, PluginSpec, run_blocking
@@ -136,6 +141,40 @@ def _permission_approved(outcome, options: list) -> bool:
         return False
     selected = next((o for o in options if o.option_id == outcome.option_id), None)
     return selected is not None and selected.kind in _ALLOW_KINDS
+
+
+def _settled_intervention(interrupt_id: str, session_id: str, tool_name: str, tool_input) -> dict | None:
+    """A previously recorded decision for this exact pause, if there is one.
+
+    Strands derives the interrupt id from the tool call, not at random —
+    `v1:before_tool_call:{toolUseId}:{uuid5(handler name)}` — so the same tool
+    call raised again in the same session produces the same id. That is the case
+    this exists for: `_stream` reports a turn's interrupts from two places (the
+    `tool_interrupt_event` and `AgentResult.interrupts`), so without a record to
+    consult the same call gets a second prompt within one turn. Replaying the
+    answer is then the honest thing — the user already answered it.
+
+    Only an *identical* call in the *same session* counts. The id is derived
+    from a tool-use id that another session's model could in principle have
+    minted too, and lending an answer across sessions would approve something no
+    one was shown; a row whose tool or input differs is likewise a different
+    pause. Anything unreadable, mismatched or from another session re-prompts —
+    the fail-closed direction.
+    """
+    row = state_store.get_intervention(interrupt_id)
+    if not row or row.get("status") == "staged":
+        return None
+    if row.get("session_id") != session_id or row.get("tool") != tool_name or row.get("tool_input") != tool_input:
+        logging.getLogger(__name__).warning(
+            "intervention %s does not match the call it is being replayed for (%r/%r != %r/%r); asking again",
+            interrupt_id,
+            row.get("session_id"),
+            row.get("tool"),
+            session_id,
+            tool_name,
+        )
+        return None
+    return row
 
 
 # How much of a running sub-agent's latest reasoning one progress update carries.
@@ -274,12 +313,13 @@ class _ApprovalHandler(InterventionHandler):
 
     name = "acp-approval"
 
-    def __init__(self, cwd: str | None = None, mode: str = "build", plugins=None, heal=None, router_hooks=None) -> None:
+    def __init__(self, cwd: str | None = None, mode: str = "build", plugins=None, heal=None, router_hooks=None, vault=None) -> None:
         self.mode = mode
         self.cwd = cwd or os.getcwd()
         self.plugins = plugins  # PluginHost: runtime plugin tools' approval
         self.heal = heal  # SelfHealHooks: selfHeal.autoApply pre-approvals
         self.router_hooks = router_hooks  # RouterHooks: Laya's risk arming
+        self.vault = vault  # vault_proxy.VaultStatus: egress proxy health
         self.session_agent = None  # the orchestrator; specialists share this handler
 
     def before_tool_call(self, event):
@@ -293,9 +333,26 @@ class _ApprovalHandler(InterventionHandler):
         tool_name = event.tool_use.get("name")
         tool_input = event.tool_use.get("input")
 
-        verdict = settings_store.evaluate(settings_store.current(self.cwd), tool_name, tool_input, self.cwd)
+        # Read once: `evaluate` below and the risk score recorded with the
+        # prompt must come from the same settings, or the ledger's explanation
+        # of why a call was held up disagrees with the decision itself.
+        preferences = settings_store.current(self.cwd)
+        verdict = settings_store.evaluate(preferences, tool_name, tool_input, self.cwd)
         if verdict is not None and verdict.action == "deny":
             return Deny(reason=f"{tool_name} was not run: blocked by a {verdict.explain()}. Do something else or ask the user.")
+        if self.vault is not None and self.vault.blocks_egress and tool_name in vault_proxy.EGRESS_TOOLS:
+            # Fail closed *before* the mode logic: with the vault enabled and
+            # unreachable, nothing that could carry a credential off the machine
+            # may run, and `auto` mode must not be able to wave it through.
+            # There is no prompt here on purpose — a pause the user answers "yes"
+            # to is exactly the fail-open path this refuses.
+            return Deny(
+                reason=(
+                    f"{tool_name} was not run: {self.vault.reason}. "
+                    "Start the Agent Vault, or set vault.egressPolicy to \"proxy\" to route through "
+                    "the configured address without vault credentials."
+                )
+            )
         read_only = _read_only_call(tool_name, tool_input)
         if self.mode == "plan":
             if tool_name in PLAN_MODE_TOOLS or read_only:
@@ -322,6 +379,7 @@ class _ApprovalHandler(InterventionHandler):
             if plugin_gate is None and (tool_name not in APPROVAL_REQUIRED_TOOLS or read_only):
                 return Proceed()
 
+        risk = self._risk(preferences)
         payload = json.dumps(
             {
                 "name": tool_name,
@@ -329,9 +387,31 @@ class _ApprovalHandler(InterventionHandler):
                 "tool_use_id": event.tool_use.get("toolUseId"),
                 "always_rule": None if armed else settings_store.suggest_rule(tool_name, tool_input),
                 **({"reason": "Laya rated this turn destructive — asking even in auto mode"} if armed else {}),
+                **({"risk": risk.to_event()} if risk else {}),
             }
         )
         return Confirm(prompt=payload)
+
+    def _risk(self, preferences) -> laya_risk.RiskAssessment | None:
+        """Laya's 0.0-1.0 destructiveness score for the turn in progress.
+
+        `None` when there is nothing to score — the router is off, or it
+        abstained before the tool gate ran. Carried through the interrupt's
+        payload (Strands' `Interrupt` has no metadata slot) so the staged
+        intervention and the `intervention` event can both say *why* the gate
+        paused, not just that it did.
+        """
+        if self.router_hooks is None or self.session_agent is None:
+            return None
+        decision = self.router_hooks.current(self.session_agent)
+        if decision is None:
+            return None
+        router = getattr(self.router_hooks, "router", None)
+        return laya_risk.assess(
+            decision,
+            preferences=preferences,
+            calibrator=getattr(router, "calibrator", None),
+        )
 
 
 def _replay_history(messages: list[dict]) -> list:
@@ -564,16 +644,26 @@ class _Session:
     heal: SelfHealHooks
     specialists: dict = field(default_factory=dict)
     plugins: PluginHost | None = None
+    #: The settings resolved for this session's cwd. Held so a turn can tell
+    #: whether the trace corpus is switched on (trace_store.enabled) without
+    #: re-reading the files, which would pick up an edit made mid-session and
+    #: disagree with every other decision this session already made from these.
+    preferences: object = None
 
 
-_PLUGIN_HOSTS: dict[str, PluginHost] = {}
+_PLUGIN_HOSTS: dict[tuple[str, bool], PluginHost] = {}
 _ROUTER: LayaRouter | None = None
 
 
-def _plugin_host(cwd: str, reserved: set[str]) -> PluginHost:
+def _plugin_host(cwd: str, reserved: set[str], traces_enabled: bool = False) -> PluginHost:
     """One host per project per process. The memory store and the LSP tools are
-    built-in plugins: listed, swappable and disable-able like an MCP server."""
-    host = _PLUGIN_HOSTS.get(cwd)
+    built-in plugins: listed, swappable and disable-able like an MCP server.
+
+    `traces_enabled` is part of the cache key rather than a runtime toggle: a
+    trace tool with nothing behind it is worse than no trace tool, so the plugin
+    only exists when `memory.traces` says the corpus does. That means `/plugins`
+    lists it exactly when it works."""
+    host = _PLUGIN_HOSTS.get((cwd, traces_enabled))
     if host is None:
         from agent_memory_tool import agent_memory
 
@@ -595,7 +685,27 @@ def _plugin_host(cwd: str, reserved: set[str]) -> PluginHost:
                 builtin_tools=lambda: list(lsp_bridge.LSP_TOOLS),
             ),
         ]
-        host = _PLUGIN_HOSTS[cwd] = PluginHost(cwd, builtins=builtins, reserved_names=reserved)
+        if traces_enabled:
+            builtins.append(
+                PluginSpec(
+                    name="traces",
+                    kind="memory",
+                    transport="builtin",
+                    source="built-in",
+                    description="search this project's recorded execution traces (memory.traces)",
+                    # Built on first use: `_tool` imports strands and builds the
+                    # @tool wrapper, which a plugin that is switched off must
+                    # not pay for.
+                    builtin_tools=lambda: [trace_store._tool()],
+                    # `allow` (not `ask`): searching the corpus changes nothing,
+                    # and a built-in does not need trust for it to be honoured.
+                    # `untrusted_output` stays at its default: a trace holds
+                    # command output and file contents, which is exactly the
+                    # text the guard exists to fence off.
+                    approval="allow",
+                )
+            )
+        host = _PLUGIN_HOSTS[(cwd, traces_enabled)] = PluginHost(cwd, builtins=builtins, reserved_names=reserved)
     return host
 
 
@@ -697,6 +807,24 @@ class SierraLabAcpAgent:
             logging.getLogger(__name__).warning("settings: %s", warning)
         _apply_startup_preferences(preferences)
 
+        # After `_apply_startup_preferences` and after `agent_common` has been
+        # imported, which is where `settings.py` takes this harness's own
+        # provider keys out of the environment — see `vault_proxy.install` for
+        # why the order matters to the placeholders it writes.
+        vault = vault_proxy.install(preferences)
+        if vault.enabled:
+            logging.getLogger(__name__).info("vault: %s", vault.reason)
+            harness_events.emit(
+                "vault",
+                {
+                    "event": "vault",
+                    "phase": "blocked" if vault.blocks_egress else "ready",
+                    "addr": vault.addr,
+                    "reason": vault.reason,
+                    "credentialed": vault.credentialed,
+                },
+            )
+
         router = _router()
         router.policy = _router_policy(preferences)
         lsp_enabled = preferences.get("lsp.enabled", True) is not False
@@ -704,7 +832,7 @@ class SierraLabAcpAgent:
         manager.enabled = lsp_enabled
 
         reserved = {"shell", "editor", "file_read", "file_write", "python_repl", "http_request", "apply_patch", "architect", "debugger"}
-        plugins = _plugin_host(cwd, reserved)
+        plugins = _plugin_host(cwd, reserved, trace_store.enabled(preferences))
         heal = SelfHealHooks(config=lambda: _heal_config(settings_store.current(cwd)), session_id=session_id, root=cwd)
         router_hooks = RouterHooks(router, notify=self._laya_notifier(session_id), plugin_host=plugins)
         handler = _ApprovalHandler(
@@ -713,6 +841,7 @@ class SierraLabAcpAgent:
             plugins=plugins,
             heal=heal,
             router_hooks=router_hooks,
+            vault=vault,
         )
         specialist_tools, specialist_agents = specialists.specialist_tools(
             interventions=[handler],
@@ -748,8 +877,18 @@ class SierraLabAcpAgent:
 
             warm_up_laya()
 
-        state = _Session(agent, handler, cwd, router_hooks, heal, specialist_agents, plugins)
+        state = _Session(agent, handler, cwd, router_hooks, heal, specialist_agents, plugins, preferences)
         self._sessions[session_id] = state
+        # The settings this session actually ran with, frozen at build time.
+        # `values` is the merged, validated dotted-key view; `sources` says which
+        # file set each key, which is what makes "who loosened that rule?"
+        # answerable after the files on disk have moved on.
+        state_store.record_session_config(
+            session_id,
+            cwd=cwd,
+            mode=handler.mode,
+            settings={"values": preferences.values, "sources": preferences.sources, "trusted": preferences.trusted},
+        )
         _touch_index(session_id, cwd)
         return state
 
@@ -792,6 +931,40 @@ class SierraLabAcpAgent:
                     update=acp.update_agent_message_text(
                         f"\n[This session's last turn was interrupted at a checkpoint ({where}). "
                         "Send /resume-turn to continue it from there.]\n"
+                    ),
+                )
+            # Approvals this session was parked on when its process went away.
+            # The child that was blocked on the prompt is gone, so the request
+            # will never arrive again — the ledger row is all that is left of
+            # it, and saying so beats a resume that silently drops the question.
+            pending = state_store.pending_interventions(session_id)
+            if pending:
+                asked = "\n".join(
+                    f"  · {row.get('tool') or 'a tool'}"
+                    + (f" — risk {row['risk_score']:.2f}" if row.get("risk_score") is not None else "")
+                    + (f" ({row['note']})" if row.get("note") else "")
+                    for row in pending
+                )
+                await self._conn.session_update(
+                    session_id=session_id,
+                    update=acp.update_agent_message_text(
+                        f"\n[A previous run of this session was stopped while waiting for approval of "
+                        f"{len(pending)} call{'s' if len(pending) != 1 else ''}, and it will not be asked again:\n"
+                        f"{asked}\nSend the request again to be asked a second time.]\n"
+                    ),
+                )
+            if state.handler.vault is not None and state.handler.vault.blocks_egress:
+                # Worth saying at resume rather than only at the first refusal:
+                # the model can do a lot of work before it wants the network,
+                # and "why is nothing able to reach anything" should not be a
+                # question the user answers from the logs.
+                vault = state.handler.vault
+                await self._conn.session_update(
+                    session_id=session_id,
+                    update=acp.update_agent_message_text(
+                        f"\n[Egress is blocked this session: {vault.reason}. shell, python_repl and "
+                        "http_request will be refused until the vault is reachable, or until "
+                        "vault.egressPolicy is set to \"proxy\".]\n"
                     ),
                 )
 
@@ -887,10 +1060,19 @@ class SierraLabAcpAgent:
         """Turn each unanswered Strands interrupt into a real ACP permission
         prompt, and build the resume payload strands.interrupt._InterruptState.resume
         expects: a list of {"interruptResponse": {"interruptId", "response"}}.
+
+        Every prompt is staged in `state.db` before it is shown and closed out
+        with what the user chose, so the prompt and its answer outlive the call
+        that raised them — and a call reported twice (this method's caller
+        learns about a turn's interrupts from two places) is answered from the
+        record instead of being put to the user a second time. See
+        `_settled_intervention` for what does and does not count as the same
+        call.
         """
         responses = []
         state = self._sessions.get(session_id)
         for interrupt in interrupts:
+            risk: dict = {}
             try:
                 payload = json.loads(interrupt.reason)
                 tool_name = payload.get("name", "tool")
@@ -898,10 +1080,62 @@ class SierraLabAcpAgent:
                 tool_use_id = payload.get("tool_use_id") or interrupt.id
                 always_rule = payload.get("always_rule")
                 why = payload.get("reason")
+                risk = payload.get("risk") or {}
             except (TypeError, ValueError):
                 tool_name, tool_input, tool_use_id, always_rule, why = str(interrupt.reason), None, interrupt.id, None, None
 
+            settled = _settled_intervention(interrupt.id, session_id, tool_name, tool_input)
+            if settled is not None:
+                approved = settled["status"] == "approved"
+                state_store.append_event(
+                    "intervention",
+                    {
+                        "phase": "replayed",
+                        "interrupt_id": interrupt.id,
+                        "tool": tool_name,
+                        "outcome": settled["status"],
+                        "decided_by": settled.get("decided_by"),
+                        "rule": settled.get("rule"),
+                    },
+                    session_id=session_id,
+                    source="approval",
+                )
+                if not approved and state is not None:
+                    state.router_hooks.note_rejection(state.agent)
+                responses.append({"interruptResponse": {"interruptId": interrupt.id, "response": approved}})
+                continue
+
+            state_store.stage_intervention(
+                session_id=session_id,
+                tool=tool_name,
+                tool_input=tool_input,
+                intervention_id=interrupt.id,
+                risk_score=risk.get("score"),
+                # The band, not the ordinal: safe/elevated/destructive is in the
+                # same units as the settings thresholds, so a row answers "did
+                # this cross the destructive line" without re-deriving it. The
+                # full reading — ordinal and confidence included — is in the
+                # event.
+                risk_label=risk.get("band"),
+                note=why,
+            )
+            state_store.append_event(
+                "intervention",
+                {
+                    "phase": "requested",
+                    "interrupt_id": interrupt.id,
+                    "tool": tool_name,
+                    "input": tool_input,
+                    "risk": risk or None,
+                    "note": why,
+                    "always_rule": always_rule,
+                },
+                session_id=session_id,
+                source="approval",
+            )
+
             approved = False
+            option_id = None
             if self._conn is not None:
                 options = [acp.schema.PermissionOption(option_id="allow", name="Allow", kind="allow_once")]
                 if always_rule:
@@ -920,10 +1154,36 @@ class SierraLabAcpAgent:
                     options=options,
                 )
                 approved = _permission_approved(result.outcome, options)
-                if approved and always_rule and getattr(result.outcome, "option_id", None) == "allow_always":
+                option_id = getattr(result.outcome, "option_id", None)
+                if approved and always_rule and option_id == "allow_always":
                     self._remember_always(session_id, always_rule)
             if not approved and state is not None:
                 state.router_hooks.note_rejection(state.agent)
+
+            rule = always_rule if (approved and option_id == "allow_always") else None
+            state_store.resolve_intervention(
+                interrupt.id,
+                "approved" if approved else "rejected",
+                # Honest, and it matters: with no client attached nothing was
+                # asked, and a rejection that reads as a user decision would
+                # misattribute a fail-closed default to a person.
+                decided_by="user" if self._conn is not None else "no-client",
+                rule=rule,
+            )
+            state_store.append_event(
+                "intervention",
+                {
+                    "phase": "resolved",
+                    "interrupt_id": interrupt.id,
+                    "tool": tool_name,
+                    "outcome": "approved" if approved else "rejected",
+                    "decided_by": "user" if self._conn is not None else "no-client",
+                    "rule": rule,
+                    "always": option_id == "allow_always",
+                },
+                session_id=session_id,
+                source="approval",
+            )
 
             responses.append({"interruptResponse": {"interruptId": interrupt.id, "response": approved}})
         return responses
@@ -940,12 +1200,27 @@ class SierraLabAcpAgent:
         except (OSError, ValueError) as error:
             logging.getLogger(__name__).warning("could not save always-allow rule %r: %s", rule, error)
 
-    async def _send_tool_result(self, session_id: str, result: dict) -> None:
-        """One finished tool call as a terminal ACP tool-call update."""
+    async def _send_tool_result(self, session_id: str, result: dict, traced: dict | None = None) -> None:
+        """One finished tool call as a terminal ACP tool-call update.
+
+        ``traced`` is the in-flight turn's trace collector, when there is one.
+        The result is where a call's outcome — and the error text that explains
+        it — actually lives, and this is the only place that sees it."""
         tool_use_id = result.get("toolUseId")
         if not tool_use_id or self._conn is None:
             return
         status = "completed" if result.get("status") == "success" else "failed"
+        if traced is not None:
+            entry = traced.setdefault(tool_use_id, {})
+            entry["status"] = status
+            text = " ".join(
+                block["text"] for block in result.get("content") or []
+                if isinstance(block, dict) and block.get("text")
+            )
+            if status == "failed":
+                entry["error"] = text or "tool reported failure"
+            elif text:
+                entry["result"] = text
         content = [
             acp.tool_content(acp.text_block(block["text"]))
             for block in result.get("content") or []
@@ -967,6 +1242,10 @@ class SierraLabAcpAgent:
         seen_tool_calls: set[str] = set()
         last_progress: dict[str, str] = {}
         specialist_progress: dict[str, _SpecialistProgress] = {}
+        # tool_use_id -> what it was called with, what it returned. Fed into
+        # trace_store at the end of the turn; empty (and never written) when
+        # memory.traces is off, so the collector costs one dict when unused.
+        traced: dict[str, dict] = {}
         last_result = None
         while True:
             stop_reason = "end_turn"
@@ -1008,6 +1287,7 @@ class SierraLabAcpAgent:
                     if tool_use_id and tool_use_id not in seen_tool_calls:
                         seen_tool_calls.add(tool_use_id)
                         tool_name = current.get("name") or "tool"
+                        traced.setdefault(tool_use_id, {}).update(name=tool_name, input=current.get("input"))
                         await self._conn.session_update(
                             session_id=session_id,
                             update=acp.start_tool_call(
@@ -1050,7 +1330,7 @@ class SierraLabAcpAgent:
                     continue
 
                 if event_type == "tool_result":
-                    await self._send_tool_result(session_id, event.get("tool_result") or {})
+                    await self._send_tool_result(session_id, event.get("tool_result") or {}, traced)
                     continue
 
                 # Strands >= 1.5x no longer yields a "tool_result" event from
@@ -1067,7 +1347,7 @@ class SierraLabAcpAgent:
                         for block in message.get("content") or []:
                             tool_result = block.get("toolResult") if isinstance(block, dict) else None
                             if tool_result:
-                                await self._send_tool_result(session_id, tool_result)
+                                await self._send_tool_result(session_id, tool_result, traced)
                     elif isinstance(message, dict) and message.get("role") == "assistant":
                         # The model finished asking for its tools; none has run yet.
                         # Send each call's complete input (the start event only had
@@ -1100,8 +1380,47 @@ class SierraLabAcpAgent:
                 agent_input = {"checkpointResume": {"checkpoint": checkpoint.to_dict()}}
                 continue
             if stop_reason != "interrupt":
+                self._ingest_turn(session_id, agent_input, traced)
                 return stop_reason, last_result
             agent_input = await self._resolve_interrupts(session_id, pending_interrupts)
+
+    def _ingest_turn(self, session_id: str, agent_input, traced: dict) -> None:
+        """Feed the finished turn to the local stores, if either is switched on.
+
+        Called only on the terminal exit from `_stream` — not on an interrupt,
+        which resumes the same turn on the next loop pass and would otherwise be
+        ingested once per approval prompt. Fire-and-forget in a thread: the
+        embedding is the slow part of a trace, a graph write is a LanceDB merge,
+        and the reply is already on its way to the client."""
+        state = self._sessions.get(session_id)
+        preferences = getattr(state, "preferences", None)
+        tracing = bool(traced) and trace_store.enabled(preferences)
+        graphing = kg.enabled(preferences)
+        if not tracing and not graphing:
+            return
+        prompt = agent_input if isinstance(agent_input, str) else None
+        # `entry` already carries exactly name/input/status/error/result, which
+        # is what record_turn reads; pass a copy so the collector is not shared
+        # with the ingest thread.
+        calls = [dict(entry) for entry in traced.values()]
+        cwd = getattr(state, "cwd", None)
+        log = logging.getLogger(__name__)
+
+        def ingest() -> None:
+            if tracing:
+                try:
+                    trace_store.record_turn(session_id=session_id, prompt=prompt, tool_calls=calls, preferences=preferences)
+                except Exception:  # never let tracing break a turn
+                    log.debug("trace ingest failed", exc_info=True)
+            if graphing:
+                # `kg.ingest_turn` swallows its own failures; this is belt and
+                # braces so one store's bug cannot cost the other's rows.
+                try:
+                    kg.ingest_turn(session_id=session_id, cwd=cwd, tool_calls=calls, preferences=preferences)
+                except Exception:
+                    log.debug("kg ingest failed", exc_info=True)
+
+        threading.Thread(target=ingest, name="trace-ingest", daemon=True).start()
 
     async def _send_tool_preview(self, session_id: str, tool_use: dict) -> None:
         if self._conn is None:

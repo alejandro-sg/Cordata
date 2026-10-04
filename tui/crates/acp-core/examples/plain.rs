@@ -31,6 +31,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (session, mut events) = SessionHandle::spawn(SessionOptions {
         backend,
         cwd: std::env::current_dir()?,
+        transport: acp_core::BackendTransport::Stdio,
         resume: None,
         debug_log,
         continue_latest: false,

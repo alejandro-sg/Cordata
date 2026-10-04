@@ -70,6 +70,7 @@ pub async fn run_scenario(
     let (session, mut events) = SessionHandle::spawn(SessionOptions {
         backend: config.backend.clone(),
         cwd,
+        transport: acp_core::BackendTransport::Stdio,
         resume: None,
         debug_log: None,
         continue_latest: false,

@@ -77,6 +77,32 @@ SCHEMA: dict[str, tuple] = {
     "selfHeal.verify": ("enum", ("sandbox", "workspace", "off")),
     "selfHeal.autoApply": ("bool",),
     "lsp.enabled": ("bool",),
+    # Destructiveness scoring (laya_risk.py). The thresholds are the 0.2 / 0.8
+    # the directive names. `riskAutoApprove` is the one key in this block that
+    # changes what runs without a prompt, so it defaults off and is opt-in.
+    "laya.riskSafe": ("float", 0.0, 1.0),
+    "laya.riskDestroy": ("float", 0.0, 1.0),
+    "laya.riskAutoApprove": ("bool",),
+    # Append-only trace store (trace_store.py). Off by default, so a checkout
+    # without lancedb installed behaves exactly as it did before.
+    "memory.traces": ("bool",),
+    # Knowledge graph (kg/). Off by default, like the trace corpus, and gated the
+    # same way: a checkout that has not opted in is unchanged by this module
+    # existing. `kg.sink` picks the backend; both write the same JSONL mirror.
+    "kg.enabled": ("bool",),
+    "kg.sink": ("enum", ("lance", "cognee")),
+    # Zero-trust credential proxy (vault_proxy.py). `vault.token` is deliberately
+    # absent: it is a secret and lives in the Keychain via secret_guard, never in
+    # a settings file, which is why _SECRET_KEY above is not a sufficient guard
+    # on its own — the key simply must not exist here.
+    "vault.enabled": ("bool",),
+    "vault.addr": ("str",),
+    "vault.vault": ("str",),
+    "vault.egressPolicy": ("enum", ("deny", "proxy")),
+    # Proactive observer (daemon/observer.py). Off by default — it is the only
+    # thing in this schema that can act with no user turn behind it.
+    "observer.enabled": ("bool",),
+    "observer.intervalMinutes": ("float", 1.0, 1440.0),
     "tui.thinking": ("enum", COLLAPSE),
     "tui.toolOutput": ("enum", COLLAPSE),
     "tui.showLaya": ("bool",),

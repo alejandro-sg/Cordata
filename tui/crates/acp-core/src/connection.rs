@@ -25,8 +25,8 @@ use agent_client_protocol::schema::v1::{
 };
 use agent_client_protocol::util::MatchDispatch;
 use agent_client_protocol::{
-    AcpAgent, AcpAgentConfig, ActiveSession, Agent, Client, ConnectionTo, Dispatch, LineDirection,
-    Responder, SessionMessage, UntypedMessage,
+    AcpAgent, AcpAgentConfig, ActiveSession, Agent, Client, ConnectionTo, Dispatch, DynConnectTo,
+    LineDirection, Responder, SessionMessage, UntypedMessage,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -34,6 +34,7 @@ use crate::error::describe_acp_error;
 use crate::events::{self, AppEvent, SessionInfo, StopReason};
 use crate::permission::{self, ApprovalDecision, PermissionInfo};
 use crate::session::{Command, SessionOptions};
+use crate::transport::{BackendTransport, WsTransport};
 
 type Events = mpsc::UnboundedSender<AppEvent>;
 
@@ -42,38 +43,48 @@ pub(crate) async fn run(
     commands: mpsc::UnboundedReceiver<Command>,
     events: Events,
 ) {
-    if let Err(error) = options.backend.validate() {
-        let _ = events.send(AppEvent::ConnectionError(error.to_string()));
-        let _ = events.send(AppEvent::Closed);
-        return;
-    }
-
-    let mut config =
-        AcpAgentConfig::new(&options.backend.python).arg(options.backend.server.to_string_lossy());
-    // Unbuffered stdout matters on the Python side: ACP frames are single
-    // lines and a block-buffered pipe would delay streamed chunks.
-    config = config.env("PYTHONUNBUFFERED", "1");
-    let mut agent = AcpAgent::new(config);
-    if let Some(path) = options.debug_log.clone()
-        && let Ok(file) = OpenOptions::new().create(true).append(true).open(&path)
-    {
-        let file = Mutex::new(file);
-        agent = agent.with_debug(move |line, direction| {
-            let tag = match direction {
-                LineDirection::Stdin => "->",
-                LineDirection::Stdout => "<-",
-                LineDirection::Stderr => "!!",
-            };
-            if let Ok(mut file) = file.lock() {
-                let _ = writeln!(file, "{tag} {line}");
+    // Only the stdio transport needs the local backend: with `--transport ws`
+    // the *daemon* spawns `acp_server.py`, possibly on this machine but not
+    // necessarily from this checkout, and validating our own copy would report
+    // a problem the connection does not actually have.
+    let transport: DynConnectTo<Client> = match &options.transport {
+        BackendTransport::Stdio => {
+            if let Err(error) = options.backend.validate() {
+                let _ = events.send(AppEvent::ConnectionError(error.to_string()));
+                let _ = events.send(AppEvent::Closed);
+                return;
             }
-        });
-    }
+
+            let mut config = AcpAgentConfig::new(&options.backend.python)
+                .arg(options.backend.server.to_string_lossy());
+            // Unbuffered stdout matters on the Python side: ACP frames are single
+            // lines and a block-buffered pipe would delay streamed chunks.
+            config = config.env("PYTHONUNBUFFERED", "1");
+            let mut agent = AcpAgent::new(config);
+            if let Some(path) = options.debug_log.clone()
+                && let Ok(file) = OpenOptions::new().create(true).append(true).open(&path)
+            {
+                let file = Mutex::new(file);
+                agent = agent.with_debug(move |line, direction| {
+                    let tag = match direction {
+                        LineDirection::Stdin => "->",
+                        LineDirection::Stdout => "<-",
+                        LineDirection::Stderr => "!!",
+                    };
+                    if let Ok(mut file) = file.lock() {
+                        let _ = writeln!(file, "{tag} {line}");
+                    }
+                });
+            }
+            DynConnectTo::new(agent)
+        }
+        BackendTransport::Ws { url } => DynConnectTo::new(WsTransport::new(url.clone())),
+    };
 
     let session_events = events.clone();
     let result = Client
         .builder()
-        .connect_with(agent, async move |connection: ConnectionTo<Agent>| {
+        .connect_with(transport, async move |connection: ConnectionTo<Agent>| {
             drive(connection, options, commands, session_events).await
         })
         .await;
@@ -122,6 +133,7 @@ async fn drive(
             let info = SessionInfo {
                 session_id: session.session_id().to_string(),
                 cwd: cwd.display().to_string(),
+                transport: options.transport.label().to_owned(),
                 resumed: true,
                 current_mode,
                 modes,
@@ -141,6 +153,7 @@ async fn drive(
             let info = SessionInfo {
                 session_id: session.session_id().to_string(),
                 cwd: cwd.display().to_string(),
+                transport: options.transport.label().to_owned(),
                 resumed: false,
                 current_mode,
                 modes,
@@ -376,7 +389,8 @@ async fn handle_message(
             }
             // Tasks / self-heal / plugins / LSP: the harness's live state.
             Dispatch::Notification(notification) => {
-                if let Some(event) = events::parse_harness(&notification.method, &notification.params)
+                if let Some(event) =
+                    events::parse_harness(&notification.method, &notification.params)
                     && events.send(AppEvent::Harness(event)).is_err()
                 {
                     alive.store(false, Ordering::Relaxed);

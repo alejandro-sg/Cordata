@@ -90,8 +90,8 @@ def test_permission_outcome_mapping():
 async def test_reject_selected_does_not_run_tool():
     """Regression: a client that answers by *selecting* Reject (AllowedOutcome
     with option_id="reject") must not run the gated tool. The marker is
-    computed by the shell ($((6*7)) -> 42), so it appears in output only if the
-    command actually ran, never in the command text echoed in the request."""
+    computed by the shell ($((6*7)) -> 42), so it appears in real output only if
+    the command actually ran."""
     client = await run_case(
         "gated tool, Reject selected (AllowedOutcome option_id=reject)",
         decision="reject",
@@ -99,11 +99,19 @@ async def test_reject_selected_does_not_run_tool():
     )
     assert client.permission_requests, "expected a permission request"
     progress = [tc for tc in client.tool_calls if type(tc).__name__ == "ToolCallProgress"]
-    output = " ".join(
-        getattr(getattr(c, "content", None), "text", "") or ""
+    blocks = [
+        getattr(c, "content", None).text or ""
         for tc in progress
         for c in (tc.content or [])
-    )
+    ]
+    # `CONFIRMATION_FAILED: {...}` is the harness echoing back the request it
+    # refused, so it contains the command text verbatim — and on a self-heal
+    # retry the model may restate the command with the arithmetic already
+    # evaluated ("echo reject-marker-42"). That is the model's wording, not
+    # shell output, so it must not count as the tool having run. Genuine
+    # execution would instead surface as a *completed* call (asserted below) or
+    # as the bare marker in a result that is not this echo.
+    output = " ".join(b for b in blocks if not b.startswith("CONFIRMATION_FAILED"))
     assert "reject-marker-42" not in output, f"tool ran despite Reject: {output!r}"
     assert not any(tc.status == "completed" for tc in progress), "tool completed despite Reject"
     assert any(tc.status == "failed" for tc in progress), "expected tool status failed"

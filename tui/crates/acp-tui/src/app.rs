@@ -443,25 +443,38 @@ impl App {
             HarnessEvent::Heal(_) => {}
             HarnessEvent::Plugin(row) => {
                 // Start-up noise stays in the progress bars; problems are worth a line.
-                let status = row.get("status").and_then(Value::as_str).unwrap_or_default();
+                let status = row
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
                 if matches!(status, "failed" | "blocked") {
                     let name = row.get("name").and_then(Value::as_str).unwrap_or("?");
                     let error = row.get("error").and_then(Value::as_str).unwrap_or_default();
-                    self.messages.push(Message::Info(sanitize(&format!("plugin {name}: {status} — {error}"))));
+                    self.messages.push(Message::Info(sanitize(&format!(
+                        "plugin {name}: {status} — {error}"
+                    ))));
                 }
             }
             HarnessEvent::Lsp(event) => {
                 let server = event.get("server").and_then(Value::as_str).unwrap_or("?");
                 match event.get("event").and_then(Value::as_str) {
                     Some("started") => {
-                        let command = event.get("command").and_then(Value::as_str).unwrap_or(server);
+                        let command = event
+                            .get("command")
+                            .and_then(Value::as_str)
+                            .unwrap_or(server);
                         self.messages.push(Message::Info(sanitize(&format!(
                             "language server for {server} started ({command}) — edits now report diagnostics"
                         ))));
                     }
                     Some("failed") => {
-                        let error = event.get("error").and_then(Value::as_str).unwrap_or_default();
-                        self.messages.push(Message::Info(sanitize(&format!("language server for {server} failed: {error}"))));
+                        let error = event
+                            .get("error")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default();
+                        self.messages.push(Message::Info(sanitize(&format!(
+                            "language server for {server} failed: {error}"
+                        ))));
                     }
                     _ => {}
                 }
@@ -473,7 +486,8 @@ impl App {
         let value = match result {
             Ok(value) => value,
             Err(error) => {
-                self.messages.push(Message::Error(sanitize(&format!("/{tag}: {error}"))));
+                self.messages
+                    .push(Message::Error(sanitize(&format!("/{tag}: {error}"))));
                 return;
             }
         };
@@ -518,10 +532,13 @@ impl App {
     }
 
     pub fn card(&self, id: &str) -> Option<&ToolCard> {
-        self.messages.iter().rev().find_map(|message| match message {
-            Message::Tool(card) if card.id == id => Some(card),
-            _ => None,
-        })
+        self.messages
+            .iter()
+            .rev()
+            .find_map(|message| match message {
+                Message::Tool(card) if card.id == id => Some(card),
+                _ => None,
+            })
     }
 
     fn card_mut(&mut self, id: &str) -> Option<&mut ToolCard> {
@@ -581,7 +598,9 @@ impl App {
             return Some(Effect::SwitchSession(SwitchTarget::Prev));
         }
         if alt && let KeyCode::Char(c @ '1'..='9') = key.code {
-            return Some(Effect::SwitchSession(SwitchTarget::Slot(c as usize - '0' as usize)));
+            return Some(Effect::SwitchSession(SwitchTarget::Slot(
+                c as usize - '0' as usize,
+            )));
         }
 
         if !self.pending.is_empty() {
@@ -1093,6 +1112,7 @@ mod tests {
         app.on_event(AppEvent::Connected(SessionInfo {
             session_id: "s1".into(),
             cwd: "/tmp".into(),
+            transport: "stdio".into(),
             resumed: false,
             current_mode: "build".into(),
             modes: ["plan", "build", "auto"]
@@ -1127,6 +1147,7 @@ mod tests {
         app.on_event(AppEvent::Connected(SessionInfo {
             session_id: "s1".into(),
             cwd: "/tmp".into(),
+            transport: "stdio".into(),
             resumed: false,
             current_mode: "build".into(),
             modes: vec![],

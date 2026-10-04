@@ -1,4 +1,4 @@
-.PHONY: setup up down restart status logs deploy-mini deploy-mini-frontend deploy-mini-backend tui tui-build tui-test stress tui-cloud stress-cloud key check-key laya-watch settings
+.PHONY: setup up down restart status logs daemon daemon-install daemon-uninstall daemon-status deploy-mini deploy-mini-frontend deploy-mini-backend tui tui-build tui-test stress tui-cloud stress-cloud key check-key laya-watch settings
 
 setup:
 	@scripts/setup.sh
@@ -26,6 +26,22 @@ deploy-mini-frontend:
 
 deploy-mini-backend:
 	@scripts/deploy-mini-backend.sh
+
+# The always-on orchestrator daemon (backend/daemon/). `daemon` runs it in the
+# foreground; `daemon-install` registers the LaunchAgent that keeps it up.
+# Sessions are one acp_server.py child per project; the TUI attaches with
+# `make tui ARGS="--transport ws"`.
+daemon:
+	@scripts/daemon.sh run $(ARGS)
+
+daemon-status:
+	@scripts/daemon.sh status
+
+daemon-install:
+	@scripts/daemon.sh install
+
+daemon-uninstall:
+	@scripts/daemon.sh uninstall
 
 # Rust ACP clients (tui/) — see tui/README.md.
 tui:

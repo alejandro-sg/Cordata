@@ -60,6 +60,19 @@ interventions share the session's `_ApprovalHandler` by reference, so a speciali
 `apply_patch` call prompts exactly like the orchestrator's own — including interrupts, which
 propagate up to the parent (`_harness_loop_smoke_test.py`).
 
+### Approvals on the ledger (`state.db`)
+
+An interrupt is in-memory state in Strands, which means the harness's own two-place report of a
+turn's interrupts (the `tool_interrupt_event` and `AgentResult.interrupts`) can put the *same*
+call in front of the user twice, and nothing outlives the process that was parked on a prompt.
+`_resolve_interrupts` therefore stages each prompt in `~/.sierralab/state.db` before showing it
+and closes the row with the answer — plus Laya's risk score and band, where the turn was scored —
+and appends both transitions to the append-only `events` table under kind `intervention`. A row
+is looked up before a second prompt is raised, and an identical one is replayed rather than
+re-asked (`_settled_intervention`; unmatched rows re-prompt). `--resume` reads the same table and
+says which approvals were left unanswered when the process died, instead of dropping the question
+silently. Detail and the fail-closed reasoning: `THREAT_MODEL.md`, "Human-in-the-loop gates".
+
 ## Self-healing (self_heal.py)
 
 A `shell` call that exits non-zero becomes an autonomous loop: the Debugger (read-only) is
@@ -138,18 +151,49 @@ returned as tool results. Deliberate limits:
 - **Secrets (`secret_guard.py`, `prompt_security.py`)** — env/Keychain values are masked in tool
   output, redacted before anything reaches Laya or the logs, and shell denies for Keychain
   reads are built in. Untrusted tool results get the injection-hardening treatment.
+- **Egress (`vault_proxy.py`)** — with `vault.enabled`, tool subprocesses carry placeholder
+  credentials and reach the network through the Agent Vault proxy, which substitutes the real
+  values on the way out; `install()` runs at session start (after `settings.py` has taken this
+  harness's own keys out of the environment, so a placeholder can never shadow them —
+  `RESERVED`). A vault enabled and unreachable is a hard denial of `shell`, `python_repl` and
+  `http_request` in every mode, not a prompt. `vault_proxy.launch_under_vault` is the wrapping
+  API for a caller that owns its argv; there is none in this repo yet, since `shell` comes from
+  `strands_tools` and offers no argv to wrap — hence the environment. Scope and the sandbox
+  caveat: `THREAT_MODEL.md`, "Agent Vault is egress-only".
+- **Knowledge graph (`kg/`)** — off by default (`kg.enabled`). The turn that just finished is
+  reduced to entities and edges deterministically — project, session, tools, the files the
+  path-bearing tools named, error signatures — and handed to a `KnowledgeGraphSink`. The default
+  `LanceGraphSink` keeps them in `backend/memory.kg/` (`graph.lance` upserted by node id, so a
+  repeat sighting refreshes `last_ts` rather than duplicating) and writes `nodes.jsonl` /
+  `edges.jsonl` mirrors even without `lancedb`; `CogneeGraphSink` sits behind the same three
+  methods but is unverified against an installed Cognee and is not a dependency. No prompts and no
+  command lines go in: that is `state.db`'s and `memory.traces`' job, and the graph is the
+  structure over them.
 - **Event bus (`harness_events.py`)** — the producers (plugins, LSP, self-heal, sub-agent tiers)
   emit thread-safe events; the ACP server forwards them as `_sierralab/<kind>` extension
   notifications. Unknown extensions are ignorable per the ACP spec, so Zed is unaffected; the
   TUI renders them as progress bars.
+- **Observer (`daemon/observer.py`)** — daemon-only, off by default (`observer.enabled`). While
+  nobody is attached it reads each known project with a fixed `git` argv list plus the tails of
+  `SIERRALAB_OBSERVER_LOGS`, hands that to a read-only agent (`observer_runner.py`, in a child
+  process because `agent_common` chdirs at import), and writes `nightly_briefing.md`. The agent
+  holds `file_read` and `think` and nothing else — the daemon runs the commands, the model never
+  chooses one — and the briefing is written by the parent from the child's stdout, so there is no
+  path from the agent to the filesystem. A client attaching kills a cycle in flight. Proposals are
+  staged `proposed`, never `staged`, so they never read as a pending approval. Scope:
+  `THREAT_MODEL.md`, "The background observer writes nothing"; keys: `settings.md`.
 
 ## Where things are applied and tested
 
 Settings keys for all of this (`laya.*`, `selfHeal.*`, `lsp.enabled`, model/temperature) are in
-[`settings.md`](settings.md), applied at session start by `_apply_startup_preferences`. Each
+[`settings.md`](settings.md), applied at session start by `_apply_startup_preferences` — except
+`observer.*`, which the daemon re-reads every cycle so a change lands without a restart. Each
 piece has a hermetic smoke test — see `_self_heal_smoke_test.py`, `_team_pipeline_smoke_test.py`,
 `_a2a_client_smoke_test.py`, `_laya_router_smoke_test.py`, `_harness_loop_smoke_test.py`,
-`_plugins_lsp_smoke_test.py` and friends; the denylist and graph-structure assumptions are
-regression-tested in `_subagent_denylist_smoke_test.py` and
+`_plugins_lsp_smoke_test.py` and friends; the daemon's transport and its new `/observe` route in
+`_daemon_smoke_test.py`, the observer's read-only toolset and preemption in
+`_observer_smoke_test.py`, the vault gate in `_vault_proxy_smoke_test.py`, the graph adapter in
+`_kg_smoke_test.py`, and the denylist and
+graph-structure assumptions in `_subagent_denylist_smoke_test.py` and
 `_local_graph_structure_smoke_test.py`. Web-UI and TUI behavior is the same backend — the
 AG-UI front door (`main.py`) gets the same tools; only the specialist/laya dispatch is ACP-side.

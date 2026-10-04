@@ -25,6 +25,12 @@ pub enum Error {
     #[error("session is closed")]
     SessionClosed,
 
+    #[error("no daemon config at {0} — start the daemon with `make daemon` first")]
+    DaemonConfigNotFound(PathBuf),
+
+    #[error("daemon transport: {0}")]
+    DaemonUnreachable(String),
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }

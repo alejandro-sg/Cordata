@@ -206,6 +206,10 @@ impl ConfigOptionInfo {
 pub struct SessionInfo {
     pub session_id: String,
     pub cwd: String,
+    /// `"stdio"` (this process spawned the backend) or `"ws"` (attached to the
+    /// daemon). Shown in the banner: whether a session survives the terminal is
+    /// not something a user should have to infer from how they launched.
+    pub transport: String,
     pub resumed: bool,
     pub current_mode: String,
     pub modes: Vec<ModeInfo>,
@@ -277,7 +281,10 @@ pub enum LayaEvent {
     Decision(LayaDecision),
     Outcome(LayaOutcome),
     /// Laya's P(this shell command succeeds), before it runs.
-    Command { tool_use_id: String, p_ok: f64 },
+    Command {
+        tool_use_id: String,
+        p_ok: f64,
+    },
     /// The command's real outcome, scored against that prediction.
     CommandOutcome {
         tool_use_id: String,
@@ -622,7 +629,11 @@ pub fn translate_update(update: SessionUpdate) -> Vec<AppEvent> {
             let content = fields
                 .content
                 .as_deref()
-                .filter(|content| content.iter().any(|c| matches!(c, ToolCallContent::Content(_))))
+                .filter(|content| {
+                    content
+                        .iter()
+                        .any(|c| matches!(c, ToolCallContent::Content(_)))
+                })
                 .map(join_tool_content);
             let untrusted = content
                 .as_deref()
@@ -730,7 +741,9 @@ mod laya_tests {
             })
         );
         assert_eq!(
-            parse_laya(&json!({"event": "command_outcome", "tool_use_id": "t1", "ok": false, "p_ok": 0.8, "log_loss": 1.6})),
+            parse_laya(
+                &json!({"event": "command_outcome", "tool_use_id": "t1", "ok": false, "p_ok": 0.8, "log_loss": 1.6})
+            ),
             Some(LayaEvent::CommandOutcome {
                 tool_use_id: "t1".into(),
                 ok: false,
@@ -756,7 +769,10 @@ mod laya_tests {
         ) else {
             panic!()
         };
-        assert_eq!((heal.phase.as_str(), heal.attempt, heal.max), ("verified", Some(1), Some(3)));
+        assert_eq!(
+            (heal.phase.as_str(), heal.attempt, heal.max),
+            ("verified", Some(1), Some(3))
+        );
         assert_eq!(parse_harness(TASK_METHOD, &json!({"title": "no id"})), None);
         assert_eq!(parse_harness("_sierralab/unknown", &json!({})), None);
     }

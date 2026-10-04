@@ -52,6 +52,32 @@ Both front doors gate the same four tools before they run for real —
   allow-kind option the server offered (`_permission_approved`); a selected
   "Reject", an unknown id, or a cancelled outcome all deny.
 
+**Every ACP approval is recorded on the ledger, and a recorded one can be
+replayed.** `_resolve_interrupts` stages the pending approval in
+`~/.sierralab/state.db` (`interventions`, keyed by the Strands interrupt id)
+before the user is asked, and closes it with what they chose; both transitions
+are also appended to the append-only `events` table, with Laya's risk score and
+band. Two properties matter for this document:
+
+- **The ledger is evidence, not authority.** `_ApprovalHandler` never consults
+  it to decide whether a call may run. The one thing read back is a decision
+  this harness itself wrote, and only for the *same* call in the *same*
+  session (`_settled_intervention`; Strands derives the interrupt id from the
+  tool-use id, which another session's model could in principle mint as well).
+  A row that is unreadable, still staged, or whose tool, input or session
+  disagrees re-prompts. Replay exists because `_stream` reports a turn's
+  interrupts from two places, and without it the same call would be put to the
+  user twice in one turn. A turn restarted after a crash re-issues a *new*
+  tool call, so it is asked again rather than inheriting an old answer.
+- **An unattended prompt is a denial, attributed as such.** With no client
+  attached the outcome is recorded as `decided_by: "no-client"` rather than as
+  a user decision, so the ledger never credits a fail-closed default to a
+  person. Nothing approves a call that nobody saw.
+
+It lives in the user's private harness directory (`~/.sierralab/`, created
+0700-on-write) rather than beside the source, because a row records the tool
+input and the settings snapshot a session ran with.
+
 **Generated tools get a second, independent gate on top**, not just the
 `file_write` approval that put them on disk:
 `skill_validation_hooks.py`'s `SkillValidationHooks` AST-parses any
@@ -188,6 +214,85 @@ every other gated route. Set `SANDBOX_API_TOKEN` explicitly instead once
 frontend and backend really are on separate hosts; auto-discovery cannot
 cross that hop by design.
 
+## The orchestrator daemon (loopback WebSocket)
+
+`backend/daemon/` listens on `127.0.0.1` only — the bind address is a constant,
+not a setting, because this process spawns shells in arbitrary project
+directories, so reachability from a network is categorically wrong rather than a
+tunable. Three properties hold it:
+
+* **Loopback is not an authorization boundary.** Any local process — and any
+  page in a local browser — can open a connection to it. So every route and the
+  socket require the token in `~/.sierralab/daemon.json`, written mode 0600 in
+  the user's private harness directory. The token is deliberately *not* in
+  `settings.json`: that file is layered, printed by `/config` and shareable.
+  It is read from the file rather than passed as a flag, because `argv` is
+  visible to every process on the machine.
+* **No browser origins.** A WebSocket handshake carries an `Origin` header a
+  script cannot forge, and any request bearing one is refused (close 4403).
+  This is what makes a query-parameter token acceptable — the browser
+  `WebSocket` constructor cannot set headers, so the token has to travel in the
+  URL, and the Origin check is what stops a malicious page from using it.
+* **One client per session.** A second attach is refused (4409). Two clients on
+  one stdin would interleave answers to prompts only one of them can see.
+
+The daemon **proxies frames verbatim** — it reads only the session id and the
+method name from a line, never decoding and re-encoding a message. The security
+consequence is the point: the daemon cannot inspect a tool call or rewrite a
+permission prompt, so the approval gate, the Laya routing and (below) the egress
+policy all stay in the child, where they already are. A daemon that could
+rewrite a frame would be a place where a compromised daemon silently weakens
+every gate at once.
+
+Sessions outlive their client: a child parked on an approval prompt stays parked,
+and a reconnecting client is replayed the prompt from the daemon's backlog. That
+is a durability property with a disclosure edge — a client attaching to a
+directory that already has a live session receives that session's buffered
+output, including tool results. It is gated by the same token, and the backlog
+is bounded (`Supervisor.BACKLOG_LIMIT`), so it is not a growing store.
+
+### The background observer writes nothing
+
+The observer (`daemon/observer.py`) is the only thing here that acts with no
+user turn behind it, and it is off by default (`observer.enabled`). Its
+zero-write property is structural, not a prompt instruction — an observer that
+is *asked* not to write is one injection away from writing:
+
+* The agent is built with `OBSERVER_TOOLS` (`file_read`, `think`) and nothing
+  else, the list is asserted disjoint from `sub_agent_common`'s denylists **at
+  import** (adding `shell` there fails loudly rather than widening silently),
+  and a `BeforeToolCallEvent` hook cancels any call outside the allowlist even
+  if a tool reached the registry another way.
+* The read-only commands are run by the *daemon*, with a fixed `git` argv list
+  (`status`, `diff --stat`, `log`, `diff`) and `GIT_OPTIONAL_LOCKS=0` — the
+  latter is what makes "changed nothing" true for a git command, since
+  `git status` otherwise rewrites `.git/index`. The model never chooses a
+  command, which is also why `shell` is absent: it does not need one.
+* The briefing is written by the daemon, in its own process, from the text the
+  child prints on stdout. There is no code path from the observer agent to the
+  filesystem.
+* The agent runs as a **child process** (`observer_runner.py`), both because
+  `agent_common` chdirs at import and because preemption has to be a process
+  kill: a client attaching mid-cycle kills the child's process group rather
+  than asking it to stop.
+
+What this does not do: the evidence it reads — `git log` messages, diffs, log
+files, and any text posted to `POST /observe` — is attacker-influenceable in the
+sense that anyone who can write a commit message or a log line can write text a
+model will read. That text can steer a *proposal*. It cannot make the observer
+write, run or fetch anything, and proposals are staged with status `proposed`
+and never applied by anything: they are advice in a file, not an action. A
+webhook body is rendered into the briefing's evidence block verbatim and
+attributed, never promoted into the model's prose.
+
+Disclosure: the briefing retains whatever the working tree and logs contained at
+the time, so it lives in the private user directory (`~/.sierralab/`), not in a
+project. `POST /observe` takes its token as a header rather than a query
+parameter, so a cross-origin page cannot reach it (a custom header needs a
+preflight this app does not answer) — and it is a *source*, not a trigger: text
+queued there is read by the next cycle, and the response says whether the
+observer is even on rather than implying anything was acted on.
+
 ## Prompt-injection hardening
 
 `prompt_security.py`'s `UntrustedToolResultHooks` rewrites `http_request`'s
@@ -286,6 +391,49 @@ done. Output masking also only sees literal values, and the model's own
 reply is not the only channel a leaked value could take (`http_request`
 bodies are not scanned beyond the literal-in-input check). Rotate any key that
 has been pasted into a chat or a shell history.
+
+### Agent Vault is egress-only
+
+Popping the key out of `os.environ` covers the harness's *own* calls, and the
+masking above covers what comes back. Neither covers a credential that was
+never this harness's: a `.env` in a project checkout, `~/.aws/credentials`, a
+variable the user exported before `make tui`. A `shell` command the model wrote
+can read and send any of those, and the harness is not in the path.
+
+`vault_proxy.py` (`vault.enabled`, default **off**) closes that on egress. Tool
+subprocesses hold placeholders (`OPENAI_API_KEY=__openai_api_key__`) instead of
+real values, the process is pointed at the vault's proxy in both variable cases
+plus a `NO_PROXY` that keeps loopback off it, and the vault substitutes the real
+credential on the way out, for destinations its own policy allows. Three
+properties hold the gate:
+
+* **Fail closed.** With `vault.egressPolicy: "deny"` (the default) an
+  unreachable vault is a *denial*: `_ApprovalHandler` refuses `shell`,
+  `python_repl` and `http_request` in every mode — `auto` included — with no
+  prompt offered, since a pause the user can answer is itself the fail-open
+  path. Nothing is left pointing at a proxy that is not there, so a tool cannot
+  egress directly while believing it is proxied; that silent fallthrough is the
+  exact failure this exists to prevent. `"proxy"` is the deliberate alternative:
+  route through the configured address without credentials rather than stop.
+* **The token is never a setting.** Read through `secret_guard.take_secret` from
+  the Keychain item `sierralab-agent-vault-token`, so it is not in a file that
+  is layered, printed by `/config` or shared. It is passed to the vault CLI and
+  never enters a tool's environment.
+* **TLS is re-pointed, not switched off.** Verification is redirected at the
+  vault's CA (`SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`,
+  `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`); nothing here sets
+  `NODE_TLS_REJECT_UNAUTHORIZED=0` or its equivalents.
+
+**What this does not do.** It is egress-only, and it does **not** deliver the
+filesystem/process sandbox the gap below describes — an approved `shell` command
+still runs as the user, with full filesystem access, so a credential at rest can
+still be read, copied or destroyed; what it cannot do is leave over the network
+unnoticed. It also only speaks for the tools it names: plugin and MCP tools can
+ship their own HTTP client, which is why the proxy is pointed at the *process*
+rather than at a tool, and why `http_request`-shaped output is still subject to
+the literal-value masking above rather than to any body inspection. And
+`auto` mode with the vault *off* is unchanged — this narrows one path, it does
+not make an ungated agent safe.
 
 ### Sub-agent providers and Laya triage
 

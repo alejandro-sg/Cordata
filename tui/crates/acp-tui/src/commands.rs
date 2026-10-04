@@ -58,7 +58,10 @@ pub const HELP: &[(&str, &str)] = &[
     ),
     ("/thinking", "expand / collapse reasoning"),
     ("/tools", "expand / collapse tool results"),
-    ("/laya [on|off|stats]", "Laya's routing line, or its calibration stats"),
+    (
+        "/laya [on|off|stats]",
+        "Laya's routing line, or its calibration stats",
+    ),
     (
         "/plugins [enable|disable <name>|reload]",
         "hot-swap MCP / memory / LSP plugins",
@@ -133,16 +136,28 @@ pub fn parse(input: &str) -> Option<Command> {
 /// `/laya stats` print. Tolerant: unknown shapes fall back to JSON.
 pub fn format_ext(tag: &str, value: &serde_json::Value) -> String {
     use serde_json::Value;
-    let text = |v: &Value, key: &str| v.get(key).and_then(Value::as_str).unwrap_or_default().to_owned();
+    let text = |v: &Value, key: &str| {
+        v.get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
     match tag {
         "plugins" => {
-            let rows = value.get("plugins").and_then(Value::as_array).cloned().unwrap_or_default();
+            let rows = value
+                .get("plugins")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
             if rows.is_empty() {
                 return "no plugins (add MCP servers to .mcp.json or ~/.sierralab/mcp.json)".into();
             }
             let mut out = vec!["plugins:".to_owned()];
             for row in rows {
-                let tools = row.get("tools").and_then(Value::as_array).map_or(0, Vec::len);
+                let tools = row
+                    .get("tools")
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len);
                 let mut line = format!(
                     "  {:<12} {:<8} {:<9} {:<8} {} tools · approval {}",
                     text(&row, "name"),
@@ -158,34 +173,62 @@ pub fn format_ext(tag: &str, value: &serde_json::Value) -> String {
                 }
                 out.push(line);
             }
-            for warning in value.get("warnings").and_then(Value::as_array).into_iter().flatten() {
+            for warning in value
+                .get("warnings")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
                 out.push(format!("  ⚠ {}", warning.as_str().unwrap_or_default()));
             }
-            out.push("  /plugins enable|disable <name> swaps one in or out of the live session".into());
+            out.push(
+                "  /plugins enable|disable <name> swaps one in or out of the live session".into(),
+            );
             out.join("\n")
         }
         "plugins enable" | "plugins disable" => {
             let ok = value.get("ok").and_then(Value::as_bool).unwrap_or(false);
-            let tools = value.get("tools").and_then(Value::as_array).map_or(0, Vec::len);
+            let tools = value
+                .get("tools")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
             if ok {
-                format!("plugin {}: {} ({} tools in the live session)", text(value, "name"), text(value, "status"), tools)
+                format!(
+                    "plugin {}: {} ({} tools in the live session)",
+                    text(value, "name"),
+                    text(value, "status"),
+                    tools
+                )
             } else {
                 format!("plugin {}: {}", text(value, "name"), text(value, "error"))
             }
         }
         "lsp" => {
-            let rows = value.get("servers").and_then(Value::as_array).cloned().unwrap_or_default();
+            let rows = value
+                .get("servers")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
             if rows.is_empty() {
                 return "no language detected that a known language server handles".into();
             }
             let mut out = vec![format!(
                 "language servers ({}):",
-                if value.get("enabled").and_then(Value::as_bool) == Some(false) { "disabled by lsp.enabled" } else { "enabled" }
+                if value.get("enabled").and_then(Value::as_bool) == Some(false) {
+                    "disabled by lsp.enabled"
+                } else {
+                    "enabled"
+                }
             )];
             for row in rows {
                 let command = text(&row, "command");
                 let name = command.rsplit('/').next().unwrap_or(&command).to_owned();
-                let mut line = format!("  {:<11} {:<14} {}", text(&row, "server"), text(&row, "state"), name);
+                let mut line = format!(
+                    "  {:<11} {:<14} {}",
+                    text(&row, "server"),
+                    text(&row, "state"),
+                    name
+                );
                 let error = text(&row, "error");
                 if !error.is_empty() {
                     line.push_str(&format!(" — {error}"));
@@ -198,12 +241,26 @@ pub fn format_ext(tag: &str, value: &serde_json::Value) -> String {
             let config = value.get("config").cloned().unwrap_or(Value::Null);
             let mut out = vec![format!(
                 "self-heal: {} · max {} attempts · verify in {} · autoApply {}",
-                if config.get("enabled").and_then(Value::as_bool) == Some(false) { "off" } else { "on" },
-                config.get("max_attempts").and_then(Value::as_u64).unwrap_or(3),
+                if config.get("enabled").and_then(Value::as_bool) == Some(false) {
+                    "off"
+                } else {
+                    "on"
+                },
+                config
+                    .get("max_attempts")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(3),
                 text(&config, "verify"),
-                config.get("auto_apply").and_then(Value::as_bool).unwrap_or(false)
+                config
+                    .get("auto_apply")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
             )];
-            let episodes = value.get("episodes").and_then(Value::as_array).cloned().unwrap_or_default();
+            let episodes = value
+                .get("episodes")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
             if episodes.is_empty() {
                 out.push("  no failures handled this session".into());
             }
@@ -213,39 +270,59 @@ pub fn format_ext(tag: &str, value: &serde_json::Value) -> String {
                     text(&ep, "status"),
                     text(&ep, "command"),
                     ep.get("attempts").and_then(Value::as_u64).unwrap_or(0),
-                    if ep.get("verified").and_then(Value::as_bool) == Some(true) { " · verified" } else { "" },
+                    if ep.get("verified").and_then(Value::as_bool) == Some(true) {
+                        " · verified"
+                    } else {
+                        ""
+                    },
                     text(&ep, "root_cause")
                 ));
             }
             out.join("\n")
         }
         "laya stats" => {
-            let mut out = vec!["laya calibration (prequential proper scores — lower is better):".to_owned()];
+            let mut out =
+                vec!["laya calibration (prequential proper scores — lower is better):".to_owned()];
             out.extend(text(value, "summary").lines().map(|l| format!("  {l}")));
             if let Some(policy) = value.get("policy") {
                 out.push(format!(
                     "  policy: gate {} · min_confidence {} · dispatch {} · on abstain {} → {}",
                     policy.get("gate").and_then(Value::as_f64).unwrap_or(0.0),
-                    policy.get("min_confidence").and_then(Value::as_f64).unwrap_or(0.0),
+                    policy
+                        .get("min_confidence")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(0.0),
                     text(policy, "dispatch"),
                     text(policy, "on_abstain"),
-                    policy.get("frontier_model").and_then(Value::as_str).unwrap_or("(no tiers.strong)")
+                    policy
+                        .get("frontier_model")
+                        .and_then(Value::as_str)
+                        .unwrap_or("(no tiers.strong)")
                 ));
             }
             out.join("\n")
         }
         "sessions" => {
-            let rows = value.get("sessions").and_then(Value::as_array).cloned().unwrap_or_default();
+            let rows = value
+                .get("sessions")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
             if rows.is_empty() {
                 return "no saved sessions for this folder".into();
             }
-            let mut out = vec!["saved sessions here (acp-tui --resume <id>, or --continue for the newest):".to_owned()];
+            let mut out = vec![
+                "saved sessions here (acp-tui --resume <id>, or --continue for the newest):"
+                    .to_owned(),
+            ];
             for row in rows.iter().take(10) {
                 let id = text(row, "sessionId");
                 out.push(format!(
                     "  {}  {}  {}",
                     id.chars().take(8).collect::<String>(),
-                    text(row, "updatedAt").replace('T', " ").trim_end_matches('Z'),
+                    text(row, "updatedAt")
+                        .replace('T', " ")
+                        .trim_end_matches('Z'),
                     text(row, "title")
                 ));
             }
@@ -293,11 +370,17 @@ mod tests {
 
     #[test]
     fn harness_commands_parse() {
-        assert_eq!(parse("/plugins disable echo"), Some(Command::Plugins(Some("disable echo".into()))));
+        assert_eq!(
+            parse("/plugins disable echo"),
+            Some(Command::Plugins(Some("disable echo".into())))
+        );
         assert_eq!(parse("/mcp"), Some(Command::Plugins(None)));
         assert_eq!(parse("/switch 2"), Some(Command::Switch(Some("2".into()))));
         assert_eq!(parse("/resume-turn"), Some(Command::ResumeTurn));
-        assert_eq!(parse("/laya stats"), Some(Command::Laya(Some("stats".into()))));
+        assert_eq!(
+            parse("/laya stats"),
+            Some(Command::Laya(Some("stats".into())))
+        );
     }
 
     #[test]
@@ -307,12 +390,20 @@ mod tests {
             {"name": "mem", "kind": "memory", "status": "blocked", "source": "project", "tools": [], "approval": "ask", "error": "folder not trusted"}
         ], "warnings": []});
         let text = format_ext("plugins", &plugins);
-        assert!(text.contains("echo") && text.contains("2 tools") && text.contains("folder not trusted"), "{text}");
+        assert!(
+            text.contains("echo")
+                && text.contains("2 tools")
+                && text.contains("folder not trusted"),
+            "{text}"
+        );
         let lsp = serde_json::json!({"enabled": true, "servers": [{"server": "rust", "state": "running", "command": "/x/rust-analyzer-2026"}]});
         assert!(format_ext("lsp", &lsp).contains("rust-analyzer-2026"));
         let stats = serde_json::json!({"summary": "route: n=4", "policy": {"gate": 0.85, "min_confidence": 0.5, "dispatch": "direct", "on_abstain": "escalate", "frontier_model": null}});
         let stats = format_ext("laya stats", &stats);
-        assert!(stats.contains("route: n=4") && stats.contains("(no tiers.strong)"), "{stats}");
+        assert!(
+            stats.contains("route: n=4") && stats.contains("(no tiers.strong)"),
+            "{stats}"
+        );
         assert!(format_ext("whatever", &serde_json::json!({"a": 1})).contains("\"a\":1"));
     }
 
