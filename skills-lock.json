@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "ollaya-decisions": {
+      "source": "ollaya-dev/ollaya",
+      "sourceType": "github",
+      "skillPath": "skills/ollaya-decisions/SKILL.md",
+      "computedHash": "1c516ee3d9e7e33ab9cad88f9c4c0a44bca003f1faa2c4181c7e13beb0287a54"
+    }
+  }
+}

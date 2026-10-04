@@ -11,8 +11,6 @@ use acp_core::{LayaDecision, LayaOutcome};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::text::{display_width, truncate};
-use crate::app::LayaNote;
 
 fn pct(value: f64) -> String {
     format!("{}%", (value * 100.0).round() as i64)
@@ -32,6 +30,50 @@ fn decision_line(decision: &LayaDecision, width: usize) -> Line<'static> {
         format!("{route} {}", pct(decision.route_confidence)),
         Style::new().fg(Color::Gray).add_modifier(Modifier::BOLD),
     ));
+
+    // Router v2 (laya_router.py): say what the policy did with the decision.
+    if let Some(action) = decision.action.as_deref() {
+        if let Some(calibrated) = decision.calibrated
+            && (calibrated - decision.route_confidence).abs() >= 0.005
+        {
+            spans.push(Span::styled(format!(" (calibrated {})", pct(calibrated)), dim));
+        }
+        let strong = |text: String, color: Color| {
+            Span::styled(text, Style::new().fg(color).add_modifier(Modifier::BOLD))
+        };
+        spans.push(match (decision.abstained, action) {
+            (true, "escalate") => strong(
+                format!(
+                    " ⛔ abstained → escalated to {}",
+                    decision.escalate_model.as_deref().unwrap_or("the frontier tier")
+                ),
+                Color::Yellow,
+            ),
+            (true, _) => strong(" ⛔ abstained → the LLM decides alone".to_owned(), Color::Yellow),
+            (false, "dispatch") => strong(format!(" ▸ dispatched to the {route} specialist"), Color::Cyan),
+            (false, "scope") => strong(
+                format!(" ▸ tools scoped to {}", route.trim_start_matches("plugin_")),
+                Color::Cyan,
+            ),
+            (false, "hint") => strong(" ▸ hint sent".to_owned(), Color::Cyan),
+            _ => Span::styled(" · confident, nothing to change".to_owned(), dim),
+        });
+        if decision.armed {
+            spans.push(strong(" ⚠ destructive: approvals armed".to_owned(), Color::Red));
+        } else if let Some(risk) = decision.risk.as_deref().filter(|r| *r != "read_only") {
+            spans.push(Span::styled(format!(" · risk {}", risk.replace('_', " ")), dim));
+        }
+        if let Some(ms) = decision.latency_ms {
+            spans.push(Span::styled(format!(" · {ms:.0} ms"), dim));
+        }
+        if decision.abstained
+            && let Some(reason) = decision.reason.as_deref()
+        {
+            let why = reason.split(" — ").next().unwrap_or(reason);
+            spans.push(Span::styled(format!(" · {why}"), dim));
+        }
+        return fit(spans, width);
+    }
 
     let note = if decision.hint.is_some() {
         Span::styled(
@@ -82,6 +124,14 @@ fn outcome_line(outcome: &LayaOutcome, width: usize) -> Line<'static> {
         Some(false) => spans.push(Span::styled(" ✗ disagreed", Style::new().fg(Color::Yellow))),
         None => {}
     }
+    match outcome.clean {
+        Some(false) => spans.push(Span::styled(" · unresolved failure", Style::new().fg(Color::Red))),
+        Some(true) => spans.push(Span::styled(" · clean", dim)),
+        None => {}
+    }
+    if let Some(loss) = outcome.log_loss {
+        spans.push(Span::styled(format!(" · log-loss {loss:.2}"), dim));
+    }
     let tiers: Vec<String> = outcome
         .tiers
         .iter()
@@ -93,41 +143,21 @@ fn outcome_line(outcome: &LayaOutcome, width: usize) -> Line<'static> {
     fit(spans, width)
 }
 
-/// One line, never wider than the pane: cut the tail with an ellipsis.
 fn fit(spans: Vec<Span<'static>>, width: usize) -> Line<'static> {
-    let total: usize = spans.iter().map(|s| display_width(&s.content)).sum();
-    if total <= width {
-        return Line::from(spans);
-    }
-    let mut remaining = width.saturating_sub(1);
-    let mut out = Vec::new();
-    for span in spans {
-        let w = display_width(&span.content);
-        if w <= remaining {
-            remaining -= w;
-            out.push(span);
-        } else {
-            out.push(Span::styled(
-                truncate(&span.content, remaining + 1),
-                span.style,
-            ));
-            break;
-        }
-    }
-    Line::from(out)
+    super::text::fit_spans(spans, width)
 }
 
-pub fn render(note: &LayaNote, width: u16) -> Vec<Line<'static>> {
-    let width = width as usize;
-    let mut lines = vec![decision_line(&note.decision, width)];
-    if let Some(outcome) = &note.outcome {
-        lines.push(outcome_line(outcome, width));
-    }
-    lines
+pub fn decision_lines(decision: &LayaDecision, width: u16) -> Vec<Line<'static>> {
+    vec![decision_line(decision, width as usize)]
+}
+
+pub fn outcome_lines(outcome: &LayaOutcome, width: u16) -> Vec<Line<'static>> {
+    vec![outcome_line(outcome, width as usize)]
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::text::display_width;
     use super::*;
 
     fn decision(route: &str, confidence: f64, hint: Option<&str>) -> LayaDecision {
@@ -145,7 +175,40 @@ mod tests {
             tier: None,
             late: false,
             error: None,
+            ..Default::default()
         }
+    }
+
+    fn v2(route: &str, confidence: f64, action: &str, abstained: bool) -> LayaDecision {
+        LayaDecision {
+            action: Some(action.into()),
+            abstained,
+            calibrated: Some(confidence),
+            reason: Some(if abstained {
+                "Laya abstained (answer_confidence 0.43 < min_confidence 0.50) — escalated to big".into()
+            } else {
+                "dispatched".into()
+            }),
+            escalate_model: abstained.then(|| "big".into()),
+            ..decision(route, confidence, None)
+        }
+    }
+
+    #[test]
+    fn router_v2_lines_say_what_the_policy_did() {
+        let dispatch = plain(&render(v2("debugger", 0.97, "dispatch", false), None, 120));
+        assert_eq!(dispatch[0], "◆ laya  debugger 97% ▸ dispatched to the debugger specialist · 64 ms");
+        let abstain = plain(&render(v2("code", 0.43, "escalate", true), None, 160));
+        assert!(abstain[0].contains("⛔ abstained → escalated to big"), "{abstain:?}");
+        assert!(abstain[0].contains("Laya abstained (answer_confidence 0.43"), "{abstain:?}");
+        let scope = plain(&render(v2("plugin_pihole", 0.95, "scope", false), None, 120));
+        assert!(scope[0].contains("▸ tools scoped to pihole"));
+        let mut armed = v2("code", 0.9, "hint", false);
+        armed.armed = true;
+        assert!(plain(&render(armed, None, 160))[0].contains("approvals armed"));
+        let mut calibrated = v2("code", 0.9, "hint", false);
+        calibrated.calibrated = Some(0.81);
+        assert!(plain(&render(calibrated, None, 160))[0].contains("(calibrated 81%)"));
     }
 
     fn plain(lines: &[Line<'_>]) -> Vec<String> {
@@ -155,14 +218,25 @@ mod tests {
             .collect()
     }
 
-    fn note(decision: LayaDecision, outcome: Option<LayaOutcome>) -> LayaNote {
-        LayaNote { decision, outcome }
+    /// The decision line, then the outcome line if there is one — as they now
+    /// appear one after the other in the transcript.
+    fn render(
+        decision: LayaDecision,
+        outcome: Option<LayaOutcome>,
+        width: u16,
+    ) -> Vec<Line<'static>> {
+        let mut lines = decision_lines(&decision, width);
+        if let Some(outcome) = outcome {
+            lines.extend(outcome_lines(&outcome, width));
+        }
+        lines
     }
 
     #[test]
     fn a_sent_hint_is_stated() {
         let lines = plain(&render(
-            &note(decision("files_and_code", 0.98, Some("h")), None),
+            decision("files_and_code", 0.98, Some("h")),
+            None,
             100,
         ));
         assert_eq!(
@@ -173,19 +247,19 @@ mod tests {
 
     #[test]
     fn below_the_gate_and_no_hint_routes_say_why_nothing_was_sent() {
-        let low = plain(&render(&note(decision("team", 0.26, None), None), 100));
+        let low = plain(&render(decision("team", 0.26, None), None, 100));
         assert!(
             low[0].contains("team 26% · below the 85% gate, no hint"),
             "{low:?}"
         );
-        let chat = plain(&render(&note(decision("chat", 0.88, None), None), 100));
+        let chat = plain(&render(decision("chat", 0.88, None), None, 100));
         assert!(
             chat[0].contains("chat 88% · no hint for this route"),
             "{chat:?}"
         );
         let mut shadow = decision("chat", 0.9, None);
         shadow.mode = "shadow".into();
-        assert!(plain(&render(&note(shadow, None), 100))[0].contains("shadow mode (log only)"));
+        assert!(plain(&render(shadow, None, 100))[0].contains("shadow mode (log only)"));
     }
 
     #[test]
@@ -194,15 +268,12 @@ mod tests {
         timed_out.route = None;
         timed_out.error = Some("timed out after 2s — the LLM decides alone".into());
         assert_eq!(
-            plain(&render(&note(timed_out, None), 100))[0],
+            plain(&render(timed_out, None, 100))[0],
             "◆ laya  no decision — timed out after 2s — the LLM decides alone"
         );
         let mut late = decision("web_research", 0.9, None);
         late.late = true;
-        assert!(
-            plain(&render(&note(late, None), 120))[0]
-                .contains("(late: after the turn had started)")
-        );
+        assert!(plain(&render(late, None, 120))[0].contains("(late: after the turn had started)"));
     }
 
     #[test]
@@ -214,12 +285,11 @@ mod tests {
             tiers: vec![("cat".into(), Some("strong".into())), ("dog".into(), None)],
             stop_reason: Some("end_turn".into()),
             turn_ms: Some(900.0),
+            ..Default::default()
         };
         let yes = plain(&render(
-            &note(
-                decision("files_and_code", 0.98, Some("h")),
-                Some(outcome(Some(true))),
-            ),
+            decision("files_and_code", 0.98, Some("h")),
+            Some(outcome(Some(true))),
             120,
         ));
         assert_eq!(
@@ -227,12 +297,14 @@ mod tests {
             "   ↳ LLM used files_and_code (file_read, shell) ✓ agreed · tiers: cat=strong, dog=default"
         );
         let no = plain(&render(
-            &note(decision("chat", 0.9, None), Some(outcome(Some(false)))),
+            decision("chat", 0.9, None),
+            Some(outcome(Some(false))),
             120,
         ));
         assert!(no[1].contains("✗ disagreed"));
         let none = plain(&render(
-            &note(decision("chat", 0.9, None), Some(outcome(None))),
+            decision("chat", 0.9, None),
+            Some(outcome(None)),
             120,
         ));
         assert!(!none[1].contains("agreed"));
@@ -240,7 +312,7 @@ mod tests {
 
     #[test]
     fn lines_never_exceed_the_pane_width() {
-        let lines = render(&note(decision("files_and_code", 0.98, Some("h")), None), 30);
+        let lines = render(decision("files_and_code", 0.98, Some("h")), None, 30);
         assert!(
             lines.iter().all(|l| l
                 .spans

@@ -12,7 +12,12 @@ clap.workspace = true
 crossterm.workspace = true
 futures.workspace = true
 ratatui.workspace = true
+regex.workspace = true
 serde_json.workspace = true
 textwrap.workspace = true
 tokio.workspace = true
 unicode-width.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+vt100.workspace = true

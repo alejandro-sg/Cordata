@@ -23,6 +23,7 @@ fn start(resume: Option<&str>) -> (SessionHandle, UnboundedReceiver<AppEvent>) {
         cwd: std::env::temp_dir(),
         resume: resume.map(str::to_owned),
         debug_log: None,
+        continue_latest: false,
     })
 }
 
@@ -49,6 +50,7 @@ struct Turn {
     tool_content: Vec<String>,
     untrusted: bool,
     permission_titles: Vec<String>,
+    always_labels: Vec<String>,
     stop: Option<StopReason>,
     failed: Option<String>,
 }
@@ -69,6 +71,7 @@ async fn run_turn(events: &mut UnboundedReceiver<AppEvent>, policy: ApprovalDeci
             }
             AppEvent::PermissionRequested { info, decision } => {
                 turn.permission_titles.push(info.title);
+                turn.always_labels.extend(info.always_label);
                 decision.send(policy).unwrap();
             }
             AppEvent::TurnComplete(reason) => {
@@ -132,6 +135,29 @@ async fn permission_allow_runs_the_tool() {
     );
     assert_eq!(turn.tool_statuses.last(), Some(&ToolStatus::Completed));
     assert_eq!(turn.stop, Some(StopReason::EndTurn));
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn always_allow_selects_the_servers_always_option() {
+    let (session, mut events) = start(None);
+    connect(&mut events).await;
+    session.send_prompt("shell: echo remember-me").unwrap();
+    let turn = run_turn(&mut events, ApprovalDecision::AllowAlways).await;
+    assert_eq!(turn.always_labels, ["Always allow shell(echo remember-me)"]);
+    assert!(
+        turn.tool_content.iter().any(|c| c.contains("[saved-rule]")),
+        "the server saw the allow_always option id: {:?}",
+        turn.tool_content
+    );
+    // A plain Allow must pick allow-once, never the always option.
+    session.send_prompt("shell: echo just-once").unwrap();
+    let turn = run_turn(&mut events, ApprovalDecision::Allow).await;
+    assert!(
+        turn.tool_content
+            .iter()
+            .all(|c| !c.contains("[saved-rule]"))
+    );
     session.shutdown().await;
 }
 

@@ -26,7 +26,7 @@ use agent_client_protocol::schema::v1::{
 use agent_client_protocol::util::MatchDispatch;
 use agent_client_protocol::{
     AcpAgent, AcpAgentConfig, ActiveSession, Agent, Client, ConnectionTo, Dispatch, LineDirection,
-    Responder, SessionMessage,
+    Responder, SessionMessage, UntypedMessage,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -96,7 +96,16 @@ async fn drive(
         .await?;
 
     let cwd = options.cwd.clone();
-    let (mut session, info, replay) = match options.resume.clone() {
+    let mut resume = options.resume.clone();
+    if resume.is_none() && options.continue_latest {
+        resume = latest_session(&connection, &cwd).await;
+        if resume.is_none() {
+            let _ = events.send(AppEvent::Notice(
+                "--continue: no earlier session in this folder — starting a new one".into(),
+            ));
+        }
+    }
+    let (mut session, info, replay) = match resume {
         Some(session_id) => {
             if !init.agent_capabilities.load_session {
                 return Err(agent_client_protocol::util::internal_error(
@@ -200,6 +209,20 @@ async fn drive(
     }
 }
 
+/// `session/list` for `cwd`, newest first (the backend sorts); `None` when the
+/// agent doesn't support it or has nothing for this folder.
+async fn latest_session(connection: &ConnectionTo<Agent>, cwd: &std::path::Path) -> Option<String> {
+    let request = UntypedMessage::new("session/list", serde_json::json!({"cwd": cwd})).ok()?;
+    let reply = connection.send_request(request).block_task().await.ok()?;
+    reply
+        .get("sessions")?
+        .as_array()?
+        .first()?
+        .get("sessionId")?
+        .as_str()
+        .map(str::to_owned)
+}
+
 fn dispatch_command(
     command: Command,
     connection: &ConnectionTo<Agent>,
@@ -268,6 +291,28 @@ fn dispatch_command(
                     Ok(())
                 })?;
         }
+        Command::Ext {
+            method,
+            mut params,
+            tag,
+        } => {
+            let events = events.clone();
+            if let Some(object) = params.as_object_mut() {
+                object
+                    .entry("sessionId")
+                    .or_insert_with(|| serde_json::Value::String(session_id.to_string()));
+            }
+            let request = UntypedMessage::new(&method, params)?;
+            connection
+                .send_request(request)
+                .on_receiving_result(async move |result| {
+                    let _ = events.send(AppEvent::ExtResult {
+                        tag,
+                        result: result.map_err(|error| describe_acp_error(&error)),
+                    });
+                    Ok(())
+                })?;
+        }
         Command::Shutdown => {}
     }
     Ok(())
@@ -329,6 +374,15 @@ async fn handle_message(
                 }
                 Ok(())
             }
+            // Tasks / self-heal / plugins / LSP: the harness's live state.
+            Dispatch::Notification(notification) => {
+                if let Some(event) = events::parse_harness(&notification.method, &notification.params)
+                    && events.send(AppEvent::Harness(event)).is_err()
+                {
+                    alive.store(false, Ordering::Relaxed);
+                }
+                Ok(())
+            }
             _ => Ok(()),
         })
         .await?;
@@ -348,6 +402,11 @@ fn permission_info(request: &RequestPermissionRequest) -> PermissionInfo {
             .map(Into::into)
             .unwrap_or(events::ToolKind::Other),
         raw_input: request.tool_call.fields.raw_input.clone(),
+        always_label: request
+            .options
+            .iter()
+            .find(|option| matches!(option.kind, PermissionOptionKind::AllowAlways))
+            .map(|option| option.name.clone()),
         tool_name,
         title,
     }
@@ -355,27 +414,26 @@ fn permission_info(request: &RequestPermissionRequest) -> PermissionInfo {
 
 /// Maps a human/scripted decision onto the outcome sent back to the server.
 ///
-/// Allow selects the server's allow option. Reject sends `cancelled` rather
-/// than selecting the server's reject option: older `acp_server.py` revisions
-/// approved on *any* `selected` outcome (`AllowedOutcome` only means
-/// "outcome == selected"), so selecting "reject" would have run the tool.
-/// `cancelled` is a denial on every revision — and harmless on one that
-/// honours option ids, because this backend keeps the turn going after a
-/// denial. `None` (consumer vanished) is also a denial.
+/// Allow selects the server's allow-once option (AllowAlways its allow-always
+/// one, falling back to allow-once if the server offered none). Reject sends
+/// `cancelled` rather than selecting the server's reject option: older
+/// `acp_server.py` revisions approved on *any* `selected` outcome
+/// (`AllowedOutcome` only means "outcome == selected"), so selecting "reject"
+/// would have run the tool. `cancelled` is a denial on every revision — and
+/// harmless on one that honours option ids, because this backend keeps the turn
+/// going after a denial. `None` (consumer vanished) is also a denial.
 fn permission_response(
     request: &RequestPermissionRequest,
     decision: Option<ApprovalDecision>,
 ) -> RequestPermissionResponse {
-    let allow = matches!(decision, Some(ApprovalDecision::Allow))
-        .then(|| {
-            request.options.iter().find(|option| {
-                matches!(
-                    option.kind,
-                    PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways
-                )
-            })
-        })
-        .flatten();
+    let find =
+        |wanted: PermissionOptionKind| request.options.iter().find(|option| option.kind == wanted);
+    let allow = match decision {
+        Some(ApprovalDecision::Allow) => find(PermissionOptionKind::AllowOnce),
+        Some(ApprovalDecision::AllowAlways) => find(PermissionOptionKind::AllowAlways)
+            .or_else(|| find(PermissionOptionKind::AllowOnce)),
+        _ => None,
+    };
     RequestPermissionResponse::new(match allow {
         Some(option) => RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
             option.option_id.clone(),

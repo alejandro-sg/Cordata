@@ -68,6 +68,8 @@ pub fn tool_may_return_untrusted(tool_name: &str) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalDecision {
     Allow,
+    /// Allow, and save the rule the server offered so it never asks again for this call.
+    AllowAlways,
     Reject,
 }
 
@@ -80,6 +82,8 @@ pub struct PermissionInfo {
     pub kind: ToolKind,
     pub raw_input: Option<Value>,
     pub untrusted_source: bool,
+    /// The server's "Always allow <rule>" option, if it offered one.
+    pub always_label: Option<String>,
 }
 
 pub(crate) fn tool_name_from_title(title: &str) -> &str {

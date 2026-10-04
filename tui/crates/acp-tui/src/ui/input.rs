@@ -1,8 +1,8 @@
-use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::{Block, BorderType, Paragraph, Widget};
 use unicode_width::UnicodeWidthChar;
 
 use crate::app::{App, ConnState};
@@ -45,49 +45,59 @@ pub fn layout(text: &str, cursor: usize, width: usize) -> (Vec<String>, (usize, 
 }
 
 pub fn height_for(app: &App, width: u16) -> u16 {
-    let inner = width.saturating_sub(2) as usize;
+    let inner = width.saturating_sub(4) as usize; // borders + the "› " lead
     let (rows, _) = layout(app.input.text(), app.input.cursor(), inner);
     rows.len().clamp(1, MAX_INPUT_ROWS) as u16 + 2
 }
 
-pub fn render(frame: &mut Frame, area: Rect, app: &App) {
+/// The prompt box. Returns where the text cursor belongs (column, row within
+/// `buffer`) when the box accepts input, else `None`.
+pub fn render(buffer: &mut Buffer, area: Rect, app: &App) -> Option<(u16, u16)> {
     let enabled = app.input_enabled();
     let (title, border) = if enabled {
-        (" message ", Color::Cyan)
+        ("", Color::Cyan)
     } else {
         match &app.conn {
             ConnState::Closed { .. } => (" disconnected — Ctrl+Q to quit ", Color::Red),
             ConnState::Connecting => (" connecting… ", Color::DarkGray),
-            ConnState::Connected if !app.pending.is_empty() => {
-                (" answer the permission request [a]/[r] ", Color::Yellow)
-            }
-            ConnState::Connected if app.picker.is_some() => (" choosing… ", Color::DarkGray),
-            ConnState::Connected => (" working… (Ctrl+C cancels the turn) ", Color::DarkGray),
+            ConnState::Connected => (" working… ", Color::DarkGray),
         }
     };
     let block = Block::bordered()
+        .border_type(BorderType::Rounded)
         .title(title)
         .border_style(Style::new().fg(border));
     let inner = block.inner(area);
 
-    let (rows, (cursor_row, cursor_col)) =
-        layout(app.input.text(), app.input.cursor(), inner.width as usize);
+    let (rows, (cursor_row, cursor_col)) = layout(
+        app.input.text(),
+        app.input.cursor(),
+        inner.width.saturating_sub(2) as usize,
+    );
     let visible = inner.height as usize;
     let first = (cursor_row + 1).saturating_sub(visible);
     let lines: Vec<Line> = rows
         .iter()
         .skip(first)
         .take(visible)
-        .map(|row| Line::raw(row.clone()))
+        .enumerate()
+        .map(|(i, row)| {
+            // `› ` marks the first row of the prompt; wrapped rows indent under it.
+            let lead = if first + i == 0 { "› " } else { "  " };
+            Line::from(vec![
+                ratatui::text::Span::styled(lead, Style::new().fg(border)),
+                ratatui::text::Span::raw(row.clone()),
+            ])
+        })
         .collect();
 
-    frame.render_widget(Paragraph::new(lines).block(block), area);
-    if enabled {
-        frame.set_cursor_position((
-            inner.x + cursor_col as u16,
+    Paragraph::new(lines).block(block).render(area, buffer);
+    enabled.then(|| {
+        (
+            inner.x + 2 + cursor_col as u16,
             inner.y + (cursor_row - first) as u16,
-        ));
-    }
+        )
+    })
 }
 
 #[cfg(test)]

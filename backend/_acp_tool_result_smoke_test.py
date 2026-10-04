@@ -12,6 +12,7 @@ loop and a fake connection records what would have gone to the client.
 """
 
 import asyncio
+import os
 
 import acp
 from strands import Agent, tool
@@ -83,7 +84,10 @@ async def run(tool_name: str) -> list:
     conn = FakeConn()
     server._conn = conn
     agent = Agent(model=Scripted(tool_name), tools=[good_tool, bad_tool], callback_handler=None)
-    server._sessions["s1"] = (agent, acp_server._ApprovalHandler())
+    handler = acp_server._ApprovalHandler()
+    router_hooks = acp_server.RouterHooks(acp_server.LayaRouter(predict=lambda *a, **k: None))
+    heal = acp_server.SelfHealHooks(config=acp_server.HealConfig(enabled=False), diagnose=lambda *a, **k: None)
+    server._sessions["s1"] = acp_server._Session(agent, handler, os.getcwd(), router_hooks, heal)
     response = await server.prompt("s1", [acp.text_block("go")])
     assert response.stopReason == "end_turn", response
     return conn.updates

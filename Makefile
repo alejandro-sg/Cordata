@@ -1,4 +1,4 @@
-.PHONY: setup up down restart status logs deploy-mini deploy-mini-frontend deploy-mini-backend tui tui-build tui-test stress tui-cloud stress-cloud key check-key laya-watch
+.PHONY: setup up down restart status logs deploy-mini deploy-mini-frontend deploy-mini-backend tui tui-build tui-test stress tui-cloud stress-cloud key check-key laya-watch settings
 
 setup:
 	@scripts/setup.sh
@@ -59,3 +59,8 @@ check-key:
 # Live view of Laya's per-turn decisions (any front door). acp-tui shows them inline.
 laya-watch:
 	@backend/.venv/bin/python backend/_laya_triage_watch.py $(ARGS)
+
+# What the backend will use for a project: merged settings, which file set each,
+# permission rules, warnings (docs/settings.md).   make settings DIR=~/some/project
+settings:
+	@backend/.venv/bin/python backend/settings_store.py $(or $(DIR),.)

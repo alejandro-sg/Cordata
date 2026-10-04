@@ -6,7 +6,7 @@ Two binaries over one protocol library, all talking to `backend/acp_server.py`
 | crate | what |
 |---|---|
 | `acp-core` | all protocol logic, no UI: spawn backend → `SessionHandle` → `AppEvent` stream; permission round-trip; untrusted-output detection |
-| `acp-tui` | interactive ratatui client (Claude-Code-style): streaming chat, tool cards, approval modal, mode/model/temperature, `--resume` |
+| `acp-tui` | interactive client (Claude-Code-style): inline in your terminal's own scrollback, streaming chat, tool cards, approval box with "always allow", layered settings (`/config`, `/permissions`), mode/model/temperature, `--resume` |
 | `acp-stress` | scriptable concurrent runner: scenarios in, one JSONL line per prompt-turn + a summary out |
 
 Built on the official [`agent-client-protocol`](https://crates.io/crates/agent-client-protocol)
@@ -29,7 +29,7 @@ The backend is found automatically (`backend/.venv/bin/python` +
 with `--backend-root` or `ACP_TUI_BACKEND_ROOT`. You need `scripts/setup.sh`
 done and your oMLX model server running — without it every turn fails with
 `Connection error`. The backend takes ~8 s to start (it loads models), so the
-status bar shows `connecting` at first.
+footer shows `connecting` at first.
 
 ### Using a cloud model (and keeping its key from the agent)
 
@@ -59,12 +59,19 @@ carries it.
 
 ## acp-tui
 
-What's on screen, top to bottom: a status bar (connection, session, mode, model, directory),
-the conversation, the prompt box, and a hint line (key reminders — or, while the agent works,
-`working 12s · 3 tool calls · Esc cancels`).
+**It prints into your terminal like any command-line program — there is no alternate screen.**
+Finished messages are written once and become ordinary scrollback, so the mouse wheel, trackpad,
+Shift+PageUp, text selection and copy/paste all work, a long reply flows into scrollback as it
+streams, and what you saw is still there after you quit (`acp-tui --resume <id>` is printed on exit).
+Only the bottom of the screen is live: the unfinished part of the reply, running tool cards, then
+the prompt box (or the approval box / `/config` panel in its place) and a one-line footer
+(connection dot, mode, model · temperature, directory — and, while the agent works,
+`⠋ working 12s · 3 tool calls · Esc cancels`). The footer sheds the least important parts on a
+narrow terminal. Multi-line paste goes into the box as one paste; it doesn't submit.
 
-- **Reasoning** is shown as a live two-line tail while the model thinks, then collapses to
-  `· reasoned (304 words) — Ctrl+R expands`. Ctrl+R (or `/thinking`) expands all of it.
+- **Reasoning** is shown as a live two-line tail while the model thinks, then settles to
+  `· reasoned (304 words)`. Ctrl+R (or `/thinking`, or `tui.thinking` in settings) shows it in full
+  for reasoning that finishes afterwards.
 - **Tool calls** are bordered cards: status glyph, the command or input, and a collapsed result
   (Ctrl+E / `/tools` expands). `shell`, `python_repl`, `file_write` ask first in `build` mode.
 - **Sub-agent teams** (`local_swarm` / `local_graph`) get one row per agent, live: `⠙ cat_agent
@@ -86,24 +93,45 @@ the conversation, the prompt box, and a hint line (key reminders — or, while t
 | key | action |
 |---|---|
 | Enter | send · `Ctrl+J` / `Alt+Enter` newline |
-| `a` / `r` (or Esc) | allow / reject a pending tool call (modal) |
-| Esc / Ctrl+C | cancel the running turn (not while the approval modal is open) · Esc/Ctrl+C clears the box when idle |
+| `a` / `r` (or Esc) | allow / reject a pending tool call (approval box) |
+| `s` | allow and **save the rule** ("Always allow shell(git status)"), when the box offers it |
+| Esc / Ctrl+C | cancel the running turn (not while the approval box is open) · Esc/Ctrl+C clears the box when idle |
 | Up / Down | earlier / later prompts (on the first / last line of the box) |
 | Tab / Shift+Tab | cycle mode forward / back: plan → build → auto |
 | Ctrl+O (also Ctrl+M where the terminal distinguishes it) | model picker |
 | Ctrl+T | temperature picker |
 | Ctrl+R / Ctrl+E | expand reasoning / tool results |
-| `?` (empty box) or F1 | help overlay (all keys and commands) |
-| PgUp / PgDn | scroll |
+| `?` (empty box) or F1 | print the help (all keys and commands) |
 | Ctrl+Q | quit |
 
-**Slash commands** (type in the prompt box; they never reach the model): `/help`,
+Scrolling is your terminal's: wheel, trackpad, Shift+PageUp/PageDown, or its scrollback search.
+
+**Slash commands** (type in the prompt box; they never reach the model, except `/init`): `/help`,
 `/mode [plan|build|auto]`, `/model [name]`, `/temp [focused|balanced|creative]`, `/thinking`,
-`/tools`, `/laya [on|off]`, `/clear`, `/quit`. A path like `/usr/bin/env is missing` is still a normal prompt.
+`/tools`, `/laya [on|off]`, `/config`, `/permissions`, `/trust`, `/memory`, `/init`, `/status`,
+`/clear`, `/quit`. A path like `/usr/bin/env is missing` is still a normal prompt.
+
+**Preferences and permissions** are layered JSON files — `~/.sierralab/settings.json`,
+`<project>/.sierralab/settings.json` (commit it), `<project>/.sierralab/settings.local.json`
+(this machine) — plus instruction files (`SIERRALAB.md`, or `AGENTS.md` / `CLAUDE.md`), the way
+Claude Code and Kilo do it:
+
+```text
+/config                                  interactive panel; Tab picks which file a change is written to
+/config set laya.mode shadow project
+/permissions allow shell(git status)     deny always wins, in every mode
+/permissions deny  file_write(*.env) project
+/trust                                   let this folder's project settings loosen permissions
+/init                                    have the agent draft SIERRALAB.md
+```
+
+Everything — keys, rule syntax, the trust model, what applies when — is in
+[`docs/settings.md`](../docs/settings.md); what is and isn't at parity with Claude Code, Kilo and
+DeepSeek-TUI is in [`docs/harness-parity.md`](../docs/harness-parity.md).
 
 Deliberate behaviours worth knowing:
 
-- **Ctrl+C is inert while the approval modal is open.** `session/cancel` is only
+- **Ctrl+C is inert while the approval box is open.** `session/cancel` is only
   checked between streamed events and the server is parked on your permission
   request, so cancelling then would do nothing. Answer the request first.
   *Rejecting a tool call does not abort the turn* — the model sees the denial and continues.
@@ -112,9 +140,9 @@ Deliberate behaviours worth knowing:
 - **Ctrl+M can't be the model key in most terminals** (it is byte-identical to
   Enter), hence Ctrl+O.
 - **`--resume`** shows text history only (the backend doesn't replay tool calls)
-  and always comes back in `build` mode; a divider says so. The protocol has no
-  session listing, so you need to know the id (it's in the status bar, and in
-  `backend/sessions/session_<id>/`).
+  and comes back in your default mode (`build` unless `permissions.defaultMode` says otherwise); a divider
+  says so. The protocol has no session listing, so you need the id (printed when you quit, shown in the
+  banner, and in `backend/sessions/session_<id>/`).
 - **Untrusted output**: results the backend wraps in `<<<UNTRUSTED_TOOL_OUTPUT>>>`
   (http_request, agent_memory reads, MCP tools) get a magenta double-line card
   labelled `⚠ UNTRUSTED CONTENT`. All agent text is stripped of terminal escape
@@ -171,8 +199,10 @@ replay, config options, crash, timeouts, concurrency, orphan-process check) are
 tested end-to-end against `crates/acp-core/tests/fixtures/fake_agent.py`, a
 scripted ACP agent, so they need no model server.
 
-## Not in v1
+## Not done
 
-Provider switching, free-float temperature, skills/MCP management, session
-enumeration (add `list_sessions` to `acp_server.py` first — don't read
-`backend/sessions/` off disk behind the protocol's back).
+Provider switching (it's environment on purpose), free-float temperature, skills/MCP management,
+session enumeration (add `list_sessions` to `acp_server.py` first — don't read `backend/sessions/`
+off disk behind the protocol's back), `/compact`, `/new`, snapshots / `/undo`, `@file` mentions,
+a non-interactive `-p` mode. The full list, with the reference tool for each, is in
+[`docs/harness-parity.md`](../docs/harness-parity.md).

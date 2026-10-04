@@ -5,16 +5,18 @@ use std::collections::VecDeque;
 use std::time::Instant;
 
 use acp_core::{
-    AppEvent, ApprovalDecision, ConfigChoice, ConfigOptionInfo, LayaDecision, LayaEvent,
-    LayaOutcome, ModeInfo, PermissionInfo, SessionInfo, StopReason, ToolCallInfo, ToolKind,
-    ToolStatus,
+    AppEvent, ApprovalDecision, ConfigChoice, ConfigOptionInfo, FileDiff, HarnessEvent, HealInfo,
+    LayaDecision, LayaEvent, LayaOutcome, ModeInfo, PermissionInfo, SessionInfo, StopReason,
+    TaskState, ToolCallInfo, ToolKind, ToolStatus,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use serde_json::Value;
 use tokio::sync::oneshot;
 
 use crate::commands::{self, Command};
+use crate::config_ui::ConfigPanel;
 use crate::input::Input;
+use crate::settings::{Settings, Store};
 
 #[derive(Debug)]
 pub struct ToolCard {
@@ -32,19 +34,26 @@ pub struct ToolCard {
     pub untrusted: bool,
     /// Tool whose output the backend wraps as untrusted (a hint, pre-result).
     pub untrusted_source: bool,
-}
-
-/// Laya's live triage for one turn: what it decided when the prompt was sent,
-/// and — once the turn ends — what the LLM then actually did.
-#[derive(Debug)]
-pub struct LayaNote {
-    pub decision: LayaDecision,
-    pub outcome: Option<LayaOutcome>,
+    /// What an edit changes (old text read before it ran), for the diff viewer.
+    pub diffs: Vec<FileDiff>,
+    /// Laya's P(this command succeeds), predicted before it ran.
+    pub p_ok: Option<f64>,
+    /// …and how it actually went: (succeeded, log loss of the prediction).
+    pub outcome: Option<(bool, Option<f64>)>,
 }
 
 #[derive(Debug)]
 pub enum Message {
-    Laya(LayaNote),
+    /// Laya's decision for a prompt, shown as soon as it arrives.
+    Laya(LayaDecision),
+    /// What the LLM then actually did, appended when the turn ends.
+    LayaOutcome(LayaOutcome),
+    /// The key/command reference, printed on demand (`?`, `/help`).
+    Help,
+    /// A phase of the self-healing loop worth a block in the transcript.
+    Heal(HealInfo),
+    /// Session banner printed once when the backend connects.
+    Welcome(SessionInfo),
     User(String),
     Agent(String),
     Thought(String),
@@ -88,8 +97,52 @@ pub enum Effect {
     SendPrompt(String),
     Cancel,
     SetMode(String),
-    SetConfig { id: String, value: String },
+    SetConfig {
+        id: String,
+        value: String,
+    },
+    /// Wipe the visible screen and scrollback (`/clear`).
+    ClearScreen,
+    /// An extension request to the backend; the reply comes back as
+    /// `AppEvent::ExtResult` with the same tag.
+    Ext {
+        method: String,
+        params: Value,
+        tag: String,
+    },
+    /// Start another session (a new backend process) in the same project.
+    NewSession,
+    /// Show another session: `Next`, `Prev` or a 1-based slot number.
+    SwitchSession(SwitchTarget),
+    /// End the shown session (its backend shuts down).
+    CloseSession,
+    /// List the open sessions and the project's saved ones.
+    ListSessions,
     Quit,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum SwitchTarget {
+    Next,
+    Prev,
+    Slot(usize),
+}
+
+/// One session's badge in the footer's tab strip (filled in by `main`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TabBadge {
+    pub number: usize,
+    pub active: bool,
+    pub state: TabState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabState {
+    Connecting,
+    Idle,
+    Working,
+    NeedsApproval,
+    Closed,
 }
 
 pub struct App {
@@ -97,6 +150,12 @@ pub struct App {
     pub input: Input,
     pub pending: VecDeque<PendingPermission>,
     pub picker: Option<Picker>,
+    /// The `/config` panel, while open.
+    pub config: Option<ConfigPanel>,
+    /// Where the settings files are (None in unit tests that don't need them).
+    pub store: Option<Store>,
+    /// Merged settings as last read.
+    pub settings: Settings,
     pub session: Option<SessionInfo>,
     pub modes: Vec<ModeInfo>,
     pub mode: String,
@@ -115,7 +174,14 @@ pub struct App {
     pub thoughts_expanded: bool,
     /// Show the live "◆ laya" lines (`/laya off` hides them; they are kept).
     pub show_laya: bool,
-    pub help_open: bool,
+    /// Messages already written to the terminal's scrollback. Everything
+    /// before this index is final and never redrawn.
+    pub committed: usize,
+    /// Rows of the message at `committed` already written (a long reply is
+    /// committed progressively as complete lines arrive).
+    pub committed_rows: usize,
+    /// Kind of the last committed message, for spacing between blocks.
+    pub last_committed: Option<crate::ui::transcript::Kind>,
     /// Prompts sent this run, oldest first, for Up/Down recall.
     history: Vec<String>,
     history_idx: Option<usize>,
@@ -123,10 +189,13 @@ pub struct App {
     draft: String,
     pub turn_started: Option<Instant>,
     pub turn_tools: usize,
-    /// Lines scrolled up from the bottom; 0 follows new output.
-    pub scroll: usize,
-    pub last_total_lines: usize,
     pub spinner: usize,
+    /// Background work (plugins, language servers, self-heal, MCP progress).
+    pub tasks: Vec<crate::ui::progress::TaskView>,
+    /// The approval panel shows the whole diff instead of its first rows (`d`).
+    pub diff_expanded: bool,
+    /// Every open session, for the footer (empty / one entry: no tab strip).
+    pub tabs: Vec<TabBadge>,
 }
 
 impl App {
@@ -136,6 +205,9 @@ impl App {
             input: Input::default(),
             pending: VecDeque::new(),
             picker: None,
+            config: None,
+            store: None,
+            settings: Settings::default(),
             session: None,
             modes: Vec::new(),
             mode: String::new(),
@@ -149,20 +221,36 @@ impl App {
             expand_tools: false,
             thoughts_expanded: false,
             show_laya: true,
-            help_open: false,
+            committed: 0,
+            committed_rows: 0,
+            last_committed: None,
             history: Vec::new(),
             history_idx: None,
             draft: String::new(),
             turn_started: None,
             turn_tools: 0,
-            scroll: 0,
-            last_total_lines: 0,
             spinner: 0,
+            tasks: Vec::new(),
+            diff_expanded: false,
+            tabs: Vec::new(),
+        }
+    }
+
+    /// For the footer of *another* session's tab strip.
+    pub fn tab_state(&self) -> TabState {
+        match self.conn {
+            ConnState::Connecting => TabState::Connecting,
+            ConnState::Closed { .. } => TabState::Closed,
+            ConnState::Connected if !self.pending.is_empty() => TabState::NeedsApproval,
+            ConnState::Connected if self.turn_active => TabState::Working,
+            ConnState::Connected => TabState::Idle,
         }
     }
 
     pub fn tick(&mut self) {
         self.spinner = self.spinner.wrapping_add(1);
+        let now = Instant::now();
+        self.tasks.retain(|task| task.visible(now));
     }
 
     pub fn input_enabled(&self) -> bool {
@@ -170,6 +258,21 @@ impl App {
             && !self.turn_active
             && self.pending.is_empty()
             && self.picker.is_none()
+            && self.config.is_none()
+    }
+
+    /// Can a prompt be sent right now? (Same as `input_enabled`, named for the
+    /// commands that send one on the user's behalf.)
+    pub(crate) fn input_enabled_for_prompt(&self) -> bool {
+        self.input_enabled()
+    }
+
+    /// Start a turn with `text` as the prompt.
+    pub(crate) fn begin_turn(&mut self, text: String) -> Effect {
+        self.turn_active = true;
+        self.turn_started = Some(Instant::now());
+        self.turn_tools = 0;
+        Effect::SendPrompt(text)
     }
 
     pub fn awaiting_approval(&self, tool_call_id: &str) -> bool {
@@ -191,6 +294,10 @@ impl App {
                 self.mode = info.current_mode.clone();
                 self.modes = info.modes.clone();
                 self.config_options = info.config_options.clone();
+                self.messages.push(Message::Welcome(info.clone()));
+                for notice in self.settings_notices() {
+                    self.messages.push(Message::Info(notice));
+                }
                 self.session = Some(info);
             }
             AppEvent::UserText(text) => self.messages.push(Message::User(sanitize(&text))),
@@ -203,18 +310,26 @@ impl App {
             }
             AppEvent::Laya(LayaEvent::Decision(decision)) => self.on_laya_decision(decision),
             AppEvent::Laya(LayaEvent::Outcome(outcome)) => {
-                if let Some(note) = self
-                    .messages
-                    .iter_mut()
-                    .rev()
-                    .find_map(|message| match message {
-                        Message::Laya(note) if note.outcome.is_none() => Some(note),
-                        _ => None,
-                    })
-                {
-                    note.outcome = Some(outcome);
+                self.messages.push(Message::LayaOutcome(outcome));
+            }
+            AppEvent::Laya(LayaEvent::Command { tool_use_id, p_ok }) => {
+                if let Some(card) = self.card_mut(&tool_use_id) {
+                    card.p_ok = Some(p_ok);
                 }
             }
+            AppEvent::Laya(LayaEvent::CommandOutcome {
+                tool_use_id,
+                ok,
+                p_ok,
+                log_loss,
+            }) => {
+                if let Some(card) = self.card_mut(&tool_use_id) {
+                    card.p_ok = card.p_ok.or(p_ok);
+                    card.outcome = Some((ok, log_loss));
+                }
+            }
+            AppEvent::Harness(event) => self.on_harness(event),
+            AppEvent::ExtResult { tag, result } => self.on_ext_result(&tag, result),
             AppEvent::ToolCallStarted(info) => {
                 self.turn_tools += 1;
                 self.messages.push(Message::Tool(card_from(info)));
@@ -223,6 +338,12 @@ impl App {
                 if let Some(card) = self.card_mut(&patch.id) {
                     if let Some(status) = patch.status {
                         card.status = status;
+                    }
+                    if let Some(input) = patch.raw_input {
+                        card.raw_input = Some(input);
+                    }
+                    if let Some(diffs) = patch.diffs {
+                        card.diffs = diffs;
                     }
                     if let Some(content) = patch.content {
                         // An in-progress update is a live log (replacing the
@@ -297,29 +418,67 @@ impl App {
     }
 
     fn on_laya_decision(&mut self, decision: LayaDecision) {
-        // A decision that arrives late (after a timeout notice) replaces that
-        // notice instead of adding a second line for the same turn.
-        if decision.late
-            && let Some(note) = self
-                .messages
-                .iter_mut()
-                .rev()
-                .find_map(|message| match message {
-                    Message::Laya(note)
-                        if note.outcome.is_none() && note.decision.error.is_some() =>
-                    {
-                        Some(note)
+        self.messages.push(Message::Laya(decision));
+    }
+
+    fn on_harness(&mut self, event: HarnessEvent) {
+        match event {
+            HarnessEvent::Task(info) => {
+                let finished = (info.state != TaskState::Running).then(Instant::now);
+                match self.tasks.iter_mut().find(|task| task.info.id == info.id) {
+                    Some(task) => {
+                        task.finished = task.finished.or(finished);
+                        task.info = info;
                     }
-                    _ => None,
-                })
-        {
-            note.decision = decision;
-            return;
+                    None => self.tasks.push(crate::ui::progress::TaskView {
+                        info,
+                        started: Instant::now(),
+                        finished,
+                    }),
+                }
+            }
+            HarnessEvent::Heal(info) if crate::ui::heal::is_shown(&info.phase) => {
+                self.messages.push(Message::Heal(info));
+            }
+            HarnessEvent::Heal(_) => {}
+            HarnessEvent::Plugin(row) => {
+                // Start-up noise stays in the progress bars; problems are worth a line.
+                let status = row.get("status").and_then(Value::as_str).unwrap_or_default();
+                if matches!(status, "failed" | "blocked") {
+                    let name = row.get("name").and_then(Value::as_str).unwrap_or("?");
+                    let error = row.get("error").and_then(Value::as_str).unwrap_or_default();
+                    self.messages.push(Message::Info(sanitize(&format!("plugin {name}: {status} — {error}"))));
+                }
+            }
+            HarnessEvent::Lsp(event) => {
+                let server = event.get("server").and_then(Value::as_str).unwrap_or("?");
+                match event.get("event").and_then(Value::as_str) {
+                    Some("started") => {
+                        let command = event.get("command").and_then(Value::as_str).unwrap_or(server);
+                        self.messages.push(Message::Info(sanitize(&format!(
+                            "language server for {server} started ({command}) — edits now report diagnostics"
+                        ))));
+                    }
+                    Some("failed") => {
+                        let error = event.get("error").and_then(Value::as_str).unwrap_or_default();
+                        self.messages.push(Message::Info(sanitize(&format!("language server for {server} failed: {error}"))));
+                    }
+                    _ => {}
+                }
+            }
         }
-        self.messages.push(Message::Laya(LayaNote {
-            decision,
-            outcome: None,
-        }));
+    }
+
+    fn on_ext_result(&mut self, tag: &str, result: Result<Value, String>) {
+        let value = match result {
+            Ok(value) => value,
+            Err(error) => {
+                self.messages.push(Message::Error(sanitize(&format!("/{tag}: {error}"))));
+                return;
+            }
+        };
+        let text = crate::commands::format_ext(tag, &value);
+        self.messages.push(Message::Info(sanitize(&text)));
     }
 
     fn end_turn(&mut self) {
@@ -358,6 +517,13 @@ impl App {
         }
     }
 
+    pub fn card(&self, id: &str) -> Option<&ToolCard> {
+        self.messages.iter().rev().find_map(|message| match message {
+            Message::Tool(card) if card.id == id => Some(card),
+            _ => None,
+        })
+    }
+
     fn card_mut(&mut self, id: &str) -> Option<&mut ToolCard> {
         self.messages
             .iter_mut()
@@ -370,6 +536,23 @@ impl App {
 
     // ------------------------------------------------------------------ keys
 
+    /// Bracketed paste: the text goes into the prompt box verbatim (newlines
+    /// included) instead of arriving as a burst of key presses that would
+    /// submit on the first newline.
+    pub fn on_paste(&mut self, text: &str) {
+        if !self.input_enabled() {
+            return;
+        }
+        for c in text.replace("\r\n", "\n").replace('\r', "\n").chars() {
+            match c {
+                '\n' => self.input.insert('\n'),
+                '\t' => (0..4).for_each(|_| self.input.insert(' ')),
+                c if c.is_control() => {}
+                c => self.input.insert(c),
+            }
+        }
+    }
+
     pub fn on_key(&mut self, key: KeyEvent) -> Option<Effect> {
         if key.kind == KeyEventKind::Release {
             return None;
@@ -381,27 +564,24 @@ impl App {
             return Some(Effect::Quit);
         }
 
-        // The help overlay swallows the next key (any key closes it).
-        if self.help_open {
-            self.help_open = false;
-            return None;
-        }
         if key.code == KeyCode::F(1) && self.pending.is_empty() {
-            self.help_open = true;
+            self.messages.push(Message::Help);
             return None;
         }
 
-        // Scrolling works everywhere, including under a modal.
-        match key.code {
-            KeyCode::PageUp => {
-                self.scroll = self.scroll.saturating_add(10);
-                return None;
-            }
-            KeyCode::PageDown => {
-                self.scroll = self.scroll.saturating_sub(10);
-                return None;
-            }
-            _ => {}
+        // Session tabs work from anywhere — even with an approval open, so a
+        // waiting session never traps you.
+        if ctrl && key.code == KeyCode::Char('n') {
+            return Some(Effect::NewSession);
+        }
+        if ctrl && key.code == KeyCode::Right {
+            return Some(Effect::SwitchSession(SwitchTarget::Next));
+        }
+        if ctrl && key.code == KeyCode::Left {
+            return Some(Effect::SwitchSession(SwitchTarget::Prev));
+        }
+        if alt && let KeyCode::Char(c @ '1'..='9') = key.code {
+            return Some(Effect::SwitchSession(SwitchTarget::Slot(c as usize - '0' as usize)));
         }
 
         if !self.pending.is_empty() {
@@ -409,6 +589,9 @@ impl App {
         }
         if self.picker.is_some() {
             return self.on_key_picker(key);
+        }
+        if self.config.is_some() {
+            return self.on_key_config(key);
         }
 
         if ctrl {
@@ -461,7 +644,7 @@ impl App {
         }
         // An empty prompt box + `?` is "help", not a question mark.
         if key.code == KeyCode::Char('?') && self.input.is_empty() {
-            self.help_open = true;
+            self.messages.push(Message::Help);
             return None;
         }
         match key.code {
@@ -482,11 +665,7 @@ impl App {
                     return self.run_command(command);
                 }
                 self.messages.push(Message::User(sanitize(&text)));
-                self.turn_active = true;
-                self.turn_started = Some(Instant::now());
-                self.turn_tools = 0;
-                self.scroll = 0;
-                return Some(Effect::SendPrompt(text));
+                return Some(self.begin_turn(text));
             }
             KeyCode::Up if self.input.on_first_line() => self.history_back(),
             KeyCode::Down if self.input.on_last_line() => self.history_forward(),
@@ -551,11 +730,14 @@ impl App {
     /// model: commands change the client or the session's settings only.
     fn run_command(&mut self, command: Command) -> Option<Effect> {
         match command {
-            Command::Help => self.help_open = true,
+            Command::Help => self.messages.push(Message::Help),
             Command::Quit => return Some(Effect::Quit),
             Command::Clear => {
                 self.messages.clear();
-                self.scroll = 0;
+                self.committed = 0;
+                self.committed_rows = 0;
+                self.last_committed = None;
+                return Some(Effect::ClearScreen);
             }
             Command::Thinking => {
                 self.thoughts_expanded = !self.thoughts_expanded;
@@ -564,6 +746,9 @@ impl App {
                 } else {
                     "reasoning collapsed"
                 });
+            }
+            Command::Laya(Some(arg)) if arg == "stats" => {
+                return Some(ext("_sierralab/laya/stats", Value::Null, "laya stats"));
             }
             Command::Laya(arg) => {
                 self.show_laya = match arg.as_deref() {
@@ -609,9 +794,60 @@ impl App {
             Command::Temp(None) => self.open_picker("temperature", "Temperature"),
             Command::Model(Some(query)) => return self.set_config_by_name("model", &query),
             Command::Temp(Some(query)) => return self.set_config_by_name("temperature", &query),
+            Command::Config(arg) => return self.run_config(arg),
+            Command::Permissions(arg) => self.run_permissions(arg),
+            Command::Trust => self.run_trust(),
+            Command::Memory => self.run_memory(),
+            Command::Init => return self.run_init(),
+            Command::Status => self.run_status(),
+            Command::Plugins(arg) => return self.run_plugins(arg),
+            Command::Lsp => return Some(ext("_sierralab/lsp/status", Value::Null, "lsp")),
+            Command::Heal => return Some(ext("_sierralab/heal/status", Value::Null, "heal")),
+            Command::Agents => self.info(
+                "specialists: architect (plans changes, read-only) · debugger (diagnoses, patches, verifies) — \
+                 Laya dispatches confident routes to them directly; otherwise the agent calls them as tools",
+            ),
+            Command::New => return Some(Effect::NewSession),
+            Command::Sessions => return Some(Effect::ListSessions),
+            Command::Switch(arg) => {
+                return match arg.as_deref().map(str::parse::<usize>) {
+                    Some(Ok(n)) if n > 0 => Some(Effect::SwitchSession(SwitchTarget::Slot(n))),
+                    None => Some(Effect::SwitchSession(SwitchTarget::Next)),
+                    _ => {
+                        self.info("/switch takes a session number (see /sessions)");
+                        None
+                    }
+                };
+            }
+            Command::Close => return Some(Effect::CloseSession),
+            Command::ResumeTurn => {
+                if !self.input_enabled_for_prompt() {
+                    return None;
+                }
+                self.messages.push(Message::User("↻ resume the interrupted turn".into()));
+                return Some(self.begin_turn(RESUME_TURN_MARKER.into()));
+            }
             Command::Unknown(name) => self.info(format!("unknown command /{name} — try /help")),
         }
         None
+    }
+
+    /// `/plugins`, `/plugins enable|disable <name>`, `/plugins reload`.
+    fn run_plugins(&mut self, arg: Option<String>) -> Option<Effect> {
+        let words: Vec<&str> = arg.as_deref().unwrap_or("").split_whitespace().collect();
+        match words.as_slice() {
+            [] | ["list"] => Some(ext("_sierralab/plugins/list", Value::Null, "plugins")),
+            ["reload"] => Some(ext("_sierralab/plugins/reload", Value::Null, "plugins")),
+            [verb @ ("enable" | "disable"), name] => Some(ext(
+                &format!("_sierralab/plugins/{verb}"),
+                serde_json::json!({ "name": name }),
+                &format!("plugins {verb}"),
+            )),
+            _ => {
+                self.info("usage: /plugins [list | reload | enable <name> | disable <name>]");
+                None
+            }
+        }
     }
 
     /// Set a select option by the value or display name the user typed
@@ -660,8 +896,17 @@ impl App {
     }
 
     fn on_key_permission(&mut self, key: KeyEvent) -> Option<Effect> {
+        let offers_always = self
+            .pending
+            .front()
+            .is_some_and(|pending| pending.info.always_label.is_some());
         let decision = match key.code {
+            KeyCode::Char('d' | 'D') => {
+                self.diff_expanded = !self.diff_expanded;
+                return None;
+            }
             KeyCode::Char('a' | 'A') => ApprovalDecision::Allow,
+            KeyCode::Char('s' | 'S') if offers_always => ApprovalDecision::AllowAlways,
             KeyCode::Char('r' | 'R') | KeyCode::Esc => ApprovalDecision::Reject,
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 // Documented, not a bug: session/cancel is only checked
@@ -675,7 +920,16 @@ impl App {
             }
             _ => return None,
         };
+        self.diff_expanded = false;
         if let Some(mut pending) = self.pending.pop_front() {
+            if decision == ApprovalDecision::AllowAlways
+                && let Some(label) = &pending.info.always_label
+            {
+                self.messages.push(Message::Info(format!(
+                    "{} — saved for this project (/permissions to review)",
+                    sanitize(label)
+                )));
+            }
             pending.answer(decision);
         }
         self.hint = None;
@@ -757,6 +1011,21 @@ impl App {
     }
 }
 
+/// What `/resume-turn` sends: the backend resumes the session's checkpoint.
+pub const RESUME_TURN_MARKER: &str = "[resume interrupted turn]";
+
+fn ext(method: &str, params: Value, tag: &str) -> Effect {
+    Effect::Ext {
+        method: method.to_owned(),
+        params: if params.is_null() {
+            serde_json::json!({})
+        } else {
+            params
+        },
+        tag: tag.to_owned(),
+    }
+}
+
 fn card_from(info: ToolCallInfo) -> ToolCard {
     ToolCard {
         id: info.id,
@@ -768,6 +1037,9 @@ fn card_from(info: ToolCallInfo) -> ToolCard {
         progress: String::new(),
         untrusted: info.untrusted,
         untrusted_source: info.untrusted_source,
+        diffs: info.diffs,
+        p_ok: None,
+        outcome: None,
     }
 }
 
@@ -844,7 +1116,25 @@ mod tests {
                     .collect(),
             }],
         }));
+        // The banner is covered by its own test; most tests want an empty transcript.
+        app.messages.clear();
         app
+    }
+
+    #[test]
+    fn connecting_adds_the_session_banner_to_the_transcript() {
+        let mut app = App::new();
+        app.on_event(AppEvent::Connected(SessionInfo {
+            session_id: "s1".into(),
+            cwd: "/tmp".into(),
+            resumed: false,
+            current_mode: "build".into(),
+            modes: vec![],
+            config_options: vec![],
+        }));
+        assert!(
+            matches!(app.messages.as_slice(), [Message::Welcome(info)] if info.session_id == "s1")
+        );
     }
 
     fn type_text(app: &mut App, text: &str) {
@@ -891,6 +1181,7 @@ mod tests {
                 kind: ToolKind::Execute,
                 raw_input: None,
                 untrusted_source: false,
+                always_label: None,
             },
             decision: tx,
         });
@@ -910,6 +1201,7 @@ mod tests {
                 kind: ToolKind::Execute,
                 raw_input: None,
                 untrusted_source: false,
+                always_label: None,
             },
             decision: tx,
         });
@@ -937,6 +1229,7 @@ mod tests {
                 kind: ToolKind::Execute,
                 raw_input: None,
                 untrusted_source: false,
+                always_label: None,
             },
             decision: tx,
         });
@@ -1001,6 +1294,7 @@ mod tests {
             tier: None,
             late,
             error: error.map(Into::into),
+            ..Default::default()
         }))
     }
 
@@ -1012,24 +1306,29 @@ mod tests {
             tiers: vec![],
             stop_reason: Some("end_turn".into()),
             turn_ms: Some(1.0),
+            ..Default::default()
         }))
     }
 
-    fn laya_notes(app: &App) -> Vec<&LayaNote> {
+    fn laya_decisions(app: &App) -> Vec<&LayaDecision> {
         app.messages
             .iter()
-            .filter_map(|m| {
-                if let Message::Laya(n) = m {
-                    Some(n)
-                } else {
-                    None
-                }
+            .filter_map(|m| match m {
+                Message::Laya(decision) => Some(decision),
+                _ => None,
             })
             .collect()
     }
 
+    fn laya_outcomes(app: &App) -> usize {
+        app.messages
+            .iter()
+            .filter(|m| matches!(m, Message::LayaOutcome(_)))
+            .count()
+    }
+
     #[test]
-    fn a_laya_decision_then_its_outcome_become_one_note_per_turn() {
+    fn each_turn_gets_its_decision_line_and_its_outcome_line() {
         let mut app = connected();
         submit(&mut app, "first");
         app.on_event(laya_decision("chat", false, None));
@@ -1038,17 +1337,14 @@ mod tests {
         submit(&mut app, "second");
         app.on_event(laya_decision("memory", false, None));
         app.on_event(laya_outcome("memory"));
-        let notes = laya_notes(&app);
-        assert_eq!(notes.len(), 2);
-        assert!(
-            notes.iter().all(|n| n.outcome.is_some()),
-            "each outcome attached to its own turn's decision"
-        );
-        assert_eq!(notes[1].decision.route.as_deref(), Some("memory"));
+        let decisions = laya_decisions(&app);
+        assert_eq!(decisions.len(), 2);
+        assert_eq!(laya_outcomes(&app), 2);
+        assert_eq!(decisions[1].route.as_deref(), Some("memory"));
     }
 
     #[test]
-    fn a_late_decision_replaces_the_timeout_notice_for_the_same_turn() {
+    fn a_late_decision_follows_the_timeout_notice_because_scrollback_cannot_be_edited() {
         let mut app = connected();
         submit(&mut app, "slow");
         app.on_event(laya_decision(
@@ -1057,21 +1353,10 @@ mod tests {
             Some("timed out after 2s — the LLM decides alone"),
         ));
         app.on_event(laya_decision("web_research", true, None));
-        let notes = laya_notes(&app);
-        assert_eq!(
-            notes.len(),
-            1,
-            "one line per turn, not a notice plus an answer"
-        );
-        assert_eq!(notes[0].decision.route.as_deref(), Some("web_research"));
-        assert!(notes[0].decision.late && notes[0].decision.error.is_none());
-    }
-
-    #[test]
-    fn an_outcome_without_a_decision_is_harmless() {
-        let mut app = connected();
-        app.on_event(laya_outcome("chat"));
-        assert!(laya_notes(&app).is_empty());
+        let decisions = laya_decisions(&app);
+        assert_eq!(decisions.len(), 2, "the notice stays; the answer is added");
+        assert!(decisions[0].error.is_some());
+        assert!(decisions[1].late && decisions[1].error.is_none());
     }
 
     #[test]
@@ -1145,12 +1430,14 @@ mod tests {
             content: String::new(),
             untrusted_source: true,
             untrusted: false,
+            diffs: vec![],
         }));
         app.on_event(AppEvent::ToolCallUpdated(ToolCallPatch {
             id: "t1".into(),
             status: Some(ToolStatus::Completed),
             content: Some("<<<UNTRUSTED_TOOL_OUTPUT>>>\nx".into()),
             untrusted: true,
+            ..Default::default()
         }));
         let Message::Tool(card) = &app.messages[0] else {
             panic!()
@@ -1171,6 +1458,7 @@ mod tests {
                 kind: ToolKind::Execute,
                 raw_input: None,
                 untrusted_source: false,
+                always_label: None,
             },
             decision: tx,
         });
@@ -1210,6 +1498,7 @@ mod tests {
             content: String::new(),
             untrusted_source: false,
             untrusted: false,
+            diffs: vec![],
         }));
         for log in ["started: a", "started: a\nfinished: a - ok"] {
             app.on_event(AppEvent::ToolCallUpdated(ToolCallPatch {
@@ -1217,6 +1506,7 @@ mod tests {
                 status: Some(ToolStatus::InProgress),
                 content: Some(log.into()),
                 untrusted: false,
+                ..Default::default()
             }));
         }
         app.on_event(AppEvent::ToolCallUpdated(ToolCallPatch {
@@ -1224,6 +1514,7 @@ mod tests {
             status: Some(ToolStatus::Completed),
             content: Some("final answer".into()),
             untrusted: false,
+            ..Default::default()
         }));
         let Message::Tool(card) = &app.messages[0] else {
             panic!()
@@ -1286,25 +1577,23 @@ mod tests {
     }
 
     #[test]
-    fn help_opens_with_question_mark_f1_and_slash_help_and_any_key_closes_it() {
+    fn help_is_printed_by_question_mark_f1_and_slash_help() {
+        let helps = |app: &App| {
+            app.messages
+                .iter()
+                .filter(|m| matches!(m, Message::Help))
+                .count()
+        };
         let mut app = connected();
         app.on_key(key(KeyCode::Char('?')));
         assert!(
-            app.help_open && app.input.is_empty(),
-            "'?' on an empty box opens help instead of typing"
+            helps(&app) == 1 && app.input.is_empty(),
+            "'?' on an empty box prints help instead of typing"
         );
-        app.on_key(key(KeyCode::Char('x')));
-        assert!(
-            !app.help_open && app.input.is_empty(),
-            "the closing key is swallowed"
-        );
-
         app.on_key(key(KeyCode::F(1)));
-        assert!(app.help_open);
-        app.on_key(key(KeyCode::Esc));
+        assert_eq!(helps(&app), 2);
         submit(&mut app, "/help");
-        assert!(app.help_open);
-        app.on_key(key(KeyCode::Enter));
+        assert_eq!(helps(&app), 3);
 
         type_text(&mut app, "why?");
         assert_eq!(
@@ -1312,11 +1601,18 @@ mod tests {
             "why?",
             "a '?' inside a prompt is just a character"
         );
-        assert_eq!(
-            app.on_key(ctrl('q')),
-            Some(Effect::Quit),
-            "Ctrl+Q still quits with help open"
-        );
+    }
+
+    #[test]
+    fn pasted_text_keeps_its_newlines_and_does_not_submit() {
+        let mut app = connected();
+        app.on_paste("line one\r\nline two\tindented\n");
+        assert_eq!(app.input.text(), "line one\nline two    indented\n");
+        assert!(app.messages.iter().all(|m| !matches!(m, Message::User(_))));
+        let mut busy = connected();
+        busy.turn_active = true;
+        busy.on_paste("ignored");
+        assert!(busy.input.is_empty(), "no pasting into a disabled box");
     }
 
     #[test]

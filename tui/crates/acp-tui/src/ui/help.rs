@@ -1,80 +1,68 @@
-use ratatui::Frame;
-use ratatui::layout::Rect;
+//! `/help`: keys and commands, written into the transcript like any message
+//! (so it scrolls with the conversation and can be copied).
+
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph};
 
-use super::permission_modal::centered;
-use crate::app::App;
+use super::text::truncate;
 use crate::commands::HELP;
 
 const KEYS: &[(&str, &str)] = &[
-    ("Enter", "send  (Ctrl+J / Alt+Enter: newline)"),
+    (
+        "Enter",
+        "send  (Ctrl+J / Alt+Enter / pasted text keeps newlines)",
+    ),
     (
         "Esc / Ctrl+C",
-        "cancel the running turn  (not while a permission is open)",
+        "cancel the running turn; clear the box when idle",
     ),
-    ("a / r", "allow / reject a tool call in the approval box"),
+    (
+        "a / r / s",
+        "allow / reject / always-allow (saves a rule) in the approval box",
+    ),
     (
         "Tab / Shift+Tab",
         "cycle mode: plan (safe) → build (asks) → auto (never asks)",
     ),
     ("Ctrl+O / Ctrl+T", "model / temperature picker"),
-    ("Ctrl+R", "expand or collapse reasoning"),
-    ("Ctrl+E", "expand or collapse tool results"),
+    (
+        "Ctrl+R",
+        "expand or collapse reasoning (applies to new output)",
+    ),
+    (
+        "Ctrl+E",
+        "expand or collapse tool results (applies to new output)",
+    ),
     ("Up / Down", "earlier / later prompts"),
-    ("PgUp / PgDn", "scroll"),
     ("? / F1", "this help"),
     ("Ctrl+Q", "quit"),
 ];
 
-pub fn render(frame: &mut Frame, area: Rect, app: &App) {
-    if !app.help_open {
-        return;
-    }
+pub fn lines(width: u16) -> Vec<Line<'static>> {
+    let width = width as usize;
     let key_style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
     let dim = Style::new().fg(Color::Gray);
-    let mut lines = vec![Line::styled(
-        "Keys",
-        Style::new().add_modifier(Modifier::BOLD),
-    )];
+    let bold = Style::new().add_modifier(Modifier::BOLD);
+
+    let mut lines = vec![Line::styled("Keys", bold)];
     for (key, what) in KEYS {
         lines.push(Line::from(vec![
             Span::styled(format!("  {key:<17}"), key_style),
-            Span::raw(*what),
+            Span::raw(truncate(what, width.saturating_sub(19))),
         ]));
     }
     lines.push(Line::raw(""));
-    lines.push(Line::styled(
-        "Commands (type in the input box)",
-        Style::new().add_modifier(Modifier::BOLD),
-    ));
+    lines.push(Line::styled("Commands", bold));
     for (usage, what) in HELP {
         lines.push(Line::from(vec![
             Span::styled(format!("  {usage:<36}"), key_style),
-            Span::raw(*what),
+            Span::raw(truncate(what, width.saturating_sub(38))),
         ]));
     }
     lines.push(Line::raw(""));
     lines.push(Line::styled(
-        "Reasoning is collapsed to a one-line preview; sub-agent teams show one row per agent.",
+        "Scroll with your terminal (mouse wheel, trackpad, Shift+PageUp) — finished output is ordinary scrollback, so selecting and copying work too.",
         dim,
     ));
-    lines.push(Line::styled(
-        "◆ laya = the fast classifier's live decision under your prompt, then whether the LLM agreed (/laya off hides it).",
-        dim,
-    ));
-    lines.push(Line::styled("Any key closes this.", dim));
-
-    let height = lines.len() as u16 + 2;
-    let rect = centered(area, 96.min(area.width), height);
-    frame.render_widget(Clear, rect);
-    frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::bordered()
-                .title(" Help ")
-                .border_style(Style::new().fg(Color::Cyan)),
-        ),
-        rect,
-    );
+    lines
 }

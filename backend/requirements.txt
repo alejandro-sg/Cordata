@@ -15,6 +15,9 @@
 ag-ui-protocol==0.1.22
 ag_ui_strands==0.4.0
 strands-agents[openai,anthropic]==1.55.1
+# the A2A extra: strands.agent.a2a_agent.A2AAgent (a2a_client_tool.py) needs
+# the a2a-sdk protocol package — pip pulls a2a-sdk==0.3.26 with it
+strands-agents[a2a]==1.55.1
 strands-agents-tools==0.8.8
 agent-client-protocol==0.12.1
 qdrant-client==1.19.0

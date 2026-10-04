@@ -12,8 +12,14 @@ strands.multiagent.Swarm and strands.multiagent.Graph emit the same
 multiagent_node_start/multiagent_node_stop/multiagent_result event shapes
 from stream_async(), confirmed empirically against this deployment's local
 model.
+
+The build-and-stream body lives in module-level ``stream_graph`` so the
+Laya-routed team pipeline (team_pipeline.py) runs the exact same machinery
+— same node construction, same denylist, same progress shape — instead of
+a hand-copied second implementation drifting apart.
 """
 
+from collections.abc import AsyncIterator
 from typing import Any
 
 from strands import tool
@@ -25,37 +31,14 @@ import sub_agent_common as sac
 _TOOL_LABEL = "local_graph"
 
 
-@tool(context=True)
-async def local_graph(task: str, agents: list[dict[str, Any]], tool_context: ToolContext) -> dict[str, Any]:
-    """Spin up a team of specialized Strands sub-agents that run in parallel.
-
-    Every sub-agent automatically runs on the same model provider as you,
-    same as local_swarm. Unlike local_swarm's sequential hand-off, nodes
-    with no unmet dependency run concurrently — use this when sub-tasks are
-    genuinely independent (e.g. researching three unrelated things at
-    once); use local_swarm instead when each step needs the previous one's
-    output, or the team needs to hand off and coordinate autonomously.
-
-    Sub-agents can never be given shell, python_repl, file_write, or any
-    generated skill tool — those need human approval, which only you (the
-    top-level agent) can trigger. If the task genuinely needs one of those,
-    do that part yourself instead of delegating it to a sub-agent.
-
-    Args:
-        task: The overall task for the team to accomplish together.
-        agents: One entry per specialist: {"name": str, "system_prompt": str,
-            "tools": list[str] (optional, tool names from your own toolset),
-            "tier": "fast"|"standard"|"strong" (optional model size; omit unless
-            the sub-task is clearly trivial or unusually hard),
-            "depends_on": list[str] (optional, names of other agents in this
-            same list whose result this one needs first — omit for an agent
-            that can start immediately, in parallel with any other agent
-            that also has no dependencies)}.
-    """
+async def stream_graph(task: str, agents: list[dict[str, Any]], caller: Any, label: str = _TOOL_LABEL) -> AsyncIterator[dict[str, Any]]:
+    """Builds a Graph from ``agent_specs`` and streams it. Everything yielded
+    before the last value is a ``{"state": ...}`` progress update; the last
+    value is the run's result dict (see the @tool below for the shapes)."""
     if not agents:
         raise ValueError("At least one agent specification is required")
 
-    nodes_by_name = sac.build_agent_nodes(agents, tool_context.agent, _TOOL_LABEL)
+    nodes_by_name = sac.build_agent_nodes(agents, caller, label)
 
     builder = GraphBuilder()
     for name, node_agent in nodes_by_name.items():
@@ -83,7 +66,7 @@ async def local_graph(task: str, agents: list[dict[str, Any]], tool_context: Too
     # "kind" lets the frontend tell a graph run's progress log apart from a
     # swarm run's without guessing from field presence. "reasoning" feeds
     # SwarmProgress.tsx's per-node thinking tab — see sub_agent_common.
-    base_state = dict(tool_context.agent.state.get() or {})
+    base_state = dict(caller.state.get() or {})
     log: list[dict[str, Any]] = []
     reasoning: dict[str, str] = {}
     reasoning_pending = 0
@@ -127,3 +110,34 @@ async def local_graph(task: str, agents: list[dict[str, Any]], tool_context: Too
         "graph_structure": structure,
         "results": {name: sac.summarize_node_result(node_result) for name, node_result in (final_result.results or {}).items()},
     }
+
+
+@tool(context=True)
+async def local_graph(task: str, agents: list[dict[str, Any]], tool_context: ToolContext) -> dict[str, Any]:
+    """Spin up a team of specialized Strands sub-agents that run in parallel.
+
+    Every sub-agent automatically runs on the same model provider as you,
+    same as local_swarm. Unlike local_swarm's sequential hand-off, nodes
+    with no unmet dependency run concurrently — use this when sub-tasks are
+    genuinely independent (e.g. researching three unrelated things at
+    once); use local_swarm instead when each step needs the previous one's
+    output, or the team needs to hand off and coordinate autonomously.
+
+    Sub-agents can never be given shell, python_repl, file_write, or any
+    generated skill tool — those need human approval, which only you (the
+    top-level agent) can trigger. If the task genuinely needs one of those,
+    do that part yourself instead of delegating it to a sub-agent.
+
+    Args:
+        task: The overall task for the team to accomplish together.
+        agents: One entry per specialist: {"name": str, "system_prompt": str,
+            "tools": list[str] (optional, tool names from your own toolset),
+            "tier": "fast"|"standard"|"strong" (optional model size; omit unless
+            the sub-task is clearly trivial or unusually hard),
+            "depends_on": list[str] (optional, names of other agents in this
+            same list whose result this one needs first — omit for an agent
+            that can start immediately, in parallel with any other agent
+            that also has no dependencies)}.
+    """
+    async for value in stream_graph(task, agents, tool_context.agent, _TOOL_LABEL):
+        yield value

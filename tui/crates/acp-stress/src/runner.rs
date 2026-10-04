@@ -22,6 +22,8 @@ pub struct RunConfig {
 
 type Events = mpsc::UnboundedReceiver<AppEvent>;
 
+// One short-lived value per wait; boxing the event would only add an allocation.
+#[allow(clippy::large_enum_variant)]
 enum Wait {
     Event(AppEvent),
     Timeout,
@@ -70,6 +72,7 @@ pub async fn run_scenario(
         cwd,
         resume: None,
         debug_log: None,
+        continue_latest: false,
     });
 
     let mut outcome = ScenarioOutcome {

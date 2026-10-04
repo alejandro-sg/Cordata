@@ -33,6 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cwd: std::env::current_dir()?,
         resume: None,
         debug_log,
+        continue_latest: false,
     });
 
     let mut permission_cards = 0;

@@ -268,7 +268,7 @@ class _Turn:
         self.decision: Decision | None = None
         self.hint: str | None = None
         self.waited_ms: float | None = None
-        self.base_prompt: str | None = None  # the system prompt to restore
+        self.base_prompt: dict | None = None  # the hint's system-prompt block, removed at turn end
         self.decision_emitted = False
         self.timed_out = False
 
@@ -421,9 +421,11 @@ class LayaTriageHooks(HookProvider):
         hint = decision.hint()
         if hint:
             try:
-                base = turn.agent.system_prompt or ""
-                turn.agent.system_prompt = f"{base}\n\n{hint}" if base else hint
-                turn.base_prompt = base
+                # Block-level (see laya_router.add_prompt_block for why not a string rewrite).
+                blocks = list(turn.agent.system_prompt_content or [])
+                turn.base_prompt = {"text": hint}
+                blocks.append(turn.base_prompt)
+                turn.agent.system_prompt = blocks
                 turn.hint = hint
             except Exception as error:  # an agent whose prompt can't be set just goes without a hint
                 logger.warning("laya triage: could not apply hint: %s", error)
@@ -459,7 +461,10 @@ class LayaTriageHooks(HookProvider):
     def _restore_prompt(turn: _Turn) -> None:
         if turn.hint is not None and turn.base_prompt is not None:
             try:
-                turn.agent.system_prompt = turn.base_prompt or None
+                blocks = list(turn.agent.system_prompt_content or [])
+                if turn.base_prompt in blocks:
+                    blocks.remove(turn.base_prompt)
+                    turn.agent.system_prompt = blocks or None
             except Exception as error:
                 logger.warning("laya triage: could not restore system prompt: %s", error)
 

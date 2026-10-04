@@ -76,6 +76,9 @@ DENIED_TOOLS = {"shell", "python_repl", "file_write", "editor"}
 ORCHESTRATOR_ONLY_TOOLS = {
     "local_swarm",
     "local_graph",
+    # Unreviewed egress to a third-party host (a2a_client_tool.py) — a
+    # sub-agent has no gate, and no credentials it could be handed either.
+    "a2a_client",
     "skill_forge",
     "proposer",
     "list_models",

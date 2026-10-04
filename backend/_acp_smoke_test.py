@@ -8,6 +8,7 @@ as native selects), session titles, and load_session's history replay.
 
 import asyncio
 import sys
+from pathlib import Path
 
 import acp
 
@@ -45,7 +46,7 @@ class RecordingClient:
 async def run_case(label: str, decision: str, prompt_text: str, mode: str | None = None, cwd: str = "."):
     print(f"\n=== {label} ===")
     client = RecordingClient(decision=decision)
-    async with acp.spawn_agent_process(lambda _agent: client, sys.executable, "acp_server.py") as (conn, proc):
+    async with acp.spawn_agent_process(lambda _agent: client, sys.executable, str(Path(__file__).parent.resolve() / "acp_server.py")) as (conn, proc):
         init = await conn.initialize(protocol_version=acp.PROTOCOL_VERSION)
         print("agentCapabilities.loadSession ->", init.agentCapabilities.load_session)
 
@@ -112,7 +113,7 @@ async def test_reject_selected_does_not_run_tool():
 async def test_config_option_change():
     print("\n=== config option: switch model, verify config_options reflects it ===")
     client = RecordingClient()
-    async with acp.spawn_agent_process(lambda _agent: client, sys.executable, "acp_server.py") as (conn, proc):
+    async with acp.spawn_agent_process(lambda _agent: client, sys.executable, str(Path(__file__).parent.resolve() / "acp_server.py")) as (conn, proc):
         await conn.initialize(protocol_version=acp.PROTOCOL_VERSION)
         session = await conn.new_session(cwd=".")
         model_option = next(c for c in session.config_options if c.id == "model")

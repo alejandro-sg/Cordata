@@ -133,6 +133,15 @@ impl From<SchemaStopReason> for StopReason {
     }
 }
 
+/// One file an edit tool call changes: ACP `diff` tool-call content. The
+/// backend reads `old_text` from disk before the call runs (None: a new file).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileDiff {
+    pub path: String,
+    pub old_text: Option<String>,
+    pub new_text: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct ToolCallInfo {
     pub id: String,
@@ -146,16 +155,21 @@ pub struct ToolCallInfo {
     pub untrusted_source: bool,
     /// The result text actually contains the untrusted guard markers.
     pub untrusted: bool,
+    pub diffs: Vec<FileDiff>,
 }
 
 /// A tool-call update. `content`, when present, *replaces* what was shown
 /// (swarm progress is a cumulative log; results are final).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ToolCallPatch {
     pub id: String,
     pub status: Option<ToolStatus>,
     pub content: Option<String>,
     pub untrusted: bool,
+    /// The call's complete input (the start event carries only what had streamed).
+    pub raw_input: Option<Value>,
+    /// What an edit will change, sent before it runs.
+    pub diffs: Option<Vec<FileDiff>>,
 }
 
 #[derive(Debug, Clone)]
@@ -203,8 +217,9 @@ pub struct SessionInfo {
 /// know it must ignore it, so other clients are unaffected.)
 pub const LAYA_METHOD: &str = "_sierralab/laya";
 
-/// Laya's decision for the turn that just started (backend `laya_triage.py`).
-#[derive(Debug, Clone, PartialEq)]
+/// Laya's decision for the turn that just started (backend `laya_triage.py`,
+/// or the v2 router `laya_router.py`, which adds the policy fields below).
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct LayaDecision {
     /// `route` | `shadow`
     pub mode: String,
@@ -226,10 +241,23 @@ pub struct LayaDecision {
     /// Arrived after the turn had already moved on (timed out earlier).
     pub late: bool,
     pub error: Option<String>,
+    /// v2: what the router did — `dispatch` | `scope` | `hint` | `escalate` | `none`.
+    pub action: Option<String>,
+    /// v2: Laya abstained (fail closed): nothing was routed on a guess.
+    pub abstained: bool,
+    pub reason: Option<String>,
+    /// v2: confidence after the online binning map.
+    pub calibrated: Option<f64>,
+    /// v2: `orchestrator` | `specialist` | `plugin`.
+    pub target_kind: Option<String>,
+    pub risk: Option<String>,
+    /// v2: a confidently destructive turn asks for approval even in auto mode.
+    pub armed: bool,
+    pub escalate_model: Option<String>,
 }
 
 /// What the LLM then actually did, for comparison.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct LayaOutcome {
     pub actual_route: String,
     /// `None` when there was no Laya decision to compare against.
@@ -238,12 +266,25 @@ pub struct LayaOutcome {
     pub tiers: Vec<(String, Option<String>)>,
     pub stop_reason: Option<String>,
     pub turn_ms: Option<f64>,
+    /// v2: the turn ended without unresolved failures or rejected approvals.
+    pub clean: Option<bool>,
+    /// v2: log loss of the calibrated route prediction for this turn.
+    pub log_loss: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LayaEvent {
     Decision(LayaDecision),
     Outcome(LayaOutcome),
+    /// Laya's P(this shell command succeeds), before it runs.
+    Command { tool_use_id: String, p_ok: f64 },
+    /// The command's real outcome, scored against that prediction.
+    CommandOutcome {
+        tool_use_id: String,
+        ok: bool,
+        p_ok: Option<f64>,
+        log_loss: Option<f64>,
+    },
 }
 
 /// Parse the notification's params. Tolerant by design (a backend a version
@@ -252,7 +293,18 @@ pub enum LayaEvent {
 pub fn parse_laya(params: &Value) -> Option<LayaEvent> {
     let text = |key: &str| params.get(key).and_then(Value::as_str).map(str::to_owned);
     let number = |key: &str| params.get(key).and_then(Value::as_f64);
+    let flag = |key: &str| params.get(key).and_then(Value::as_bool).unwrap_or(false);
     match params.get("event")?.as_str()? {
+        "command" => Some(LayaEvent::Command {
+            tool_use_id: text("tool_use_id")?,
+            p_ok: number("p_ok")?,
+        }),
+        "command_outcome" => Some(LayaEvent::CommandOutcome {
+            tool_use_id: text("tool_use_id")?,
+            ok: params.get("ok")?.as_bool()?,
+            p_ok: number("p_ok"),
+            log_loss: number("log_loss"),
+        }),
         "decision" => Some(LayaEvent::Decision(LayaDecision {
             mode: text("mode").unwrap_or_default(),
             route: text("route"),
@@ -265,8 +317,16 @@ pub fn parse_laya(params: &Value) -> Option<LayaEvent> {
             waited_ms: number("waited_ms"),
             hint: text("hint"),
             tier: text("tier"),
-            late: params.get("late").and_then(Value::as_bool).unwrap_or(false),
+            late: flag("late"),
             error: text("error"),
+            action: text("action"),
+            abstained: flag("abstained"),
+            reason: text("reason"),
+            calibrated: number("calibrated"),
+            target_kind: text("target_kind"),
+            risk: text("risk"),
+            armed: flag("armed"),
+            escalate_model: text("escalate_model"),
         })),
         "outcome" => Some(LayaEvent::Outcome(LayaOutcome {
             actual_route: text("actual_route")?,
@@ -294,7 +354,108 @@ pub fn parse_laya(params: &Value) -> Option<LayaEvent> {
                 .unwrap_or_default(),
             stop_reason: text("stop_reason"),
             turn_ms: number("turn_ms"),
+            clean: params.get("clean").and_then(Value::as_bool),
+            log_loss: number("log_loss"),
         })),
+        _ => None,
+    }
+}
+
+/// Harness extension notifications (backend `harness_events.py`).
+pub const TASK_METHOD: &str = "_sierralab/task";
+pub const HEAL_METHOD: &str = "_sierralab/heal";
+pub const PLUGINS_METHOD: &str = "_sierralab/plugins";
+pub const LSP_METHOD: &str = "_sierralab/lsp";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskState {
+    Running,
+    Completed,
+    Failed,
+}
+
+/// One unit of background work: plugin start-up, a language server indexing,
+/// an MCP tool reporting progress, the self-heal loop diagnosing / verifying.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TaskInfo {
+    pub id: String,
+    pub title: String,
+    pub done: f64,
+    /// `None`: indeterminate (a spinner, not a bar).
+    pub total: Option<f64>,
+    pub message: String,
+    pub state: TaskState,
+    pub source: String,
+}
+
+impl TaskInfo {
+    /// 0.0..=1.0 when the total is known.
+    pub fn fraction(&self) -> Option<f64> {
+        self.total
+            .filter(|total| *total > 0.0)
+            .map(|total| (self.done / total).clamp(0.0, 1.0))
+    }
+}
+
+/// One phase of the self-healing loop (backend `self_heal.py`).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct HealInfo {
+    /// detected | diagnosing | proposed | verifying | verified | verify_failed |
+    /// no_patch | healed | escalated | continuing | state_mismatch | auto_approved
+    pub phase: String,
+    pub attempt: Option<u64>,
+    pub max: Option<u64>,
+    pub command: Option<String>,
+    pub root_cause: Option<String>,
+    pub patch: Option<String>,
+    pub verify: Option<String>,
+    pub output_tail: Option<String>,
+    pub exit_code: Option<i64>,
+    pub tool: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum HarnessEvent {
+    Task(TaskInfo),
+    Heal(HealInfo),
+    /// A plugin changed state (the backend's plugin row, as JSON).
+    Plugin(Value),
+    /// A language-server event (started / failed / diagnostics), as JSON.
+    Lsp(Value),
+}
+
+/// Parse a harness notification; `None` for unknown methods or malformed params.
+pub fn parse_harness(method: &str, params: &Value) -> Option<HarnessEvent> {
+    let text = |key: &str| params.get(key).and_then(Value::as_str).map(str::to_owned);
+    let number = |key: &str| params.get(key).and_then(Value::as_f64);
+    match method {
+        TASK_METHOD => Some(HarnessEvent::Task(TaskInfo {
+            id: text("id")?,
+            title: text("title").unwrap_or_default(),
+            done: number("done").unwrap_or(0.0),
+            total: number("total"),
+            message: text("message").unwrap_or_default(),
+            state: match params.get("state").and_then(Value::as_str) {
+                Some("completed") => TaskState::Completed,
+                Some("failed") => TaskState::Failed,
+                _ => TaskState::Running,
+            },
+            source: text("source").unwrap_or_default(),
+        })),
+        HEAL_METHOD => Some(HarnessEvent::Heal(HealInfo {
+            phase: text("phase")?,
+            attempt: params.get("attempt").and_then(Value::as_u64),
+            max: params.get("max").and_then(Value::as_u64),
+            command: text("command"),
+            root_cause: text("root_cause"),
+            patch: text("patch"),
+            verify: text("verify"),
+            output_tail: text("output_tail"),
+            exit_code: params.get("exit_code").and_then(Value::as_i64),
+            tool: text("tool"),
+        })),
+        PLUGINS_METHOD => params.get("plugin").cloned().map(HarnessEvent::Plugin),
+        LSP_METHOD => Some(HarnessEvent::Lsp(params.clone())),
         _ => None,
     }
 }
@@ -321,6 +482,13 @@ pub enum AppEvent {
     },
     /// Laya's live triage for the turn (a backend extension; see `LayaEvent`).
     Laya(LayaEvent),
+    /// Background tasks, self-heal phases, plugin and LSP changes.
+    Harness(HarnessEvent),
+    /// The answer to an extension request sent with `SessionHandle::ext`.
+    ExtResult {
+        tag: String,
+        result: Result<Value, String>,
+    },
     TurnComplete(StopReason),
     /// The turn's `session/prompt` request failed; the session stays usable.
     TurnFailed(String),
@@ -391,6 +559,20 @@ fn text_of(block: &ContentBlock) -> Option<&str> {
     }
 }
 
+fn diffs_of(content: &[ToolCallContent]) -> Vec<FileDiff> {
+    content
+        .iter()
+        .filter_map(|item| match item {
+            ToolCallContent::Diff(diff) => Some(FileDiff {
+                path: diff.path.display().to_string(),
+                old_text: diff.old_text.clone(),
+                new_text: diff.new_text.clone(),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
 fn join_tool_content(content: &[ToolCallContent]) -> String {
     content
         .iter()
@@ -425,12 +607,23 @@ pub fn translate_update(update: SessionUpdate) -> Vec<AppEvent> {
                 kind: call.kind.into(),
                 status: call.status.into(),
                 raw_input: call.raw_input,
+                diffs: diffs_of(&call.content),
                 content,
             })]
         }
         SessionUpdate::ToolCallUpdate(update) => {
             let fields = update.fields;
-            let content = fields.content.as_deref().map(join_tool_content);
+            let diffs = fields
+                .content
+                .as_deref()
+                .map(diffs_of)
+                .filter(|diffs| !diffs.is_empty());
+            // A diff-only update (the pre-run preview) must not blank the result text.
+            let content = fields
+                .content
+                .as_deref()
+                .filter(|content| content.iter().any(|c| matches!(c, ToolCallContent::Content(_))))
+                .map(join_tool_content);
             let untrusted = content
                 .as_deref()
                 .is_some_and(permission::contains_untrusted_markers);
@@ -439,6 +632,8 @@ pub fn translate_update(update: SessionUpdate) -> Vec<AppEvent> {
                 status: fields.status.map(Into::into),
                 content,
                 untrusted,
+                raw_input: fields.raw_input,
+                diffs,
             })]
         }
         SessionUpdate::CurrentModeUpdate(update) => {
@@ -512,6 +707,58 @@ mod laya_tests {
                 ("b".to_owned(), None)
             ]
         );
+    }
+
+    #[test]
+    fn parses_v2_router_fields_and_command_predictions() {
+        let LayaEvent::Decision(decision) = parse_laya(&json!({
+            "event": "decision", "router": "v2", "route": "debugger", "route_confidence": 0.97,
+            "calibrated": 0.95, "action": "dispatch", "abstained": false, "target_kind": "specialist",
+            "risk": "edits_files", "armed": false, "reason": "dispatched to the debugger specialist"
+        }))
+        .unwrap() else {
+            panic!()
+        };
+        assert_eq!(decision.action.as_deref(), Some("dispatch"));
+        assert_eq!(decision.calibrated, Some(0.95));
+        assert!(!decision.abstained);
+        assert_eq!(
+            parse_laya(&json!({"event": "command", "tool_use_id": "t1", "p_ok": 0.8})),
+            Some(LayaEvent::Command {
+                tool_use_id: "t1".into(),
+                p_ok: 0.8
+            })
+        );
+        assert_eq!(
+            parse_laya(&json!({"event": "command_outcome", "tool_use_id": "t1", "ok": false, "p_ok": 0.8, "log_loss": 1.6})),
+            Some(LayaEvent::CommandOutcome {
+                tool_use_id: "t1".into(),
+                ok: false,
+                p_ok: Some(0.8),
+                log_loss: Some(1.6)
+            })
+        );
+    }
+
+    #[test]
+    fn parses_harness_tasks_and_heal_phases() {
+        let Some(HarnessEvent::Task(task)) = parse_harness(
+            TASK_METHOD,
+            &json!({"id": "task-3", "title": "lsp: indexing", "done": 30, "total": 120, "state": "running", "source": "lsp"}),
+        ) else {
+            panic!()
+        };
+        assert_eq!(task.fraction(), Some(0.25));
+        assert_eq!(task.state, TaskState::Running);
+        let Some(HarnessEvent::Heal(heal)) = parse_harness(
+            HEAL_METHOD,
+            &json!({"event": "heal", "phase": "verified", "attempt": 1, "max": 3, "command": "cargo test", "patch": "--- a/x\n+++ b/x\n"}),
+        ) else {
+            panic!()
+        };
+        assert_eq!((heal.phase.as_str(), heal.attempt, heal.max), ("verified", Some(1), Some(3)));
+        assert_eq!(parse_harness(TASK_METHOD, &json!({"title": "no id"})), None);
+        assert_eq!(parse_harness("_sierralab/unknown", &json!({})), None);
     }
 
     #[test]

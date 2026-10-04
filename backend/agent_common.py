@@ -25,6 +25,7 @@ from strands_tools import calculator, current_time, editor, file_read, file_writ
 from agent_memory_tool import agent_memory
 from local_graph_tool import local_graph
 from local_swarm_tool import local_swarm
+from a2a_client_tool import a2a_client
 from mcp_manager import load_configured_mcp_clients
 from laya_triage import triage_hooks
 from prompt_security import UNTRUSTED_CONTEXT_POLICY, SecretRedactionHooks, UntrustedToolResultHooks
@@ -308,6 +309,7 @@ _STATIC_TOOLS = [
     agent_memory,
     local_swarm,
     local_graph,
+    a2a_client,
     skill_forge,
     proposer,
     list_models,
@@ -472,6 +474,13 @@ def build_agent_for_session(
     interventions: list | None = None,
     system_prompt: str | None = None,
     triage_notify=None,
+    *,
+    extra_tools: list | None = None,
+    extra_hooks: list | None = None,
+    exclude_tools: set[str] | frozenset[str] = frozenset(),
+    use_triage: bool = True,
+    untrusted_tools=None,
+    checkpointing: bool = False,
 ) -> Agent:
     """A fully session-bound Agent, for front doors that manage their own
     per-session instances (the ACP server — nothing derives this one for us).
@@ -507,6 +516,14 @@ def build_agent_for_session(
     human-approval interrupt (ACP's own APPROVAL_REQUIRED_TOOLS) protected
     it there, never the second, independent check the web path always had.
 
+    The agentic harness (acp_server) passes the rest: ``extra_tools`` (the
+    specialists, apply_patch), ``extra_hooks`` (router, self-heal, LSP),
+    ``exclude_tools`` (tools a plugin manages instead — the memory store and the
+    LSP tools are hot-swappable plugins there), ``use_triage=False`` (its Laya
+    router replaces the advisory triage hooks), ``untrusted_tools`` (a live
+    container: plugin tools come and go) and ``checkpointing`` (Strands pauses
+    at every ReAct cycle boundary so a turn can be resumed after a crash).
+
     ``tools=`` deliberately does *not* reuse the shared, computed-once
     ``TOOLS`` constant below — it re-runs ``discover_generated_tools()``
     fresh on every call instead. TOOLS/_GENERATED_TOOLS are computed once at
@@ -521,20 +538,26 @@ def build_agent_for_session(
     ones started after the next restart.
     """
     ensure_provider_ready()
+    static = [t for t in _STATIC_TOOLS if getattr(t, "tool_name", None) not in exclude_tools]
+    # With a plugin host (untrusted_tools given) MCP servers are hot-swappable
+    # plugins it registers itself; the process-start MCP snapshot is not added.
+    mcp = [] if untrusted_tools is not None else _MCP_CLIENTS
     return Agent(
         model=build_model(),
         system_prompt=system_prompt or SYSTEM_PROMPT,
-        tools=[*_STATIC_TOOLS, *discover_generated_tools(), *_MCP_CLIENTS],
+        tools=[*static, *discover_generated_tools(), *mcp, *(extra_tools or [])],
         plugins=build_plugins(),
         hooks=[
             SkillValidationHooks(),
-            UntrustedToolResultHooks(extra_untrusted_tools=MCP_TOOL_NAMES),
+            UntrustedToolResultHooks(extra_untrusted_tools=untrusted_tools if untrusted_tools is not None else MCP_TOOL_NAMES),
             SecretRedactionHooks(),
-            *triage_hooks(notify=triage_notify),
+            *(triage_hooks(notify=triage_notify) if use_triage else []),
+            *(extra_hooks or []),
         ],
         conversation_manager=build_conversation_manager(),
         session_manager=FileSessionManager(session_id=session_id, storage_dir=str(SESSIONS_DIR)),
         interventions=interventions,
+        checkpointing=checkpointing,
         # The default handler prints the streamed reply to stdout — which for the
         # ACP front door is the protocol channel (see acp_server._ProtocolStdout).
         # Events reach the client through stream_async, not through printing.

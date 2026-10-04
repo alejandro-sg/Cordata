@@ -1,0 +1,11 @@
+{
+  "model": "project-model",
+  "permissions": {
+    "defaultMode": "auto",
+    "allow": ["shell(make *)"],
+    "deny": ["shell(rm -rf *)"]
+  },
+  "tui": { "toolOutput": "expanded" },
+  "apiKey": "nope",
+  "bogus": 1
+}

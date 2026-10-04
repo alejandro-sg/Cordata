@@ -12,6 +12,33 @@ use super::text::{display_width, pad_to, truncate, wrap};
 use crate::app::ToolCard;
 
 const COLLAPSED_RESULT_LINES: usize = 4;
+/// Diff rows shown per file while the card is collapsed (Ctrl+E shows all).
+const COLLAPSED_DIFF_ROWS: usize = 12;
+
+fn is_edit_tool(name: &str) -> bool {
+    matches!(name, "editor" | "file_write" | "apply_patch")
+}
+
+/// Spans inside the card's side borders, padded to the inner width.
+fn boxed(spans: Vec<Span<'static>>, inner: usize, border: Style, v: char) -> Line<'static> {
+    let used: usize = spans.iter().map(|s| display_width(&s.content)).sum();
+    let mut all = vec![Span::styled(format!("{v} "), border)];
+    all.extend(spans);
+    all.push(Span::raw(" ".repeat(inner.saturating_sub(used))));
+    all.push(Span::styled(format!(" {v}"), border));
+    Line::from(all)
+}
+
+/// "laya p(ok) 82%", and whether the outcome surprised it.
+fn laya_badge(card: &ToolCard) -> Option<(String, Color)> {
+    let p = card.p_ok?;
+    let pct = (p * 100.0).round() as i64;
+    Some(match card.outcome {
+        Some((ok, _)) if ok != (p >= 0.5) => (format!(" laya p(ok) {pct}% ✗ surprised "), Color::Yellow),
+        Some(_) => (format!(" laya p(ok) {pct}% ✓ "), Color::DarkGray),
+        None => (format!(" laya p(ok) {pct}% "), Color::DarkGray),
+    })
+}
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 pub fn status_glyph(status: ToolStatus, spinner: usize) -> (&'static str, Color) {
@@ -171,12 +198,25 @@ fn team_row_lines(
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn render(
     card: &ToolCard,
     width: u16,
     expanded: bool,
     awaiting: bool,
     spinner: usize,
+) -> Vec<Line<'static>> {
+    render_in(card, width, expanded, awaiting, spinner, "")
+}
+
+/// `cwd` shortens diff paths to the session's project.
+pub fn render_in(
+    card: &ToolCard,
+    width: u16,
+    expanded: bool,
+    awaiting: bool,
+    spinner: usize,
+    cwd: &str,
 ) -> Vec<Line<'static>> {
     let width = (width as usize).max(24);
     let inner = width - 4;
@@ -220,19 +260,22 @@ pub fn render(
             card.kind.label()
         )
     };
-    let flag = if card.untrusted {
-        " ⚠ UNTRUSTED CONTENT "
+    let badge = laya_badge(card);
+    let (flag, flag_color) = if card.untrusted {
+        (" ⚠ UNTRUSTED CONTENT ".to_owned(), Color::Magenta)
     } else if card.untrusted_source {
-        " ⚠ may return untrusted content "
+        (" ⚠ may return untrusted content ".to_owned(), Color::Magenta)
+    } else if let Some((text, color)) = badge {
+        (text, color)
     } else {
-        ""
+        (String::new(), Color::Magenta)
     };
-    let flag = if 3 + display_width(&title) + display_width(flag) + 1 > width {
-        ""
+    let flag = if 3 + display_width(&title) + display_width(&flag) + 1 > width {
+        String::new()
     } else {
         flag
     };
-    let fill = width.saturating_sub(2 + display_width(&title) + display_width(flag) + 1);
+    let fill = width.saturating_sub(2 + display_width(&title) + display_width(&flag) + 1);
 
     let mut lines = vec![Line::from(vec![
         Span::styled(format!("{tl}{h}"), border),
@@ -242,7 +285,7 @@ pub fn render(
         ),
         Span::styled(
             flag,
-            Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+            Style::new().fg(flag_color).add_modifier(Modifier::BOLD),
         ),
         Span::styled(format!("{}{tr}", h.to_string().repeat(fill)), border),
     ])];
@@ -256,7 +299,41 @@ pub fn render(
     };
 
     let dim = Style::new().fg(Color::Gray);
-    if let Some(summary) = input_summary(card) {
+    // Edits: the diff viewer instead of the raw input.
+    let patch_text = (card.name == "apply_patch")
+        .then(|| card.raw_input.as_ref()?.get("patch")?.as_str().map(str::to_owned))
+        .flatten();
+    let cap = (!expanded).then_some(COLLAPSED_DIFF_ROWS);
+    if is_edit_tool(&card.name) && !card.diffs.is_empty() && awaiting {
+        // The approval panel right below shows this diff in full; one line here.
+        for file in &card.diffs {
+            let lines_ = super::diff::line_diff(file.old_text.as_deref().unwrap_or(""), &file.new_text);
+            let (added, removed) = super::diff::stats(&lines_);
+            let path = super::diff::short(&file.path, cwd);
+            lines.push(boxed(
+                vec![
+                    Span::styled("✎ ", Style::new().fg(Color::Cyan)),
+                    Span::styled(truncate(&path, inner.saturating_sub(34)), Style::new().add_modifier(Modifier::BOLD)),
+                    Span::styled(format!("  +{added}"), Style::new().fg(Color::Green)),
+                    Span::styled(format!(" −{removed}"), Style::new().fg(Color::Red)),
+                    Span::styled("  — review it below", dim.add_modifier(Modifier::ITALIC)),
+                ],
+                inner,
+                border,
+                v,
+            ));
+        }
+    } else if is_edit_tool(&card.name) && !card.diffs.is_empty() {
+        for file in &card.diffs {
+            for row in super::diff::file_rows(file, cwd, inner, cap) {
+                lines.push(boxed(row, inner, border, v));
+            }
+        }
+    } else if let Some(patch) = patch_text {
+        for row in super::diff::patch_rows(&patch, inner, cap) {
+            lines.push(boxed(row, inner, border, v));
+        }
+    } else if let Some(summary) = input_summary(card) {
         let summary = truncate(&summary.replace('\n', " ⏎ "), 600);
         for row in wrap(&summary, inner) {
             lines.push(body_line(&row, dim));
@@ -352,6 +429,9 @@ mod tests {
             progress: String::new(),
             untrusted,
             untrusted_source: false,
+            diffs: vec![],
+            p_ok: None,
+            outcome: None,
         }
     }
 
@@ -407,6 +487,52 @@ mod tests {
             "completed in 1.7s  (Ctrl+E shows the full result)"
         );
         assert_eq!(team_result_summary("not json"), None);
+    }
+
+    #[test]
+    fn edit_cards_show_the_diff_with_equal_width_rows() {
+        let mut edit = card("patched", false);
+        edit.name = "editor".into();
+        edit.kind = ToolKind::Edit;
+        edit.diffs = vec![acp_core::FileDiff {
+            path: "/proj/src/a.rs".into(),
+            old_text: Some("let a = 1;\nlet b = 2;\n".into()),
+            new_text: "let a = 1;\nlet b = 3;\n".into(),
+        }];
+        let lines = plain(&render_in(&edit, 50, false, false, 0, "/proj"));
+        assert!(lines.iter().all(|l| display_width(l) == 50), "{lines:#?}");
+        assert!(lines.iter().any(|l| l.contains("✎ src/a.rs")));
+        assert!(lines.iter().any(|l| l.contains("   2 − let b = 2;")));
+        assert!(lines.iter().any(|l| l.contains("   2 + let b = 3;")));
+        assert!(!lines.iter().any(|l| l.contains("old_str")), "the raw input is replaced by the diff");
+    }
+
+    #[test]
+    fn while_awaiting_approval_the_card_defers_the_diff_to_the_panel() {
+        let mut edit = card("", false);
+        edit.name = "file_write".into();
+        edit.diffs = vec![acp_core::FileDiff { path: "/p/a.txt".into(), old_text: None, new_text: "x\ny\n".into() }];
+        let lines = plain(&render_in(&edit, 60, false, true, 0, "/p"));
+        assert_eq!(lines.len(), 3, "{lines:#?}");
+        assert!(lines[1].contains("✎ a.txt  +2 −0  — review it below"));
+    }
+
+    #[test]
+    fn a_patch_without_a_preview_is_still_coloured() {
+        let mut patch = card("", false);
+        patch.name = "apply_patch".into();
+        patch.raw_input = Some(serde_json::json!({"patch": "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n"}));
+        let lines = render(&patch, 40, false, false, 0);
+        assert!(plain(&lines).iter().any(|l| l.contains("+b")));
+    }
+
+    #[test]
+    fn laya_command_predictions_badge_the_card() {
+        let mut shell = card("", false);
+        shell.p_ok = Some(0.9);
+        shell.outcome = Some((false, Some(2.3)));
+        let lines = plain(&render(&shell, 70, false, false, 0));
+        assert!(lines[0].contains("laya p(ok) 90% ✗ surprised"), "{lines:?}");
     }
 
     #[test]

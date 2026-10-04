@@ -25,6 +25,9 @@ pub struct SessionOptions {
     /// Append raw JSON-RPC lines + server stderr here. Never stdout/stdin —
     /// the TUI owns those.
     pub debug_log: Option<PathBuf>,
+    /// With no `resume`, ask the backend (`session/list`) for the newest session
+    /// in `cwd` and load that one; a fresh session when there is none.
+    pub continue_latest: bool,
 }
 
 #[derive(Debug)]
@@ -33,6 +36,13 @@ pub(crate) enum Command {
     Cancel,
     SetMode(String),
     SetConfigOption { id: String, value: String },
+    /// An extension request (`_sierralab/...`, or a standard method the typed
+    /// API doesn't cover); the answer arrives as `AppEvent::ExtResult { tag }`.
+    Ext {
+        method: String,
+        params: serde_json::Value,
+        tag: String,
+    },
     Shutdown,
 }
 
@@ -83,6 +93,21 @@ impl SessionHandle {
         self.send(Command::SetConfigOption {
             id: id.into(),
             value: value.into(),
+        })
+    }
+
+    /// Send an extension request; the reply comes back as `AppEvent::ExtResult`
+    /// carrying `tag`, so the caller knows which request it answers.
+    pub fn ext(
+        &self,
+        method: impl Into<String>,
+        params: serde_json::Value,
+        tag: impl Into<String>,
+    ) -> Result<()> {
+        self.send(Command::Ext {
+            method: method.into(),
+            params,
+            tag: tag.into(),
         })
     }
 

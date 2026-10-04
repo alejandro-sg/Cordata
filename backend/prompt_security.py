@@ -171,7 +171,7 @@ def score_injection_risk(text: str) -> float | None:
             return None
 
 
-def laya_predict(text: str, questions: dict, max_chars: int = _LAYA_MAX_CHARS) -> dict | None:
+def laya_predict(text: str, questions: dict, max_chars: int = _LAYA_MAX_CHARS, **predict_kwargs) -> dict | None:
     """Run one Laya ``predict`` on the shared agent (the same lazily-loaded,
     lock-serialized instance the injection guard uses — one copy of the
     weights in memory, one forward pass at a time). Returns Laya's raw result
@@ -185,9 +185,14 @@ def laya_predict(text: str, questions: dict, max_chars: int = _LAYA_MAX_CHARS) -
         return None
     with _LAYA_LOCK:
         try:
-            return agent.predict(text[:max_chars], questions)
+            return agent.predict(text[:max_chars], questions, **predict_kwargs)
         except Exception:
             return None
+
+
+def laya_ready() -> bool:
+    """Weights loaded (a predict now costs one forward pass, not a load)."""
+    return _laya_agent is not None
 
 
 _warmup_started = False
@@ -207,7 +212,11 @@ def warm_up_laya() -> None:
         _warmup_started = True
 
     def _warm() -> None:
-        laya_predict("warm up", {"w": {"type": "choice", "instructions": "Pick one.", "criteria": {"a": "first", "b": "second"}}})
+        import harness_events
+
+        task = harness_events.Task("laya: loading weights", source="laya")
+        result = laya_predict("warm up", {"w": {"type": "choice", "instructions": "Pick one.", "criteria": {"a": "first", "b": "second"}}})
+        task.finish("completed" if result is not None else "failed", None if result is not None else "Laya unavailable")
 
     threading.Thread(target=_warm, name="laya-warmup", daemon=True).start()
 

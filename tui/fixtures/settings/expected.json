@@ -1,0 +1,30 @@
+{
+  "trusted": false,
+  "values": {
+    "laya.mode": "shadow",
+    "model": "project-model",
+    "temperature": "creative",
+    "tui.showLaya": false,
+    "tui.thinking": "expanded",
+    "tui.toolOutput": "expanded"
+  },
+  "sources": {
+    "laya.mode": "user",
+    "model": "project",
+    "temperature": "local",
+    "tui.showLaya": "local",
+    "tui.thinking": "user",
+    "tui.toolOutput": "project"
+  },
+  "rules": [
+    ["allow", "shell(git status)", "user", true],
+    ["deny", "file_read(~/.ssh/*)", "user", true],
+    ["allow", "shell(make *)", "project", false],
+    ["deny", "shell(rm -rf *)", "project", true],
+    ["ask", "file_write(*.md)", "local", true],
+    ["deny", "shell(security *find-generic-password*)", "built-in", true],
+    ["deny", "shell(security *find-internet-password*)", "built-in", true],
+    ["deny", "shell(security *dump-keychain*)", "built-in", true]
+  ],
+  "warning_count": 5
+}

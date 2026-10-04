@@ -1,0 +1,6 @@
+{
+  "temperature": "creative",
+  "tui": { "showLaya": false },
+  "permissions": { "ask": ["file_write(*.md)"] },
+  "laya": { "threshold": 2 }
+}

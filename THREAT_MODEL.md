@@ -80,6 +80,85 @@ own tool registry, and their proxy body unconditionally returns a fake
 `"success"` with no real effect; a sub-agent given one wouldn't just lack a
 capability, it would silently report doing something that never happened.
 
+### Settings files, permission rules and project trust (ACP front door)
+
+`settings_store.py` layers `~/.sierralab/settings.json`, `<project>/.sierralab/settings.json` and
+`settings.local.json` over the approval gate (`docs/settings.md`). The new attack surface is that
+the project files arrive with a cloned repository:
+
+- **A stranger's repo cannot loosen the gate.** Project and local `allow` rules, and
+  `permissions.defaultMode: "auto"`, are ignored until the folder is in the *user* file's
+  `trustedProjects` (`/trust`, or an explicit "Always allow"). `deny` and `ask` rules only restrict,
+  so they apply regardless. `/permissions` and the connect banner show what was ignored.
+- **`deny` is checked first, in every mode** (`auto` included), and an `ask` rule can force a prompt
+  on a tool that wouldn't normally ask. Shell commands are split on `; && || | &` and newlines
+  before matching, and a wildcard `allow` never applies to a command with `$( )`, backticks or a
+  redirect — so `allow shell(git *)` does not approve `git status && rm -rf ~`. Built-in denies
+  refuse reading a credential out of the macOS Keychain from the agent's shell.
+- **No credentials in settings.** A key named like a credential, or a value shaped like one, is
+  refused on read and on write; provider, URL and key stay environment/Keychain configuration. The
+  files are written atomically; the user file is `0600`; a file that fails to parse is never
+  overwritten.
+- **"Always allow" is an explicit decision about a folder.** It saves the exact command (never a
+  wildcard, never for `python_repl`) to `settings.local.json` and marks the folder trusted — which
+  also activates any `allow` rules a cloned repo already ships in that folder. Review them with
+  `/permissions`.
+
+**What this does not do.** Rules are not a sandbox: a pattern can't anticipate everything an
+allowed program can do (`allow shell(npm *)` includes `npm exec`). Instruction files
+(`SIERRALAB.md`, and — as a fallback — a repo's own `AGENTS.md` / `CLAUDE.md`) are read into the
+system prompt from folders that have *not* been trusted, because they cannot change the gate; a
+hostile one can still steer the model toward a request you then have to refuse, so the connect
+banner names the files being read and `/memory` lists them. Trust is per-folder-path, not
+per-content: a trusted folder whose settings later change (a `git pull`) keeps its trust.
+
+## Harness autonomy: the new surfaces
+
+The agentic harness layer (`docs/agentic-harness.md`) added code that runs without a new user
+approval on every individual call. Four surfaces, each with its own containment:
+
+- **Project MCP servers (`backend/mcp-servers/`, `plugin_host.py`)**. The config file a project
+  ships (`.mcp.json`, `.sierralab/mcp.json` / `mcp.local.json`, plus the backend's own list)
+  tells the *backend itself* which MCP servers to spawn — this is deliberately not behind the
+  per-call approval gate, because starting a plugin is a launch-time action, not a tool call. The
+  mitigations that make this survivable: a project's own plugin declarations are auto-started
+  **only when the folder is trusted** — the same `trustedProjects` check the settings files use,
+  the same principle (a stranger's repo cannot activate anything of its own); plugins this
+  backend or the user's own file declared start regardless, but those are the user's choices.
+  Plugin tool *calls* always land in `APPROVAL_REQUIRED_TOOLS` / `MCP_TOOL_NAMES`, so they
+  prompt like any gated call whatever the source; and a confident Laya route only *narrows* the
+  visible toolset to one plugin — it can never widen it. The residual risk to know: the
+  auto-started server's command runs with the backend user's full privileges at session start,
+  same as any dev tooling the user runs on the project.
+- **Language servers running locally (`lsp_bridge.py`)**. The LSP manager spawns whatever the
+  project type implies (a Rust server for Rust files, etc.) at session start, also outside the
+  per-call gate. A language server executes code paths of its own; an attacked one is an
+  interpreter for its project's files. Contained the same way as plugin servers: nothing
+  *sends* a command from the model through it (the LSP tools are read-only queries); the edit
+  hooks only *read* diagnostics back. Off with `lsp.enabled: false`. The residual risk is the
+  standard one for running dev infrastructure on unreviewed code — treat a cloned repo you don't
+  trust like you'd treat opening it in a full IDE: the servers are running on your machine.
+- **The throwaway project copies (`self_heal.py`'s `ShadowWorkspace`)**. Self-heal verification
+  copies tracked + untracked-not-ignored files (and symlinks heavy dirs) into a temp directory
+  and applies candidate patches *there*. The copy is a full copy of real project files — secrets
+  and all (`.venv` is symlinked, but `.env`-style files the project carries are copied). It
+  lives in the user's own temp dir (`$TMPDIR`), cleaned up on exit; commands run there with the
+  session's own user, exactly as they would in the real tree (`NotASandboxLocalEnvironment` —
+  by design, it is not a sandbox). Attack surface to know about: the temp copy briefly holds
+  project data outside the project (on the same machine, same user); the stale-`.pyc` trap is
+  handled (caches are excluded from the copy and `apply_patch` invalidates the patched module's
+  `.pyc` — a verification pass can't silently run pre-patch byte-code).
+- **`selfHeal.autoApply`**. Off by default, and pre-approval is deliberately narrow: it may
+  auto-approve exactly (a) an `apply_patch` whose text *equals* the sandbox-verified patch, and
+  (b) a re-run of the exact command that already failed once. Every other tool still prompts;
+  `deny` rules still win; plan mode still blocks everything; the sandbox verification step is
+  not skippable for a pre-approved patch. What this buys the attacker model: an adversary who
+  controls the failing *output* (e.g. a repo whose build failure text is prompt-injected) can
+  shape the diagnosis, but the patch still has to pass the sandbox-verified re-run of the
+  original command before it lands, and the patch application is still visible in the TUI as a
+  diff. The residual risk is accepted explicitly once, when the flag is turned on in a trusted
+  folder — it is not a per-turn decision.
+
 ## Network-edge gate: SANDBOX_API_TOKEN
 
 `main.py` binds `0.0.0.0`, not `127.0.0.1` — this deployment is meant to
@@ -283,6 +362,21 @@ Acknowledged, not fixed:
    multi-user system with real roles. Fine for the one-person-one-machine
    case this is built for; would need real auth before being anything
    else.
+5. **`a2a_client` and `http_request` are ungated egress.** Both fetch-kind
+   tools send network requests to a model-chosen endpoint without an approval
+   prompt (the same deliberate trade-off in both cases: read-only fetches are
+   what a research turn is *for*). For `a2a_client` the outbound body is
+   model-authored — a prompt could carry project content to a remote host it
+   names. Contained as far as it can be without another gate type: the tool is
+   orchestrator-only (sub-agents can't get it at all), can't carry credentials
+   as arguments, and its reply is framed untrusted and passes the redaction
+   hooks. If that residual is too much, deny it — a `deny a2a_client(*)` rule
+   holds in every mode.
+6. **The shadow workspace is not a sandbox.** Self-heal verification runs the
+   verify command in a temp copy with the session user's full privileges (see
+   "Harness autonomy" above) — it contains *mistakes*, not malice: its purpose
+   is that an unverified patch never touches the real tree, not that a hostile
+   patch can do no harm while "in" there.
 5. **CSP has no script-src lockdown yet** — `frame-ancestors 'none'` is
    the only directive set. A stricter policy (restricting script/style
    sources) is a reasonable follow-up but needs auditing what the frontend

@@ -120,11 +120,29 @@ estimate. See [`docs/laya-triage.md`](docs/laya-triage.md).
   The LLM still does all generation and tool use. Full design, tuning, the log/report,
   and the fine-tuning loop: [`docs/laya-triage.md`](docs/laya-triage.md).
 
+## The agentic harness
+
+On top of the model loop sits a harness layer that runs the session like a coding-agent CLI
+would: specialists (`architect` plans changes, `debugger` fixes failures — dispatched directly
+on a confident Laya route), an autonomous self-healing loop (a failing command becomes a
+diagnosed, sandbox-verified patch and a verification re-run), a team pipeline (a confident
+"team" route decomposes the task and runs it as a parallel Strands graph), language-server
+diagnostics, per-project MCP plugins, and remote agents over the A2A protocol (`a2a_client`).
+What runs with and without a human gate, and the deliberate limits of each autonomous piece, is
+in [`docs/agentic-harness.md`](docs/agentic-harness.md) and [`THREAT_MODEL.md`](THREAT_MODEL.md).
+
 ## Terminal clients (Rust)
 
-`tui/` holds an interactive terminal client (`acp-tui`, a Claude-Code-style UI over ACP)
+`tui/` holds an interactive terminal client (`acp-tui`, a Claude-Code-style UI over ACP — it prints
+into your terminal's own scrollback, so you scroll with the wheel as usual)
 and a concurrent stress runner (`acp-stress`) for this backend — see
 [`tui/README.md`](tui/README.md). `make tui`, `make tui-test`, `make stress`.
+
+Preferences work the way Claude Code's and Kilo's do: layered `settings.json` files (user / project /
+local), `allow` / `ask` / `deny` permission rules, "always allow" from the approval prompt, and
+`SIERRALAB.md` instructions — `/config`, `/permissions`, `/trust`, `/init` in the TUI. See
+[`docs/settings.md`](docs/settings.md); what is and isn't at parity with Claude Code, Kilo CLI and
+DeepSeek-TUI is in [`docs/harness-parity.md`](docs/harness-parity.md).
 
 ## Ported skills
 

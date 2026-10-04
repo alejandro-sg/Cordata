@@ -20,38 +20,100 @@ mechanism below is wired to something this backend can already really do
 (model_control_tool.py's model/temperature switching, the same tool set
 main.py gates) — nothing here is a cosmetic stand-in for a capability that
 doesn't exist.
+
+The agentic harness on top (docs/agentic-harness.md), per session:
+
+* **Laya router** (laya_router.py) — one typed forward pass per user turn picks
+  the target (orchestrator / architect / debugger / an MCP plugin), with
+  abstention that fails closed (escalate to the frontier tier, never dispatch on
+  a guess); confident specialist routes are dispatched directly; outcomes feed
+  online calibration.
+* **Specialists** (specialists.py) — Architect and Debugger as Strands
+  agents-as-tools sharing this session's approval handler.
+* **Plugins** (plugin_host.py) — MCP servers, the memory store and the LSP tools
+  as hot-swappable plugins (``_sierralab/plugins/*`` ext methods).
+* **LSP** (lsp_bridge.py) — language servers started for the project; edits get
+  fresh diagnostics appended.
+* **Self-healing** (self_heal.py) — failing commands are diagnosed, patched in a
+  sandbox copy, verified, and the fix applied through the normal gate.
+* **Checkpoints** — Strands pauses at every ReAct cycle boundary; the checkpoint
+  is written next to the session so an interrupted turn can be resumed.
+* Live state (tasks/progress, heal phases, plugin and LSP changes) goes to the
+  client as ``_sierralab/<kind>`` extension notifications.
 """
 
 import asyncio
 import json
 import logging
 import os
+import threading
+import time
 import uuid
+from dataclasses import dataclass, field
+from pathlib import Path
 
 import acp
 import acp.stdio
 from strands.interventions import Confirm, Deny, InterventionHandler, Proceed
 
-from agent_common import GENERATED_TOOL_NAMES, MCP_TOOL_NAMES, build_agent_for_session, start_mcp_clients
-from model_control_tool import _context_window_limit, _fetch_available_models
+import edit_preview
+import harness_events
+import lsp_bridge
+import patch_tool
+import settings as app_settings
+import settings_store
+import specialists
+import team_pipeline
+import workspace_context
+from laya_router import BASE_TARGETS, LayaRouter, Policy, RouteDecision, RouterHooks, plugin_targets, summarize_stats
+from plugin_host import PluginHost, PluginSpec, run_blocking
+from self_heal import HealConfig, SelfHealHooks
+
+# Last: importing agent_common chdirs the process into backend/workspace/, after
+# which bare-module imports only resolve when this file runs as a script.
+from agent_common import GENERATED_TOOL_NAMES, MCP_TOOL_NAMES, SESSIONS_DIR, build_agent_for_session, start_mcp_clients  # noqa: E402
+from model_control_tool import _context_window_limit, _fetch_available_models  # noqa: E402
 
 # Set-identical to main.py's _APPROVAL_REQUIRED_TOOLS — both gate `editor`
 # and every MCP-server-provided tool too (main.py's own comment on
 # MCP_TOOL_NAMES explains why); this repo has no shared source for the two
-# lists, so keep them in sync by hand when either changes.
-APPROVAL_REQUIRED_TOOLS = {"shell", "python_repl", "file_write", "editor", *GENERATED_TOOL_NAMES, *MCP_TOOL_NAMES}
+# lists, so keep them in sync by hand when either changes. apply_patch is
+# ACP-only (the harness's patch tool). Plugins added at runtime are gated by
+# PluginHost.requires_approval, not by this static set.
+APPROVAL_REQUIRED_TOOLS = {"shell", "python_repl", "file_write", "editor", "apply_patch", *GENERATED_TOOL_NAMES, *MCP_TOOL_NAMES}
+
+# Plan mode runs only these (reading code is part of planning, as in Claude
+# Code's and OpenCode's plan modes); everything else is denied.
+PLAN_MODE_TOOLS = {"file_read", "think", "current_time", "calculator", "architect", *(t.tool_name for t in lsp_bridge.LSP_TOOLS)}
+
+# editor's read-only commands: like file_read, they never ask (and run in plan mode).
+_EDITOR_READ_COMMANDS = {"view", "find_line"}
+
+
+def _read_only_call(tool_name: str, tool_input) -> bool:
+    return tool_name == "editor" and isinstance(tool_input, dict) and tool_input.get("command") in _EDITOR_READ_COMMANDS
+
+
+# A turn Laya rates destructive with confidence arms the gate for these, even in auto mode.
+_ARMABLE_TOOLS = {"shell", "python_repl", "file_write", "editor", "apply_patch"}
 
 _TOOL_KIND: dict[str, str] = {
     "shell": "execute",
     "python_repl": "execute",
     "file_write": "edit",
     "editor": "edit",
+    "apply_patch": "edit",
     "file_read": "read",
     "http_request": "fetch",
     "think": "think",
     "agent_memory": "other",
     "local_swarm": "other",
     "local_graph": "other",
+    "team": "other",
+    "a2a_client": "fetch",
+    "architect": "think",
+    "debugger": "other",
+    **{t.tool_name: "search" for t in lsp_bridge.LSP_TOOLS},
 }
 
 
@@ -212,24 +274,61 @@ class _ApprovalHandler(InterventionHandler):
 
     name = "acp-approval"
 
-    def __init__(self) -> None:
-        self.mode = _DEFAULT_MODE
+    def __init__(self, cwd: str | None = None, mode: str = "build", plugins=None, heal=None, router_hooks=None) -> None:
+        self.mode = mode
+        self.cwd = cwd or os.getcwd()
+        self.plugins = plugins  # PluginHost: runtime plugin tools' approval
+        self.heal = heal  # SelfHealHooks: selfHeal.autoApply pre-approvals
+        self.router_hooks = router_hooks  # RouterHooks: Laya's risk arming
+        self.session_agent = None  # the orchestrator; specialists share this handler
 
     def before_tool_call(self, event):
-        tool_name = event.tool_use.get("name")
+        """Mode first, with the user's permission rules (settings_store.py) laid
+        over it: a ``deny`` rule blocks in every mode — ``auto`` included — and an
+        ``allow`` / ``ask`` rule decides whether a call pauses for approval.
 
+        Then the harness layers, none of which can *remove* a deny or plan block:
+        Laya arming (a confidently destructive turn asks even in auto mode), the
+        self-heal loop's two bounded pre-approvals, and per-plugin approval."""
+        tool_name = event.tool_use.get("name")
+        tool_input = event.tool_use.get("input")
+
+        verdict = settings_store.evaluate(settings_store.current(self.cwd), tool_name, tool_input, self.cwd)
+        if verdict is not None and verdict.action == "deny":
+            return Deny(reason=f"{tool_name} was not run: blocked by a {verdict.explain()}. Do something else or ask the user.")
+        read_only = _read_only_call(tool_name, tool_input)
         if self.mode == "plan":
+            if tool_name in PLAN_MODE_TOOLS or read_only:
+                return Proceed()
             return Deny(reason=f"Plan mode is active — {tool_name} was not run. Describe the change instead of making it.")
-        if self.mode == "auto":
+        armed = (
+            self.router_hooks is not None
+            and self.session_agent is not None
+            and tool_name in _ARMABLE_TOOLS
+            and not read_only
+            and self.router_hooks.armed(self.session_agent)
+        )
+        if self.mode == "auto" and not armed:
             return Proceed()
-        if tool_name not in APPROVAL_REQUIRED_TOOLS:
+        if not armed and verdict is not None and verdict.action == "allow":
             return Proceed()
+        if not armed and self.heal is not None and self.heal.preapproved(tool_name, tool_input):
+            harness_events.emit("heal", {"event": "heal", "phase": "auto_approved", "tool": tool_name})
+            return Proceed()
+        plugin_gate = self.plugins.requires_approval(tool_name) if self.plugins is not None else None
+        if not armed and verdict is None:
+            if plugin_gate is False:
+                return Proceed()
+            if plugin_gate is None and (tool_name not in APPROVAL_REQUIRED_TOOLS or read_only):
+                return Proceed()
 
         payload = json.dumps(
             {
                 "name": tool_name,
-                "input": event.tool_use.get("input"),
+                "input": tool_input,
                 "tool_use_id": event.tool_use.get("toolUseId"),
+                "always_rule": None if armed else settings_store.suggest_rule(tool_name, tool_input),
+                **({"reason": "Laya rated this turn destructive — asking even in auto mode"} if armed else {}),
             }
         )
         return Confirm(prompt=payload)
@@ -267,10 +366,11 @@ def _project_system_prompt(cwd: str) -> str:
     handing over.
     """
     return (
-        "You are a local coding agent running entirely on-device via oMLX, "
-        f"working in the project at {cwd}. Your shell, file, and code tools "
-        "operate relative to this directory — explore it first if you're not "
-        "sure what's there."
+        f"You are a coding agent working in the project at {cwd}. Your shell, file, and code tools "
+        "operate relative to this directory — explore it first if you're not sure what's there. "
+        "For multi-line or multi-file changes prefer apply_patch (a unified diff). After a command or "
+        "test fails, read the [self-heal] notes appended to its result: they carry a root cause and, "
+        "usually, a patch already verified in a sandbox copy."
     )
 
 
@@ -301,22 +401,225 @@ def _extract_prompt_text(blocks: list) -> str:
     return "\n\n".join(part for part in parts if part)
 
 
+def _apply_model(agent, value) -> bool:
+    """Switch the session's model; False if the provider doesn't offer it."""
+    if not isinstance(value, str):
+        return False
+    available = _fetch_available_models()
+    if available and value not in available:
+        logging.getLogger(__name__).warning("model=<%s> | not offered by the provider, keeping the current model", value)
+        return False
+    config_update: dict = {"model_id": value}
+    limit = _context_window_limit(value)
+    if limit is not None:
+        config_update["context_window_limit"] = limit
+    agent.model.update_config(**config_update)
+
+    import agent_common
+
+    agent_common.ACTIVE_MODEL_ID = value
+    return True
+
+
+def _apply_temperature(agent, value) -> bool:
+    preset = next((p for p in _TEMPERATURE_PRESETS if p[0] == value), None)
+    if preset is None:
+        return False
+    current_params = dict(agent.model.get_config().get("params") or {})
+    current_params["temperature"] = preset[1]
+    agent.model.update_config(params=current_params)
+
+    import agent_common
+
+    agent_common.ACTIVE_TEMPERATURE = preset[1]
+    return True
+
+
+def _apply_startup_preferences(preferences) -> None:
+    """Preferences that configure modules which read them when a session is
+    built (Laya's mode and gate, the sub-agent model tiers). A value in a
+    settings file beats the env/.env default; unset keys leave the env alone."""
+    if preferences.get("laya.mode"):
+        app_settings.LAYA_TRIAGE_MODE = preferences.get("laya.mode")
+    if preferences.get("laya.threshold") is not None:
+        app_settings.LAYA_TRIAGE_THRESHOLD = float(preferences.get("laya.threshold"))
+    for tier in ("fast", "standard", "strong"):
+        if preferences.get(f"tiers.{tier}"):
+            setattr(app_settings, f"MODEL_TIER_{tier.upper()}", preferences.get(f"tiers.{tier}"))
+
+
+def _router_policy(preferences) -> Policy:
+    return Policy(
+        gate=float(preferences.get("laya.threshold", app_settings.LAYA_TRIAGE_THRESHOLD)),
+        min_confidence=float(preferences.get("laya.minConfidence", 0.5)),
+        dispatch=preferences.get("laya.dispatch", "direct"),
+        team_dispatch=preferences.get("laya.teamDispatch", "direct"),
+        on_abstain=preferences.get("laya.onAbstain", "escalate"),
+        frontier_model=preferences.get("tiers.strong") or app_settings.MODEL_TIER_STRONG or None,
+    )
+
+
+def _heal_config(preferences) -> HealConfig:
+    return HealConfig(
+        enabled=preferences.get("selfHeal.enabled", True) is not False,
+        max_attempts=int(preferences.get("selfHeal.maxAttempts", 3)),
+        verify=preferences.get("selfHeal.verify", "sandbox"),
+        auto_apply=preferences.get("selfHeal.autoApply", False) is True,
+    )
+
+
+# The marker a client sends (acp-tui's /resume-turn) to continue a turn that a
+# crash or kill interrupted between two checkpoints.
+RESUME_TURN_MARKER = "[resume interrupted turn]"
+_LAYA_DECIDE_TIMEOUT = 2.0
+_SPECIALIST_CONTEXT_CHARS = 4000
+
+
+def _checkpoint_path(session_id: str) -> Path:
+    return SESSIONS_DIR / f"session_{session_id}.checkpoint.json"
+
+
+_INDEX_PATH = SESSIONS_DIR / "index.json"
+_INDEX_LOCK = threading.Lock()
+
+
+def _read_index() -> dict:
+    try:
+        data = json.loads(_INDEX_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _touch_index(session_id: str, cwd: str, title: str | None = None) -> None:
+    """sessions/index.json: id -> cwd / title / updatedAt, for session/list."""
+    with _INDEX_LOCK:
+        data = _read_index()
+        entry = data.get(session_id, {})
+        entry.update({"cwd": cwd, "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+        if title:
+            entry["title"] = title
+        data[session_id] = entry
+        try:
+            tmp = _INDEX_PATH.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, indent=1), encoding="utf-8")
+            os.replace(tmp, _INDEX_PATH)
+        except OSError:
+            pass
+
+
+def _recent_context(messages: list, limit: int = _SPECIALIST_CONTEXT_CHARS) -> str:
+    """The last turns' text, newest last, for a specialist that starts fresh."""
+    parts: list[str] = []
+    used = 0
+    for message in reversed(messages):
+        texts = [b["text"] for b in message.get("content") or [] if isinstance(b, dict) and isinstance(b.get("text"), str)]
+        if not texts:
+            continue
+        line = f"{message.get('role')}: {' '.join(texts)}"
+        if used + len(line) > limit:
+            break
+        parts.append(line)
+        used += len(line)
+    return "\n".join(reversed(parts))
+
+
+class _SpecialistProgress:
+    """A running specialist's activity, rendered into its tool card: the tools
+    it called and the tail of what it is writing."""
+
+    def __init__(self) -> None:
+        self.lines: list[str] = []
+        self.seen: set[str] = set()
+        self.text = ""
+
+    def feed(self, data: dict) -> bool:
+        changed = False
+        if data.get("type") == "tool_use_stream":
+            current = data.get("current_tool_use") or {}
+            tool_id = current.get("toolUseId")
+            if tool_id and tool_id not in self.seen:
+                self.seen.add(tool_id)
+                self.lines.append(f"→ {current.get('name') or 'tool'}")
+                changed = True
+        elif isinstance(data.get("data"), str):
+            self.text += data["data"]
+            changed = len(self.text) % 48 < len(data["data"])  # re-render every ~48 chars
+        return changed
+
+    def render(self, name: str) -> str:
+        lines = [f"{name}: " + line for line in self.lines[-8:]]
+        tail = " ".join(self.text.split())[-_REASONING_TAIL_CHARS:]
+        if tail:
+            lines.append(f"thinking: {name} - {tail}")
+        return "\n".join(lines)
+
+
+@dataclass
+class _Session:
+    agent: object
+    handler: _ApprovalHandler
+    cwd: str
+    router_hooks: RouterHooks
+    heal: SelfHealHooks
+    specialists: dict = field(default_factory=dict)
+    plugins: PluginHost | None = None
+
+
+_PLUGIN_HOSTS: dict[str, PluginHost] = {}
+_ROUTER: LayaRouter | None = None
+
+
+def _plugin_host(cwd: str, reserved: set[str]) -> PluginHost:
+    """One host per project per process. The memory store and the LSP tools are
+    built-in plugins: listed, swappable and disable-able like an MCP server."""
+    host = _PLUGIN_HOSTS.get(cwd)
+    if host is None:
+        from agent_memory_tool import agent_memory
+
+        builtins = [
+            PluginSpec(
+                name="memory",
+                kind="memory",
+                transport="builtin",
+                source="built-in",
+                description="long-term semantic memory (Qdrant); swap in another memory MCP server by disabling this",
+                builtin_tools=lambda: [agent_memory],
+            ),
+            PluginSpec(
+                name="lsp",
+                kind="lsp",
+                transport="builtin",
+                source="built-in",
+                description="language-server tools: diagnostics, definitions, references, hover, symbols",
+                builtin_tools=lambda: list(lsp_bridge.LSP_TOOLS),
+            ),
+        ]
+        host = _PLUGIN_HOSTS[cwd] = PluginHost(cwd, builtins=builtins, reserved_names=reserved)
+    return host
+
+
+def _router() -> LayaRouter:
+    global _ROUTER
+    if _ROUTER is None:
+        _ROUTER = LayaRouter()
+    return _ROUTER
+
+
 class SierraLabAcpAgent:
-    """Implements initialize, new_session, load_session, prompt, cancel,
-    set_session_mode, set_config_option — the subset of the ACP `Agent`
-    protocol an interactive Zed session actually exercises. fork_session/
-    resume_session/authenticate aren't wired up (nothing here needs forking
-    or auth), and list_sessions isn't either (Zed doesn't call it in this
-    configuration).
+    """Implements initialize, new_session, load_session, list_sessions, prompt,
+    cancel, set_session_mode, set_config_option and the ``_sierralab/*``
+    extension methods. fork_session/resume_session/authenticate aren't wired up
+    (nothing here needs forking or auth).
     """
 
     def __init__(self) -> None:
         self._conn: acp.Client | None = None
-        # session_id -> (Agent, _ApprovalHandler) — the handler is kept
-        # alongside its agent so set_session_mode can reach the exact
-        # instance the agent's hooks already reference.
-        self._sessions: dict[str, tuple] = {}
+        self._sessions: dict[str, _Session] = {}
         self._cancelled: set[str] = set()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._unsubscribe = None
+        self._last_session: str | None = None
 
     def on_connect(self, conn: acp.Client) -> None:
         self._conn = conn
@@ -324,37 +627,52 @@ class SierraLabAcpAgent:
     async def initialize(self, protocol_version: int, **kwargs) -> acp.InitializeResponse:
         return acp.InitializeResponse(
             protocolVersion=acp.PROTOCOL_VERSION,
-            agentCapabilities=acp.schema.AgentCapabilities(load_session=True),
+            agentCapabilities=acp.schema.AgentCapabilities(
+                load_session=True,
+                session_capabilities=acp.schema.SessionCapabilities(list=acp.schema.SessionListCapabilities()),
+            ),
         )
+
+    # ------------------------------------------------------- live events
+
+    def _send_ext(self, method: str, payload: dict) -> None:
+        """Thread-safe: schedule one extension notification on the ACP loop."""
+        loop, conn = self._loop, self._conn
+        if loop is None or conn is None or loop.is_closed():
+            return
+
+        async def send() -> None:
+            try:
+                await conn.ext_notification(method, payload)
+            except Exception:
+                logging.getLogger(__name__).debug("%s notification not delivered", method, exc_info=True)
+
+        loop.call_soon_threadsafe(lambda: loop.create_task(send()))
+
+    def _forward_event(self, kind: str, payload: dict) -> None:
+        if "sessionId" not in payload and self._last_session:
+            payload = {**payload, "sessionId": self._last_session}
+        self._send_ext(f"sierralab/{kind}", payload)
 
     def _laya_notifier(self, session_id: str):
         """A thread-safe callback that forwards Laya's live triage events to the
         client as an ACP *extension notification* (method ``_sierralab/laya``).
         The ACP spec says a client that doesn't understand an extension
         notification must ignore it, so Zed and other clients are unaffected;
-        acp-tui renders it as the live "⚡ laya" line.
-
-        Hooks run on the event loop's thread and the classifier's callbacks on
-        a worker thread, so the send is scheduled with call_soon_threadsafe.
+        acp-tui renders it as the live "◆ laya" line.
         """
-        loop = asyncio.get_running_loop()
+
+        if self._loop is None:
+            self._loop = asyncio.get_running_loop()
 
         def notify(payload: dict) -> None:
-            conn = self._conn
-            if conn is None:
-                return
-
-            async def send() -> None:
-                try:
-                    await conn.ext_notification("sierralab/laya", {"sessionId": session_id, **payload})
-                except Exception:
-                    logging.getLogger(__name__).debug("laya notification not delivered", exc_info=True)
-
-            loop.call_soon_threadsafe(lambda: loop.create_task(send()))
+            self._send_ext("sierralab/laya", {"sessionId": session_id, **payload})
 
         return notify
 
-    def _build_session(self, session_id: str, cwd: str) -> tuple:
+    # ----------------------------------------------------------- sessions
+
+    def _build_session(self, session_id: str, cwd: str) -> _Session:
         # Process-wide, not per-agent: strands_tools' file_read/file_write/
         # editor have no per-call working-directory parameter at all (only
         # shell does, via its own work_dir kwarg) — they just resolve
@@ -368,81 +686,202 @@ class SierraLabAcpAgent:
             os.chdir(cwd)
         except OSError as error:
             logging.getLogger(__name__).warning("cwd=<%s> | failed to chdir, tools will use the previous cwd: %s", cwd, error)
-        handler = _ApprovalHandler()
+        if self._loop is None:
+            self._loop = asyncio.get_running_loop()
+        if self._unsubscribe is None:
+            self._unsubscribe = harness_events.subscribe(self._forward_event)
+        self._last_session = session_id
+
+        preferences = settings_store.current(cwd)
+        for warning in preferences.warnings:
+            logging.getLogger(__name__).warning("settings: %s", warning)
+        _apply_startup_preferences(preferences)
+
+        router = _router()
+        router.policy = _router_policy(preferences)
+        lsp_enabled = preferences.get("lsp.enabled", True) is not False
+        manager = lsp_bridge.manager_for(cwd)
+        manager.enabled = lsp_enabled
+
+        reserved = {"shell", "editor", "file_read", "file_write", "python_repl", "http_request", "apply_patch", "architect", "debugger"}
+        plugins = _plugin_host(cwd, reserved)
+        heal = SelfHealHooks(config=lambda: _heal_config(settings_store.current(cwd)), session_id=session_id, root=cwd)
+        router_hooks = RouterHooks(router, notify=self._laya_notifier(session_id), plugin_host=plugins)
+        handler = _ApprovalHandler(
+            cwd,
+            preferences.get("permissions.defaultMode", _DEFAULT_MODE),
+            plugins=plugins,
+            heal=heal,
+            router_hooks=router_hooks,
+        )
+        specialist_tools, specialist_agents = specialists.specialist_tools(
+            interventions=[handler],
+            hooks_factory=lambda: [lsp_bridge.LspEditHooks(), router_hooks],
+        )
+        instructions = settings_store.load_instructions(cwd)
+        context = workspace_context.summary(cwd, specialists=list(specialist_agents))
+        system_prompt = _project_system_prompt(cwd) + f"\n\n{context}" + (f"\n\n{instructions}" if instructions else "")
+        # Order matters for AfterInvocationEvent (callbacks run in reverse):
+        # self-heal is registered last so it runs first and can set `resume`
+        # before the router decides whether the turn is over.
         agent = build_agent_for_session(
             session_id,
             interventions=[handler],
-            system_prompt=_project_system_prompt(cwd),
-            triage_notify=self._laya_notifier(session_id),
+            system_prompt=system_prompt,
+            extra_tools=[patch_tool.apply_patch, *specialist_tools],
+            extra_hooks=[lsp_bridge.LspEditHooks(), router_hooks, heal],
+            exclude_tools={"agent_memory"},
+            use_triage=False,
+            untrusted_tools=plugins.untrusted_names,
+            checkpointing=True,
         )
-        self._sessions[session_id] = (agent, handler)
-        return agent, handler
+        handler.session_agent = agent
+        if preferences.get("model"):
+            _apply_model(agent, preferences.get("model"))
+        if preferences.get("temperature"):
+            _apply_temperature(agent, preferences.get("temperature"))
+
+        plugins.attach(agent)  # specialists keep their fixed kit; plugins reach the orchestrator
+        threading.Thread(target=self._start_background, args=(plugins, manager, lsp_enabled), name="harness-start", daemon=True).start()
+        if app_settings.LAYA_TRIAGE_MODE != "off":
+            from prompt_security import warm_up_laya
+
+            warm_up_laya()
+
+        state = _Session(agent, handler, cwd, router_hooks, heal, specialist_agents, plugins)
+        self._sessions[session_id] = state
+        _touch_index(session_id, cwd)
+        return state
+
+    @staticmethod
+    def _start_background(plugins: PluginHost, manager, lsp_enabled: bool) -> None:
+        """Plugins and language servers start off the request path; their
+        progress arrives as task events (progress bars in acp-tui)."""
+        try:
+            if not any(row["status"] in ("running", "starting") for row in plugins.status()):
+                plugins.start_autostart()
+            if lsp_enabled:
+                manager.start_all()
+        except Exception:
+            logging.getLogger(__name__).warning("background start failed", exc_info=True)
 
     async def new_session(self, cwd: str, **kwargs) -> acp.NewSessionResponse:
         session_id = str(uuid.uuid4())
-        agent, _handler = self._build_session(session_id, cwd)
+        state = self._build_session(session_id, cwd)
         return acp.NewSessionResponse(
             sessionId=session_id,
-            modes=acp.schema.SessionModeState(current_mode_id=_DEFAULT_MODE, available_modes=_MODES),
-            config_options=_config_options(agent),
+            modes=acp.schema.SessionModeState(current_mode_id=state.handler.mode, available_modes=_MODES),
+            config_options=_config_options(state.agent),
         )
 
     async def load_session(self, cwd: str, session_id: str, **kwargs) -> acp.LoadSessionResponse:
-        agent, _handler = self._build_session(session_id, cwd)
+        state = self._build_session(session_id, cwd)
 
         if self._conn is not None:
-            for update in _replay_history(agent.messages):
+            for update in _replay_history(state.agent.messages):
                 await self._conn.session_update(session_id=session_id, update=update)
+            checkpoint = _checkpoint_path(session_id)
+            if checkpoint.exists():
+                try:
+                    data = json.loads(checkpoint.read_text())
+                    where = f"{data['checkpoint'].get('position')}, cycle {data['checkpoint'].get('cycle_index')}"
+                except (OSError, ValueError, KeyError):
+                    where = "unknown point"
+                await self._conn.session_update(
+                    session_id=session_id,
+                    update=acp.update_agent_message_text(
+                        f"\n[This session's last turn was interrupted at a checkpoint ({where}). "
+                        "Send /resume-turn to continue it from there.]\n"
+                    ),
+                )
 
         # Mode isn't persisted across restarts (FileSessionManager only
-        # persists agent messages) — a reloaded session always comes back in
-        # the safe default (build), never a previously-chosen plan/auto.
+        # persists agent messages) — a reloaded session comes back in the
+        # configured default (permissions.defaultMode, "build" unless the user
+        # chose otherwise), never a previously-chosen plan/auto.
         return acp.LoadSessionResponse(
-            modes=acp.schema.SessionModeState(current_mode_id=_DEFAULT_MODE, available_modes=_MODES),
-            config_options=_config_options(agent),
+            modes=acp.schema.SessionModeState(current_mode_id=state.handler.mode, available_modes=_MODES),
+            config_options=_config_options(state.agent),
         )
 
+    async def list_sessions(self, cwd: str | None = None, cursor: str | None = None, **kwargs) -> acp.schema.ListSessionsResponse:
+        index = _read_index()
+        rows = [
+            acp.schema.SessionInfo(session_id=sid, cwd=meta.get("cwd", ""), title=meta.get("title"), updated_at=meta.get("updatedAt"))
+            for sid, meta in index.items()
+            if (SESSIONS_DIR / f"session_{sid}").exists() and (cwd is None or os.path.realpath(meta.get("cwd", "")) == os.path.realpath(cwd))
+        ]
+        rows.sort(key=lambda r: r.updated_at or "", reverse=True)
+        return acp.schema.ListSessionsResponse(sessions=rows[:50])
+
     async def set_session_mode(self, session_id: str, mode_id: str, **kwargs) -> acp.SetSessionModeResponse | None:
-        entry = self._sessions.get(session_id)
-        if entry is None or mode_id not in _MODE_IDS:
+        state = self._sessions.get(session_id)
+        if state is None or mode_id not in _MODE_IDS:
             return None
-        _agent, handler = entry
-        handler.mode = mode_id
+        state.handler.mode = mode_id
         return acp.schema.SetSessionModeResponse()
 
     async def set_config_option(self, config_id: str, session_id: str, value, **kwargs):
-        entry = self._sessions.get(session_id)
-        if entry is None:
+        state = self._sessions.get(session_id)
+        if state is None:
             return None
-        agent, _handler = entry
-
         if config_id == "model" and isinstance(value, str):
-            available = _fetch_available_models()
-            if not available or value in available:
-                config_update: dict = {"model_id": value}
-                limit = _context_window_limit(value)
-                if limit is not None:
-                    config_update["context_window_limit"] = limit
-                agent.model.update_config(**config_update)
-
-                import agent_common
-
-                agent_common.ACTIVE_MODEL_ID = value
+            _apply_model(state.agent, value)
         elif config_id == "temperature" and isinstance(value, str):
-            preset = next((p for p in _TEMPERATURE_PRESETS if p[0] == value), None)
-            if preset is not None:
-                current_params = dict(agent.model.get_config().get("params") or {})
-                current_params["temperature"] = preset[1]
-                agent.model.update_config(params=current_params)
-
-                import agent_common
-
-                agent_common.ACTIVE_TEMPERATURE = preset[1]
-
-        return acp.schema.SetSessionConfigOptionResponse(config_options=_config_options(agent))
+            _apply_temperature(state.agent, value)
+        return acp.schema.SetSessionConfigOptionResponse(config_options=_config_options(state.agent))
 
     async def cancel(self, session_id: str, **kwargs) -> None:
         self._cancelled.add(session_id)
+
+    # ------------------------------------------------------ ext methods
+
+    async def ext_method(self, method: str, params: dict) -> dict:
+        """``_sierralab/*`` requests from acp-tui: plugins, LSP, Laya stats,
+        self-heal state. Unknown methods raise (JSON-RPC method-not-found)."""
+        name = method.removeprefix("_").removeprefix("sierralab/")
+        session_id = params.get("sessionId") or self._last_session
+        state = self._sessions.get(session_id) if session_id else None
+        cwd = state.cwd if state else os.getcwd()
+        if name == "plugins/list":
+            host = state.plugins if state else _plugin_host(cwd, set())
+            return {"plugins": host.status(), "warnings": host.warnings}
+        if name in ("plugins/enable", "plugins/disable"):
+            host = state.plugins if state else _plugin_host(cwd, set())
+            target = str(params.get("name") or "")
+            persist = bool(params.get("persist", True))
+            fn = host.enable if name.endswith("enable") else host.disable
+            row = await run_blocking(fn, target, persist)
+            return row
+        if name == "plugins/reload":
+            host = state.plugins if state else _plugin_host(cwd, set())
+            host.discover()
+            return {"plugins": host.status(), "warnings": host.warnings}
+        if name == "lsp/status":
+            manager = lsp_bridge.manager_for(cwd)
+            return {"servers": manager.status(), "enabled": manager.enabled}
+        if name == "laya/stats":
+            router = _router()
+            return {
+                "summary": summarize_stats(router.calibrator),
+                "stats": router.calibrator.stats(),
+                "weights": router.calibrator.weights(),
+                "policy": router.policy.__dict__,
+            }
+        if name == "heal/status":
+            heal = state.heal if state else None
+            episodes = [
+                {"command": ep.command, "status": ep.status, "attempts": len(ep.attempts), "root_cause": ep.root_cause, "verified": ep.verified}
+                for ep in (heal.episodes.values() if heal else [])
+            ]
+            config = heal.config if heal else HealConfig()
+            return {"episodes": episodes, "config": config.__dict__}
+        raise acp.RequestError.method_not_found(method)
+
+    async def ext_notification(self, method: str, params: dict) -> None:
+        return None
+
+    # ------------------------------------------------------ interrupts
 
     async def _resolve_interrupts(self, session_id: str, interrupts: list) -> list:
         """Turn each unanswered Strands interrupt into a real ACP permission
@@ -450,35 +889,56 @@ class SierraLabAcpAgent:
         expects: a list of {"interruptResponse": {"interruptId", "response"}}.
         """
         responses = []
+        state = self._sessions.get(session_id)
         for interrupt in interrupts:
             try:
                 payload = json.loads(interrupt.reason)
                 tool_name = payload.get("name", "tool")
                 tool_input = payload.get("input")
                 tool_use_id = payload.get("tool_use_id") or interrupt.id
+                always_rule = payload.get("always_rule")
+                why = payload.get("reason")
             except (TypeError, ValueError):
-                tool_name, tool_input, tool_use_id = str(interrupt.reason), None, interrupt.id
+                tool_name, tool_input, tool_use_id, always_rule, why = str(interrupt.reason), None, interrupt.id, None, None
 
             approved = False
             if self._conn is not None:
-                options = [
-                    acp.schema.PermissionOption(option_id="allow", name="Allow", kind="allow_once"),
-                    acp.schema.PermissionOption(option_id="reject", name="Reject", kind="reject_once"),
-                ]
+                options = [acp.schema.PermissionOption(option_id="allow", name="Allow", kind="allow_once")]
+                if always_rule:
+                    options.append(
+                        acp.schema.PermissionOption(option_id="allow_always", name=f"Always allow {always_rule}", kind="allow_always")
+                    )
+                options.append(acp.schema.PermissionOption(option_id="reject", name="Reject", kind="reject_once"))
                 result = await self._conn.request_permission(
                     session_id=session_id,
                     tool_call=acp.schema.ToolCallUpdate(
                         tool_call_id=tool_use_id,
-                        title=f"Run {tool_name}",
+                        title=f"Run {tool_name}" + (f" — {why}" if why else ""),
                         kind=_tool_kind(tool_name),
                         raw_input=tool_input,
                     ),
                     options=options,
                 )
                 approved = _permission_approved(result.outcome, options)
+                if approved and always_rule and getattr(result.outcome, "option_id", None) == "allow_always":
+                    self._remember_always(session_id, always_rule)
+            if not approved and state is not None:
+                state.router_hooks.note_rejection(state.agent)
 
             responses.append({"interruptResponse": {"interruptId": interrupt.id, "response": approved}})
         return responses
+
+    def _remember_always(self, session_id: str, rule: str) -> None:
+        """"Always allow": save the rule for this project (settings.local.json,
+        this machine only). Choosing it is an explicit decision about the folder,
+        so it is also marked trusted — otherwise its own allow rule would be ignored."""
+        state = self._sessions.get(session_id)
+        cwd = state.cwd if state else os.getcwd()
+        try:
+            settings_store.add_rule("allow", rule, "local", cwd)
+            settings_store.trust_project(cwd)
+        except (OSError, ValueError) as error:
+            logging.getLogger(__name__).warning("could not save always-allow rule %r: %s", rule, error)
 
     async def _send_tool_result(self, session_id: str, result: dict) -> None:
         """One finished tool call as a terminal ACP tool-call update."""
@@ -496,46 +956,26 @@ class SierraLabAcpAgent:
             update=acp.update_tool_call(tool_use_id, status=status, content=content or None),
         )
 
-    async def prompt(self, session_id: str, prompt: list, **kwargs) -> acp.PromptResponse:
-        entry = self._sessions.get(session_id)
-        if entry is None:
-            # Defensive only — the ACP protocol always calls new_session or
-            # load_session (both of which carry the real cwd) before prompt.
-            # No cwd is available here, so this just keeps whatever
-            # directory the process is already in rather than guessing.
-            entry = self._build_session(session_id, os.getcwd())
-        agent, _handler = entry
+    # ---------------------------------------------------------- turns
 
-        is_first_turn = len(agent.messages) == 0
-        text = _extract_prompt_text(prompt)
-
-        if is_first_turn and self._conn is not None and text:
-            title = text.strip().splitlines()[0][:60]
-            await self._conn.session_update(
-                session_id=session_id,
-                update=acp.schema.SessionInfoUpdate(title=title, session_update="session_info_update"),
-            )
-
-        agent_input: object = text
+    async def _stream(self, session_id: str, agent, agent_input, *, checkpoints: bool) -> tuple[str, object]:
+        """Run one turn of ``agent`` to its end, translating Strands events into
+        ACP updates. Loops through approval interrupts (each becomes a real ACP
+        permission prompt) and, with ``checkpoints``, through Strands checkpoint
+        pauses — each one is written beside the session before resuming, so a
+        crash mid-turn leaves a resumable point. Returns (stop reason, result)."""
         seen_tool_calls: set[str] = set()
         last_progress: dict[str, str] = {}
-
-        self._cancelled.discard(session_id)
-
-        # Loops once per interrupt round-trip: a turn that never gets
-        # interrupted runs this exactly once; a gated tool call pauses the
-        # inner stream, gets resolved via a real ACP permission prompt, and
-        # re-enters with the resume payload as agent_input.
+        specialist_progress: dict[str, _SpecialistProgress] = {}
+        last_result = None
         while True:
             stop_reason = "end_turn"
             pending_interrupts: list = []
+            checkpoint = None
 
             async for event in agent.stream_async(agent_input):
                 if session_id in self._cancelled:
-                    return acp.PromptResponse(stopReason="cancelled")
-                if self._conn is None:
-                    continue
-
+                    return "cancelled", last_result
                 if "tool_interrupt_event" in event:
                     interrupts = event["tool_interrupt_event"].get("interrupts") or []
                     if interrupts:
@@ -544,16 +984,21 @@ class SierraLabAcpAgent:
                     continue
 
                 if "result" in event:
-                    reason = event["result"].stop_reason
+                    last_result = event["result"]
+                    reason = last_result.stop_reason
                     if reason == "interrupt":
                         # Belt-and-suspenders with the tool_interrupt_event
                         # branch above: AgentResult.interrupts carries the
                         # same list, so this still works even if that event
                         # was ever skipped for some interrupt path.
                         stop_reason = "interrupt"
-                        pending_interrupts = pending_interrupts or list(event["result"].interrupts or [])
+                        pending_interrupts = pending_interrupts or list(last_result.interrupts or [])
+                    elif reason == "checkpoint":
+                        stop_reason, checkpoint = "checkpoint", last_result.checkpoint
                     else:
                         stop_reason = reason if reason in ("end_turn", "max_tokens") else "end_turn"
+                    continue
+                if self._conn is None:
                     continue
 
                 event_type = event.get("type")
@@ -577,24 +1022,31 @@ class SierraLabAcpAgent:
 
                 if event_type == "tool_stream":
                     stream_event = event.get("tool_stream_event") or {}
-                    tool_use_id = (stream_event.get("tool_use") or {}).get("toolUseId")
-                    state = (stream_event.get("data") or {}).get("state") or {}
-                    entries = state.get("swarm_progress")
+                    tool_use = stream_event.get("tool_use") or {}
+                    tool_use_id = tool_use.get("toolUseId")
+                    data = stream_event.get("data") or {}
+                    rendered = None
+                    state = data.get("state") if isinstance(data, dict) else None
+                    entries = (state or {}).get("swarm_progress")
                     if tool_use_id and entries:
-                        rendered = _render_swarm_progress(entries, state.get("reasoning"))
-                        # The swarm/graph tools re-yield their whole state every
-                        # ~24 reasoning characters; a client only needs to hear
-                        # when the rendered text actually changed.
-                        if rendered and last_progress.get(tool_use_id) != rendered:
-                            last_progress[tool_use_id] = rendered
-                            await self._conn.session_update(
-                                session_id=session_id,
-                                update=acp.update_tool_call(
-                                    tool_use_id,
-                                    status="in_progress",
-                                    content=[acp.tool_content(acp.text_block(rendered))],
-                                ),
-                            )
+                        rendered = _render_swarm_progress(entries, (state or {}).get("reasoning"))
+                    elif tool_use_id and isinstance(data, dict) and tool_use.get("name") in self._specialist_names(session_id):
+                        progress = specialist_progress.setdefault(tool_use_id, _SpecialistProgress())
+                        if progress.feed(data):
+                            rendered = progress.render(tool_use.get("name"))
+                    # The swarm/graph tools re-yield their whole state every
+                    # ~24 reasoning characters; a client only needs to hear
+                    # when the rendered text actually changed.
+                    if rendered and last_progress.get(tool_use_id) != rendered:
+                        last_progress[tool_use_id] = rendered
+                        await self._conn.session_update(
+                            session_id=session_id,
+                            update=acp.update_tool_call(
+                                tool_use_id,
+                                status="in_progress",
+                                content=[acp.tool_content(acp.text_block(rendered))],
+                            ),
+                        )
                     continue
 
                 if event_type == "tool_result":
@@ -616,6 +1068,15 @@ class SierraLabAcpAgent:
                             tool_result = block.get("toolResult") if isinstance(block, dict) else None
                             if tool_result:
                                 await self._send_tool_result(session_id, tool_result)
+                    elif isinstance(message, dict) and message.get("role") == "assistant":
+                        # The model finished asking for its tools; none has run yet.
+                        # Send each call's complete input (the start event only had
+                        # what had streamed so far) and, for edits, the change as
+                        # ACP diff content read from disk *before* it happens.
+                        for block in message.get("content") or []:
+                            tool_use = block.get("toolUse") if isinstance(block, dict) else None
+                            if tool_use and tool_use.get("toolUseId"):
+                                await self._send_tool_preview(session_id, tool_use)
                     continue
 
                 if "data" in event:
@@ -629,10 +1090,245 @@ class SierraLabAcpAgent:
                         update=acp.update_agent_thought_text(event["reasoningText"]),
                     )
 
+            if stop_reason == "checkpoint" and checkpoint is not None:
+                payload = {"checkpoint": checkpoint.to_dict(), "ts": time.time()}
+                if checkpoints:
+                    try:
+                        _checkpoint_path(session_id).write_text(json.dumps(payload), encoding="utf-8")
+                    except OSError:
+                        pass
+                agent_input = {"checkpointResume": {"checkpoint": checkpoint.to_dict()}}
+                continue
             if stop_reason != "interrupt":
-                return acp.PromptResponse(stopReason=stop_reason)
-
+                return stop_reason, last_result
             agent_input = await self._resolve_interrupts(session_id, pending_interrupts)
+
+    async def _send_tool_preview(self, session_id: str, tool_use: dict) -> None:
+        if self._conn is None:
+            return
+        name = tool_use.get("name") or ""
+        tool_input = tool_use.get("input")
+        diffs = edit_preview.preview(name, tool_input) if name in ("editor", "file_write", "apply_patch") else []
+        await self._conn.session_update(
+            session_id=session_id,
+            update=acp.update_tool_call(
+                tool_use["toolUseId"],
+                raw_input=tool_input,
+                content=[acp.tool_diff_content(path, new_text, old_text) for path, old_text, new_text in diffs] or None,
+            ),
+        )
+
+    def _specialist_names(self, session_id: str) -> set[str]:
+        state = self._sessions.get(session_id)
+        return set(state.specialists) if state else set()
+
+    async def _decide(self, state: _Session, text: str) -> RouteDecision | None:
+        if app_settings.LAYA_TRIAGE_MODE != "route" or not text:
+            return None
+        from prompt_security import laya_ready
+
+        router = _router()
+        router.policy = _router_policy(settings_store.current(state.cwd))
+        targets = [*BASE_TARGETS, *plugin_targets(state.plugins.descriptions() if state.plugins else [])]
+        timeout = _LAYA_DECIDE_TIMEOUT if laya_ready() else app_settings.LAYA_TRIAGE_TIMEOUT
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(router.decide, text, targets), timeout)
+        except asyncio.TimeoutError:
+            decision = RouteDecision(target=None, error=f"Laya not ready within {timeout:g}s")
+            return router._abstain(decision, "no decision: Laya still loading")
+
+    async def _dispatch(self, session_id: str, state: _Session, decision: RouteDecision, text: str) -> str:
+        """Run a confidently-routed specialist directly — the orchestrator's
+        model call that would only have decided to delegate is skipped. The
+        exchange is then written into the orchestrator's history (and session
+        file) so the conversation continues normally next turn."""
+        name = decision.target.id
+        specialist = state.specialists[name]
+        specialist.messages.clear()  # specialists start fresh; context is passed explicitly
+        context = _recent_context(state.agent.messages)
+        prompt = text if not context else f"{text}\n\nConversation so far (for context):\n{context}"
+        state.router_hooks.prime(specialist, decision)
+        tool_use_id = f"dispatch-{uuid.uuid4().hex[:8]}"
+        if self._conn is not None:
+            await self._conn.session_update(
+                session_id=session_id,
+                update=acp.start_tool_call(tool_use_id, name, kind=_tool_kind(name), status="in_progress", raw_input={"input": text, "routed_by": "laya"}),
+            )
+        stop_reason, result = await self._stream(session_id, specialist, prompt, checkpoints=False)
+        reply = str(result).strip() if result is not None else ""
+        if self._conn is not None:
+            await self._conn.session_update(
+                session_id=session_id,
+                update=acp.update_tool_call(tool_use_id, status="completed" if stop_reason == "end_turn" else "failed", content=None),
+            )
+        if stop_reason == "end_turn":
+            orchestrator = state.agent
+            for message in (
+                {"role": "user", "content": [{"text": text}]},
+                {"role": "assistant", "content": [{"text": f"[{name} specialist, routed by Laya]\n{reply}"}]},
+            ):
+                orchestrator.messages.append(message)
+                manager = getattr(orchestrator, "_session_manager", None)
+                if manager is not None:
+                    try:
+                        manager.append_message(message, orchestrator)
+                    except Exception:
+                        logging.getLogger(__name__).debug("could not persist dispatched turn", exc_info=True)
+        return stop_reason
+
+    async def _dispatch_team(self, session_id: str, state: _Session, decision: RouteDecision, text: str) -> str | None:
+        """Laya's confident ``team`` route, executed as a harness-level
+        pipeline (team_pipeline.py): one planner call decomposes the task,
+        then the exact same Strands graph machinery the local_graph tool uses
+        runs it — streamed into one ACP tool call, its result written back
+        into the orchestrator's history. Same safety as local_graph's own
+        runs: build_agent_nodes' denylist still holds for every node.
+
+        Returns None when the plan is unusable or the pipeline failed; the
+        decision is then reclassified to an advisory hint and the caller must
+        continue the ordinary turn — a pipeline failure never ends or hides a
+        turn. On success returns "end_turn"."""
+        context = _recent_context(state.agent.messages)
+        plan = await team_pipeline.plan_team_async(text, state.agent, context)
+        if plan is None:
+            decision.action, decision.reason = "hint", "team pipeline planning failed; the orchestrator decides"
+            return None
+
+        tool_use_id = f"team-{uuid.uuid4().hex[:8]}"
+        if self._conn is not None:
+            await self._conn.session_update(
+                session_id=session_id,
+                update=acp.start_tool_call(
+                    tool_use_id,
+                    "team",
+                    kind=_tool_kind("team"),
+                    status="in_progress",
+                    raw_input={"task": text, "routed_by": "laya", "nodes": [entry.get("name") for entry in plan["agents"]]},
+                ),
+            )
+
+        # Stream_graph re-yields the whole cumulative state on every event;
+        # like the tool_stream branch in _stream, the client only hears when
+        # the rendered text actually changed.
+        last_rendered = None
+        result = None
+        try:
+            async for value in team_pipeline.stream_team(plan["task"] or text, plan, state.agent):
+                if "state" in value:
+                    state_data = value["state"]
+                    rendered = _render_swarm_progress(state_data.get("swarm_progress") or [], state_data.get("reasoning"))
+                    if rendered and rendered != last_rendered and self._conn is not None:
+                        last_rendered = rendered
+                        await self._conn.session_update(
+                            session_id=session_id,
+                            update=acp.update_tool_call(
+                                tool_use_id,
+                                status="in_progress",
+                                content=[acp.tool_content(acp.text_block(rendered))],
+                            ),
+                        )
+                else:
+                    result = value  # the result dict stream_graph yields last
+        except Exception as error:
+            logging.getLogger(__name__).warning("team pipeline failed: %s: %s", type(error).__name__, error)
+            if self._conn is not None:
+                await self._conn.session_update(
+                    session_id=session_id,
+                    update=acp.update_tool_call(tool_use_id, status="failed", content=None),
+                )
+            decision.action, decision.reason = "hint", "team pipeline execution failed; the orchestrator decides"
+            return None
+
+        result = result or {"status": "FAILED", "execution_time_ms": 0, "results": {}}
+        succeeded = str(result.get("status", "")).upper() == "COMPLETED"
+        summary = "\n".join(f"{name}: {summary}".strip()[:400] for name, summary in (result.get("results") or {}).items())
+        if self._conn is not None:
+            await self._conn.session_update(
+                session_id=session_id,
+                update=acp.update_tool_call(
+                    tool_use_id,
+                    status="completed" if succeeded else "failed",
+                    content=[acp.tool_content(acp.text_block(summary))] if summary else None,
+                ),
+            )
+
+        if succeeded or result.get("results"):
+            orchestrator = state.agent
+            for message in (
+                {"role": "user", "content": [{"text": text}]},
+                {"role": "assistant", "content": [{"text": f"[team pipeline, routed by Laya — status {result.get('status')}]\n{summary}"}]},
+            ):
+                orchestrator.messages.append(message)
+                manager = getattr(orchestrator, "_session_manager", None)
+                if manager is not None:
+                    try:
+                        manager.append_message(message, orchestrator)
+                    except Exception:
+                        logging.getLogger(__name__).debug("could not persist team turn", exc_info=True)
+
+        # The orchestrator never streamed, so no BeforeInvocation hook fired;
+        # score the turn manually, exactly as the specialist dispatch's hooks
+        # would (begin_external_turn + finish_turn).
+        turn = state.router_hooks.begin_external_turn(state.agent, decision, text)
+        state.router_hooks.finish_turn(turn, "end_turn", dispatched_ok=succeeded)
+        return "end_turn"
+
+    async def prompt(self, session_id: str, prompt: list, **kwargs) -> acp.PromptResponse:
+        state = self._sessions.get(session_id)
+        if state is None:
+            # Defensive only — the ACP protocol always calls new_session or
+            # load_session (both of which carry the real cwd) before prompt.
+            # No cwd is available here, so this just keeps whatever
+            # directory the process is already in rather than guessing.
+            state = self._build_session(session_id, os.getcwd())
+        agent = state.agent
+        self._last_session = session_id
+
+        is_first_turn = len(agent.messages) == 0
+        text = _extract_prompt_text(prompt)
+
+        if is_first_turn and self._conn is not None and text:
+            title = text.strip().splitlines()[0][:60]
+            await self._conn.session_update(
+                session_id=session_id,
+                update=acp.schema.SessionInfoUpdate(title=title, session_update="session_info_update"),
+            )
+            _touch_index(session_id, state.cwd, title)
+        else:
+            _touch_index(session_id, state.cwd)
+
+        self._cancelled.discard(session_id)
+
+        checkpoint_file = _checkpoint_path(session_id)
+        if text.strip() == RESUME_TURN_MARKER:
+            if not checkpoint_file.exists():
+                if self._conn is not None:
+                    await self._conn.session_update(session_id=session_id, update=acp.update_agent_message_text("No interrupted turn to resume."))
+                return acp.PromptResponse(stopReason="end_turn")
+            data = json.loads(checkpoint_file.read_text())
+            agent_input: object = {"checkpointResume": {"checkpoint": data["checkpoint"]}}
+        else:
+            checkpoint_file.unlink(missing_ok=True)  # a new turn supersedes an abandoned one
+            agent_input = text
+            decision = await self._decide(state, text)
+            if decision is not None:
+                self._send_ext("sierralab/laya", {"sessionId": session_id, "mode": "route", "router": "v2", **decision.to_event()})
+                if decision.action == "dispatch" and decision.target and decision.target.id in state.specialists:
+                    stop_reason = await self._dispatch(session_id, state, decision, text)
+                    return acp.PromptResponse(stopReason=stop_reason if stop_reason in ("end_turn", "max_tokens", "cancelled") else "end_turn")
+                if decision.action == "dispatch" and decision.target and decision.target.id == "team":
+                    # None means the plan/pipeline failed open: the decision is
+                    # already reclassified to a hint, and prime below applies it
+                    # for the ordinary turn (fall-through, no return).
+                    stop_reason = await self._dispatch_team(session_id, state, decision, text)
+                    if stop_reason is not None:
+                        return acp.PromptResponse(stopReason=stop_reason if stop_reason in ("end_turn", "max_tokens", "cancelled") else "end_turn")
+                state.router_hooks.prime(agent, decision)
+
+        stop_reason, _result = await self._stream(session_id, agent, agent_input, checkpoints=True)
+        if stop_reason != "cancelled":
+            checkpoint_file.unlink(missing_ok=True)
+        return acp.PromptResponse(stopReason=stop_reason if stop_reason in ("end_turn", "max_tokens", "cancelled") else "end_turn")
 
 
 class _ProtocolStdout:
