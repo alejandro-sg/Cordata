@@ -34,10 +34,12 @@ keep working with no daemon running at all. Append-only tables plus
 
 Failure policy. Writes here are audit, not enforcement — a ledger that is
 unwritable must not break a turn, so `append_event` swallows and logs like
-`harness_events.emit` does. The approval gate itself does not consult this
-module to decide anything; it only records what it decided. Anything that
-*were* to read state back as a security decision would be a different design
-and would need the error to propagate instead.
+`harness_events.emit` does. The approval gate records what it decided
+here and, in one place, reads it back: `acp_server._settled_intervention` replays
+an answer the user already gave to the identical call in the same turn. That read
+cannot grant anything the user did not say yes to, and every failure of it — an
+unreadable ledger, a mismatched row, a stale one — means "ask again", which is why
+`get_intervention` swallows errors into None rather than raising.
 """
 
 from __future__ import annotations
@@ -169,6 +171,31 @@ def path() -> Path:
     return Path(override) if override else settings_store.user_dir() / DEFAULT_NAME
 
 
+def _make_private(target: Path) -> None:
+    """Keep the ledger readable by this user only.
+
+    It records prompts and tool inputs — commands with whatever was typed into
+    them — so "lives in the private user dir" has to be true rather than assumed:
+    `mkdir` and `sqlite3.connect` both create with the umask's mode, which on a
+    default macOS account is world-readable (the directory 0755, the database
+    0644). The directory is tightened only when it is the harness's own
+    (`user_dir()`); a `SIERRALAB_STATE_DB` pointing somewhere shared is the
+    caller's business, but the database file is ours either way. SQLite gives
+    the -wal and -shm files the database's mode, so fixing the file fixes them.
+    """
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.parent == settings_store.user_dir():
+            os.chmod(target.parent, 0o700)
+        if not target.exists():
+            os.close(os.open(target, os.O_WRONLY | os.O_CREAT, 0o600))
+        for candidate in (target, target.with_name(target.name + "-wal"), target.with_name(target.name + "-shm")):
+            if candidate.exists():
+                os.chmod(candidate, 0o600)
+    except OSError:
+        logger.warning("state_store: could not restrict %s to its owner", target, exc_info=True)
+
+
 def _configure(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
@@ -193,7 +220,7 @@ def connect() -> sqlite3.Connection:
             conn.close()
         except Exception:
             pass
-    target.parent.mkdir(parents=True, exist_ok=True)
+    _make_private(target)
     conn = sqlite3.connect(str(target), timeout=_BUSY_TIMEOUT_MS / 1000, isolation_level=None)
     conn.row_factory = sqlite3.Row
     _configure(conn)
@@ -213,7 +240,7 @@ def migrate(conn: sqlite3.Connection | None = None) -> None:
             if target in _migrated_paths:
                 return
             target_path = path()
-            target_path.parent.mkdir(parents=True, exist_ok=True)
+            _make_private(target_path)
             conn = sqlite3.connect(str(target_path), timeout=_BUSY_TIMEOUT_MS / 1000, isolation_level=None)
             conn.row_factory = sqlite3.Row
             _configure(conn)
@@ -375,21 +402,36 @@ def _decode_intervention(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def pending_interventions(session_id: str | None = None) -> list[dict[str, Any]]:
-    """Everything still staged — what a reconnecting client is owed."""
-    if session_id is None:
-        rows = connect().execute(
-            "SELECT * FROM interventions WHERE status = 'staged' ORDER BY ts"
-        ).fetchall()
-    else:
-        rows = connect().execute(
-            "SELECT * FROM interventions WHERE status = 'staged' AND session_id = ? ORDER BY ts",
-            (session_id,),
-        ).fetchall()
+    """Everything still staged — what a reconnecting client is owed.
+
+    An unreadable ledger is an empty answer, not an exception: this runs while a
+    session is being resumed, and a locked or damaged `state.db` must not be what
+    stops a conversation from loading."""
+    try:
+        if session_id is None:
+            rows = connect().execute(
+                "SELECT * FROM interventions WHERE status = 'staged' ORDER BY ts"
+            ).fetchall()
+        else:
+            rows = connect().execute(
+                "SELECT * FROM interventions WHERE status = 'staged' AND session_id = ? ORDER BY ts",
+                (session_id,),
+            ).fetchall()
+    except Exception:
+        logger.debug("state_store: pending interventions unreadable", exc_info=True)
+        return []
     return [_decode_intervention(row) for row in rows]
 
 
 def get_intervention(intervention_id: str) -> dict[str, Any] | None:
-    row = connect().execute("SELECT * FROM interventions WHERE id = ?", (intervention_id,)).fetchone()
+    """One row, or None — including when the ledger cannot be read. The approval
+    path consults this to decide whether a call was already answered, so "I could
+    not tell" has to land on the same side as "no": the user is asked."""
+    try:
+        row = connect().execute("SELECT * FROM interventions WHERE id = ?", (intervention_id,)).fetchone()
+    except Exception:
+        logger.debug("state_store: intervention %s unreadable", intervention_id, exc_info=True)
+        return None
     return _decode_intervention(row) if row else None
 
 

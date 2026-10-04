@@ -200,6 +200,42 @@ def test_a_repeat_merges_in_lancedb() -> None:
     check(stats["lancedb"] is True and stats["nodes"] == 2 * len(nodes), "stats reports both halves: 2 ingests, one row set")
 
 
+def test_reads_collapse_the_log_and_inputs_are_masked() -> None:
+    """The JSONL mirror is a log (one line per sighting), so a reader that
+    returned lines would answer a `limit` of 20 with twenty copies of one node."""
+    directory = _TMPDIR / "collapsed"
+    sink = LanceGraphSink(directory)
+    for ts in (1000.0, 2000.0, 3000.0):
+        nodes, edges = extract.extract_turn(session_id="s5", cwd=CWD, tool_calls=TURN, ts=ts)
+        sink.write(nodes, edges)
+    hits = sink.search("app.py", limit=20)
+    check(len(hits) == 1, f"three sightings of one file are one search result (got {len(hits)})")
+    check(hits[0]["first_ts"] == 1000.0 and hits[0]["last_ts"] == 3000.0, "carrying the first and the latest sighting")
+    node_id = hits[0]["id"]
+    ids = [edge["id"] for edge in sink.neighbours(node_id, limit=50)]
+    check(len(ids) == len(set(ids)), "and neighbours lists each edge once")
+
+    # A relative path means relative to the session's directory, not to this
+    # process's: otherwise two sessions in two projects merge their files.
+    nodes, _ = extract.extract_turn(
+        session_id="s6", cwd=str(_TMPDIR / "proj-a"), tool_calls=[{"name": "file_read", "input": {"path": "src/app.py"}}]
+    )
+    check(
+        any(node["type"] == "file" and node["label"] == "src/app.py" for node in nodes),
+        "a relative path is anchored to the session's cwd",
+    )
+
+    import secret_guard
+
+    secret_guard.register_secret("sk-live-abcdef0123456789LEAK")
+    nodes, _ = extract.extract_turn(
+        session_id="s7",
+        cwd=CWD,
+        tool_calls=[{"name": "shell", "input": {"command": "curl x"}, "status": "failed", "error": "401 for sk-live-abcdef0123456789LEAK"}],
+    )
+    check(all("LEAK" not in node["label"] for node in nodes), "a registered secret never becomes a node label")
+
+
 # ------------------------------------------------------------------ failures
 
 
@@ -231,6 +267,7 @@ def main() -> None:
     test_error_labels()
     test_ingest_writes_the_mirror()
     test_a_repeat_merges_in_lancedb()
+    test_reads_collapse_the_log_and_inputs_are_masked()
     test_a_bad_write_never_costs_a_turn()
     print("\nkg: all checks passed")
 

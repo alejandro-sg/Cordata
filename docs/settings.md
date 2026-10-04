@@ -169,6 +169,13 @@ stranger's repo switch off the approval prompts, so **project and local `allow` 
 *user* file's `trustedProjects`. `/trust` does that; so does choosing "Always allow". The user file
 itself is always trusted. `/permissions` marks ignored rules `← ignored: folder not trusted`.
 
+The same gate covers the keys that decide how much the harness protects you or where data goes:
+`selfHeal.autoApply`, `vault.enabled`, `vault.addr`, `vault.vault`, `vault.egressPolicy` and
+`kg.sink`. A repo that could set them could switch off the egress proxy you turned on, make its
+refusal fail open, or point its address at a host of its own. Set in the user file, or in a folder you
+trusted, they apply; from an untrusted project or local file they are ignored and reported as a
+warning.
+
 Instruction files from a folder you haven't looked at are still read (see below) — the banner tells
 you which — but they can only advise the model; every gated tool call still needs your approval.
 

@@ -357,6 +357,87 @@ def test_preemption_kills_the_child() -> None:
         check(False, f"the observation child (pid {pid}) survived preemption")
 
 
+def test_a_preempted_cycle_does_not_lose_the_queue() -> None:
+    """`/observe` answers "queued" — so a cycle that is abandoned after it took
+    the queue has to hand the observations back, not drop them."""
+    repo = make_repo(_TMPDIR / "repo7")
+    stub = write_stub("requeue.py")
+    pidfile = _TMPDIR / "requeue.pid"
+    pidfile.unlink(missing_ok=True)
+    os.environ["OBSERVER_STUB_PIDFILE"] = str(pidfile)
+    os.environ["OBSERVER_STUB_SLEEP"] = "30"
+    observer = observer_mod.Observer(
+        projects=lambda: [str(repo)],
+        busy=lambda: False,
+        settings=lambda: ON,
+        briefing_path=_TMPDIR / "requeue_briefing.md",
+        runner=lambda: [sys.executable, str(stub)],
+        logs=lambda: [],
+    )
+    observer.observe("the deploy failed", source="ci")
+
+    async def run() -> None:
+        cycle = asyncio.ensure_future(observer.cycle())
+        for _ in range(100):
+            if pidfile.exists():
+                break
+            await asyncio.sleep(0.05)
+        observer.observe("arrived while the model was thinking", source="ci")
+        observer.wake("a client attached")
+        await asyncio.wait_for(cycle, timeout=15)
+
+    asyncio.run(run())
+    held = [item["text"] for item in observer._inbox]
+    check(
+        held == ["the deploy failed", "arrived while the model was thinking"],
+        f"an abandoned cycle returns what it took, ahead of what arrived since (got {held})",
+    )
+
+
+def test_evidence_does_not_run_the_repos_own_config() -> None:
+    """git executes programs a repository's config names. The observer runs git
+    unattended, so `core.fsmonitor` and `diff.external` must not fire."""
+    repo = make_repo(_TMPDIR / "repo8")
+    marker = _TMPDIR / "ran-from-git-config"
+    marker.unlink(missing_ok=True)
+    hook = _TMPDIR / "hook.sh"
+    hook.write_text(f"#!/bin/sh\ntouch {marker}\n", encoding="utf-8")
+    hook.chmod(0o755)
+    for key in ("core.fsmonitor", "diff.external"):
+        subprocess.run(["git", "config", key, str(hook)], cwd=repo, check=True, capture_output=True)
+    (repo / "work.py").write_text("print('changed again')\n", encoding="utf-8")
+    evidence = observer_mod.git_evidence(str(repo))
+    check(bool(evidence.get("diff")), "the evidence is still collected")
+    check(not marker.exists(), "a program named in the repository's git config was not executed")
+
+
+def test_briefing_is_private_and_fences_hold() -> None:
+    repo = make_repo(_TMPDIR / "repo9")
+    briefing = _TMPDIR / "private_briefing.md"
+    briefing.unlink(missing_ok=True)
+    briefing.with_suffix(".tmp").unlink(missing_ok=True)
+    observer = observer_for(repo, write_stub("private.py"), briefing=briefing)
+    asyncio.run(observer.cycle())
+    mode = briefing.stat().st_mode & 0o777
+    check(mode == 0o600, f"the briefing is 0600 (got {oct(mode)})")
+
+    # A diff of a markdown file carries triple backticks of its own.
+    text = observer_mod.render_briefing(
+        [
+            {
+                "project": "p",
+                "summary": "s",
+                "proposals": [],
+                "evidence": {"git": {"diff": "+```python\n+print(1)\n+```", "status": " M README.md"}},
+            }
+        ],
+        generated_at=time.time(),
+    )
+    fence = next(line for line in text.splitlines() if line.startswith("`") and line.endswith("text"))
+    check(len(fence) - len("text") >= 4, f"the fence is longer than any backtick run in the evidence (got {fence!r})")
+    check(text.count(fence[: -len("text")]) == 2, "and it opens and closes exactly once, so the diff cannot escape it")
+
+
 def test_webhook_inbox_is_a_source() -> None:
     repo = make_repo(_TMPDIR / "repo6")
     briefing = _TMPDIR / "inbox_briefing.md"
@@ -381,6 +462,9 @@ def main() -> None:
     test_a_busy_daemon_is_not_observed()
     test_off_is_off()
     test_preemption_kills_the_child()
+    test_a_preempted_cycle_does_not_lose_the_queue()
+    test_evidence_does_not_run_the_repos_own_config()
+    test_briefing_is_private_and_fences_hold()
     test_webhook_inbox_is_a_source()
     print("\nobserver: all checks passed")
 

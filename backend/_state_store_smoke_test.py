@@ -119,6 +119,46 @@ def main() -> None:
     check(True, "an unserialisable payload is recorded rather than raising")
 
 
+    # The ledger holds prompts and tool inputs, so on the harness's own
+    # directory it must not be left at the umask's default (0755 / 0644).
+    import stat
+
+    home = Path(_TMP.name) / "home"
+    home.mkdir(mode=0o755)
+    os.chmod(home, 0o755)
+    saved = {key: os.environ.pop(key, None) for key in ("SIERRALAB_STATE_DB", "SIERRALAB_HOME")}
+    os.environ["SIERRALAB_HOME"] = str(home)
+    try:
+        # A database a previous build left at the default mode is tightened too.
+        old = home / "state.db"
+        old.touch()
+        os.chmod(old, 0o644)
+        state_store.append_event("task", {"id": "private"}, session_id="s-private")
+        check(stat.S_IMODE(home.stat().st_mode) == 0o700, "the harness directory is 0700")
+        check(stat.S_IMODE(old.stat().st_mode) == 0o600, "state.db is 0600, even when it already existed looser")
+        for side in ("state.db-wal", "state.db-shm"):
+            if (home / side).exists():
+                check(stat.S_IMODE((home / side).stat().st_mode) == 0o600, f"{side} is 0600")
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    # An unreadable ledger must read as "nothing there", never as an exception:
+    # the approval path asks it whether a call was already answered, and a
+    # resume lists what was left pending.
+    os.environ["SIERRALAB_STATE_DB"] = str(Path(_TMP.name) / "no-such-dir" / "x" / "state.db")
+    os.chmod(_TMP.name, 0o500)
+    try:
+        check(state_store.get_intervention("anything") is None, "an unreadable ledger answers None to a lookup")
+        check(state_store.pending_interventions("s1") == [], "and an empty list to a pending query")
+    finally:
+        os.chmod(_TMP.name, 0o700)
+        os.environ["SIERRALAB_STATE_DB"] = str(Path(_TMP.name) / "state.db")
+
+
 if __name__ == "__main__":
     main()
     _TMP.cleanup()

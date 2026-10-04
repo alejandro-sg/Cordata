@@ -78,8 +78,10 @@ SCHEMA: dict[str, tuple] = {
     "selfHeal.autoApply": ("bool",),
     "lsp.enabled": ("bool",),
     # Destructiveness scoring (laya_risk.py). The thresholds are the 0.2 / 0.8
-    # the directive names. `riskAutoApprove` is the one key in this block that
-    # changes what runs without a prompt, so it defaults off and is opt-in.
+    # the directive names. `riskAutoApprove` is reserved: nothing consults it
+    # (laya_risk.auto_approvable has no caller, deliberately — see its docstring),
+    # so setting it changes nothing. It stays in the schema so an existing
+    # settings file that names it is not rejected.
     "laya.riskSafe": ("float", 0.0, 1.0),
     "laya.riskDestroy": ("float", 0.0, 1.0),
     "laya.riskAutoApprove": ("bool",),
@@ -109,6 +111,19 @@ SCHEMA: dict[str, tuple] = {
 }
 LIST_KEYS = tuple(f"permissions.{kind}" for kind in RULE_KINDS)
 USER_ONLY_KEYS = ("trustedProjects",)
+
+#: Keys a repository must not be able to set for itself. Like `defaultMode:
+#: "auto"` and `selfHeal.autoApply`, they decide how much the harness protects
+#: the user, and `.sierralab/settings.json` is a file a cloned project brings
+#: along: `vault.enabled: false` would turn off the egress proxy the user chose,
+#: `vault.egressPolicy: "proxy"` would turn its fail-closed refusal into
+#: fail-open, `vault.addr` would point every tool subprocess's proxy variables at
+#: a host the project names, and `kg.sink` decides where graph rows are sent. Set
+#: from the user file, or from a project the user has `/trust`ed, they apply.
+#: Mirrored in `tui/crates/acp-tui/src/settings.rs` (`TRUST_GATED_KEYS`).
+TRUST_GATED_KEYS = frozenset(
+    {"vault.enabled", "vault.addr", "vault.vault", "vault.egressPolicy", "kg.sink"}
+)
 
 _SECRET_KEY = re.compile(r"(api[_-]?key|token|secret|password|passwd|credential)", re.IGNORECASE)
 _SECRET_VALUE = re.compile(r"(sk-[A-Za-z0-9]{16,}|[A-Za-z0-9]{32,}\.[A-Za-z0-9_-]{8,}|ghp_[A-Za-z0-9]{20,}|xox[bp]-[A-Za-z0-9-]{10,})")
@@ -284,6 +299,9 @@ def load(cwd: str | os.PathLike) -> Settings:
             # so like 'auto' a repository can't switch it on for itself.
             if key == "selfHeal.autoApply" and value is True and scope != "user" and not result.trusted:
                 result.warnings.append(f"{where}: selfHeal.autoApply ignored — folder not trusted (run /trust to enable)")
+                continue
+            if key in TRUST_GATED_KEYS and scope != "user" and not result.trusted:
+                result.warnings.append(f"{where}: '{key}' ignored — folder not trusted (run /trust to enable)")
                 continue
             result.values[key] = value
             result.sources[key] = scope

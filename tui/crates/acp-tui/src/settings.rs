@@ -256,7 +256,7 @@ pub const SCHEMA: &[Entry] = &[
         key: "laya.riskAutoApprove",
         kind: Kind::Bool,
         applies: Applies::NextSession,
-        help: "let a confidently safe turn skip the approval prompt (off unless you set it)",
+        help: "reserved — has no effect yet: the approval gate does not consult it (see laya_risk.py)",
     },
     Entry {
         key: "memory.traces",
@@ -327,6 +327,17 @@ pub const BUILTIN_DENY: [&str; 3] = [
 static SECRET_KEY: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)(api[_-]?key|token|secret|password|passwd|credential)").unwrap()
 });
+/// Keys a repository must not set for itself — see `TRUST_GATED_KEYS` in
+/// `backend/settings_store.py`, which this mirrors (the shared fixture holds
+/// both readers to it).
+const TRUST_GATED_KEYS: &[&str] = &[
+    "vault.enabled",
+    "vault.addr",
+    "vault.vault",
+    "vault.egressPolicy",
+    "kg.sink",
+];
+
 static SECRET_VALUE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"(sk-[A-Za-z0-9]{16,}|[A-Za-z0-9]{32,}\.[A-Za-z0-9_-]{8,}|ghp_[A-Za-z0-9]{20,}|xox[bp]-[A-Za-z0-9-]{10,})",
@@ -632,6 +643,15 @@ impl Store {
                 {
                     result.warnings.push(format!(
                         "{location}: selfHeal.autoApply ignored — folder not trusted (run /trust to enable)"
+                    ));
+                    continue;
+                }
+                if TRUST_GATED_KEYS.contains(&key.as_str())
+                    && scope != Scope::User
+                    && !result.trusted
+                {
+                    result.warnings.push(format!(
+                        "{location}: '{key}' ignored — folder not trusted (run /trust to enable)"
                     ));
                     continue;
                 }

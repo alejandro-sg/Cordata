@@ -13,6 +13,11 @@ before trusting a `cognee` configuration in production. What the rest of the
 package guarantees does not depend on this file: the extraction, the gating and
 the interface are all exercised by `_kg_smoke_test.py` through the Lance sink.
 
+**What leaves the machine.** `cognify` is where Cognee calls its configured LLM,
+and unless its own environment says otherwise that is a hosted provider: the node
+and edge rows — file paths, tool names, error signatures — go there. The Lance
+sink never leaves the machine. Choosing `"cognee"` is choosing that.
+
 The JSONL mirror is written here too. A sink whose data exists only inside a
 service is a sink you cannot read after the service changes its mind.
 """

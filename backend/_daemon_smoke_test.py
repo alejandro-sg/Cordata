@@ -35,7 +35,7 @@ os.environ["SIERRALAB_HOME"] = str(_ROOT / "home")
 # message" — which is the property frames.py exists to hold.
 _CHILD = _ROOT / "fake_acp.py"
 _CHILD.write_text(
-    "import json, sys\n"
+    "import json, sys, time\n"
     "\n"
     "# The daemon's client sees this before it has sent anything, which is the\n"
     "# situation the backlog exists for.\n"
@@ -47,7 +47,15 @@ _CHILD.write_text(
     "        message = json.loads(line)\n"
     "    except ValueError:\n"
     "        message = {}\n"
-    "    if message.get('method') == 'initialize':\n"
+    "    if message.get('method') == 'big/frame':\n"
+    "        # One line far past asyncio's 64 KiB StreamReader default, like a\n"
+    "        # file_read result or a diff.\n"
+    "        reply = {'jsonrpc': '2.0', 'id': message.get('id'), 'echo': 'x' * 200_000}\n"
+    "    elif message.get('method') == 'late/emit':\n"
+    "        # Output that arrives after the client that asked has gone.\n"
+    "        time.sleep(0.4)\n"
+    "        reply = {'jsonrpc': '2.0', 'method': '_sierralab/late'}\n"
+    "    elif message.get('method') == 'initialize':\n"
     "        reply = {'jsonrpc': '2.0', 'id': message.get('id'), 'result': {'protocolVersion': 1}}\n"
     "    else:\n"
     "        # The raw line, spacing and all: the test compares this against what\n"
@@ -120,7 +128,27 @@ def test_token_file() -> None:
     load_or_create_token(9111)
     check(read_port() == 9111, "the port written is the port the daemon actually bound")
     check(load_or_create_token(9111) == original, "rewriting the port keeps the token")
+    # A file left behind with loose permissions is tightened, not trusted.
+    os.chmod(token_path(), 0o644)
+    load_or_create_token()
+    mode = stat.S_IMODE(token_path().stat().st_mode)
+    check(mode == 0o600, f"a pre-existing 0644 token file is brought back to 0600 (got {oct(mode)})")
     load_or_create_token()  # leave the file as the other tests expect it
+
+
+def test_log_redaction() -> None:
+    import logging
+
+    from daemon.main import _RedactToken
+
+    record = logging.LogRecord(
+        "uvicorn.error", logging.INFO, __file__, 0,
+        '%s - "WebSocket %s" [accepted]', ("127.0.0.1:5000", "/ws?cwd=/tmp/p&token=SECRET-abc_123&session=s1"), None,
+    )
+    _RedactToken().filter(record)
+    rendered = record.getMessage()
+    check("SECRET-abc_123" not in rendered, f"the token is scrubbed from a logged websocket path (got {rendered})")
+    check("cwd=/tmp/p" in rendered and "session=s1" in rendered, "and the rest of the path is left readable")
 
 
 # -------------------------------------------------------------------- app
@@ -164,6 +192,10 @@ def test_daemon() -> None:
         queued = client.post("/observe", json={"text": "the deploy failed"}, headers={"X-Daemon-Token": token})
         check(queued.status_code == 200, "observe queues with the token")
         check(queued.json() == {"queued": 1, "enabled": False}, "and reports queue depth plus whether anything will read it")
+
+        bad_id = client.post("/sessions", json={"cwd": str(project), "sessionId": ["x"]}, headers={"X-Daemon-Token": token})
+        check(bad_id.status_code == 400, "a non-string sessionId is a 400, not a server error")
+        check(app.state.daemon.supervisor.find_by_cwd("/tmp/a\x00b") is None, "a NUL byte in a cwd is 'not found', not an exception")
 
         # A directory that does not exist is refused rather than silently
         # spawned into the daemon's own cwd.
@@ -234,10 +266,40 @@ def test_daemon() -> None:
                 and named["params"]["sessionId"] == session_id,
                 f"attaching by directory names the live session there (got {named})",
             )
+            # What this client was already handed is not replayed to the next
+            # one: a reattaching client would otherwise be shown prompts and
+            # answers from before it left. Nothing is pending, so the first
+            # frame it sees is the answer to what it asks now.
+            socket.send_text('{"jsonrpc":"2.0","id":8,"method":"initialize","params":{"sessionId":"' + session_id + '"}}')
+            fresh_answer = json.loads(socket.receive_text())
             check(
-                json.loads(socket.receive_text()).get("result", {}).get("protocolVersion") == 1,
-                "the named session's backlog follows the id — the whole turn, not just the greeting",
+                fresh_answer.get("id") == 8,
+                f"frames a client already received are not replayed on reattach (got {fresh_answer})",
             )
+
+            # A frame larger than asyncio's default 64 KiB reader limit must not
+            # take the session down: `readline` raises past it, which used to end
+            # the pump and report a running child as exited.
+            socket.send_text('{"jsonrpc":"2.0","id":9,"method":"big/frame","params":{"sessionId":"' + session_id + '"}}')
+            big = wait_for_text(socket)
+            check(big is not None and len(big["echo"]) == 200_000, "a 200 KB frame is delivered intact")
+            check(
+                supervisor.sessions()[0]["alive"] is True,
+                "and the session is still reported alive afterwards",
+            )
+
+        # Output produced while nobody is attached is held for the next client —
+        # including a frame that was in flight when the socket dropped.
+        with client.websocket_connect(f"/ws?session={session_id}&token={token}") as socket:
+            socket.send_text('{"jsonrpc":"2.0","method":"late/emit","params":{"sessionId":"' + session_id + '"}}')
+        check(
+            wait_for(lambda: any("_sierralab/late" in line for line in supervisor.backlog(session_id))),
+            "a frame emitted after the client left is held in the backlog",
+        )
+        with client.websocket_connect(f"/ws?session={session_id}&token={token}") as socket:
+            late = json.loads(socket.receive_text())
+            check(late.get("method") == "_sierralab/late", f"and delivered on reattach (got {late})")
+            check(supervisor.backlog(session_id) == [], "the backlog is cleared once it has been handed over")
 
         # A directory with nothing running in it gets a session started, and a
         # second attach to the same directory lands on that same session rather
@@ -295,6 +357,7 @@ def wait_for_text(socket, timeout: float = 5.0):
 def main() -> None:
     test_frames()
     test_token_file()
+    test_log_redaction()
     test_daemon()
 
 

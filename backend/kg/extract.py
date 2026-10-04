@@ -24,6 +24,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+import secret_guard
+
 logger = logging.getLogger(__name__)
 
 #: Tools whose input names a file. `shell` is deliberately absent: its input is
@@ -68,6 +70,12 @@ def _relative(raw: str, cwd: str | None) -> str:
     except (OSError, ValueError):
         return raw
     if cwd:
+        # A relative path means relative to the *session's* directory, not to
+        # whatever this process's working directory happens to be: one process
+        # can host sessions in several projects, and `resolve()` alone would
+        # anchor `src/app.py` to the last one that was opened.
+        if not path.is_absolute():
+            path = Path(cwd) / path
         try:
             return str(path.resolve().relative_to(Path(cwd).resolve()))
         except (OSError, ValueError):
@@ -107,7 +115,10 @@ def _error_label(call: dict[str, Any]) -> str:
     # signature a person searches for is the exception at the bottom. Falling
     # back to the first non-empty line keeps a plain `exit code 1` useful.
     matches = [line for line in lines if _EXCEPTION_LINE.match(line)]
-    return (matches[-1] if matches else lines[0])[:ERROR_LINE_LIMIT]
+    # Masked: an error line is output of a command the model ran, and one that
+    # echoes a credential back ("401 for sk-...") would otherwise become a node
+    # label that every later query returns.
+    return secret_guard.redact((matches[-1] if matches else lines[0])[:ERROR_LINE_LIMIT])
 
 
 def extract_turn(
@@ -138,7 +149,8 @@ def extract_turn(
         return ident
 
     def edge(kind: str, source: str, target: str) -> None:
-        ident = f"{kind}:{hashlib.sha1(f'{source}\x00{target}'.encode()).hexdigest()[:16]}"
+        digest = hashlib.sha1(f"{source}\x00{target}".encode()).hexdigest()[:16]
+        ident = f"{kind}:{digest}"
         edges.setdefault(
             ident,
             {

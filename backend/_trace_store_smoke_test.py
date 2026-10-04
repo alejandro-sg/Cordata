@@ -200,6 +200,41 @@ def main() -> None:
         "the tool says so plainly when tracing is off, rather than reporting no matches",
     )
 
+    # --------------------------------------------- filters narrow, not truncate
+    # LanceDB's default filters *after* taking the nearest `limit` rows. Twelve
+    # clean rows nearer to the query than the one failure would then make a
+    # `failed_only` search come back empty.
+    for index in range(12):
+        trace_store.record(f"zeta zeta zeta clean run {index}", tool="shell", status="completed", session_id="s9", preferences=ON)
+    trace_store.record("zeta the one that broke", tool="shell", status="failed", error="boom", session_id="s9", preferences=ON)
+    only_failures = trace_store.search("zeta zeta zeta", preferences=ON, failed_only=True, limit=3, session_id="s9")
+    check(
+        [row["error"] for row in only_failures] == ["boom"],
+        f"failed_only finds a failure ranked below the top `limit` clean rows (got {len(only_failures)} rows)",
+    )
+
+    # ------------------------------------------------------------ redaction
+    import secret_guard  # noqa: PLC0415
+
+    secret_guard.register_secret("sk-live-0123456789abcdefSECRET")
+    trace_store.record(
+        "theta curl -H 'Authorization: Bearer sk-live-0123456789abcdefSECRET'",
+        tool="shell",
+        error="401 for sk-live-0123456789abcdefSECRET",
+        patch="+ key = sk-live-0123456789abcdefSECRET",
+        preferences=ON,
+    )
+    leaked = trace_store.search("theta", preferences=ON, limit=5)
+    check(
+        leaked and all("sk-live-0123456789abcdefSECRET" not in str(value) for row in leaked for value in row.values()),
+        "a registered secret is masked in the text, error and patch columns",
+    )
+
+    # -------------------------------------------------------------- the cap
+    trace_store.record("eta " + "x" * (trace_store.MAX_TEXT_CHARS * 2), tool="file_read", preferences=ON)
+    capped = trace_store.search("eta", preferences=ON, limit=1)
+    check(capped and len(capped[0]["text"]) <= trace_store.MAX_TEXT_CHARS, "one row's text is bounded")
+
     # ---------------------------------------------------- the plugin gate
     # `acp_server` is imported last: `agent_common` chdirs the process on
     # import, which every check above would otherwise have had to survive. The
@@ -213,6 +248,30 @@ def main() -> None:
     check("traces" not in off_rows, "the traces plugin is absent when memory.traces is off")
     check("traces" in on_rows, "the traces plugin is present when memory.traces is on")
     check("memory" in off_rows and "memory" in on_rows, "the existing plugins are unaffected")
+
+    # ---------------------------------------------- the prompt survives approvals
+    # `_stream` replaces its input with the interrupt responses after an approval
+    # prompt, so the turn that was worth tracing most — the one that needed a
+    # human — used to be recorded with no prompt. The prompt is now captured at
+    # the top of the turn and handed to ingestion.
+    import time  # noqa: PLC0415
+    import types  # noqa: PLC0415
+
+    seen: dict = {}
+    original = trace_store.record_turn
+    trace_store.record_turn = lambda **kwargs: seen.update(kwargs) or 1
+    try:
+        agent = types.SimpleNamespace(_sessions={"sx": types.SimpleNamespace(preferences=ON, cwd=str(Path(_TMP.name)))})
+        acp_server.SierraLabAcpAgent._ingest_turn(
+            agent, "sx", "fix the import cycle", {"call-1": {"name": "shell", "input": {"command": "make"}, "status": "failed"}}
+        )
+        for _ in range(100):
+            if seen:
+                break
+            time.sleep(0.02)
+    finally:
+        trace_store.record_turn = original
+    check(seen.get("prompt") == "fix the import cycle", f"the user's prompt reaches trace ingestion (got {seen.get('prompt')!r})")
 
 
 if __name__ == "__main__":

@@ -36,6 +36,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import secret_guard
 import settings_store
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,12 @@ DEFAULT_DIR = "memory.lance"
 #: `exit_code` are columns to filter on. Separate tables would make "everything
 #: that failed in this session" a union across them for no benefit.
 TABLE = "traces"
+
+#: The most text one row keeps. A `file_read` result can be megabytes; the
+#: embedder only reads its first few hundred tokens anyway, so the tail would be
+#: stored, never searched, and paid for in every clone's disk.
+MAX_TEXT_CHARS = 16_000
+MAX_ERROR_CHARS = 4_000
 
 #: Rows returned by a search when the caller does not say.
 DEFAULT_LIMIT = 10
@@ -196,6 +203,11 @@ def record(
         return None
     try:
         ident = str(uuid.uuid4())
+        # Masked before it is stored *or* embedded: this corpus keeps raw command
+        # output and file contents in a directory inside the checkout, and a
+        # value `secret_guard` already knows to hide from the model has no more
+        # business being searchable here than it has in the transcript.
+        text = secret_guard.redact(text)[:MAX_TEXT_CHARS]
         row = {
             "id": ident,
             "ts": time.time(),
@@ -205,8 +217,8 @@ def record(
             "tool": tool or "",
             "status": status or "",
             "exit_code": exit_code,
-            "error": error or "",
-            "patch": patch or "",
+            "error": secret_guard.redact(error or "")[:MAX_ERROR_CHARS],
+            "patch": secret_guard.redact(patch or ""),
             "path": path or "",
             "vector": _vector(text),
         }
@@ -260,7 +272,11 @@ def search(
             clauses.append("(status = 'failed' OR (exit_code IS NOT NULL AND exit_code != 0))")
         query_builder = _table(db).search(_vector(query)).limit(max(1, int(limit)))
         if clauses:
-            query_builder = query_builder.where(" AND ".join(clauses))
+            # `prefilter=True`: LanceDB's default (0.17) filters *after* taking the
+            # nearest `limit` rows, so a `failed_only` search whose ten nearest
+            # neighbours all succeeded would come back empty while failures sat
+            # one rank further down.
+            query_builder = query_builder.where(" AND ".join(clauses), prefilter=True)
         rows = query_builder.to_list()
         for row in rows:
             row.pop("vector", None)

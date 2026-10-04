@@ -99,6 +99,10 @@ stop)
 install)
   require_venv
   mkdir -p "$(dirname "$PLIST")" "$RUN_DIR"
+  # launchd creates the log with the umask's mode (world-readable). It holds the
+  # daemon's and its children's stderr — session ids, project paths, whatever a
+  # tool logged — so it is made owner-only before launchd first opens it.
+  touch "$DAEMON_LOG" && chmod 600 "$DAEMON_LOG"
   cat >"$PLIST" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

@@ -155,6 +155,53 @@ def test_launch_refuses_without_the_vault() -> None:
             os.environ[vault_proxy.BINARY_ENV] = previous
 
 
+def test_no_proxy_keeps_the_users_entries_and_credentialed_needs_a_token() -> None:
+    env = vault_proxy.build_proxy_env("http://127.0.0.1:14322", environ={"NO_PROXY": "internal.corp,10.0.0.0/8"})
+    parts = env["NO_PROXY"].split(",")
+    check("internal.corp" in parts and "10.0.0.0/8" in parts, "a host the user excluded from proxying stays excluded")
+    check("127.0.0.1" in parts and "localhost" in parts, "and loopback is added")
+    check(len(parts) == len(set(parts)), "without duplicates")
+    check(env["no_proxy"] == env["NO_PROXY"], "in both spellings")
+
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    try:
+        addr = f"http://127.0.0.1:{server.getsockname()[1]}"
+        status = vault_proxy.install(
+            Prefs(**{"vault.enabled": True, "vault.addr": addr}), environ={}, token=""
+        )
+        check(status.ok and status.credentialed is False, "a reachable vault with no token is not reported as credentialed")
+        check("token" in status.reason.lower(), f"and the reason says why ({status.reason!r})")
+    finally:
+        server.close()
+
+
+def test_a_blocked_session_recovers_when_the_vault_comes_up() -> None:
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    port = server.getsockname()[1]
+    addr = f"http://127.0.0.1:{port}"
+    server.close()  # nothing listening: the vault is down when the session starts
+    blocked = vault_proxy.install(Prefs(**{"vault.enabled": True, "vault.addr": addr}), environ={}, token="t")
+    check(blocked.blocks_egress, "a vault that is down blocks egress at session start")
+    env: dict[str, str] = {}
+    check(vault_proxy.reprobe(blocked, environ=env, token="t").blocks_egress, "and still does while it is down")
+    check(not env, "re-probing a vault that is still down touches nothing")
+
+    revived = socket.socket()
+    revived.bind(("127.0.0.1", port))
+    revived.listen(1)
+    try:
+        recovered = vault_proxy.reprobe(blocked, environ=env, token="t")
+        check(not recovered.blocks_egress and recovered.credentialed, "once the vault answers, egress is allowed again")
+        check(env.get("HTTPS_PROXY") == addr, "and the proxy environment is applied, not just assumed")
+        healthy = vault_proxy.VaultStatus(enabled=True, ok=True)
+        check(vault_proxy.reprobe(healthy) is healthy, "a status that was not blocked is returned as it was")
+    finally:
+        revived.close()
+
+
 def test_the_token_comes_from_the_keychain() -> None:
     """`vault.token` is not a setting; the token is read from the Keychain item
     this module names. A recorder stands in for `secret_guard` so the assertion
@@ -227,6 +274,8 @@ def main() -> None:
     test_placeholders_never_shadow_the_harness_keys()
     test_unreachable_denies()
     test_launch_refuses_without_the_vault()
+    test_no_proxy_keeps_the_users_entries_and_credentialed_needs_a_token()
+    test_a_blocked_session_recovers_when_the_vault_comes_up()
     test_the_token_comes_from_the_keychain()
     test_the_gate_refuses_egress_tools()
     print("\nvault_proxy: all checks passed")

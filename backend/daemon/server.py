@@ -88,11 +88,17 @@ def load_or_create_token(port: int = DEFAULT_PORT) -> str:
     if not token:
         token = secrets.token_urlsafe(32)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"token": token, "port": port}, indent=2) + "\n", encoding="utf-8")
+    # Created 0600 rather than chmod-ed after the write: `write_text` makes the
+    # file with the umask's mode first, which leaves a window in which the token
+    # is readable by other local users. `os.open` applies the mode at creation;
+    # the `fchmod` covers a file that already existed with looser permissions.
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
     try:
-        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+        os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
     except OSError:
         logger.warning("daemon: could not restrict %s to 0600", path)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps({"token": token, "port": port}, indent=2) + "\n")
     return token
 
 
@@ -198,8 +204,11 @@ def create_app(port: int = DEFAULT_PORT) -> FastAPI:
         cwd = payload.get("cwd")
         if not isinstance(cwd, str) or not cwd:
             raise HTTPException(status_code=400, detail="cwd is required")
+        requested = payload.get("sessionId")
+        if requested is not None and not (isinstance(requested, str) and requested):
+            raise HTTPException(status_code=400, detail="sessionId must be a non-empty string")
         try:
-            session = await state.supervisor.spawn(cwd, session_id=payload.get("sessionId"))
+            session = await state.supervisor.spawn(cwd, session_id=requested)
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         return session.to_json()
@@ -264,8 +273,14 @@ def create_app(port: int = DEFAULT_PORT) -> FastAPI:
             await websocket.close(code=4404, reason="no such session")
             return
 
-        await websocket.accept()
+        # Claimed before `accept`, which awaits: two clients arriving together
+        # would both pass the check above and then both be attached.
         state._subscribers.add(session)
+        try:
+            await websocket.accept()
+        except BaseException:
+            state._subscribers.discard(session)
+            raise
         # A person is here. Any observer cycle in flight is abandoned — it is
         # killed, not asked to stop — because a briefing written over a project
         # someone is actively working in is the one thing this must not do.
@@ -295,7 +310,12 @@ def create_app(port: int = DEFAULT_PORT) -> FastAPI:
                     task.cancel()
                 for task in done:
                     if task is reader:
-                        await supervisor.write(session, task.result())
+                        if not await supervisor.write(session, task.result()):
+                            # The child is gone. Dropping the frame silently
+                            # leaves a client typing into a session that will
+                            # never answer; closing tells it to start over.
+                            await websocket.close(code=4410, reason="session has exited")
+                            return
                     else:
                         await websocket.send_text(task.result())
         except (WebSocketDisconnect, RuntimeError):

@@ -143,7 +143,9 @@ def _permission_approved(outcome, options: list) -> bool:
     return selected is not None and selected.kind in _ALLOW_KINDS
 
 
-def _settled_intervention(interrupt_id: str, session_id: str, tool_name: str, tool_input) -> dict | None:
+def _settled_intervention(
+    interrupt_id: str, session_id: str, tool_name: str, tool_input, since: float | None = None
+) -> dict | None:
     """A previously recorded decision for this exact pause, if there is one.
 
     Strands derives the interrupt id from the tool call, not at random —
@@ -158,11 +160,17 @@ def _settled_intervention(interrupt_id: str, session_id: str, tool_name: str, to
     from a tool-use id that another session's model could in principle have
     minted too, and lending an answer across sessions would approve something no
     one was shown; a row whose tool or input differs is likewise a different
-    pause. Anything unreadable, mismatched or from another session re-prompts —
-    the fail-closed direction.
+    pause. And only one staged during *this turn* (`since`): a local server that
+    numbers its tool calls (`call_0`) reuses an id every turn, so without the
+    bound an approval given last week for `ls` would silently approve the next
+    `ls`, and a rejection would silently reject it forever. Anything unreadable,
+    mismatched, stale or from another session re-prompts — the fail-closed
+    direction.
     """
     row = state_store.get_intervention(interrupt_id)
     if not row or row.get("status") == "staged":
+        return None
+    if since is not None and (row.get("ts") or 0) < since:
         return None
     if row.get("session_id") != session_id or row.get("tool") != tool_name or row.get("tool_input") != tool_input:
         logging.getLogger(__name__).warning(
@@ -340,6 +348,10 @@ class _ApprovalHandler(InterventionHandler):
         verdict = settings_store.evaluate(preferences, tool_name, tool_input, self.cwd)
         if verdict is not None and verdict.action == "deny":
             return Deny(reason=f"{tool_name} was not run: blocked by a {verdict.explain()}. Do something else or ask the user.")
+        if self.vault is not None and self.vault.blocks_egress and tool_name in vault_proxy.EGRESS_TOOLS:
+            # The vault may have come up since the session started; the refusal
+            # below tells the user to start it, so honour that without a restart.
+            self.vault = vault_proxy.reprobe(self.vault)
         if self.vault is not None and self.vault.blocks_egress and tool_name in vault_proxy.EGRESS_TOOLS:
             # Fail closed *before* the mode logic: with the vault enabled and
             # unreachable, nothing that could carry a credential off the machine
@@ -1056,7 +1068,7 @@ class SierraLabAcpAgent:
 
     # ------------------------------------------------------ interrupts
 
-    async def _resolve_interrupts(self, session_id: str, interrupts: list) -> list:
+    async def _resolve_interrupts(self, session_id: str, interrupts: list, since: float | None = None) -> list:
         """Turn each unanswered Strands interrupt into a real ACP permission
         prompt, and build the resume payload strands.interrupt._InterruptState.resume
         expects: a list of {"interruptResponse": {"interruptId", "response"}}.
@@ -1084,7 +1096,7 @@ class SierraLabAcpAgent:
             except (TypeError, ValueError):
                 tool_name, tool_input, tool_use_id, always_rule, why = str(interrupt.reason), None, interrupt.id, None, None
 
-            settled = _settled_intervention(interrupt.id, session_id, tool_name, tool_input)
+            settled = _settled_intervention(interrupt.id, session_id, tool_name, tool_input, since)
             if settled is not None:
                 approved = settled["status"] == "approved"
                 state_store.append_event(
@@ -1247,6 +1259,13 @@ class SierraLabAcpAgent:
         # memory.traces is off, so the collector costs one dict when unused.
         traced: dict[str, dict] = {}
         last_result = None
+        # What the user asked, before an approval resume replaces `agent_input`
+        # with the interrupt responses — otherwise the turns that hit a prompt,
+        # the ones most worth tracing, would be recorded with no prompt at all.
+        prompt = agent_input if isinstance(agent_input, str) else None
+        # Bounds what `_settled_intervention` may replay: a decision from before
+        # this turn began is not this turn's to reuse.
+        turn_started = time.time()
         while True:
             stop_reason = "end_turn"
             pending_interrupts: list = []
@@ -1380,11 +1399,11 @@ class SierraLabAcpAgent:
                 agent_input = {"checkpointResume": {"checkpoint": checkpoint.to_dict()}}
                 continue
             if stop_reason != "interrupt":
-                self._ingest_turn(session_id, agent_input, traced)
+                self._ingest_turn(session_id, prompt, traced)
                 return stop_reason, last_result
-            agent_input = await self._resolve_interrupts(session_id, pending_interrupts)
+            agent_input = await self._resolve_interrupts(session_id, pending_interrupts, turn_started)
 
-    def _ingest_turn(self, session_id: str, agent_input, traced: dict) -> None:
+    def _ingest_turn(self, session_id: str, prompt: str | None, traced: dict) -> None:
         """Feed the finished turn to the local stores, if either is switched on.
 
         Called only on the terminal exit from `_stream` — not on an interrupt,
@@ -1398,7 +1417,6 @@ class SierraLabAcpAgent:
         graphing = kg.enabled(preferences)
         if not tracing and not graphing:
             return
-        prompt = agent_input if isinstance(agent_input, str) else None
         # `entry` already carries exactly name/input/status/error/result, which
         # is what record_turn reads; pass a copy so the collector is not shared
         # with the ingest thread.

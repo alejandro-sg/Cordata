@@ -6,7 +6,8 @@
     "temperature": "creative",
     "tui.showLaya": false,
     "tui.thinking": "expanded",
-    "tui.toolOutput": "expanded"
+    "tui.toolOutput": "expanded",
+    "vault.enabled": true
   },
   "sources": {
     "laya.mode": "user",
@@ -14,7 +15,8 @@
     "temperature": "local",
     "tui.showLaya": "local",
     "tui.thinking": "user",
-    "tui.toolOutput": "project"
+    "tui.toolOutput": "project",
+    "vault.enabled": "user"
   },
   "rules": [
     ["allow", "shell(git status)", "user", true],
@@ -26,5 +28,5 @@
     ["deny", "shell(security *find-internet-password*)", "built-in", true],
     ["deny", "shell(security *dump-keychain*)", "built-in", true]
   ],
-  "warning_count": 5
+  "warning_count": 9
 }

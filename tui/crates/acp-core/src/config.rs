@@ -95,7 +95,7 @@ impl BackendConfig {
 /// rather than taking it on the command line, because a token in `argv` is
 /// visible to every process on the machine (`ps`). File permissions are the
 /// authorization boundary here; loopback is not one.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct DaemonConfig {
     pub token: String,
     #[serde(default = "default_port")]
@@ -108,6 +108,17 @@ pub struct DaemonConfig {
 
 fn default_port() -> u16 {
     8765
+}
+
+// By hand, so the token cannot reach a log line through `{:?}`.
+impl std::fmt::Debug for DaemonConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DaemonConfig")
+            .field("token", &"REDACTED")
+            .field("port", &self.port)
+            .field("path", &self.path)
+            .finish()
+    }
 }
 
 impl DaemonConfig {

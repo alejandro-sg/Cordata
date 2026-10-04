@@ -15,6 +15,7 @@ import asyncio
 import json
 import os
 import tempfile
+import time
 import types
 from pathlib import Path
 
@@ -180,6 +181,17 @@ def test_a_mismatched_row_re_prompts() -> None:
     check(
         _settled_intervention("int-reuse", "sess-other", "shell", {"command": "ls"}) is None,
         "another session's answer is not lent to this one",
+    )
+
+    # A server that numbers its tool calls reuses an id on every turn. The
+    # answer given to an earlier turn's `ls` is not this turn's to reuse.
+    check(
+        _settled_intervention("int-reuse", "sess-6", "shell", {"command": "ls"}, since=time.time() + 1) is None,
+        "a decision from before the current turn is not replayed",
+    )
+    check(
+        _settled_intervention("int-reuse", "sess-6", "shell", {"command": "ls"}, since=time.time() - 60) is not None,
+        "one made during the current turn still is",
     )
 
     state_store.stage_intervention(session_id="sess-6", tool="shell", tool_input={"command": "ls"}, intervention_id="int-live")

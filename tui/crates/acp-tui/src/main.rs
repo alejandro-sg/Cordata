@@ -412,9 +412,20 @@ async fn run(
                     Ok(())
                 }
                 Effect::NewSession => {
-                    workspace.active = workspace.spawn(None, false);
-                    banner = Some(workspace.banner());
-                    last = None;
+                    if matches!(workspace.transport, BackendTransport::Ws { .. }) {
+                        // The daemon hands out one session per directory and
+                        // refuses a second client on it (4409), so a second slot
+                        // here could only fail to connect — say why instead.
+                        workspace.app().messages.push(Message::Info(
+                            "/new needs --transport stdio: the daemon keeps one session per \
+                             directory — run another terminal in a different folder"
+                                .into(),
+                        ));
+                    } else {
+                        workspace.active = workspace.spawn(None, false);
+                        banner = Some(workspace.banner());
+                        last = None;
+                    }
                     Ok(())
                 }
                 Effect::SwitchSession(target) => {

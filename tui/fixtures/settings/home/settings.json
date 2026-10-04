@@ -6,5 +6,6 @@
     "deny": ["file_read(~/.ssh/*)"]
   },
   "tui": { "thinking": "expanded", "showLaya": true },
-  "laya": { "mode": "shadow" }
+  "laya": { "mode": "shadow" },
+  "vault": { "enabled": true }
 }

@@ -62,10 +62,12 @@ band. Two properties matter for this document:
 - **The ledger is evidence, not authority.** `_ApprovalHandler` never consults
   it to decide whether a call may run. The one thing read back is a decision
   this harness itself wrote, and only for the *same* call in the *same*
-  session (`_settled_intervention`; Strands derives the interrupt id from the
-  tool-use id, which another session's model could in principle mint as well).
-  A row that is unreadable, still staged, or whose tool, input or session
-  disagrees re-prompts. Replay exists because `_stream` reports a turn's
+  session and the *same turn* (`_settled_intervention`; Strands derives the
+  interrupt id from the tool-use id, which another session's model could in
+  principle mint as well — and a local server that numbers its calls reuses an
+  id every turn, which is why a decision from an earlier turn is never
+  replayed). A row that is unreadable, still staged, stale, or whose tool,
+  input or session disagrees re-prompts. Replay exists because `_stream` reports a turn's
   interrupts from two places, and without it the same call would be put to the
   user twice in one turn. A turn restarted after a crash re-issues a *new*
   tool call, so it is asked again rather than inheriting an old answer.
@@ -74,9 +76,11 @@ band. Two properties matter for this document:
   a user decision, so the ledger never credits a fail-closed default to a
   person. Nothing approves a call that nobody saw.
 
-It lives in the user's private harness directory (`~/.sierralab/`, created
-0700-on-write) rather than beside the source, because a row records the tool
-input and the settings snapshot a session ran with.
+It lives in the user's private harness directory (`~/.sierralab/`, forced to
+0700, with `state.db` and its `-wal`/`-shm` at 0600 — `state_store._make_private`;
+a default umask would leave both world-readable) rather than beside the source,
+because a row records the tool input and the settings snapshot a session ran
+with.
 
 **Generated tools get a second, independent gate on top**, not just the
 `file_write` approval that put them on disk:
@@ -245,8 +249,10 @@ rewrite a frame would be a place where a compromised daemon silently weakens
 every gate at once.
 
 Sessions outlive their client: a child parked on an approval prompt stays parked,
-and a reconnecting client is replayed the prompt from the daemon's backlog. That
-is a durability property with a disclosure edge — a client attaching to a
+and a reconnecting client is replayed the prompt from the daemon's backlog. The
+backlog holds only output no client has been handed yet — a frame a client already
+received is never replayed to the next one, which would re-show answered prompts.
+That is a durability property with a disclosure edge — a client attaching to a
 directory that already has a live session receives that session's buffered
 output, including tool results. It is gated by the same token, and the backlog
 is bounded (`Supervisor.BACKLOG_LIMIT`), so it is not a growing store.

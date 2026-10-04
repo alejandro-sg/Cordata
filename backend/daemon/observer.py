@@ -41,6 +41,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -71,15 +72,26 @@ LOG_TAIL_LINES = 40
 
 COMMAND_TIMEOUT = 15.0
 
+#: The longest one observation may take. A model call that never returns would
+#: otherwise park the only unattended loop here forever — a client attaching is
+#: the sole other way out, and the point of the loop is that nobody is there.
+CHILD_TIMEOUT = 600.0
+
 #: The commands the observer is allowed to gather evidence with. Fixed argv,
 #: fixed order, no shell — this is the "allowlisted read-only command set", read
 #: as strictly as it can be read: the *daemon* runs them and the model is handed
 #: the output. `git diff HEAD` is included but truncated; see MAX_EVIDENCE_CHARS.
+#:
+#: Reading is not the same as harmless: git runs programs named in the
+#: repository's own config. `core.fsmonitor` is executed by `status` and `diff`,
+#: and `diff.external` / `diff.<driver>.textconv` by `diff`, so a checkout whose
+#: `.git/config` was written by something else would run its command from a
+#: daemon nobody is watching. Those are switched off per invocation.
 GIT_COMMANDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("status", ("git", "status", "--short", "--branch")),
-    ("diff-stat", ("git", "diff", "--stat", "HEAD")),
+    ("status", ("git", "-c", "core.fsmonitor=false", "status", "--short", "--branch")),
+    ("diff-stat", ("git", "-c", "core.fsmonitor=false", "diff", "--no-ext-diff", "--no-textconv", "--stat", "HEAD")),
     ("log", ("git", "log", "--oneline", "-n", "20")),
-    ("diff", ("git", "diff", "HEAD")),
+    ("diff", ("git", "-c", "core.fsmonitor=false", "diff", "--no-ext-diff", "--no-textconv", "HEAD")),
 )
 
 #: `GIT_OPTIONAL_LOCKS=0` is the load-bearing one: a plain `git status` refreshes
@@ -101,6 +113,19 @@ def _truncate(text: str, limit: int = MAX_EVIDENCE_CHARS) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + f"\n… [{len(text) - limit} more characters]"
+
+
+def _fence(body: str, info: str = "text") -> list[str]:
+    """A fenced block whose fence is longer than any backtick run inside it.
+
+    The evidence is a `git diff`, and a diff of a markdown file is full of
+    triple backticks: with a fixed fence the first one closes the block early and
+    the rest of the diff — plus whatever follows it — renders as the briefing's
+    own prose, which is exactly the line this file draws between evidence and
+    reading."""
+    longest = max((len(run) for run in re.findall(r"`+", body)), default=0)
+    ticks = "`" * max(3, longest + 1)
+    return [f"{ticks}{info}", body, ticks]
 
 
 def user_briefing_path() -> Path:
@@ -319,6 +344,20 @@ class Observer:
             self._inbox.clear()
         return items
 
+    def _requeue(self, items: list[dict[str, Any]]) -> None:
+        """Put taken observations back, ahead of anything that arrived since.
+
+        A cycle that is abandoned never wrote them anywhere. Without this a
+        webhook that said "deploy failed" is lost to whoever happened to attach a
+        client while the model was thinking — and `/observe` has already told the
+        sender it was queued."""
+        if not items:
+            return
+        with self._lock:
+            newer = list(self._inbox)
+            self._inbox.clear()
+            self._inbox.extend([*items, *newer])
+
     # ------------------------------------------------------------- control
 
     def wake(self, reason: str = "") -> None:
@@ -415,7 +454,7 @@ class Observer:
         logs = await asyncio.to_thread(log_evidence, self._logs()) if self._logs() else {}
         for project in projects:
             if self._preempt.is_set():
-                return self._abandon("preempted during evidence collection")
+                return self._abandon("preempted during evidence collection", inbox)
             evidence = {
                 "collectedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "project": project,
@@ -426,10 +465,10 @@ class Observer:
                 if item.get("project") in (None, project):
                     evidence.setdefault("noted", []).append({"source": item["source"], "text": item["text"]})
             if self._preempt.is_set():
-                return self._abandon("preempted before the observer agent ran")
+                return self._abandon("preempted before the observer agent ran", inbox)
             answer = await self._run_child(project, evidence)
             if answer is None:
-                return self._abandon("preempted while the observer agent was running")
+                return self._abandon("preempted while the observer agent was running", inbox)
             answer["evidence"] = evidence
             observations.append(answer)
 
@@ -449,7 +488,7 @@ class Observer:
             # The last look before anything is written: a user who attached while
             # the model was thinking must not get a briefing written over their
             # session's project.
-            return self._abandon("preempted before writing the briefing")
+            return self._abandon("preempted before writing the briefing", inbox)
 
         text = render_briefing(observations, generated_at=time.time())
         await asyncio.to_thread(self._write_briefing, text)
@@ -464,8 +503,9 @@ class Observer:
         logger.info("observer: cycle %s — %s project(s), %s proposal(s)", self._cycles, len(observations), staged)
         return self._last
 
-    def _abandon(self, why: str) -> None:
+    def _abandon(self, why: str, inbox: list[dict[str, Any]] | None = None) -> None:
         logger.info("observer: %s", why)
+        self._requeue(inbox or [])
         self._last = {"lastCycle": time.time(), "observed": 0, "note": why}
 
     async def _run_child(self, project: str, evidence: dict[str, Any]) -> dict[str, Any] | None:
@@ -496,10 +536,12 @@ class Observer:
         talking = asyncio.ensure_future(process.communicate(payload))
         watching = asyncio.ensure_future(self._wait_preempt())
         try:
-            done, _ = await asyncio.wait({talking, watching}, return_when=asyncio.FIRST_COMPLETED)
+            done, _ = await asyncio.wait({talking, watching}, timeout=CHILD_TIMEOUT, return_when=asyncio.FIRST_COMPLETED)
             if talking not in done:
                 talking.cancel()
                 await self._kill(process)
+                if watching not in done:
+                    logger.warning("observer: the runner in %s took longer than %.0fs; killed", project, CHILD_TIMEOUT)
                 return None
             stdout, _ = talking.result()
         except asyncio.CancelledError:
@@ -553,7 +595,12 @@ class Observer:
         try:
             self._briefing.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._briefing.with_suffix(".tmp")
-            tmp.write_text(text, encoding="utf-8")
+            # 0600 from creation: the briefing quotes a full `git diff` of the
+            # user's working tree, which is not for other local accounts.
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(text)
             os.replace(tmp, self._briefing)
         except OSError as error:
             logger.warning("observer: could not write %s: %s", self._briefing, error)
@@ -617,7 +664,7 @@ def render_briefing(observations: list[dict[str, Any]], *, generated_at: float) 
         changed = [line for line in (git.get("status") or "").splitlines() if line.strip()]
         parts += [f"## {project}", ""]
         if git.get("diff-stat"):
-            parts += ["```", git["diff-stat"].strip(), "```", ""]
+            parts += [*_fence(git["diff-stat"].strip(), ""), ""]
         parts += [str(observation.get("summary") or "").strip(), ""]
         proposals = observation.get("proposals") or []
         if proposals:
@@ -631,36 +678,34 @@ def render_briefing(observations: list[dict[str, Any]], *, generated_at: float) 
                     line += f" _(next: {proposal['next']})_"
                 parts.append(line)
             parts.append("")
-        parts += [
-            "<details><summary>Evidence</summary>",
-            "",
-            "```text",
-            f"working tree ({len(changed)} line(s) of status):",
-            (git.get("status") or "(none)").strip(),
-            "",
-            "recent commits:",
-            (git.get("log") or "(none)").strip(),
-            "",
-            "full diff (truncated):",
-            (git.get("diff") or "(none)").strip(),
-            "```",
-            "",
-        ]
+        evidence_block = "\n".join(
+            [
+                f"working tree ({len(changed)} line(s) of status):",
+                (git.get("status") or "(none)").strip(),
+                "",
+                "recent commits:",
+                (git.get("log") or "(none)").strip(),
+                "",
+                "full diff (truncated):",
+                (git.get("diff") or "(none)").strip(),
+            ]
+        )
+        parts += ["<details><summary>Evidence</summary>", "", *_fence(evidence_block), ""]
         noted = (observation.get("evidence") or {}).get("noted") or []
         if noted:
             # Externally supplied text, so it goes in the evidence block — raw and
             # attributed, never promoted into the model's prose. A webhook that
             # said "deploy failed" must show up even if the model did not repeat
             # it, or the operator would never learn it arrived.
-            parts += [
-                "```text",
-                "queued observations (from outside this daemon; not written by a model):",
-                *(_truncate(f"[{item.get('source')}] {item.get('text')}", MAX_EVIDENCE_CHARS) for item in noted),
-                "```",
-                "",
-            ]
+            queued = "\n".join(
+                [
+                    "queued observations (from outside this daemon; not written by a model):",
+                    *(_truncate(f"[{item.get('source')}] {item.get('text')}", MAX_EVIDENCE_CHARS) for item in noted),
+                ]
+            )
+            parts += [*_fence(queued), ""]
         logs = (observation.get("evidence") or {}).get("logs") or {}
         if logs:
-            parts += ["```text", *(f"{path}:\n{text}" for path, text in logs.items()), "```", ""]
+            parts += [*_fence("\n".join(f"{path}:\n{text}" for path, text in logs.items())), ""]
         parts += ["</details>", ""]
     return "\n".join(parts)

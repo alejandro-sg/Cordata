@@ -20,6 +20,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import signal
 import sys
 from pathlib import Path
@@ -29,6 +30,35 @@ import uvicorn
 from .server import DAEMON_HOST, DEFAULT_PORT, create_app, token_path
 
 logger = logging.getLogger("sierralab.daemon")
+
+_TOKEN_IN_URL = re.compile(r"([?&]token=)[^&\s\"']+")
+
+
+class _RedactToken(logging.Filter):
+    """Scrub `?token=...` from log lines.
+
+    The socket takes its token as a query parameter (a browser `WebSocket`
+    cannot set headers), and uvicorn logs the full request path at INFO when it
+    accepts one — `access_log=False` does not cover that line. Under the
+    LaunchAgent stderr is `daemon.log`, so without this the credential that the
+    whole auth design keeps in a 0600 file is written to a log beside it."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:  # noqa: BLE001 — a malformed record is not ours to crash on
+            return True
+        if "token=" in message:
+            record.msg = _TOKEN_IN_URL.sub(r"\1REDACTED", message)
+            record.args = None
+        return True
+
+
+def _redact_logs() -> None:
+    # On the handlers, not the loggers: a logger's filters only see records
+    # logged directly to it, and uvicorn's lines come from its own child loggers.
+    for handler in logging.getLogger().handlers:
+        handler.addFilter(_RedactToken())
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -75,6 +105,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=args.log_level.upper(), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    _redact_logs()
 
     pidfile = pid_path()
     if pidfile.exists():
@@ -99,7 +130,9 @@ def main(argv: list[str] | None = None) -> int:
     # daemon.json — the file clients read to find this daemon. Recording the
     # default while listening elsewhere is worse than recording nothing.
     app = create_app(port)
-    config = uvicorn.Config(app, host=DAEMON_HOST, port=port, log_level=args.log_level, access_log=False)
+    # `log_config=None`: uvicorn's own config gives its loggers private handlers
+    # that do not propagate, which would put them beyond `_redact_logs`.
+    config = uvicorn.Config(app, host=DAEMON_HOST, port=port, log_level=args.log_level, access_log=False, log_config=None)
     server = uvicorn.Server(config)
 
     async def run() -> None:

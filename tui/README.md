@@ -168,7 +168,10 @@ The daemon takes the **directory**, not a session id: the id is the daemon's to
 mint, and a client that just started does not have one. Attaching to a directory
 that already has a live session reattaches to it and replays what you missed —
 including an approval prompt the child is already blocked on, which it will not
-re-emit. The banner's `link` row says which transport you are on.
+re-emit (output a previous client already received is not replayed). One client
+per session: a second terminal on the same directory is refused, and `/new` is
+unavailable over `ws` for the same reason. The banner's `link` row says which
+transport you are on.
 
 The token and port come from `~/.sierralab/daemon.json` (0600); `--daemon-url`
 overrides the URL, for a daemon whose config you don't have on disk. Nothing

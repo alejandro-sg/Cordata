@@ -155,6 +155,15 @@ def auto_approvable(decision: Any, *, preferences: Any = None, calibrator: Any =
     false. The caller is responsible for having checked that the tool would have
     been prompted at all — this says nothing about tools that were already going
     to run, or about any `deny` rule, which outranks everything here.
+
+    **Deliberately not wired into the approval gate.** The reading scored here is
+    Laya's of the *user's message*; the call under approval is chosen by a model
+    that may since have read a web page, a file or a tool result. A turn that was
+    confidently `read_only` ("summarise this README") would then wave through
+    whatever the README talked the model into running. The score is safe to
+    *show* a person deciding (it rides on the prompt) and unsafe to decide *for*
+    them, so until the risk is read per call this stays a function with no
+    caller, and `laya.riskAutoApprove` is a reserved key that changes nothing.
     """
     if preferences is None:
         return False

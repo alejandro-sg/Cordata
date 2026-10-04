@@ -178,6 +178,22 @@ def ca_bundle(environ: Mapping[str, str] | None = None) -> str | None:
     return path or None
 
 
+def _merged_no_proxy(environ: Mapping[str, str] | None = None) -> str:
+    """Loopback plus whatever the user already excluded.
+
+    Replacing `NO_PROXY` outright would quietly route an internal registry or a
+    corporate host the user had deliberately kept off a proxy through the vault —
+    and, with the vault's policy denying it, break it. Their entries stay; ours
+    are added."""
+    env = environ if environ is not None else os.environ
+    entries: list[str] = []
+    for raw in (env.get("NO_PROXY"), env.get("no_proxy"), LOCAL_NO_PROXY):
+        for item in (raw or "").replace(" ", ",").split(","):
+            if item and item not in entries:
+                entries.append(item)
+    return ",".join(entries)
+
+
 def build_proxy_env(
     addr: str | None = None,
     *,
@@ -194,13 +210,14 @@ def build_proxy_env(
     request.
     """
     target = (addr or DEFAULT_ADDR).rstrip("/")
+    no_proxy = _merged_no_proxy(environ)
     out = {
         "HTTP_PROXY": target,
         "HTTPS_PROXY": target,
         "http_proxy": target,
         "https_proxy": target,
-        "NO_PROXY": LOCAL_NO_PROXY,
-        "no_proxy": LOCAL_NO_PROXY,
+        "NO_PROXY": no_proxy,
+        "no_proxy": no_proxy,
         "NODE_USE_ENV_PROXY": "1",
     }
     bundle = ca_bundle(environ)
@@ -298,6 +315,56 @@ class VaultUnavailableError(RuntimeError):
     """The vault was asked for and could not be reached or started."""
 
 
+def _route_through(addr: str, target: dict[str, str], token: str | None) -> VaultStatus:
+    """Apply the proxy environment for a vault that answered, and say so."""
+    applied = build_proxy_env(addr, environ=target)
+    target.update(applied)
+    if token is None:
+        token = secret_guard.take_secret(keychain=KEYCHAIN_SERVICE).reveal()
+    if token:
+        # Not registered for masking: the token is the harness's own, and a
+        # value in the environment of a tool subprocess is exactly what the
+        # vault is meant to stop mattering. It is passed to the vault CLI,
+        # never to the tools.
+        target["SIERRALAB_VAULT_TOKEN_PRESENT"] = "1"
+    # `credentialed` is a claim the TUI and the resume notice repeat to the
+    # user, so it is only made when there is a token behind it: a reachable
+    # vault with nothing in the Keychain item routes egress through the proxy
+    # and substitutes nothing.
+    return VaultStatus(
+        enabled=True,
+        ok=True,
+        credentialed=bool(token),
+        addr=addr,
+        reason=(
+            f"egress goes through {addr}"
+            if token
+            else f"egress goes through {addr}, but there is no token in the Keychain item "
+            f"{KEYCHAIN_SERVICE!r}, so nothing will be substituted"
+        ),
+        env=applied,
+    )
+
+
+def reprobe(
+    status: VaultStatus,
+    *,
+    environ: dict[str, str] | None = None,
+    token: str | None = None,
+) -> VaultStatus:
+    """A blocked status, re-checked; anything else comes back unchanged.
+
+    `install` runs once when a session starts, so a vault started afterwards
+    would leave egress refused for the rest of the session — while the refusal
+    text tells the user to start it. A call that is about to be refused asks
+    again first. The same address is probed (a session does not get to
+    re-point itself), and only a vault that now answers changes anything.
+    """
+    if not status.blocks_egress or not check_health(status.addr):
+        return status
+    return _route_through(status.addr, environ if environ is not None else os.environ, token)
+
+
 def install(
     preferences: Any = None,
     *,
@@ -339,24 +406,7 @@ def install(
         logger.warning("vault: %s is up at %s but no %s on PATH", DEFAULT_BINARY, addr, DEFAULT_BINARY)
 
     if health_ok:
-        applied = build_proxy_env(addr, environ=target)
-        target.update(applied)
-        if token is None:
-            token = secret_guard.take_secret(keychain=KEYCHAIN_SERVICE).reveal()
-        if token:
-            # Not registered for masking: the token is the harness's own, and a
-            # value in the environment of a tool subprocess is exactly what the
-            # vault is meant to stop mattering. It is passed to the vault CLI,
-            # never to the tools.
-            target["SIERRALAB_VAULT_TOKEN_PRESENT"] = "1"
-        return VaultStatus(
-            enabled=True,
-            ok=True,
-            credentialed=True,
-            addr=addr,
-            reason=f"egress goes through {addr}",
-            env=applied,
-        )
+        return _route_through(addr, target, token)
 
     if policy == "proxy":
         # The user asked to keep working without credentials rather than stop:

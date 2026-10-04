@@ -102,8 +102,14 @@ def _merge(db: Any, name: str, fields: tuple[str, ...], rows: list[dict[str, Any
     if not rows:
         return 0
     payload = [{field: row.get(field) for field in fields} for row in rows]
+    # Only the rows this write touches, not the table: reading everything back
+    # on every turn is a cost that grows with the graph, to protect one column.
+    wanted = ", ".join("'" + str(row["id"]).replace("'", "''") + "'" for row in payload)
     try:
-        existing = {row["id"]: row for row in table.search().limit(1_000_000).to_list()}
+        existing = {
+            row["id"]: row
+            for row in table.search().where(f"id IN ({wanted})").select(["id", "first_ts"]).limit(len(payload)).to_list()
+        }
     except Exception:  # pragma: no cover — a store that cannot be read is rewritten from here
         existing = {}
     for row in payload:
@@ -175,7 +181,7 @@ class LanceGraphSink(KnowledgeGraphSink):
         needle = query.strip().lower()
         if not needle:
             return []
-        found = [row for row in _read_jsonl(self._dir / "nodes.jsonl") if needle in str(row.get("label", "")).lower()]
+        found = [row for row in _collapse(_read_jsonl(self._dir / "nodes.jsonl")) if needle in str(row.get("label", "")).lower()]
         found.sort(key=lambda row: float(row.get("last_ts") or 0), reverse=True)
         return found[:limit]
 
@@ -184,11 +190,32 @@ class LanceGraphSink(KnowledgeGraphSink):
         whole structure exists for."""
         rows = [
             row
-            for row in _read_jsonl(self._dir / "edges.jsonl")
+            for row in _collapse(_read_jsonl(self._dir / "edges.jsonl"))
             if row.get("source") == node_id or row.get("target") == node_id
         ]
         rows.sort(key=lambda row: float(row.get("last_ts") or 0), reverse=True)
         return rows[:limit]
+
+
+def _collapse(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One row per id, with the earliest `first_ts` and the latest `last_ts`.
+
+    The JSONL mirror is a log: a file touched in fifty turns is fifty lines. A
+    reader that wants the *state* (what LanceDB holds) has to fold them, or a
+    `limit` of 20 is twenty sightings of the same node."""
+    merged: dict[Any, dict[str, Any]] = {}
+    for row in rows:
+        ident = row.get("id")
+        held = merged.get(ident)
+        if held is None:
+            merged[ident] = dict(row)
+            continue
+        firsts = [float(value) for value in (held.get("first_ts"), row.get("first_ts")) if value]
+        newer = float(row.get("last_ts") or 0) >= float(held.get("last_ts") or 0)
+        if newer:
+            held.update(row)
+        held["first_ts"] = min(firsts) if firsts else None
+    return list(merged.values())
 
 
 def _lines(target: Path) -> int:

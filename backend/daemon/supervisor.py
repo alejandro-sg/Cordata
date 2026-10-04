@@ -50,13 +50,12 @@ class Session:
     cwd: str
     process: asyncio.subprocess.Process
     started: float = field(default_factory=time.time)
-    #: Frames the daemon has been asked to send but the child has not read yet.
-    #: Only the WebSocket task writes to it, so it needs no lock of its own.
-    pending: list[bytes] = field(default_factory=list)
     #: Frames from the child that no client has claimed yet. Kept so a client
     #: that reconnects to a running session is not blind to what it missed —
     #: an approval prompt in particular, which the child has already emitted
-    #: and is now blocked on.
+    #: and is now blocked on. Frames a subscriber was handed never land here:
+    #: replaying them would show a reattaching client prompts and answers it
+    #: already dealt with.
     backlog: list[str] = field(default_factory=list)
     exited: bool = False
 
@@ -90,6 +89,13 @@ class Supervisor:
     #: better served by the backlog on reconnect than by an ever-growing queue.
     QUEUE_LIMIT = 2000
 
+    #: The most one line of a child's stdout may hold. asyncio's StreamReader
+    #: defaults to 64 KiB and `readline` raises past it, which would end `_pump`
+    #: and report a healthy child as exited — and a file_read result or a diff
+    #: is a single ACP line far bigger than that. Generous because the cost of
+    #: the cap is a dropped session, and the cost of room is address space.
+    FRAME_LIMIT = 64 * 1024 * 1024
+
     def __init__(self, *, entrypoint: Callable[[], list[str]] | None = None) -> None:
         self._sessions: dict[str, Session] = {}
         self._entrypoint = entrypoint or default_entrypoint
@@ -106,7 +112,23 @@ class Supervisor:
         return queue
 
     def unsubscribe(self, session_id: str) -> None:
-        self._subscribers.pop(session_id, None)
+        """Detach the subscriber. Whatever it was handed but never sent goes back
+        to the front of the backlog, so a frame that was in flight when the
+        socket dropped is delivered to the next client rather than lost."""
+        queue = self._subscribers.pop(session_id, None)
+        session = self._sessions.get(session_id)
+        if queue is None or session is None:
+            return
+        unsent: list[str] = []
+        while True:
+            try:
+                unsent.append(queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        if unsent:
+            session.backlog[:0] = unsent
+            if len(session.backlog) > self.BACKLOG_LIMIT:
+                del session.backlog[: len(session.backlog) - self.BACKLOG_LIMIT]
 
     # ------------------------------------------------------------- lifecycle
 
@@ -133,6 +155,7 @@ class Supervisor:
             stdout=asyncio.subprocess.PIPE,
             stderr=None,  # the child's logs go to the daemon's own stderr
             env=self._child_env(),
+            limit=self.FRAME_LIMIT,
             # Its own process group: cancelling a turn must not signal the
             # daemon, and shutting the daemon down must be able to reach every
             # child at once with one killpg.
@@ -196,14 +219,16 @@ class Supervisor:
         The backlog is what makes reattaching work. A client that drops while
         the child is parked on an approval prompt has missed the prompt itself,
         and on reconnect there is nothing to re-request it with — the child
-        will not re-emit it, it is waiting for the answer."""
-        session = self._sessions.get(session_id)
-        if session is not None:
-            session.backlog.append(line)
-            if len(session.backlog) > self.BACKLOG_LIMIT:
-                del session.backlog[: len(session.backlog) - self.BACKLOG_LIMIT]
+        will not re-emit it, it is waiting for the answer. It holds only what
+        no one has been handed: a frame a client already received is that
+        client's, and replaying it to the next would re-ask answered prompts."""
         queue = self._subscribers.get(session_id)
         if queue is None:
+            session = self._sessions.get(session_id)
+            if session is not None:
+                session.backlog.append(line)
+                if len(session.backlog) > self.BACKLOG_LIMIT:
+                    del session.backlog[: len(session.backlog) - self.BACKLOG_LIMIT]
             return
         try:
             queue.put_nowait(line)
@@ -240,7 +265,7 @@ class Supervisor:
         """
         try:
             target = str(Path(cwd).expanduser().resolve())
-        except (OSError, RuntimeError):  # a path that cannot even be resolved
+        except (OSError, RuntimeError, ValueError):  # unresolvable, or a NUL byte in it
             return None
         for session in self._sessions.values():
             if session.cwd == target:
