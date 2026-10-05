@@ -28,7 +28,7 @@ scrollback), **Kilo CLI** (`kilo.jsonc`, permission wildcards, "always run", `ru
 | `/clear` | Claude Code | 🟡 | clears the screen; the *conversation* continues (a new conversation needs a new session) |
 | New conversation without restarting (`/new`) | Claude Code | ⬜ | needs a second `new_session` on the live connection |
 | `/compact` (summarise to free context) | Claude Code | ⬜ | Strands has a conversation manager; no ACP surface for it yet |
-| Snapshots and `/undo` / `/restore` of file changes | DeepSeek-TUI | ⬜ | would need the backend to snapshot before `file_write` / `editor` |
+| Snapshots and `/undo` / `/restore` of file changes | DeepSeek-TUI | ✅ | `checkpoints.py` snapshots into a shadow git repo before any call that may write; `/undo`, `/checkpoints`; see `docs/agentic-harness.md` |
 | `/export` / `/copy` | Claude Code | ⬜ | selecting text in the terminal works; no command |
 | Non-interactive single prompt (`-p`, `kilo run`) | Claude Code, Kilo | 🟡 | `acp-stress` runs scripted prompts and prints JSONL; there is no `acp-tui -p "…"` |
 | `@file` mentions | Claude Code, Kilo | ⬜ | the backend reads ACP resource blocks; the TUI doesn't send them |

@@ -30,6 +30,13 @@ try to stop:
 - A sub-agent (`local_swarm`/`local_graph`) reaching a capability with no
   human-in-the-loop gate of its own, since sub-agents have no approval UI
   to pause into at all.
+- An external process this harness runs on the model's behalf — the Claude
+  Code CLI (`claude_code_tool.py`) — egressing to the network without passing
+  the Agent Vault, or reading a credential file while it does.
+
+New surfaces added with the Meta-Harness (`docs/meta-harness.md`) — the gRPC telemetry bridge and
+the sandboxed Claude Code child — are analyzed under "The orchestrator daemon" and "Harness
+autonomy" below, and their accepted residuals are in "Known gaps".
 
 ## Human-in-the-loop gates
 
@@ -257,6 +264,117 @@ directory that already has a live session receives that session's buffered
 output, including tool results. It is gated by the same token, and the backlog
 is bounded (`Supervisor.BACKLOG_LIMIT`), so it is not a growing store.
 
+### The Experimental Lab: what its controls are, and are not
+
+`backend/lab.py` exposes a live view of every agent and five controls
+(`_sierralab/lab/{select,isolate,release,dial,inject}`, ACP extension requests on the
+session's own connection — there is no REST verb for any of them).
+
+* **E-Stop is a refusal, not a process kill.** The pods are Strands agents inside one
+  `acp_server.py` process; there is no OS process per agent to kill, and the vault proxy
+  holds credential *placeholders* per process, not a ticket per agent, so there is nothing
+  to revoke. `isolate` marks the pod (and everything it spawned) isolated, `agent.cancel()`s
+  it if it is mid-flight, and its hooks then refuse every model call and every tool call.
+  That stops the loop at the next boundary and cannot be argued with by a prompt; it does
+  **not** interrupt a tool already executing in the OS (a running `shell` command finishes —
+  reject it at the station instead), and it does not make an *approved* call unhappen.
+* **The Laya dial only tightens.** A pod's dial arms the approval gate (asks even in `auto`
+  mode) when the turn's score exceeds it. It can be lowered to 0.30 and cannot be raised
+  above the router's own 0.8 gate, which stays authoritative — a control that could
+  loosen the gate would be a way to switch off a safety check from a keypress. The score is
+  Laya's reading of the *user's message* for the turn, not of the specific call
+  (`laya_risk.py`), and that is what the gauge shows; treat it as context for a human
+  deciding, never as a clearance.
+* **Guidance is attributed and outranks nothing it should not.** Injected text is merged
+  into the model's next request as `[operator directive — …]`. It is operator input (the
+  person running the session), not tool output, so it is *not* wrapped as untrusted; it
+  cannot widen a permission rule or skip an approval — those are enforced in code, not in
+  the prompt.
+* **Every control is in the ledger** (`state.db` events, kind `lab`) before it takes effect.
+* **Nothing reaches a snapshot unmasked.** Stream text, tool inputs, system prompts, memory
+  snippets and guidance pass through `secret_guard.redact` first.
+* **The daemon's `/lab` and `/lab/ws` are read-only** and follow the daemon's rules
+  (loopback, token, no browser origins — so a browser page cannot be the canvas). The
+  snapshots include tool inputs and approval prompts, which is why they carry the same gate
+  as the session socket. A canvas cannot approve, isolate or inject: controls travel only on
+  the session's own connection, where the driving client already holds them.
+* **Resource numbers are process-wide** (CPU %, peak RSS): agents share a process, so a
+  per-pod figure would be a guess.
+
+### The gRPC telemetry bridge (the native Lab)
+
+`backend/daemon/grpc_bridge.py` is a second daemon front door, added for the native GPUI window
+(`docs/meta-harness.md`). It relays and reports; it decides nothing. What holds it:
+
+* **Loopback-only, token-gated, no TLS.** The bind is a constant (`127.0.0.1`), not a setting, for
+  the same reason as the WebSocket: this process answers questions about shells running in
+  arbitrary projects. Every RPC requires the `x-daemon-token` metadata — the same 0600
+  `daemon.json` secret — compared in constant time. There is no TLS because there is no network:
+  a loopback socket that never leaves the machine would only be paying for a certificate, and the
+  token, not the transport, is the boundary. The one thing a native window does *not* inherit is
+  the WebSocket's `Origin` check; that check exists to defeat a browser page, and a GUI is not
+  one — but it is precisely why the token is required here rather than relying on loopback.
+* **It cannot make a decision the human didn't.** An approval forwards the answer into the paused
+  ACP request, and the options it may send are the ones the *child offered* — the bridge cannot
+  invent a choice. A knob call is the child's own `_sierralab/lab/*` control invoked on the user's
+  behalf; the unload is the same `memory_budget.unload_all` the agent's tools call. Nothing here
+  can widen a permission rule or skip a gate.
+* **Two front doors, first answer wins** (`Supervisor._admit_client_frame`). A TUI keypress and a
+  GUI click cannot both reach the child: the first is admitted, the second is told it lost. Without
+  this, two clients on one blocked prompt would each think they resolved it.
+* **The bridge only ever tightens a gate.** It cannot be asked for a looser one. The dial is clamped
+  in the bridge as well as in the child — a scripted client need not run the GPUI view's own clamp —
+  and the clamp is the child's own range, so the most a client can ask for is "no dial", never a gate
+  above the router's. The thresholds are mirrored rather than imported (the daemon is stdlib-only;
+  `lab`/`laya_risk` reach the agent stack) and CI asserts the mirror equals the originals, because a
+  drifted `DIAL_DEFAULT` would be exactly the loosening this rule forbids. Likewise a request the
+  child left unlabelled at or above the destructive gate is shown **armed** with a derived band: the
+  disagreement is one-directional — it can make a human look, never stop one looking.
+* **A refused control is not a dead bridge.** `SetKnob` reports a bad argument as `KnobReply.ok=false`
+  with the reason in the body, which is what the Rust client renders inline; a gRPC `Status` is how it
+  learns the daemon is unreachable. Keeping them distinct is why a mistyped pod shows a refusal rather
+  than turning the window read-only.
+* **An intervention id is namespaced by session** (`<session_id>/<child id>`); the bridge reads only
+  the prefix and lets the supervisor resolve the rest, so one session's approval cannot be applied to
+  another's pending request.
+* **Every RPC is bounded**, because a client is the untrusted side of this wire: telemetry is
+  latest-wins per subscriber, the intervention fan-out queue is capped, `ProactiveIngest` is capped
+  and deduplicated on content hash, snippet and diff bodies have size limits, and gRPC messages are
+  capped at 16 MiB. Ingest is fed by the Rust observer through `try_send` — it drops and counts
+  rather than blocking a UI thread, so a hostile or merely broken workspace cannot stall the app.
+* **Everything is audited** (`state.db`, kind `gui`) before it takes effect: who approved a
+  destructive command, who unloaded the models. The approval record is the one a post-mortem needs.
+* **The diff body is masked at three layers** (child, daemon, client) before the modal renders it —
+  the same `secret_guard` chain the Lab view uses, so the third party to touch it adds no trust.
+* **A stale approval cannot be answered.** A request whose originating connection is gone is shown
+  but not approvable, because the agent may already have been resumed by the other client — the
+  window does not get to act on a picture of the past. See "Known gaps".
+
+### The Claude Code CLI runs as a sandboxed child, egress only through the vault
+
+`backend/claude_code_tool.py` runs the official CLI headless as a subprocess. Four properties are
+the whole containment, and each is enforced by the tool, not asked of the CLI:
+
+* **Its CLI is driven by an allowlist and a denylist, not by prompts.** `--permission-prompts none`
+  means anything not allowed is *denied*, not asked — a task cannot stall on a dialog and cannot
+  argue its way to a permission. `DENIED_TOOLS` names the network paths a proxy cannot see into
+  (`WebFetch`, `WebSearch`, `curl`, `wget`, `nc`, `ssh`, `scp`) and the credential files
+  (`**/.env`, `**/.env.*` on read, edit and write) so the CLI says no before the kernel has to.
+* **Its environment is an allowlist, and on macOS it is inside a Seatbelt profile.** The child is
+  spawned with a scrubbed, allowlisted environment (`scrubbed_sandbox`) — not the parent's — so no
+  provider key, vault placeholder or daemon token is in it. Seatbelt additionally makes `.env`
+  files unreadable to it at the kernel, whatever the CLI's own tools or a script it writes try.
+  The residual: an *approved* shell call can still read anything else this user can (gap 1 below).
+* **Egress is through the Agent Vault or not at all.** `HTTPS_PROXY` (and the CA bundle variables)
+  point at the vault proxy, and with the vault off or unreachable the tool **refuses** — the same
+  fail-closed posture as the `shell` gate. There is no setting that lets this CLI reach the network
+  directly. What that buys: the proxy holds *placeholders*, so a credential the CLI managed to read
+  still isn't one it can use, and the substitution happens in the proxy.
+* **The LanceDB priming is untrusted data.** Retrieved traces are log text — past commands,
+  outcomes, errors — wrapped as data, never instructions, and redacted before they enter the
+  prompt. An attacker who can write a log line can write text the CLI's model reads; that is the
+  same injection surface as the observer's evidence, and it does not widen the tool's own rules.
+
 ### The background observer writes nothing
 
 The observer (`daemon/observer.py`) is the only thing here that acts with no
@@ -298,6 +416,53 @@ parameter, so a cross-origin page cannot reach it (a custom header needs a
 preflight this app does not answer) — and it is a *source*, not a trigger: text
 queued there is read by the next cycle, and the response says whether the
 observer is even on rather than implying anything was acted on.
+
+### Discord remote control (outbound only)
+
+The daemon can carry the same approvals and steering conversation to Discord
+(`daemon/discord_bot.py`), so an unattended run is not parked forever on a
+prompt nobody can see. The direction is what makes it tolerable:
+
+* **Outbound WebSocket only.** discord.py opens a client connection to Discord's
+  gateway. The daemon listens on no new port, registers no webhook, and exposes
+  no callback URL. The loopback socket above stays the only inbound surface —
+  this adds a second *way out*, not a second way in, and the network-edge
+  reasoning for `bind 127.0.0.1` is untouched.
+* **Fail-closed, twice.** The bot is off unless `DISCORD_BOT_TOKEN`,
+  `ALLOWED_USER_ID` and `TELEMETRY_CHANNEL_ID` are all present and parse — a
+  missing allowlist disables it rather than opening it to everyone, and
+  `SIERRALAB_DISCORD=0` is a kill switch checked before the token is even read.
+  An unparseable id disables the bot with a logged reason and never raises into
+  daemon startup.
+* **Zero-trust click.** Approve/Reject callbacks (`_click`) check
+  `interaction.user.id == ALLOWED_USER_ID` as their **first** statement and
+  return before touching any state; anyone else's press is a no-op that gets an
+  ephemeral refusal, not a decision. A click is not a credential: the id is
+  compared to a configured operator, and Discord's own interaction signing is
+  just what delivers it. Approving relays through `Supervisor.answer_permission`
+  — the *same* arbitration the GUI and TUI use, so the second front door to
+  answer loses harmlessly (`_settle`) and the decision is attributed
+  (`decided_by="discord"`) in `state.db` and the `_sierralab/resolved` frame.
+* **Steering reuses the Lab's path.** A reply in the telemetry channel or a
+  task thread becomes `_sierralab/lab/inject` (the same call `lab.py:inject`
+  serves), capped at 2000 characters and acknowledged by length only; it is
+  gated by the same author check as a click, so an unauthorized message is
+  dropped before anything is injected. It is *guidance*, consumed by the model's
+  next call — it does not bypass a permission prompt or run anything itself.
+* **Nothing new is trusted into the transcript.** Embed bodies are built from
+  the child's own `PendingPermission.meta` (already the masked view the GUI
+  uses), passed through `secret_guard.redact` again, and every post is
+  length-capped. The token is read once through the same `take_secret`/
+  Keychain path as the provider keys, removed from the process environment, and
+  masked in logs and tool results; it is never a settings key and never appears
+  in `/health`, which reports only `enabled` / `connected` / the operator id.
+
+What this does not do: it does not add a timeout to an unanswered prompt (a
+parked child stays parked if nobody answers on any door), and it does not
+authenticate *which human* the operator is beyond the configured snowflake — a
+compromised operator account is a compromised approver, the same as a
+compromised GUI session. A standalone `make tui` session with no daemon has no
+Discord, because only the daemon holds the supervisor this relays through.
 
 ## Prompt-injection hardening
 
@@ -342,6 +507,32 @@ sub-agent's own tool results were already wrapped inside *its* context, but
 its final reply is model-written text built from what it read — returned
 unwrapped, an injected instruction a sub-agent repeated in its summary would
 reach the orchestrator looking trusted.
+
+### Learned artifacts never reach a turn unfiltered
+
+A learned skill (`learned.py`) and a prompt overlay (`prompts.py`) are both prose a model wrote for itself, and
+both are drafted from text that may be untrusted (a failing test's output, a tool result). Neither goes live on
+its own: each passes `textfilter.py` — the same list for both, so a rule added for one is enforced for the other
+(no URL, no download piped into a shell, no destructive or privileged command, no "ignore your instructions", no
+"skip the approval", no credential-shaped string, no prompt delimiter, no control/bidi character) — and is then
+staged, never live, until `promote.py`'s eval gate has measured it.
+
+The filter is a first pass, not the defence: a determined sentence can be phrased past any pattern list. What
+actually bounds the damage is structural. An artifact can only *advise* — it cannot approve a call, lower a Guard
+score, change a mode or touch the vault, because every one of those decisions is made in code that never reads a
+skill or an overlay. A skill loads only into the project it was learned in (global scope is a manual decision);
+a prompt overlay is appended to the system prompt of sessions in that project only, inside its own named block at
+the end, so a person reading the prompt can see the boundary. Both are retired when the turns that had them score
+worse than the project's own baseline. `learning.promotion` and `learning.optimizePrompts` are trust-gated: a
+cloned repository cannot turn them on for itself.
+
+A fine-tuned Laya checkpoint (`laya_checkpoints.py`) is the third candidate through the same gate, and the only
+one that is a model rather than prose. It can only change Laya's *weights*: the checkpoint is put in force for
+the eval run, measured against the one it would replace, and `activate` refuses one whose verdict did not
+promote. Nothing a checkpoint contains can approve a call, lower a Guard score or waive a deny — those are read
+from `laya_guard.py`, `laya_risk.py` and `settings_store.evaluate`, none of which consult the registry — so a
+trained model can re-rank the routes Laya already offered and nothing else. Registering is by local directory;
+`LAYA_MODEL` still overrides the registry, and a repo cannot write either.
 
 ## Provider API keys
 
@@ -441,6 +632,86 @@ the literal-value masking above rather than to any body inspection. And
 `auto` mode with the vault *off* is unchanged — this narrows one path, it does
 not make an ungated agent safe.
 
+### Laya Guard and `auto` mode
+
+`auto` mode removes prompts, so it lets everything through that nothing else stops. Before Laya
+Guard, "everything else" was one number: Laya's reading of the user's *message*, taken at the start
+of the turn, for the orchestrator. A specialist's calls were judged by that number, and so was
+whatever the model decided to do after reading a file, a page or a tool result — the injection path
+`laya_risk.auto_approvable` warns about.
+
+* **Per call, per agent** (`laya_guard.py`): each shell command, patch, file write, Python snippet
+  and Claude Code task is scored when it is about to run, and a score at or above the calling agent's
+  gate (0.8, tightened by its Lab dial) asks in every mode. A destructive command from a specialist,
+  or from the orchestrator after the turn went somewhere new, now stops.
+* **It only adds asks.** Rules are the floor; Laya's own reading can raise a score (at 0.8
+  confidence) and never lower one; `laya.callGuard: off` is the old behaviour. Nothing a score says
+  *approves* a call. The classifier is near chance until fine-tuned, so nothing safety-relevant
+  depends on it alone.
+* **What it does not do.** It is a pattern reader, not a sandbox: a command it does not recognise
+  scores 0.4 ("unknown") and runs in `auto`. The kernel-level confinement (Seatbelt for the Claude
+  Code child, the scrubbed environment, the vault's fail-closed egress, deny rules) is unchanged and
+  is what bounds a call the guard misjudged. `auto` is still a mode a person chooses; a repository
+  cannot set it for itself (`permissions.defaultMode` is trust-gated).
+* **Auditable.** What `auto` let through at score ≥ 0.2 is in `state.db` (`auto_approved`) with the
+  agent, the call (secret-masked, 200 characters) and the score; mode changes from the Lab are
+  audited with before/after (`gui`/`mode`), as are stop, release and steer (steer by length, never by text).
+* **The GUI can switch the mode.** Over the gRPC bridge, with the daemon token — the same authority as
+  the TUI's Tab key, and as the approval itself. The bridge relays; what `auto` waves through is
+  decided in the child. A client that holds the token can already approve anything pending, so
+  `SetMode` adds convenience, not capability.
+
+### Checkpoints are a recovery path, not a boundary
+
+A snapshot of the project (`checkpoints.py`) is taken before any call that may change files, so what
+`auto` mode or an approval let through can be undone. It is **recovery**, and the model should not be
+read as stronger than that:
+
+* **It prevents nothing.** A command that exfiltrates a file, calls an API or edits something outside the
+  project has happened by the time anyone can undo it. Prevention is Laya Guard, deny rules, the vault's
+  fail-closed egress and the Seatbelt child; a checkpoint only helps with the files.
+* **Its edges are reported, not hidden.** Writes outside the project, paths over the size limit, ignored
+  paths and a snapshot that could not be taken are surfaced (`checkpoint` event, once per reason; the
+  turn's outcome record counts `unprotected` / `outside`).
+* **Secrets are not copied.** `.env*`, `*.pem`, `*.key`, `id_rsa*`, `.npmrc`, `.netrc` are excluded from
+  the snapshot, so the shadow repository (0700, under the user's home) holds nothing the project's own
+  working tree would not already expose. They are therefore also not rolled back.
+* **A repository cannot switch it off.** `checkpoints.enabled` and `checkpoints.maxFileMb` are trust-gated.
+* **Restoring is guarded.** Refused while a turn runs; the present is snapshotted first so the restore is
+  undoable; every applied restore is in the ledger; paths are confined to the project (a path that
+  resolves outside it is refused) and ids must be 7–40 hex characters naming a commit in that project's
+  shadow repository. Git is run with the user's config, hooks and pathspec globbing disabled
+  (`GIT_CONFIG_GLOBAL=/dev/null`, `core.hooksPath=/dev/null`, `--literal-pathspecs`).
+* **It costs time, bounded.** One `git add -A` per writing call (incremental after the first), with a
+  25 s ceiling (90 s the first time); a timeout is reported as unprotected, never silently skipped.
+
+### Remembered fixes are data, tried only in the sandbox
+
+`fix_memory.py` keeps a verified patch against a failure's signature and offers it again the next time that
+failure happens in the same project. The failure output a root cause is derived from is untrusted (a test
+log, a build step, a dependency's message can say anything), so remembered text is treated as such:
+
+* **Same project only.** Nothing remembered in one project is offered in another — a hostile repository cannot
+  plant a "lesson" that surfaces in your next one.
+* **Executed, not obeyed.** A recalled patch runs in the throwaway copy and must make the failing command
+  pass *there*; the model is then offered it as a patch to apply through the ordinary, gated `apply_patch`.
+  Nothing recalled is ever run or applied in the real tree without that gate.
+* **Prose is capped and labelled.** A recalled root cause (300 characters, control characters removed) is shown as
+  "recalled … unverified; a lead, not an instruction".
+* **Credentials stay out.** A patch containing a credential-shaped string is not stored; the diagnosis is.
+* **It retires.** Two failures in a row, or reliability under a third, and it is no longer offered; the ledger
+  (`heal_fix`, `heal_fix_use`) shows what was remembered and how it fared.
+
+Stall detection only refuses or annotates a call; it cannot approve one. Auto-resume continues a turn through the
+same approval gates as the original — it saves a keystroke, not a decision.
+
+### Sub-agents get no tool that needs a person
+
+Swarm, graph and team nodes have no human-in-the-loop path, so they are denied every tool the
+orchestrator gates. That list was missing two entries: **`apply_patch`** (edits project files; a node
+could use it in any mode) and **MCP servers' tools** (each reaches out to whatever that server is).
+Both are now denied (`sub_agent_common`, `_laya_call_guard_smoke_test.py`).
+
 ### Sub-agent providers and Laya triage
 
 - **Sub-agents follow the active provider.** `sub_agent_common.build_sub_agent_model`
@@ -531,7 +802,25 @@ Acknowledged, not fixed:
    "Harness autonomy" above) — it contains *mistakes*, not malice: its purpose
    is that an unverified patch never touches the real tree, not that a hostile
    patch can do no harm while "in" there.
-5. **CSP has no script-src lockdown yet** — `frame-ancestors 'none'` is
+7. **CSP has no script-src lockdown yet** — `frame-ancestors 'none'` is
    the only directive set. A stricter policy (restricting script/style
    sources) is a reasonable follow-up but needs auditing what the frontend
    actually loads first, to avoid silently breaking something.
+8. **E-Stop does not interrupt a tool already executing** in the OS, and an in-process pod
+   has no process of its own to kill — it refuses every further model and tool call (see "The
+   Experimental Lab: what its controls are, and are not"). A running `shell` command finishes;
+   reject it at the HITL station instead.
+9. **The gRPC bridge has no per-client identity.** Every RPC carries the same
+   daemon token, so the ledger records *that* a GUI approved something, not *which* window —
+   and there is no way to grant a client "read telemetry but not approve". It is one token for
+   one machine, the same posture as the WebSocket; anything multi-window or multi-user would
+   need real per-client credentials here.
+10. **A GUI approval cannot be recalled.** "First answer wins" resolves the race between two
+    clients, but the losing client is only told it lost — the approved call is already running
+    and cannot be un-approved from either window. Reject it at the station *before* answering,
+    or isolate the pod afterwards; there is no undo.
+11. **The Seatbelt profile is macOS-only, and it is the CLI's confinement, not the harness's.**
+    The Claude Code tool's `.env`-unreadable guarantee comes from `sandbox-exec`; on a Linux host
+    the CLI keeps only the allowlisted environment and the deny list, and an approved shell call
+    it makes is unconfined like any other (gap 1). The profile covers the CLI's children, not the
+    backend's own tools.

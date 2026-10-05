@@ -148,6 +148,26 @@ pub fn lines(info: &HealInfo, width: u16, expanded: bool) -> Vec<Line<'static>> 
             w,
         )),
         "continuing" => out.push(head("⟲", accent, "the agent stopped before verifying — continuing autonomously".into())),
+        "recalled" => {
+            let cause = info.root_cause.as_deref().map(crate::app::sanitize).unwrap_or_default();
+            let text = format!("{command} failed like before — trying the fix remembered for it (root cause: {cause})");
+            for (i, row) in wrap(&text, w.saturating_sub(2)).into_iter().enumerate() {
+                let lead = if i == 0 { Span::styled("⟲ ", accent) } else { Span::raw("  ") };
+                out.push(Line::from(vec![lead, Span::styled(row, dim)]));
+            }
+        }
+        "recall_failed" => out.push(head(
+            "✗",
+            bad,
+            "the remembered fix no longer works here — asking the Debugger from scratch".into(),
+        )),
+        "stalled" => {
+            let text = info.root_cause.as_deref().map(crate::app::sanitize).unwrap_or_else(|| "repeating the same step with the same result".into());
+            for (i, row) in wrap(&format!("loop detected · {text}"), w.saturating_sub(2)).into_iter().enumerate() {
+                let lead = if i == 0 { Span::styled("⟳ ", bad) } else { Span::raw("  ") };
+                out.push(Line::from(vec![lead, Span::styled(row, dim)]));
+            }
+        }
         "state_mismatch" => out.push(head(
             "⟲",
             accent,
@@ -220,6 +240,9 @@ mod tests {
             "escalated",
             "no_patch",
             "continuing",
+            "recalled",
+            "recall_failed",
+            "stalled",
         ] {
             for row in plain(&lines(&info(phase), 40, false)) {
                 assert!(

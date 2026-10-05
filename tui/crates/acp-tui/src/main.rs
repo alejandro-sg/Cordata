@@ -2,6 +2,7 @@ mod app;
 mod commands;
 mod config_ui;
 mod input;
+mod lab;
 mod settings;
 mod term;
 mod ui;
@@ -403,6 +404,9 @@ async fn run(
             }
         }
 
+        if let Some(effect) = workspace.app().take_auto_resume() {
+            effects.push(effect);
+        }
         for effect in effects {
             let outcome = match effect {
                 Effect::Quit => return Ok(()),

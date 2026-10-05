@@ -1,0 +1,16 @@
+[package]
+name = "harness-proto"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Generated gRPC types for proto/harness.proto (the daemon's telemetry bridge)"
+
+[dependencies]
+tonic.workspace = true
+tonic-prost.workspace = true
+prost.workspace = true
+
+[build-dependencies]
+tonic-prost-build.workspace = true
+protoc-bin-vendored.workspace = true

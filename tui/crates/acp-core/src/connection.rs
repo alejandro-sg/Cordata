@@ -369,8 +369,20 @@ async fn handle_message(
                 }
                 // The server is blocked on this response; a dropped sender
                 // (consumer quit) must still answer it so nothing hangs.
-                let decision = decision_rx.await.ok();
-                responder.respond(permission_response(&request, decision))
+                //
+                // Answered from its own task, not awaited here: this handler runs
+                // in the one loop that reads every incoming message, so waiting
+                // for the human inside it would hold back everything the backend
+                // sends *after* the request — the Lab's state updates (the very
+                // pod statuses the approval screen is drawn from), task progress,
+                // the rest of the turn's stream — until the person answers.
+                tokio::spawn(async move {
+                    let decision = decision_rx.await.ok();
+                    // A failed send means the connection is already gone, and
+                    // there is no one left to tell.
+                    let _ = responder.respond(permission_response(&request, decision));
+                });
+                Ok(())
             },
         )
         .await

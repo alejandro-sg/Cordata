@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use acp_core::{
-    AppEvent, ApprovalDecision, BackendConfig, SessionHandle, SessionOptions, StopReason,
-    ToolStatus,
+    AppEvent, ApprovalDecision, BackendConfig, HarnessEvent, PodStatus, SessionHandle,
+    SessionOptions, StopReason, ToolStatus,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -404,5 +404,38 @@ async fn laya_extension_notifications_arrive_as_events_before_the_turn_completes
         (outcome.agreed, outcome.tools.as_slice()),
         (Some(true), ["file_read".to_owned()].as_slice())
     );
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn notifications_keep_flowing_while_an_approval_is_open() {
+    // The Lab keeps reporting while an agent waits on the human, and the
+    // Debugger's CONTAINED status is the very thing the HITL station is drawn
+    // from. A client that stops reading until the request is answered would show
+    // the station with stale pods — and the E-Stop would be blind.
+    let (session, mut events) = start(None);
+    connect(&mut events).await;
+    session.send_prompt("park-lab").unwrap();
+    let mut decision = None;
+    let mut lab = None;
+    while lab.is_none() {
+        match next(&mut events).await {
+            AppEvent::PermissionRequested {
+                decision: sender, ..
+            } => decision = Some(sender),
+            AppEvent::Harness(HarnessEvent::Lab(state)) => lab = Some(state),
+            AppEvent::ConnectionError(error) => panic!("connection error: {error}"),
+            _ => {}
+        }
+    }
+    let lab = lab.unwrap();
+    assert_eq!(lab.seq, 7);
+    assert_eq!(lab.pods[0].status, PodStatus::Contained);
+    assert_eq!(lab.hitl[0].status, "pending");
+    let decision =
+        decision.expect("the request arrived before the notification, and is still open");
+    decision.send(ApprovalDecision::Allow).unwrap();
+    let turn = run_turn(&mut events, ApprovalDecision::Allow).await;
+    assert_eq!(turn.text, "decided");
     session.shutdown().await;
 }

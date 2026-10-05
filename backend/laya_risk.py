@@ -162,8 +162,15 @@ def auto_approvable(decision: Any, *, preferences: Any = None, calibrator: Any =
     confidently `read_only` ("summarise this README") would then wave through
     whatever the README talked the model into running. The score is safe to
     *show* a person deciding (it rides on the prompt) and unsafe to decide *for*
-    them, so until the risk is read per call this stays a function with no
-    caller, and `laya.riskAutoApprove` is a reserved key that changes nothing.
+    them.
+
+    The per-call reading this docstring used to wait for now exists —
+    ``laya_guard`` scores every call by every agent — and it is wired the safe way
+    round: it can only **add** an ask (a call at or above its agent's gate asks in
+    every mode, ``auto`` included), never remove one. Waiving a prompt on a low
+    score would put the weakest part of the system, a classifier that is near
+    chance until fine-tuned, in charge of the strongest decision, so this stays a
+    function with no caller and ``laya.riskAutoApprove`` stays a reserved key.
     """
     if preferences is None:
         return False

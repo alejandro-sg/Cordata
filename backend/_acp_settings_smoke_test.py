@@ -13,6 +13,7 @@ your real settings are never read or written.
 import asyncio
 import json
 import os
+os.environ.setdefault("SIERRALAB_REFLECT", "off")  # scripted/live test turns are not lessons (reflect.py)
 import sys
 import tempfile
 from pathlib import Path

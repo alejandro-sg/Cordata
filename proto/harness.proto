@@ -1,0 +1,421 @@
+// The Experimental Lab's gRPC telemetry bridge.
+//
+// One service, `Harness`, served by the Python daemon (backend/daemon/grpc_bridge.py) on
+// 127.0.0.1 and consumed by the native GPUI client (lab/). The daemon keeps absolute control of
+// routing (Strands), gating (Laya), memory (LanceDB) and credentials (Infisical Agent Vault);
+// this schema is a window onto that state and a small set of *human* controls over it:
+//
+//   StreamTelemetry     server streaming   daemon state, pushed as it changes (latest-wins)
+//   InterventionStream  bidirectional      HITL requests down, explicit approve/reject back
+//   ProactiveIngest     client streaming   AST snippets up, never blocking the UI thread
+//   SetKnob             unary              reasoning_effort / Laya dial, mid-execution
+//   SetMode             unary              the session's permission mode: plan | build | auto
+//   ControlPod          unary              stop (E-Stop), release or steer one agent
+//   UnloadMemory        unary              the emergency [Unload Memory] — oMLX/Ollama weights out
+//   GetDiff             unary              the body of a diff a frame only referenced
+//   Ping                unary              liveness + version, what the client's reconnect loop probes
+//
+// Every RPC carries the daemon token as call metadata `x-daemon-token` (the same 0600 secret in
+// ~/.sierralab/daemon.json that guards the HTTP/WebSocket surface); a missing or wrong token is
+// UNAUTHENTICATED. The listener is loopback-only.
+//
+// Evolution rules: numbers are never reused (retired ones go in `reserved`), every enum has an
+// UNSPECIFIED = 0, new fields are additive, and a client must ignore fields it does not know.
+// `version` in PingReply is the *schema* major; a breaking change is a new package (`v2`).
+
+syntax = "proto3";
+
+package sierralab.harness.v1;
+
+service Harness {
+  rpc StreamTelemetry(TelemetryRequest) returns (stream TelemetryFrame);
+  rpc InterventionStream(stream InterventionReply) returns (stream InterventionEvent);
+  rpc ProactiveIngest(stream AstSnippet) returns (IngestSummary);
+  rpc SetKnob(KnobRequest) returns (KnobReply);
+  rpc SetMode(ModeRequest) returns (ModeReply);
+  rpc ControlPod(PodControlRequest) returns (PodControlReply);
+  rpc UnloadMemory(UnloadRequest) returns (UnloadReply);
+  rpc GetDiff(DiffRequest) returns (DiffArtifact);
+  rpc Ping(PingRequest) returns (PingReply);
+}
+
+// ------------------------------------------------------------------ telemetry
+
+message TelemetryRequest {
+  // Empty = every session the daemon runs.
+  string session_id = 1;
+}
+
+// One frame is the *newest* state of one session plus whichever daemon-wide sections changed
+// (a section absent from a frame is unchanged, not empty). The first frame on a stream carries
+// every section, so a reconnecting client is whole after one message. A slow client does not
+// grow a queue: frames for the same session are conflated, and `dropped` says how many were
+// folded into this one.
+message TelemetryFrame {
+  uint64 seq = 1;       // monotonic per stream
+  int64 ts_ms = 2;      // daemon wall clock, ms since the epoch
+  uint64 dropped = 3;   // frames conflated into this one since the last delivered
+  string session_id = 4;
+  LabState lab = 5;     // absent on a frame that only carries daemon-wide sections
+  OmlxState omlx = 6;
+  DaemonState daemon = 7;
+  DiffSet diffs = 8;              // newest first; bodies via GetDiff. Present = replaces the client's list
+  PendingSet pending = 9;         // every unresolved HITL pause, all sessions. Present = replaces the list
+  MemoryEvent memory_event = 10;  // a one-off notice (a load, an unload, a lease), not state
+}
+
+enum PodStatus {
+  POD_STATUS_UNSPECIFIED = 0;
+  POD_STATUS_IDLE = 1;
+  POD_STATUS_SYNTHESIZING = 2;
+  POD_STATUS_EXECUTING = 3;
+  POD_STATUS_CONTAINED = 4;   // waiting on a human
+  POD_STATUS_ISOLATED = 5;    // E-Stopped
+}
+
+message TraceRow {
+  string tool = 1;
+  string status = 2;  // running | completed | failed
+  string input = 3;   // already redacted
+  uint32 ms = 4;
+  int64 ts_ms = 5;    // when the call started; 0 from a child that predates it
+}
+
+// One agent's containment pod. `role` selects the GUI element that draws it
+// ("orchestrator", "architect", "debugger", "claude_code", …); an unknown role gets the generic one.
+message Pod {
+  string id = 1;
+  string name = 2;
+  string role = 3;
+  string parent = 4;
+  string model = 5;
+  string effort = 6;          // the reasoning_effort last sent on the wire, "" if none
+  PodStatus status = 7;
+  bool isolated = 8;
+  double dial = 9;            // this pod's Laya destructiveness threshold, 0.3–0.8
+  double dial_default = 10;
+  uint32 calls = 11;
+  uint64 busy_ms = 12;
+  string pending_tool = 13;
+  uint32 guidance_pending = 14;
+  string stream_tail = 15;    // the end of what the pod last said, redacted
+  repeated TraceRow trace = 16;
+  bool effort_adjustable = 17;  // does this pod's model have a reasoning_effort knob at all
+  int64 since_ms = 18;          // when it entered its current status (daemon clock); 0 if unknown
+  // Laya Guard, per agent: each tool call this agent makes is scored on its own.
+  optional double risk_last = 19;  // the last call's destructiveness, 0.0 – 1.0; unset until one is scored
+  double risk_peak = 20;           // the highest this session
+  uint32 auto_approved = 21;       // calls that ran in auto mode without asking
+  uint32 asked = 22;               // calls held for a person
+}
+
+message Link {
+  string from = 1;
+  string to = 2;
+  string kind = 3;     // delegation | dispatch | team | pipeline
+  bool active = 4;
+  uint32 count = 5;
+  string label = 6;
+}
+
+// Laya's destructiveness reading for the call at the gate. `score`/`confidence` are unset until
+// Laya has scored a turn; the gauge shows "—", not 0.
+message Threat {
+  string pod = 1;
+  string tool = 2;
+  optional double score = 3;       // 0.0 – 1.0
+  optional double confidence = 4;  // 0.0 – 1.0
+  string band = 5;                 // safe | elevated | destructive
+  bool pending = 6;
+}
+
+message Resources {
+  double cpu_percent = 1;
+  double rss_mb = 2;
+  repeated string mcp = 3;
+}
+
+message LabState {
+  uint64 lab_seq = 1;     // the child's own snapshot counter
+  string focus = 2;
+  repeated Pod pods = 3;
+  repeated Link links = 4;
+  Threat threat = 5;
+  Resources resources = 6;
+  double default_dial = 7;  // the router's own destructive gate (0.8); a dial can only tighten it
+  string mode = 8;          // the session's permission mode (plan | build | auto); "" from a child that predates it
+  string mission = 9;       // what the team is working on: the person's latest request, redacted and shortened
+  int64 mission_ms = 10;    // when it was given
+  // Every agent's recent store reads, so the canvas can show a retrieval reaching a pod. This is
+  // *state* (the newest reads), not a stream: a fresh frame supersedes an older one, and `ts_ms` is
+  // what a client dedupes on.
+  repeated MemoryHit memory = 11;
+}
+
+message OmlxModel {
+  string id = 1;
+  bool loaded = 2;
+  double size_gb = 3;
+  bool pinned = 4;
+}
+
+// What is resident in the 48 GB unified-memory budget.
+message OmlxState {
+  bool up = 1;
+  double pool_gb = 2;       // oMLX's own ceiling
+  double loaded_gb = 3;     // what oMLX's loaded models hold
+  double budget_gb = 4;     // the harness's model budget (ceiling − reserve)
+  double used_gb = 5;       // oMLX + Ollama residents
+  double free_gb = 6;
+  repeated OmlxModel models = 7;
+  repeated string ollama_resident = 8;
+}
+
+message DaemonState {
+  string version = 1;
+  double uptime_s = 2;
+  uint32 sessions = 3;
+  uint32 alive = 4;
+  bool observer_enabled = 5;
+  uint64 ingest_accepted = 6;
+  uint64 ingest_rejected = 7;
+  uint32 telemetry_subscribers = 8;
+}
+
+// Sets are wrapped in a message so that "the list is now empty" (field present, no items) can be
+// told from "the list did not change" (field absent) — a bare `repeated` field cannot say both.
+message DiffSet {
+  repeated DiffRef items = 1;
+}
+
+message PendingSet {
+  repeated PendingIntervention items = 1;
+}
+
+message DiffRef {
+  string id = 1;
+  string source = 2;          // "claude_code_engineer", "apply_patch", …
+  repeated string files = 3;
+  uint32 lines = 4;
+  bool truncated = 5;
+  int64 ts_ms = 6;
+  string stat = 7;
+  string session_id = 8;
+}
+
+message MemoryEvent {
+  string event = 1;     // load | unload | unload_all | lease_load | lease_unload | lease_failed | heavy_task | stop | headroom
+  string runtime = 2;   // omlx | ollama | claude_code
+  string model = 3;
+  string detail = 4;
+}
+
+// One hit of a store read. `score` is unset for a store that returns labels without a distance
+// (the graph sink); the GUI shows "—", not 0.0.
+message MemoryHitEntry {
+  string id = 1;
+  string label = 2;
+  optional double score = 3;
+}
+
+// One retrieval an agent made: a RAG read against LanceDB, the knowledge graph or the trace corpus.
+// The record is per-reading, not a summary: `count` is what the store returned, which may exceed
+// `hits` (the child keeps the first few).
+message MemoryHit {
+  string pod = 1;      // the agent whose tool did the read
+  string source = 2;   // qdrant | kg | lancedb
+  string query = 3;    // already redacted and shortened
+  uint32 count = 4;
+  repeated MemoryHitEntry hits = 5;
+  int64 ts_ms = 6;     // daemon wall clock; what the client dedupes a replayed frame on
+}
+
+// ------------------------------------------------------------- interventions
+
+enum PayloadKind {
+  PAYLOAD_KIND_UNSPECIFIED = 0;
+  PAYLOAD_KIND_SHELL_COMMAND = 1;
+  PAYLOAD_KIND_FILE_DIFF = 2;
+  PAYLOAD_KIND_OTHER = 3;
+}
+
+enum Outcome {
+  OUTCOME_UNSPECIFIED = 0;
+  OUTCOME_APPROVED = 1;
+  OUTCOME_REJECTED = 2;
+  OUTCOME_ABORTED = 3;   // the session ended while the question was open
+}
+
+// A suspended agent thread waiting on a person. The exact command or diff the Strands sandbox is
+// about to run, as the daemon will let it be seen: secret-masked in the child, again in the
+// daemon, and again by the client before drawing.
+message InterventionRequest {
+  string intervention_id = 1;   // opaque; echo it in the decision
+  string session_id = 2;
+  string pod = 3;
+  string tool = 4;
+  PayloadKind kind = 5;
+  string command = 6;           // the exact shell command, when kind is SHELL_COMMAND
+  string diff = 7;              // a unified diff, when kind is FILE_DIFF
+  string input_json = 8;        // the whole tool input, redacted
+  optional double risk_score = 9;
+  optional double risk_confidence = 10;
+  string risk_band = 11;
+  bool armed = 12;              // Laya rated it destructive, or the call always asks
+  string reason = 13;
+  int64 requested_ms = 14;
+  uint32 redactions = 15;       // how many secret-shaped spans were masked in this payload
+}
+
+message PendingIntervention {
+  InterventionRequest request = 1;
+}
+
+message InterventionResolved {
+  string intervention_id = 1;
+  Outcome outcome = 2;
+  string decided_by = 3;   // "gui" | "tui" | "no-client" | "session-ended"
+}
+
+message Heartbeat {
+  int64 ts_ms = 1;
+}
+
+// Daemon → client. On connect the daemon first replays every request still open.
+message InterventionEvent {
+  oneof event {
+    InterventionRequest request = 1;
+    InterventionResolved resolved = 2;
+    Heartbeat heartbeat = 3;
+  }
+}
+
+message InterventionHello {
+  string client = 1;   // free text, for the daemon's log
+}
+
+// `approve` = [Approve & Execute]; `!approve` = [Reject]. `isolate` additionally E-Stops the pod
+// that asked ([Reject & Isolate]). The daemon relays exactly the human's choice into the paused
+// ACP request; it never decides, and an id it does not hold is refused.
+message InterventionDecision {
+  string intervention_id = 1;
+  bool approve = 2;
+  bool isolate = 3;
+  string note = 4;
+}
+
+// Client → daemon.
+message InterventionReply {
+  oneof reply {
+    InterventionHello hello = 1;
+    InterventionDecision decision = 2;
+  }
+}
+
+// ------------------------------------------------------------------- ingest
+
+// One changed function or class, extracted locally with tree-sitter — not the file.
+message AstSnippet {
+  string workspace = 1;     // absolute path of the watched root
+  string path = 2;          // relative to the workspace
+  string language = 3;
+  string node_kind = 4;     // function_item | class_definition | …
+  string name = 5;
+  uint32 start_line = 6;    // 1-based
+  uint32 end_line = 7;
+  string text = 8;
+  string content_hash = 9;  // of `text`; the daemon dedupes on (path, hash)
+  string change = 10;       // added | modified
+  int64 saved_ms = 11;
+}
+
+message IngestSummary {
+  uint64 received = 1;
+  uint64 accepted = 2;
+  uint64 deduplicated = 3;
+  uint64 rejected = 4;
+  repeated string rejections = 5;   // a few reasons, for the log
+}
+
+// -------------------------------------------------------------------- knobs
+
+message KnobRequest {
+  string session_id = 1;   // empty = the session the daemon last spoke to
+  string pod = 2;
+  oneof knob {
+    string reasoning_effort = 10;  // low | medium | high | max
+    double laya_dial = 11;         // 0.3 – 0.8; only tightens the gate
+  }
+}
+
+message KnobReply {
+  bool ok = 1;
+  string applied = 2;   // what is now in force
+  string error = 3;
+}
+
+// The session's permission mode, as the child's own `session/set_mode` takes it. `auto` is what
+// Claude Code calls the same thing: routine tool calls run without asking. It does not switch off
+// the safety floor, which lives in the child, not in any client: deny rules, the vault's fail-closed
+// egress, a call Laya rates destructive, and pulling/deleting model weights still ask.
+message ModeRequest {
+  string session_id = 1;   // empty = the session the daemon last spoke to
+  string mode = 2;         // plan | build | auto
+}
+
+message ModeReply {
+  bool ok = 1;
+  string mode = 2;         // what is now in force
+  string error = 3;
+}
+
+enum PodAction {
+  POD_ACTION_UNSPECIFIED = 0;
+  POD_ACTION_ISOLATE = 1;   // E-Stop: the pod and everything it spawned stop and refuse new calls
+  POD_ACTION_RELEASE = 2;   // lift an E-Stop
+  POD_ACTION_STEER = 3;     // queue a directive for the pod's next model call
+}
+
+// One agent, one control. `text` is the directive for STEER and is ignored otherwise.
+message PodControlRequest {
+  string session_id = 1;   // empty = the session the daemon last spoke to
+  string pod = 2;
+  PodAction action = 3;
+  string text = 4;
+}
+
+message PodControlReply {
+  bool ok = 1;
+  string error = 2;
+  repeated string affected = 3;   // the pods stopped/released (an E-Stop cascades to what the pod spawned)
+  uint32 queued = 4;              // STEER: directives now waiting for that pod
+}
+
+message UnloadRequest {
+  string reason = 1;
+  bool include_ollama = 2;
+}
+
+message UnloadReply {
+  bool ok = 1;
+  repeated string unloaded = 2;
+  double loaded_gb_after = 3;
+  repeated string errors = 4;
+}
+
+message DiffRequest {
+  string id = 1;   // empty = the newest
+}
+
+message DiffArtifact {
+  DiffRef ref = 1;
+  string unified = 2;
+}
+
+message PingRequest {}
+
+message PingReply {
+  string version = 1;   // schema major, "1"
+  int64 ts_ms = 2;
+  string daemon = 3;
+}

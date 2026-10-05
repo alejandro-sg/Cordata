@@ -68,7 +68,33 @@ fn permission_panel(app: &App, width: u16) -> Option<Panel> {
     let inner_width = (width as usize).saturating_sub(4);
     let label = Style::new().fg(Color::Gray);
 
-    let mut lines: Vec<Line<'static>> = vec![Line::from(vec![
+    // With the Lab open this prompt is the HITL Intervention Station: same
+    // request, same diff, the station's own wording and keys.
+    let station = app.lab.open;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    if station
+        && let Some(staged) = app
+            .lab
+            .state
+            .hitl
+            .iter()
+            .rev()
+            .find(|row| row.status == "pending")
+    {
+        let risk = staged
+            .risk_score
+            .map(|score| format!(" · Laya destructiveness {score:.2}"))
+            .unwrap_or_default();
+        lines.push(Line::from(vec![
+            Span::styled("pod   ", label),
+            Span::styled(
+                sanitize(&staged.pod),
+                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(risk, Style::new().fg(Color::Red)),
+        ]));
+    }
+    lines.push(Line::from(vec![
         Span::styled("tool  ", label),
         Span::styled(
             sanitize(&info.tool_name),
@@ -77,7 +103,7 @@ fn permission_panel(app: &App, width: u16) -> Option<Panel> {
         Span::styled(format!("  ({})", info.kind.label()), label),
         Span::styled("   mode ", label),
         Span::styled(app.mode.clone(), Style::new().fg(mode_color(&app.mode))),
-    ])];
+    ]));
     if info.untrusted_source {
         lines.push(Line::styled(
             "⚠ its result will be untrusted content (web page / memory / MCP) — don't let it steer you",
@@ -148,12 +174,23 @@ fn permission_panel(app: &App, width: u16) -> Option<Panel> {
                 .add_modifier(Modifier::BOLD),
         )
     };
-    let mut keys = vec![
-        key(" a ", Color::Green),
-        Span::raw(" Allow     "),
-        key(" r ", Color::Red),
-        Span::raw(" Reject (Esc)"),
-    ];
+    let mut keys = if station {
+        vec![
+            key(" Y ", Color::Green),
+            Span::raw(" Approve & Execute     "),
+            key(" N ", Color::Red),
+            Span::raw(" Reject & Discard (Esc)     "),
+            key(" K ", Color::Magenta),
+            Span::raw(" E-Stop: reject + isolate"),
+        ]
+    } else {
+        vec![
+            key(" a ", Color::Green),
+            Span::raw(" Allow     "),
+            key(" r ", Color::Red),
+            Span::raw(" Reject (Esc)"),
+        ]
+    };
     if shows_diff {
         keys.push(Span::raw("     "));
         keys.push(key(" d ", Color::Blue));
@@ -188,8 +225,12 @@ fn permission_panel(app: &App, width: u16) -> Option<Panel> {
         label,
     ));
     Some(Panel {
-        title: " Permission required ".into(),
-        border: Color::Yellow,
+        title: if station {
+            " ⚠ HITL INTERVENTION STATION ".into()
+        } else {
+            " Permission required ".into()
+        },
+        border: if station { Color::Red } else { Color::Yellow },
         lines,
         selected: None,
         pinned_from: Some(pinned_from),
@@ -274,7 +315,9 @@ fn config_panel(app: &App, width: u16) -> Option<Panel> {
     // The selected entry's help goes in the *title*, not the list: the list
     // scrolls to follow the selection, so a help row at the end of it would be
     // unreadable for every entry above the last screenful. The title is drawn
-    // by the block and never scrolls.
+    // by the block and never scrolls. "When it applies" comes before the help
+    // text so that a narrow terminal cuts the help short, never the part that
+    // says whether the change takes effect now.
     let entry = &SCHEMA[panel.selected.min(SCHEMA.len() - 1)];
     let when = match entry.applies {
         Applies::Now => "applies now",
@@ -291,7 +334,7 @@ fn config_panel(app: &App, width: u16) -> Option<Panel> {
     Some(Panel {
         title: truncate(
             &format!(
-                " Settings → {} file · {} · {when} ",
+                " Settings → {} file · {when} · {} ",
                 panel.scope.name(),
                 entry.help
             ),

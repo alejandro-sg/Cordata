@@ -139,6 +139,22 @@ diagnostics, per-project MCP plugins, and remote agents over the A2A protocol (`
 What runs with and without a human gate, and the deliberate limits of each autonomous piece, is
 in [`docs/agentic-harness.md`](docs/agentic-harness.md) and [`THREAT_MODEL.md`](THREAT_MODEL.md).
 
+The **Experimental Lab** (`make tui-lab`, F2 in the TUI) runs Ollama Cloud models through the local
+signed-in Ollama daemon (no API key, nothing pulled), gives each agent role its own model and
+`reasoning_effort`, and shows every agent live — status pods, A2A links, Laya's threat gauge, memory
+reads — with an E-Stop, a per-agent Laya dial, guidance injection and a HITL approval station:
+[`docs/experimental-lab.md`](docs/experimental-lab.md).
+
+The **Meta-Harness** (`make lab`) adds three pieces on top: the official Claude Code CLI as a tool
+(headless, memory-primed from the trace corpus, egress only through the Agent Vault), local Prism
+inference under an explicit 48 GB unified-memory budget with model failover, and a native GPUI
+window onto the daemon's gRPC telemetry — Containment Modal, Laya gauge, live knobs and a
+tree-sitter observer that reports changed *symbols*:
+[`docs/meta-harness.md`](docs/meta-harness.md). **`make lab-demo`** opens that window against a
+scripted daemon — a team to watch, an approval to answer, a 10,000-line diff, an autonomy switch
+and a steer bar that work — with no model, key or token spent. **Laya Guard** scores every tool
+call by every agent, so even `auto` mode stops at anything destructive ([`docs/agentic-harness.md`](docs/agentic-harness.md#laya-guard-every-call-by-every-agent)).
+
 ## Terminal clients (Rust)
 
 `tui/` holds an interactive terminal client (`acp-tui`, a Claude-Code-style UI over ACP — it prints
@@ -173,6 +189,24 @@ else, so the zero-write rule is structural rather than a prompt — and a client
 cycle in flight. A deploy hook or CI job can feed it with `POST /observe`. Keys and limits:
 [`docs/settings.md`](docs/settings.md); what it can and can't do:
 [`THREAT_MODEL.md`](THREAT_MODEL.md), "The background observer writes nothing".
+
+An unattended daemon can also carry approvals and steering to Discord — outbound WebSocket only,
+no inbound port, no webhook. Configure it with the environment (there are no settings keys, and the
+token never goes in a file):
+
+```bash
+make discord-key                               # store the bot token in the Keychain, verified against Discord
+export ALLOWED_USER_ID=... TELEMETRY_CHANNEL_ID=...
+make daemon                                    # the bot announces "Daemon Connected" in the channel
+```
+
+The bot is off unless all three are set and both ids parse; a stranger's Approve click is refused
+ephemerally and changes nothing, and an approval relays through the same arbitration the GUI and TUI
+use (first answer wins). Multi-step work opens a `🧵 Task: …` thread, and a reply there — or
+`> steer: …` in the channel — is fed to the orchestrator through the Lab's existing inject path.
+Message Content Intent must be on for the application. Details:
+[`THREAT_MODEL.md`](THREAT_MODEL.md), "Discord remote control"; the names:
+[`docs/settings.md`](docs/settings.md).
 
 Preferences work the way Claude Code's and Kilo's do: layered `settings.json` files (user / project /
 local), `allow` / `ask` / `deny` permission rules, "always allow" from the approval prompt, and

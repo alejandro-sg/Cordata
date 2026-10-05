@@ -76,6 +76,28 @@ SCHEMA: dict[str, tuple] = {
     "selfHeal.maxAttempts": ("float", 1.0, 10.0),
     "selfHeal.verify": ("enum", ("sandbox", "workspace", "off")),
     "selfHeal.autoApply": ("bool",),
+    "selfHeal.memory": ("bool",),
+    "selfHeal.autoResume": ("bool",),
+    # Learning (reflect.py, learned.py, promote.py). Reflection drafts a lesson into staging after a turn that cost
+    # something; nothing staged reaches a model until it has beaten the baseline on the eval suite
+    # (`learning.promotion`: off = never automatically, shadow = evaluate and record verdicts only, live = promote on a pass).
+    "learning.reflect": ("bool",),
+    "learning.promotion": ("enum", ("off", "shadow", "live")),
+    "learning.evalTasks": ("float", 3.0, 60.0),
+    # Prompt/skill optimization (optimize.py, prompts.py): draft a sharper variant of a live lesson or prompt
+    # overlay and stage it as a candidate for the same gate. Off by default; trust-gated so a cloned repo cannot
+    # start rewriting what is in front of the model.
+    "learning.optimizePrompts": ("bool",),
+    # The contextual bandit (bandit.py): learns which of the harness's own discrete choices — the route action,
+    # the model tier, the reasoning effort, Claude Code vs local tools, whether to ask — tends to turn out better
+    # in a context like this one. Off by default, and **additive only**: a learned choice may add an ask or
+    # re-rank options already on the table, never remove a prompt or lower a Guard score. `learning.bandit` is
+    # trust-gated so a cloned repo cannot turn a learned policy loose on itself.
+    "learning.bandit": ("enum", ("off", "shadow", "live")),
+    "learning.banditExplore": ("float", 0.0, 0.5),
+    "learning.banditMinPulls": ("float", 1.0, 100.0),
+    "learning.banditLambda": ("float", 0.0, 1.0),
+    "learning.banditMu": ("float", 0.0, 1.0),
     "lsp.enabled": ("bool",),
     # Destructiveness scoring (laya_risk.py). The thresholds are the 0.2 / 0.8
     # the directive names. `riskAutoApprove` is reserved: nothing consults it
@@ -85,6 +107,14 @@ SCHEMA: dict[str, tuple] = {
     "laya.riskSafe": ("float", 0.0, 1.0),
     "laya.riskDestroy": ("float", 0.0, 1.0),
     "laya.riskAutoApprove": ("bool",),
+    # Laya Guard (laya_guard.py): a destructiveness score for every tool call by every agent, not
+    # just the turn's one reading. `rules` is deterministic only; `full` adds Laya's own reading,
+    # which can only raise a score. A call at or above its agent's gate asks, in every mode.
+    "laya.callGuard": ("enum", ("off", "rules", "full")),
+    # Checkpoints (checkpoints.py): a snapshot of the project before every tool call that may change
+    # files, so `auto` mode can be undone. On by default; trust-gated so a cloned repo cannot turn it off.
+    "checkpoints.enabled": ("bool",),
+    "checkpoints.maxFileMb": ("float", 0.5, 512.0),
     # Append-only trace store (trace_store.py). Off by default, so a checkout
     # without lancedb installed behaves exactly as it did before.
     "memory.traces": ("bool",),
@@ -105,6 +135,14 @@ SCHEMA: dict[str, tuple] = {
     # thing in this schema that can act with no user turn behind it.
     "observer.enabled": ("bool",),
     "observer.intervalMinutes": ("float", 1.0, 1440.0),
+    # The Meta-Harness (claude_code_tool.py, omlx_provider.py). The Claude Code CLI wrapper is
+    # on by default but still asks for approval per call, and never egresses except through the
+    # vault — there is deliberately no setting that lets it. `omlx.prism` sends the architect and
+    # the local context digest to the Prism models on oMLX (when oMLX answers); off keeps them
+    # on the orchestrator's provider.
+    "claudeCode.enabled": ("bool",),
+    "claudeCode.maxBudgetUsd": ("float", 0.1, 100.0),
+    "omlx.prism": ("bool",),
     "tui.thinking": ("enum", COLLAPSE),
     "tui.toolOutput": ("enum", COLLAPSE),
     "tui.showLaya": ("bool",),
@@ -118,11 +156,12 @@ USER_ONLY_KEYS = ("trustedProjects",)
 #: along: `vault.enabled: false` would turn off the egress proxy the user chose,
 #: `vault.egressPolicy: "proxy"` would turn its fail-closed refusal into
 #: fail-open, `vault.addr` would point every tool subprocess's proxy variables at
-#: a host the project names, and `kg.sink` decides where graph rows are sent. Set
+#: a host the project names, `kg.sink` decides where graph rows are sent, and
+#: `checkpoints.enabled: false` would remove the undo that makes `auto` mode safe to leave on. Set
 #: from the user file, or from a project the user has `/trust`ed, they apply.
 #: Mirrored in `tui/crates/acp-tui/src/settings.rs` (`TRUST_GATED_KEYS`).
 TRUST_GATED_KEYS = frozenset(
-    {"vault.enabled", "vault.addr", "vault.vault", "vault.egressPolicy", "kg.sink"}
+    {"vault.enabled", "vault.addr", "vault.vault", "vault.egressPolicy", "kg.sink", "claudeCode.maxBudgetUsd", "checkpoints.enabled", "checkpoints.maxFileMb", "learning.promotion", "learning.optimizePrompts", "learning.bandit"}
 )
 
 _SECRET_KEY = re.compile(r"(api[_-]?key|token|secret|password|passwd|credential)", re.IGNORECASE)

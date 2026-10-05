@@ -46,6 +46,154 @@ online calibrators (`laya_calibration.py`), logged per user in `laya_triage.json
 Routing targets: the orchestrator itself (`answer`/`code`/`web`/`memory`/`team`), the two
 specialists, or a running plugin. `docs/laya-triage.md` has the triage details and thresholds.
 
+## Laya Guard: every call, by every agent (laya_guard.py)
+
+The router's risk reading is **per turn**: Laya reads the user's message once, and the
+orchestrator's reading arms the approval gate for everything that turn then does. That cannot be
+allowed to *waive* a prompt (a turn that began "summarise this README" would wave through whatever the
+README talked the model into running — `laya_risk.auto_approvable`'s docstring says so), but it was
+also all that stood between `auto` mode and a destructive call, for every agent: a specialist was
+judged by the *orchestrator's* turn, and a model that drifted mid-turn was not judged again.
+
+Laya Guard scores **each tool call, at the moment it is about to run, for the agent making it**:
+
+* **Rules** — a deterministic reading of the concrete command, path or patch: `rm -rf` (a build
+  directory is routine, `src` is not), `git clean -fdx`, `git push --force`, `curl … | sh`, `sudo`,
+  a write outside the project or to `~/.ssh`, `.env` or the harness's own settings, a patch that deletes
+  a file or thousands of lines, a Claude Code task that asks for destruction. These are the floor,
+  because the shipped Laya checkpoints are near chance until fine-tuned.
+* **Laya** (`laya.callGuard: full`, the default) — the same `risk` question the router asks about a
+  turn, asked about this one call on weights that are already loaded (it never triggers a load). Its
+  reading can only **raise** a score, and only when it calls the call destructive at the confidence the
+  router itself needs to arm a turn (0.8). It cannot talk a rule's score down.
+
+The score is compared with **that agent's gate**: the router's destructive threshold (0.8), tightened
+by the agent's own Lab dial. At or above it the call asks a person — **in every mode, `auto` included**.
+Below it, nothing is added and nothing is waived: whether a call asks at all is still the mode, the
+permission rules, the vault and the forced asks. What auto mode lets through that was not trivially
+safe (score ≥ 0.2) is written to the ledger (`auto_approved`, with the agent, the call and the score).
+
+Each agent's last reading, peak, and counts of calls auto-approved and held ride on the Lab pod and
+show on the team board. `laya.callGuard: rules` keeps only the deterministic half; `off` restores the
+turn-level behaviour exactly. Covered by `_laya_call_guard_smoke_test.py`.
+
+Sub-agents in a swarm, graph or team have no approval gate, so they are kept away from every tool that
+needs one: `sub_agent_common.DENIED_TOOLS` (now including `apply_patch`, which edits project files)
+plus the orchestrator-only tools and every MCP server's tools.
+
+## Learning from turns (reflect.py, promote.py, learned.py, prompts.py, optimize.py, bandit.py, trajectory.py, laya_checkpoints.py)
+
+The harness records every turn (`outcomes.py`, `docs/evals.md`). Eight pieces read that record and change
+behaviour in a bounded way; the governing rule is the same for all of them — **nothing learned may lower a Guard
+score, remove a prompt, or waive a deny.** They can only add a hint, re-rank choices that were already allowed,
+and change prose that a person can read in full.
+
+- **Reflection (`reflect.py`)** — a turn that failed or that the person reworked becomes a drafted lesson: a
+  tool-less model call writes a `SKILL.md` into `~/.sierralab/learned/<project>/staging/`, which is *not* live.
+  The goal and error lines it is shown are wrapped as data and secret-masked first, and the drafting call has no
+  tools at all. `learning.reflect` (default on) is the switch.
+- **Promotion (`promote.py`)** — a staged candidate is run through the eval suite and promoted only if it raises
+  the score on the dev split **without breaking anything** there *and* leaves the held-out third clean. Two kinds
+  go through the same gate: a **skill** (read on demand — the model sees one line and opens the body only when it
+  applies) and a **prompt overlay** (`prompts.py` — prose appended to a session's system prompt on *every* turn).
+  `learning.promotion: off | shadow | live` — `shadow` writes the verdict and promotes nothing, so a person can
+  read what the gate would have done. Trust-gated: a cloned repository cannot turn it on for itself.
+- **Prompt overlays (`prompts.py`)** — the same four places as a skill (staging / live / retired / rejected) at
+  `~/.sierralab/prompts/<project>/`, private, and in the ledger. A live overlay is appended to the system prompt
+  as its own named block (`# How this project is worked on`), after the project prompt, the workspace context and
+  the person's instructions, so the boundary is unambiguous to a person reading it. Because an overlay is in front
+  of the model on every turn it is the more powerful lever, so it is filtered by exactly the same rules a skill is
+  (`textfilter.py`: no URL, no download piped into a shell, no destructive or privileged command, no "ignore your
+  instructions", no "skip the approval", no credential, no prompt delimiter, no control character) and its turns
+  are scored against the project baseline the same way.
+- **Optimization (`optimize.py`)** — the other loop: an artifact that is *already* live and whose turns scored
+  below par gets one rewrite. It is shown the current text plus the summaries of those turns, and the variant is
+  **staged, never swapped in place** — it faces the same gate, and the live one keeps working until the variant
+  has measurably beaten it. `learning.optimizePrompts` (default off, trust-gated) is the switch; a store's own
+  daily draft limit bounds it.
+- **Artifact health (`learned.py`, `prompts.py`)** — the stores. A live skill's or overlay's turns are scored
+  against the project's own baseline (`_baseline_reward`); one whose turns score worse is retired.
+- **The contextual bandit (`bandit.py`)** — *which* harness choice to make, learned from turn outcomes. Three
+  points are acted on in v1: **route** (dispatch · hint · none, among the ones the base policy already allowed),
+  **engine** (the Claude Code CLI path vs. the orchestrator's own tools) and **ask** (whether to add an approval
+  on a call the Guard already scored at or above its gate). The reward is the turn's own `outcomes.score`
+  re-weighted as `verifier success − λ·cost − μ·correction`, with cost counting tokens, time and Claude Code
+  dollars (`learning.banditLambda`, `learning.banditMu`). The table is coarse and per-project, in
+  `~/.sierralab/bandit/`, keyed by mode × risk × tier × target kind so a person's few turns still fill a bucket;
+  `learning.banditMinPulls` keeps a choice on its default until every arm has enough outcomes, and
+  `learning.banditExplore` is ε. `learning.bandit: off | shadow | live` — `shadow` records what it *would* have
+  chosen and acts on nothing.
+  - **It is a bandit, not a policy.** It never decides what is allowed, only which of a set of already-permitted
+    options tends to turn out better. `bandit.py` deliberately does not import `laya_guard`, `laya_risk` or
+    `secret_guard`; the one read inside the approval handler (`acp_server._ApprovalHandler._bandit_ask`) is an
+    OR-term that can only *add* a `Confirm` and whose precondition is the Guard's own gate, so the effective
+    threshold stays `max(guard_floor, bandit_floor) = guard_floor`. An abstained decision is left untouched —
+    fail-closed is not the bandit's to reopen.
+  - **The ledger is the trajectory.** The chosen arms ride on the turn's `route["choices"]`; the reward arrives
+    late through the existing `outcome_update`, exactly like kept/reverted, so a turn teaches nothing until it
+    has been reconciled (`learning.bandit` is checked fresh each turn, so it lands without a restart).
+
+- **Trajectory (`trajectory.py`)** — the ledger and Laya's triage log joined into the four row shapes a trainer
+  reads: off-policy rows `(context, arm, propensity, reward)` for a model that would replace the bandit's tabular
+  scorer behind `choose`, Laya's behaviour-cloning rows in the exact schema its training script reads, and
+  `(request, tools, reward)` SFT / preference pairs for the small local models. Nothing is trained here; this is
+  the export. A row exists only for a turn whose reward is known, and the train / eval split is a hash of the
+  request text, so adding turns never moves an existing one. `make laya-export`; row shapes in `docs/evals.md`.
+- **Checkpoints (`laya_checkpoints.py`)** — a fine-tuned Laya checkpoint is a **candidate like a skill**: a
+  registry (`~/.sierralab/laya/checkpoints.json`) maps an id to its directory and its measured numbers, the same
+  A/B gate judges it on the same tasks, and only a pass may go live — `activate` refuses a checkpoint whose last
+  verdict did not promote. `LAYA_MODEL` resolves through the registry (a live checkpoint wins over the stock repo;
+  an explicit `LAYA_MODEL` still overrides both). This is the one artifact that changes a *model's weights*
+  rather than prose — and still nothing structural: it can re-rank routes Laya already offered and nothing else.
+  The shipped checkpoints are near chance (`docs/laya-triage.md`), so until one is trained on real turns and
+  clears the gate, the bandit's Laya-derived points are weak features; its reward is outcomes-based, so it is not
+  blocked by that, only less informed.
+
+Covered by `_bandit_smoke_test.py`, `_learning_smoke_test.py` and `_optimize_smoke_test.py`
+(`make learning-test`) and `_trajectories_smoke_test.py` (`make laya-test`, and in CI — it is hermetic). The
+bandit test asserts the Guard-floor property by import and behaviour introspection rather than review; the
+optimize test proves a staged candidate really is in force for the eval run it is judged on (the `config` →
+`run_task` → `sandbox` path), and that a prompt naming "skip the approval" is refused by the same filter a skill
+gets. The trajectories test proves the Laya rows are byte-for-byte the exporter's, that no request lands in both
+splits, and that the registry refuses to make a regressing checkpoint live.
+
+## Checkpoints: `auto` you can undo (checkpoints.py)
+
+`auto` removes the pause before a change; a checkpoint puts back the ability to take the change back.
+Before any tool call that may change files — `file_write`, `editor` (not `view`), `apply_patch`,
+`python_repl`, `claude_code_engineer`, a generated tool, and any shell command that is not recognisably
+read-only — the harness snapshots the project. It does so in every mode and for every agent, after the
+decision and before the call: a call held for approval is snapshotted before the prompt appears, a call
+refused (plan mode, a deny rule, the vault) is not snapshotted at all.
+
+* **Where.** A *shadow* git repository under `~/.sierralab/checkpoints/<project hash>/` (0700), with the
+  project as its work tree. Your own `.git` is never read for this or written: no commits, branches, index
+  changes or hooks of yours are involved, and it works in a folder that is not a repository. One commit per
+  call, its message carrying the session, turn, agent, tool and a redacted one-line summary; one more after
+  each turn (`end`).
+* **What it covers.** Everything not git-ignored, not a dependency/build directory, not a secrets file, not
+  over `checkpoints.maxFileMb` (default 8). Edits are reverted, created files removed (and the directories
+  they leave empty), deleted files recreated. Executable bits and symlinks survive.
+* **What it does not.** Ignored paths (`node_modules`, `.venv`, `target`, your `.gitignore`); `.env*`, keys
+  and `.npmrc`, which are deliberately never copied; the inside of a nested git repository; anything outside
+  the project directory (reported as `outside`, once, so you know); non-file side effects (a database, a
+  network call). A project over 50,000 files, your home directory and system directories are not
+  checkpointed. A snapshot that fails never stops the turn — but the turn's record and the client both say
+  it was **not protected**, once per reason, and the ledger has it.
+* **Undoing.** `/undo` previews the latest turn that has not been undone — the files, what each would do, and
+  any that were edited *after* the turn ended (their changes would be overwritten); `/undo apply` does it;
+  `/undo <turn> [apply]` names an earlier one; `/checkpoints` lists turns. Restoring snapshots the present
+  first, so an undo can itself be undone, and is refused while a turn is running (two writers, one tree). Every
+  applied restore is audited (`checkpoint_restore`). Over ACP: `_sierralab/checkpoints/{list,undo,restore}`.
+* **Bounded.** History past 800 snapshots is rebuilt from the newest 400 and garbage-collected, off the turn's path.
+* **Not a permission.** A checkpoint approves nothing and lowers no gate; it only makes what got through
+  recoverable. Laya Guard still asks first. `checkpoints.enabled` is trust-gated: a cloned repository cannot
+  turn the undo off.
+
+Covered by `_checkpoints_smoke_test.py` (real git: snapshots, restore, your own `.git` untouched, ignored
+files, odd names, refusals, upkeep) and `_checkpoints_acp_smoke_test.py` (an `auto` turn, undo, refusal while
+running, off, unprotected).
+
 ## Direct specialist dispatch (specialists.py)
 
 With `laya.dispatch: direct` (default), a confident `architect` or `debugger` route skips the
@@ -73,6 +221,18 @@ re-asked (`_settled_intervention`; unmatched rows re-prompt). `--resume` reads t
 says which approvals were left unanswered when the process died, instead of dropping the question
 silently. Detail and the fail-closed reasoning: `THREAT_MODEL.md`, "Human-in-the-loop gates".
 
+A prompt is a *front door*, not a GUI modal. Under `make daemon`, `session/request_permission`
+is tapped into a `PendingPermission` and fanned out to whoever is listening; the TUI, the Lab's
+Containment Modal and — when the environment configures one — the Discord bot are all equal doors,
+and `Supervisor._settle` makes the second answer to a prompt harmless (the child is written the
+first, the loser gets a "already decided"). That is what closes the unattended gap: with no client
+attached, a destructive call used to leave the child blocked forever, because nothing was ever
+going to answer. The Discord door (`daemon/discord_bot.py`) posts an embed built from the same
+masked `PendingPermission.meta` the GUI modal uses — pod, tool, Laya score, the fenced command or
+diff, redaction count — with Approve/Reject buttons whose callback checks the configured operator
+id *before* it touches any state. It is outbound-only (no inbound port, no webhook) and off unless
+the token and both ids are set. What it is and isn't: `THREAT_MODEL.md`, "Discord remote control".
+
 ## Self-healing (self_heal.py)
 
 A `shell` call that exits non-zero becomes an autonomous loop: the Debugger (read-only) is
@@ -93,6 +253,35 @@ Two subtle traps this code now defends against, both found live:
 - With `selfHeal.autoApply`, pre-approval is *exact-match* only: the `apply_patch` text must
   equal the sandbox-verified patch, and the re-run command must equal the one that failed.
   `deny` rules and plan mode still win; see `THREAT_MODEL.md`.
+
+### The loop closes: memory, stalls, more than shell, resuming
+
+Four additions turn the loop from "fixes this failure" into "gets better at failures it has seen":
+
+- **Remembered fixes (`fix_memory.py`, `selfHeal.memory`).** A patch that passes sandbox verification is
+  written to the ledger against the failure's *signature* — the command family (`pytest`, `cargo test`,
+  `npm run build`) plus the salient error lines with paths, numbers and addresses normalised away — and the
+  project. The next time a similar failure happens *in the same project*, the remembered patch is tried first,
+  in the sandbox, before the Debugger is asked anything. It is never trusted, only tried: a patch that no longer
+  applies, or applies and still fails, is recorded against the fix and the Debugger runs as it would have (told
+  what memory tried). A fix that failed its last two uses, or whose reliability — (successes + 1) / (uses + 2) —
+  drops under a third, retires. A patch containing a credential-shaped string is not stored. Recalled text is
+  capped, stripped of control characters and labelled unverified; another project never sees it.
+- **Stall detection (`stall_guard.py`).** The same call with the same result three times gets a `[loop]` note in
+  its result; the fifth identical call is refused (`was not run` — a nudge, the count restarts); the third
+  refusal in a turn tells the model to stop and report. Two calls alternating, and a file edited back to an
+  earlier version (A → B → A), are noticed too. The turn's outcome record carries the stall and its reward falls
+  (`stalled`, −0.15). Per agent and per turn: a specialist's loop is not the orchestrator's, and a new turn starts clean.
+- **More than a failing shell command.** A failed `apply_patch` hunk now comes back with the file's *current*
+  lines around the spot it expected, so the next patch is written against what is there. A check the Claude
+  Code CLI left failing inside its own session is reproduced in a throwaway copy; if it really fails it is
+  healed like a shell failure, and if it passes in a clean copy the model is told so instead of reporting done.
+- **Auto-resume (`selfHeal.autoResume`).** When a session loads with a turn a crash interrupted, the backend says so
+  (`_sierralab/resume`) and the TUI continues it on its own once idle — at most twice from the same checkpoint
+  (a turn that got further has a new checkpoint and a fresh count), never for a checkpoint over thirty minutes
+  old, and never past an approval: a resumed turn asks exactly as the original did. `/resume-turn` always works.
+
+Covered by `_fix_memory_smoke_test.py`, `_stall_guard_smoke_test.py`, `_self_heal_smoke_test.py` and `_auto_resume_smoke_test.py`.
 
 ## Team pipeline (team_pipeline.py)
 
@@ -183,17 +372,26 @@ returned as tool results. Deliberate limits:
   staged `proposed`, never `staged`, so they never read as a pending approval. Scope:
   `THREAT_MODEL.md`, "The background observer writes nothing"; keys: `settings.md`.
 
+## The Experimental Lab
+
+`lab.py` observes every agent through Strands hooks and gives the person at the terminal
+controls over them (E-Stop, a per-agent Laya dial, guidance, the HITL station); `ollama_cloud.py`
+is the provider it was built around. Design, protocol and limits: [`experimental-lab.md`](experimental-lab.md).
+
 ## Where things are applied and tested
 
 Settings keys for all of this (`laya.*`, `selfHeal.*`, `lsp.enabled`, model/temperature) are in
 [`settings.md`](settings.md), applied at session start by `_apply_startup_preferences` — except
-`observer.*`, which the daemon re-reads every cycle so a change lands without a restart. Each
+`observer.*`, which the daemon re-reads every cycle so a change lands without a restart, and
+`learning.*`, which the turn path re-reads every turn. Each
 piece has a hermetic smoke test — see `_self_heal_smoke_test.py`, `_team_pipeline_smoke_test.py`,
 `_a2a_client_smoke_test.py`, `_laya_router_smoke_test.py`, `_harness_loop_smoke_test.py`,
 `_plugins_lsp_smoke_test.py` and friends; the daemon's transport and its new `/observe` route in
 `_daemon_smoke_test.py`, the observer's read-only toolset and preemption in
 `_observer_smoke_test.py`, the vault gate in `_vault_proxy_smoke_test.py`, the graph adapter in
-`_kg_smoke_test.py`, and the denylist and
+`_kg_smoke_test.py`, the learning loop's clamp in `_bandit_smoke_test.py`, its reflection/promotion half in
+`_learning_smoke_test.py`, prompt overlays and optimization in `_optimize_smoke_test.py`, the trajectory export
+and the checkpoint registry in `_trajectories_smoke_test.py`, and the denylist and
 graph-structure assumptions in `_subagent_denylist_smoke_test.py` and
 `_local_graph_structure_smoke_test.py`. Web-UI and TUI behavior is the same backend — the
 AG-UI front door (`main.py`) gets the same tools; only the specialist/laya dispatch is ACP-side.

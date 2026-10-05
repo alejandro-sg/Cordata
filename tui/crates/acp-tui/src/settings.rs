@@ -232,6 +232,72 @@ pub const SCHEMA: &[Entry] = &[
         help: "apply sandbox-verified fixes without asking (needs a trusted folder)",
     },
     Entry {
+        key: "selfHeal.memory",
+        kind: Kind::Bool,
+        applies: Applies::NextSession,
+        help: "remember verified fixes and try a remembered one before asking the Debugger",
+    },
+    Entry {
+        key: "selfHeal.autoResume",
+        kind: Kind::Bool,
+        applies: Applies::NextSession,
+        help: "continue a turn a crash interrupted on its own when the session reloads (twice at most)",
+    },
+    Entry {
+        key: "learning.reflect",
+        kind: Kind::Bool,
+        applies: Applies::NextSession,
+        help: "draft a lesson from a turn that cost something, into staging (never straight into a prompt)",
+    },
+    Entry {
+        key: "learning.promotion",
+        kind: Kind::Enum(&["off", "shadow", "live"]),
+        applies: Applies::NextSession,
+        help: "the eval gate for staged lessons: off | shadow (record verdicts) | live (promote a pass)",
+    },
+    Entry {
+        key: "learning.evalTasks",
+        kind: Kind::Float(3.0, 60.0),
+        applies: Applies::NextSession,
+        help: "how many tasks the promotion gate samples when judging a staged lesson",
+    },
+    Entry {
+        key: "learning.optimizePrompts",
+        kind: Kind::Bool,
+        applies: Applies::NextSession,
+        help: "draft a sharper variant of a live lesson or prompt overlay whose turns went badly, into staging",
+    },
+    Entry {
+        key: "learning.bandit",
+        kind: Kind::Enum(&["off", "shadow", "live"]),
+        applies: Applies::NextSession,
+        help: "learn which harness choice to make: off | shadow (record) | live — additive only, never lifts a gate",
+    },
+    Entry {
+        key: "learning.banditExplore",
+        kind: Kind::Float(0.0, 0.5),
+        applies: Applies::NextSession,
+        help: "how often the bandit tries a choice other than the best one it knows",
+    },
+    Entry {
+        key: "learning.banditMinPulls",
+        kind: Kind::Float(1.0, 100.0),
+        applies: Applies::NextSession,
+        help: "pulls an arm needs before the bandit will act on it at all",
+    },
+    Entry {
+        key: "learning.banditLambda",
+        kind: Kind::Float(0.0, 1.0),
+        applies: Applies::NextSession,
+        help: "how much a turn's cost counts against it in the bandit's reward",
+    },
+    Entry {
+        key: "learning.banditMu",
+        kind: Kind::Float(0.0, 1.0),
+        applies: Applies::NextSession,
+        help: "how much a person's correction counts against a turn in the bandit's reward",
+    },
+    Entry {
         key: "lsp.enabled",
         kind: Kind::Bool,
         applies: Applies::NextSession,
@@ -251,6 +317,24 @@ pub const SCHEMA: &[Entry] = &[
         kind: Kind::Float(0.0, 1.0),
         applies: Applies::NextSession,
         help: "destructiveness score above which a turn counts as destructive (0.8)",
+    },
+    Entry {
+        key: "laya.callGuard",
+        kind: Kind::Enum(&["off", "rules", "full"]),
+        applies: Applies::NextSession,
+        help: "score every tool call by every agent: off | rules | rules + Laya",
+    },
+    Entry {
+        key: "checkpoints.enabled",
+        kind: Kind::Bool,
+        applies: Applies::NextSession,
+        help: "snapshot the project before any call that may change files, so /undo can reverse it",
+    },
+    Entry {
+        key: "checkpoints.maxFileMb",
+        kind: Kind::Float(0.5, 512.0),
+        applies: Applies::NextSession,
+        help: "files larger than this (MB) are left out of snapshots",
     },
     Entry {
         key: "laya.riskAutoApprove",
@@ -312,6 +396,24 @@ pub const SCHEMA: &[Entry] = &[
         applies: Applies::NextSession,
         help: "which knowledge-graph backend keeps the rows",
     },
+    Entry {
+        key: "claudeCode.enabled",
+        kind: Kind::Bool,
+        applies: Applies::NextSession,
+        help: "hand large coding tasks to the Claude Code CLI (via the vault)",
+    },
+    Entry {
+        key: "claudeCode.maxBudgetUsd",
+        kind: Kind::Float(0.1, 100.0),
+        applies: Applies::NextSession,
+        help: "spend cap per Claude Code CLI run (--max-budget-usd)",
+    },
+    Entry {
+        key: "omlx.prism",
+        kind: Kind::Bool,
+        applies: Applies::NextSession,
+        help: "run architect planning and digests on local Prism models (oMLX)",
+    },
 ];
 
 pub fn entry(key: &str) -> Option<&'static Entry> {
@@ -331,11 +433,17 @@ static SECRET_KEY: LazyLock<Regex> = LazyLock::new(|| {
 /// `backend/settings_store.py`, which this mirrors (the shared fixture holds
 /// both readers to it).
 const TRUST_GATED_KEYS: &[&str] = &[
+    "checkpoints.enabled",
+    "checkpoints.maxFileMb",
     "vault.enabled",
     "vault.addr",
     "vault.vault",
     "vault.egressPolicy",
     "kg.sink",
+    "claudeCode.maxBudgetUsd",
+    "learning.promotion",
+    "learning.optimizePrompts",
+    "learning.bandit",
 ];
 
 static SECRET_VALUE: LazyLock<Regex> = LazyLock::new(|| {

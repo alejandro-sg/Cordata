@@ -1,0 +1,24 @@
+[package]
+name = "harness-lab"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "The Experimental Lab: a native GPUI front end for the Python orchestrator daemon"
+
+[[bin]]
+name = "harness-lab"
+path = "src/main.rs"
+
+[dependencies]
+harness-client.workspace = true
+harness-proto.workspace = true
+harness-observer.workspace = true
+gpui.workspace = true
+tokio.workspace = true
+futures.workspace = true
+
+[dev-dependencies]
+# `TestAppContext` and `debug_selector` are behind this feature, not behind gpui's own `cfg(test)`:
+# built as a dependency, it needs to be asked for.
+gpui = { workspace = true, features = ["test-support"] }

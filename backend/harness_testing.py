@@ -16,11 +16,15 @@ Not imported by the server; only by ``_*_smoke_test.py`` files.
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 from strands.models.model import Model
+
+# Scripted turns are not lessons: reflection (reflect.py) would draft one, on a background thread, from every bad one.
+os.environ.setdefault("SIERRALAB_REFLECT", "off")
 
 
 @dataclass

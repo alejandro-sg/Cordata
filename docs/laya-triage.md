@@ -107,29 +107,75 @@ after fine-tuning on your own decisions. A live run here confirmed it:
 Hence: hint above a confidence gate, never block, always log. Tune
 `LAYA_TRIAGE_THRESHOLD` from the report's gate table, not from this document.
 
+The same numbers bound what can be *learned* on top of Laya: `bandit.py`'s `route` arm and
+`laya_risk`'s complexity reading are only as good as the checkpoint behind them, and the
+shipped one is near chance, so those arms are weak features until a fine-tuned checkpoint
+(from the loop below) clears the gate. The bandit's reward is outcomes-based, so it is not
+blocked by this — it just has less to work with on the Laya-derived points than on `engine`
+and `ask`.
+
 ## Improving it: collect → export → fine-tune → swap
 
+`scripts/laya-finetune.sh` runs the four steps below (`export` / `train` / `register` /
+`gate`); this section is what each one does. `make laya-export`, `make laya-eval`.
+
 1. Run normally (or with `acp-stress` scenarios) so the log accumulates real turns.
-2. `backend/.venv/bin/python backend/_laya_triage_export.py --out ./laya_data --validate`
-   writes `train.jsonl` / `eval.jsonl` in the row schema of Laya's own training set
-   (`state`, `questions`, `gold` as JSON-string columns). Labels are what the LLM did,
-   one-hot — a behaviour-cloning target, mistakes included, so review before training.
-   `--validate` feeds every question through Laya's own `build_sequence` with the
-   loaded tokenizer, the call its training script makes.
+2. **Export.** `backend/.venv/bin/python backend/trajectory.py export --validate` writes
+   every row shape in one directory (`~/.sierralab/trajectories/<project>/`, override
+   `--out`): `laya.{train,eval}.jsonl` — `state`, `questions`, `gold` as JSON-string
+   columns, byte-for-byte the schema `_laya_triage_export.py` writes and Laya's training
+   script reads (a `--validate` pass feeds every question through Laya's own
+   `build_sequence` with the loaded tokenizer, the call its training script makes) — plus
+   `bandit.*`, `sft.*` and `dpo.*` for the trainer that replaces the bandit's tabular
+   scorer and for the small local models. See "The other three row shapes" below.
+   `_laya_triage_export.py --out DIR` still works and writes just the Laya pair.
+
+   Labels are what the LLM did, one-hot — a behaviour-cloning target, mistakes included,
+   so review before training. Every row is split train / eval by a hash of its own
+   request, so the same request is never in both.
 3. Fine-tune with Laya's script (`notebooks/laya_finetune_typed_decisions_mps.py` in its
    repo — Apple Silicon; a Kaggle 2×T4 notebook also exists). Its dataset loader calls
    `load_dataset("LocalLLaMA/typed-decisions", ...)`; replace that call with
    `datasets.load_dataset("json", data_files={"train": "laya_data/train.jsonl"})["train"]`.
    Laya's own run used ~30k questions and took hours on 2×T4; a few hundred rows will
    mostly memorise, so treat early runs as a way to exercise the loop.
-4. Point the backend at the result: `LAYA_MODEL=/path/to/laya_finetuned_typed_decisions`
-   (`LAYA_MODEL_SUBFOLDER` empty). Re-run the report on fresh traffic and compare the
+4. **Register and gate.** `backend/.venv/bin/python backend/laya_checkpoints.py register
+   <id> <checkpoint dir>` records it under `~/.sierralab/laya/checkpoints.json` as a
+   *candidate*. `make laya-eval` (default `--mode shadow`) then puts it in force for an
+   eval run (`LAYA_MODEL=<dir>`) and measures it the same way a staged skill is measured:
+   nothing that passed without it may fail with it, something must improve, and the same
+   must hold on held-out tasks (`promote.py`; `docs/evals.md`). Only a pass may go live —
+   `activate` refuses a checkpoint whose last verdict did not promote, and `--force` is
+   the deliberate override for one measured elsewhere. A live checkpoint wins over the
+   stock repo for the next backend start; an explicit `LAYA_MODEL` still overrides both.
+
+5. **Look at the traffic again.** Re-run the report on fresh turns and compare the
    confidence-gate table with the stock model's before raising the threshold or routing
    anything harder.
 
-I have **not** run step 3 end to end here (hours of training); steps 1–2 and the
-format validation are tested, and `LAYA_MODEL` loading goes through `laya.load`, which
-accepts a local path.
+Fine-tuning itself still runs off this machine: step 3 is Laya's script and hours on a
+GPU or an Apple Silicon box, and `scripts/laya-finetune.sh train` prints what to run
+rather than pretending to run it. Steps 1–2 and the format validation are tested here;
+`LAYA_MODEL` loading goes through `laya.load`, which accepts a local path.
+
+### The other three row shapes
+
+`trajectory.py` also writes what the rest of the learning loop needs, from the same
+ledger (`docs/evals.md`):
+
+| file | row | for |
+|---|---|---|
+| `bandit.*.jsonl` | `(context, point, arm, propensity, reward)` | the model that replaces the tabular scorer behind `bandit.choose` when there is enough data. Only choices the bandit recorded a decision for are exported — the propensity comes from that audit row, and a made-up one teaches the wrong thing about how the data was collected |
+| `sft.*.jsonl` | `(request, the tools the turn ran, reward)` | imitation data for the small local models |
+| `dpo.*.jsonl` | two turns in the same coarse context, better against worse | a preference pair; only comparable contexts, and only when they really differ |
+
+### What a checkpoint can and cannot change
+
+Its **weights** — which route it leans toward, how confident it is. Not what the harness
+permits: Laya Guard's floor, `laya_risk`'s thresholds and the approval gate are read from
+code that does not consult the registry, and a better checkpoint can only re-rank options
+that were already on the table. `docs/evals.md` says the same thing about every learned
+artifact, and `THREAT_MODEL.md` about the ones that reach a turn.
 
 ## Settings
 
@@ -140,7 +186,7 @@ accepts a local path.
 | `LAYA_TRIAGE_TEAM_THRESHOLD` | *(off)* | P(needs team) that hints a team on its own |
 | `LAYA_TRIAGE_TIMEOUT` | `2.0` | seconds a turn waits for Laya before going without a hint |
 | `LAYA_TRIAGE_LOG` | `backend/laya_triage.jsonl` | the log |
-| `LAYA_MODEL` / `LAYA_MODEL_SUBFOLDER` | `convaiinnovations/laya` / `multilingual` | checkpoint (repo id or local dir) |
+| `LAYA_MODEL` / `LAYA_MODEL_SUBFOLDER` | `convaiinnovations/laya` / `multilingual` | checkpoint (repo id or local dir). Unset, a checkpoint registered *live* by `laya_checkpoints.py` wins; set, it overrides everything |
 | `MODEL_TIER_FAST` / `_STANDARD` / `_STRONG` | *(unset)* | sub-agent model ids on the active provider |
 | `LAYA_GUARD_ENABLED` / `LAYA_GUARD_THRESHOLD` | `false` / `0.75` | the separate injection guard on untrusted tool output |
 

@@ -254,6 +254,16 @@ class MemoryStore:
         vector = _embedder.encode(query).tolist()
         query_filter = None if include_deprecated else _ACTIVE_FILTER
         result = _client.query_points(self._collection, query=vector, query_filter=query_filter, limit=limit)
+        try:
+            import lab
+
+            lab.memory_hit(
+                "qdrant",
+                query,
+                [{"id": str(p.id), "label": (p.payload or {}).get("content") or str(p.id), "score": p.score} for p in result.points],
+            )
+        except Exception:  # the radar must never cost a memory read
+            pass
         if not result.points:
             return "No matching memories found."
         return "\n".join(_format(str(p.id), p.payload, p.score) for p in result.points)

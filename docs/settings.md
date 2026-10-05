@@ -33,6 +33,9 @@ other value is replaced by the higher scope.
 | `permissions.allow` / `ask` / `deny` | list of rules | live | see [Permission rules](#permission-rules) |
 | `model` | model id | now | model on the active provider; ignored (with a log line) if the provider doesn't offer it |
 | `temperature` | `focused` · `balanced` · `creative` | now | sampling preset |
+| `laya.callGuard` | `off` · `rules` · `full` | next session | Laya Guard: score **every tool call, by every agent**, and ask at or above that agent's gate in every mode, `auto` included (`docs/agentic-harness.md`). `full` (default) adds Laya's own reading, which can only raise a score |
+| `checkpoints.enabled` | `true` · `false` | next session | snapshot the project before any call that may change files, so `/undo` can reverse it (default `true`; trust-gated — a project file cannot turn it off; see `docs/agentic-harness.md`) |
+| `checkpoints.maxFileMb` | 0.5–512 | next session | files larger than this are left out of snapshots (default 8; trust-gated) |
 | `laya.mode` | `off` · `shadow` · `route` | next session | Laya triage (see `docs/laya-triage.md`) |
 | `laya.threshold` | 0–1 | next session | confidence needed before Laya adds a routing hint |
 | `laya.dispatch` | `direct` · `hint` | next session | confident specialist routes: run the specialist directly, or only hint |
@@ -42,6 +45,8 @@ other value is replaced by the higher scope.
 | `selfHeal.enabled` | `true` · `false` | next session | diagnose and fix failing commands autonomously (see `docs/self-healing-architecture.md`) |
 | `selfHeal.maxAttempts` | 1–10 | next session | debugger rounds per failure before escalating to you |
 | `selfHeal.verify` | `sandbox` · `workspace` · `off` | next session | verify patches in a throwaway copy first, or only in the workspace |
+| `selfHeal.memory` | `true` · `false` | next session | remember sandbox-verified fixes (failure signature → patch, per project) and try a remembered one in the sandbox before asking the Debugger; a fix that stops working retires itself (`docs/self-healing-architecture.md`) |
+| `selfHeal.autoResume` | `true` · `false` | next session | continue a turn a crash interrupted on its own when the session reloads (twice at most per checkpoint, never over 30 minutes old; approvals still ask) |
 | `selfHeal.autoApply` | `true` · `false` | next session | apply sandbox-verified fixes without asking (needs a trusted folder; see `THREAT_MODEL.md`) |
 | `lsp.enabled` | `true` · `false` | next session | start the project's language servers for diagnostics after edits |
 | `vault.enabled` | `true` · `false` | next session | run tool subprocesses through the Agent Vault credential proxy (see below) |
@@ -51,6 +56,15 @@ other value is replaced by the higher scope.
 | `observer.enabled` | `true` · `false` | next cycle | the daemon's background observer (see below); off by default |
 | `observer.intervalMinutes` | 1–1440 | next cycle | how long between observations (default 30) |
 | `memory.traces` | `true` · `false` | next session | record execution traces to the local LanceDB corpus |
+| `learning.reflect` | `true` · `false` | next turn | draft a lesson from a failed or reworked turn into staging (see `docs/agentic-harness.md`) |
+| `learning.promotion` | `off` · `shadow` · `live` | next turn | promote a staged lesson, skill or prompt overlay only when it raises the eval score: `shadow` records the verdict and promotes nothing (trust-gated — a project file cannot turn it on) |
+| `learning.evalTasks` | 3–60 | next turn | how many eval tasks a promotion candidate is judged on |
+| `learning.optimizePrompts` | `true` · `false` | next turn | draft a sharper variant of a live lesson or prompt overlay whose turns scored below par, into staging for the same gate (trust-gated — a project file cannot turn it on) |
+| `learning.bandit` | `off` · `shadow` · `live` | next turn | learn which harness choice to make (route · engine · ask) from turn outcomes; `shadow` records the choice and acts on nothing (trust-gated) |
+| `learning.banditExplore` | 0.0–0.5 | next turn | ε: how often `live` takes a non-best arm so it keeps learning (default 0.1) |
+| `learning.banditMinPulls` | 1–100 | next turn | a choice is not moved until every arm has this many outcomes behind it (default 5) |
+| `learning.banditLambda` | 0.0–1.0 | next turn | λ in `verifier success − λ·cost − μ·correction` — how much tokens, time and Claude Code dollars count against a turn |
+| `learning.banditMu` | 0.0–1.0 | next turn | μ in the same reward — how much refusals, reverts and a cancelled turn count against it |
 | `kg.enabled` | `true` · `false` | next session | record graph entities and edges from each turn (see below) |
 | `kg.sink` | `lance` · `cognee` | next session | which graph backend keeps the rows (default `lance`) |
 | `tiers.fast` / `standard` / `strong` | model id | next session | sub-agent model tiers |
@@ -202,6 +216,7 @@ file write). `/memory` lists what's being read. Changes apply to the next sessio
 | `vault.*` | backend (`vault_proxy.install`) | session start |
 | `observer.*` | daemon (`Observer`) | every cycle, so a change lands without a restart |
 | `memory.traces`, `kg.*` | backend (`_ingest_turn`) | session start, applied when the turn finishes |
+| `learning.*` | backend (`reflect` / `optimize` / `bandit`, `_maintain`) | every turn, read fresh, so a change lands without a restart |
 | instruction files | backend (system prompt) | session start |
 | `tui.*` | acp-tui | startup and on change |
 
@@ -271,6 +286,29 @@ are not approvals somebody is waiting on, so they never appear in the
 ledger keeps the record (`interventions.kind = 'observation'` plus an
 `observation` event, readable with `state_store.recent_events(kind="observation")`).
 Tests: `backend/_observer_smoke_test.py`.
+
+## Discord remote control (environment only, not settings)
+
+There is deliberately no `discord.*` settings key. Enabling the daemon's Discord
+front door is environment-only, so nothing about it lands in a layered,
+printed, shareable `settings.json` — in particular not the bot token, which
+follows the same Keychain path as the provider keys (see `.env.example` and
+`THREAT_MODEL.md`, "Discord remote control").
+
+| Variable | Meaning |
+| --- | --- |
+| `DISCORD_BOT_TOKEN` | The bot token. Prefer `make discord-key` (Keychain service `sierralab-discord-bot-token`) or export it; **not** a file value. Read once at startup, then removed from the process environment and masked everywhere. |
+| `ALLOWED_USER_ID` | The one Discord user id allowed to approve, reject or steer (Developer Mode → Copy ID). Required — with no allowlist the bot stays off. |
+| `TELEMETRY_CHANNEL_ID` | The channel the bot announces in, opens task threads under, and reads steering replies from. |
+| `SIERRALAB_DISCORD` | `0`/`off`/`false`/`no` disables the bot even when the three above are set (kill switch, checked before the token is read). |
+
+All three of the first row's names must be present and parse (the ids as
+integers) for the bot to start; otherwise it logs the reason and is a no-op.
+`GET /health` reports `discord: {enabled, connected, allowedUser, channel,
+reason}` — never the token. Message Content Intent must be enabled for the
+application in the Discord Developer Portal, or `discord.PrivilegedIntentsRequired`
+is logged as the actionable message it is rather than crashing the daemon.
+Tests: `backend/_discord_remote_smoke_test.py` (hermetic, fake `discord`).
 
 ## Checking the result
 

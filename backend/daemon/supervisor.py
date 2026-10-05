@@ -18,6 +18,7 @@ that reads a relative path) is already in the right place.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import logging
 import os
@@ -25,6 +26,7 @@ import signal
 import sys
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -43,6 +45,35 @@ def default_entrypoint() -> list[str]:
 
 
 @dataclass
+class PendingPermission:
+    """An ACP ``session/request_permission`` the child has sent and is blocked on.
+
+    Held so a second front door — the GUI's containment modal, over gRPC — can answer it.
+    The daemon still parses nothing it does not need: the JSON-RPC id (to answer with),
+    the options the child *offered* (the only ids an answer may name), the tool call, and
+    the ``_meta.sierralab`` view the child attached (pod, risk, the exact command or diff)."""
+
+    session_id: str
+    request_id: Any
+    options: list[dict[str, Any]]
+    tool_call_id: str | None
+    title: str | None
+    kind: str | None
+    raw_input: Any
+    meta: dict[str, Any]
+    ts: float = field(default_factory=time.time)
+
+    @property
+    def key(self) -> str:
+        return str(self.request_id)
+
+    @property
+    def public_id(self) -> str:
+        """What a gRPC client sees. Session-qualified: JSON-RPC ids restart per child."""
+        return f"{self.session_id}/{self.request_id}"
+
+
+@dataclass
 class Session:
     """One live child, and the frames waiting to reach it."""
 
@@ -58,6 +89,17 @@ class Session:
     #: already dealt with.
     backlog: list[str] = field(default_factory=list)
     exited: bool = False
+    #: The newest `_sierralab/lab` state the child sent (the Experimental Lab's
+    #: pods, links, threat and HITL rows), kept so a remote canvas that attaches
+    #: late is drawn from the current state rather than waiting for the next change.
+    lab: dict[str, Any] | None = None
+    #: Permission requests the child is waiting on, by JSON-RPC id (stringified).
+    pending: dict[str, PendingPermission] = field(default_factory=dict)
+    #: Requests already answered, id -> who ("gui" | "tui"), newest last and bounded. A late
+    #: answer from the *other* front door for an id in here is dropped, not forwarded.
+    answered: "OrderedDict[str, str]" = field(default_factory=OrderedDict)
+    #: Requests the daemon itself sent the child (knobs, isolate), awaiting their response.
+    calls: dict[str, "asyncio.Future[dict[str, Any]]"] = field(default_factory=dict)
 
     @property
     def alive(self) -> bool:
@@ -100,6 +142,10 @@ class Supervisor:
         self._sessions: dict[str, Session] = {}
         self._entrypoint = entrypoint or default_entrypoint
         self._subscribers: dict[str, asyncio.Queue[str]] = {}
+        self._lab_watchers: set[asyncio.Queue[dict[str, Any]]] = set()
+        self._listeners: dict[str, list[Callable[[dict[str, Any]], None]]] = {}
+        self._call_ids = itertools.count(1)
+        self.diffs: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
 
     def subscribe(self, session_id: str) -> asyncio.Queue[str]:
         """A queue of every line this session emits from now on.
@@ -129,6 +175,280 @@ class Supervisor:
             session.backlog[:0] = unsent
             if len(session.backlog) > self.BACKLOG_LIMIT:
                 del session.backlog[: len(session.backlog) - self.BACKLOG_LIMIT]
+
+    # ------------------------------------------------------------------- lab
+
+    #: A frame is only parsed for the Lab when it carries this method name — the
+    #: other 99.9% of lines (token deltas, tool updates) cost one substring test.
+    LAB_MARK = '"_sierralab/lab"'
+    LAB_QUEUE_LIMIT = 64
+
+    def watch_lab(self) -> asyncio.Queue[dict[str, Any]]:
+        """A read-only feed of Lab state changes, for any number of watchers.
+        Unlike `subscribe` it never claims the session: a canvas looking at a
+        session must not displace the terminal that is driving it."""
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=self.LAB_QUEUE_LIMIT)
+        self._lab_watchers.add(queue)
+        return queue
+
+    def unwatch_lab(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
+        self._lab_watchers.discard(queue)
+
+    def lab_states(self) -> dict[str, dict[str, Any]]:
+        return {sid: session.lab for sid, session in self._sessions.items() if session.lab is not None}
+
+    def _tap_lab(self, session_id: str, line: str) -> None:
+        """Remember and fan out a Lab state frame. The frame itself is still
+        delivered to the client untouched (`_deliver` forwards the original bytes);
+        this only reads a copy. Never raises: a frame it cannot parse is not its
+        business, and the daemon's transport must not depend on it."""
+        try:
+            message = json.loads(line)
+            params = message.get("params") if isinstance(message, dict) else None
+            if not isinstance(params, dict) or message.get("method") != "_sierralab/lab":
+                return
+            session = self._sessions.get(session_id)
+            if session is None:
+                return
+            session.lab = params
+            frame = {"type": "state", "sessionId": session_id, "state": params}
+            for queue in list(self._lab_watchers):
+                try:
+                    queue.put_nowait(frame)
+                except asyncio.QueueFull:
+                    # Only the newest state matters to a canvas: drop the oldest.
+                    try:
+                        queue.get_nowait()
+                        queue.put_nowait(frame)
+                    except (asyncio.QueueEmpty, asyncio.QueueFull):
+                        pass
+        except Exception:
+            logger.debug("daemon: lab tap failed for %s", session_id, exc_info=True)
+
+    # ------------------------------------------------------- listeners / taps
+
+    PERMISSION_MARK = '"session/request_permission"'
+    DIFF_MARK = '"_sierralab/diff"'
+    MEMORY_MARK = '"_sierralab/memory"'
+    TASK_MARK = '"_sierralab/task"'
+    LAYA_MARK = '"_sierralab/laya"'
+    DAEMON_ID_PREFIX = "daemon-"
+    MAX_DIFFS = 8
+    MAX_ANSWERED = 256
+
+    def listen(self, topic: str, callback: Callable[[dict[str, Any]], None]) -> Callable[[], None]:
+        """Be told about ``intervention`` (requested / resolved), ``diff`` and ``memory``
+        events, on the event loop. A callback that raises is logged and skipped."""
+        self._listeners.setdefault(topic, []).append(callback)
+
+        def stop() -> None:
+            if callback in self._listeners.get(topic, []):
+                self._listeners[topic].remove(callback)
+
+        return stop
+
+    def _notify(self, topic: str, payload: dict[str, Any]) -> None:
+        for callback in list(self._listeners.get(topic, [])):
+            try:
+                callback(payload)
+            except Exception:
+                logger.debug("daemon: %s listener failed", topic, exc_info=True)
+
+    def _tap_permission(self, session_id: str, line: str) -> None:
+        try:
+            message = json.loads(line)
+            if not isinstance(message, dict) or message.get("method") != "session/request_permission" or message.get("id") is None:
+                return
+            session = self._sessions.get(session_id)
+            params = message.get("params") or {}
+            if session is None or not isinstance(params, dict):
+                return
+            tool_call = params.get("toolCall") or {}
+            meta = (params.get("_meta") or {}).get("sierralab") or {}
+            pending = PendingPermission(
+                session_id=session_id,
+                request_id=message["id"],
+                options=[opt for opt in params.get("options") or [] if isinstance(opt, dict)],
+                tool_call_id=tool_call.get("toolCallId"),
+                title=tool_call.get("title"),
+                kind=tool_call.get("kind"),
+                raw_input=tool_call.get("rawInput"),
+                meta=meta if isinstance(meta, dict) else {},
+            )
+            session.pending[pending.key] = pending
+            self._notify("intervention", {"event": "requested", "pending": pending})
+        except Exception:
+            logger.debug("daemon: permission tap failed for %s", session_id, exc_info=True)
+
+    def _tap_diff(self, session_id: str, line: str) -> None:
+        try:
+            message = json.loads(line)
+            params = message.get("params") if isinstance(message, dict) else None
+            if not isinstance(params, dict) or message.get("method") != "_sierralab/diff" or not params.get("id"):
+                return
+            entry = {**params, "session_id": session_id, "ts": time.time()}
+            self.diffs[str(params["id"])] = entry
+            while len(self.diffs) > self.MAX_DIFFS:
+                self.diffs.popitem(last=False)
+            self._notify("diff", entry)
+        except Exception:
+            logger.debug("daemon: diff tap failed for %s", session_id, exc_info=True)
+
+    def _tap_task(self, session_id: str, line: str) -> None:
+        """A harness task bar (``harness_events.Task``: the long step an agent is inside —
+        a team plan, a self-heal attempt, a Claude Code run, an oMLX load). Remembered and
+        fanned out, never consumed: a remote front door is what listens, and it is a no-op
+        when nobody is."""
+        try:
+            message = json.loads(line)
+            params = message.get("params") if isinstance(message, dict) else None
+            if isinstance(params, dict) and message.get("method") == "_sierralab/task":
+                self._notify("task", {**params, "session_id": session_id})
+        except Exception:
+            logger.debug("daemon: task tap failed for %s", session_id, exc_info=True)
+
+    def _tap_laya(self, session_id: str, line: str) -> None:
+        """Laya's live triage line for a turn (route, risk, destructiveness). Fanned out to
+        listeners so a remote front door can show it beside the session it belongs to."""
+        try:
+            message = json.loads(line)
+            params = message.get("params") if isinstance(message, dict) else None
+            if isinstance(params, dict) and message.get("method") == "_sierralab/laya":
+                self._notify("laya", {**params, "session_id": session_id})
+        except Exception:
+            logger.debug("daemon: laya tap failed for %s", session_id, exc_info=True)
+
+    def _tap_memory(self, session_id: str, line: str) -> None:
+        try:
+            message = json.loads(line)
+            params = message.get("params") if isinstance(message, dict) else None
+            if isinstance(params, dict) and message.get("method") == "_sierralab/memory":
+                self._notify("memory", {**params, "session_id": session_id})
+        except Exception:
+            logger.debug("daemon: memory tap failed for %s", session_id, exc_info=True)
+
+    def _tap_call_response(self, session: Session, line: str) -> bool:
+        """Is this the child's answer to a request the *daemon* sent? Resolves the waiter and
+        returns True — the frame is the daemon's, not the client's, so it is not forwarded."""
+        try:
+            message = json.loads(line)
+        except ValueError:
+            return False
+        if not isinstance(message, dict) or "method" in message:
+            return False
+        waiter = session.calls.get(str(message.get("id")))
+        if waiter is None:
+            return False
+        if not waiter.done():
+            waiter.set_result(message)
+        return True
+
+    def all_pending(self) -> list[PendingPermission]:
+        return sorted((p for session in self._sessions.values() for p in session.pending.values()), key=lambda p: p.ts)
+
+    def live_cwds(self) -> set[str]:
+        return {session.cwd for session in self._sessions.values() if session.alive}
+
+    def _settle(self, session: Session, key: str, outcome: str, decided_by: str) -> PendingPermission | None:
+        pending = session.pending.pop(key, None)
+        if pending is None:
+            return None
+        session.answered[key] = decided_by
+        while len(session.answered) > self.MAX_ANSWERED:
+            session.answered.popitem(last=False)
+        self._notify("intervention", {"event": "resolved", "pending": pending, "outcome": outcome, "decided_by": decided_by})
+        return pending
+
+    def _admit_client_frame(self, session: Session, line: str) -> bool:
+        """The driving client (a TUI over the WebSocket) is about to write ``line`` to the
+        child. Returns False when it is an answer the GUI already gave: forwarding a second
+        response to one request would reach a child that has moved on.
+
+        Also the place the daemon learns the *driver* answered first (so the GUI's modal can
+        close) or cancelled the turn (so a pause that will never be answered is not left open)."""
+        try:
+            message = json.loads(line)
+        except ValueError:
+            return True
+        if not isinstance(message, dict):
+            return True
+        if message.get("method") == "session/cancel":
+            for key in list(session.pending):
+                self._settle(session, key, "aborted", "tui")
+            return True
+        if "method" in message or "id" not in message:
+            return True
+        key = str(message["id"])
+        if key in session.pending:
+            self._settle(session, key, _outcome_of(message, session.pending[key]), "tui")
+            return True
+        return session.answered.get(key) != "gui"
+
+    async def answer_permission(self, session_id: str, key: str, approve: bool, *, decided_by: str = "gui") -> PendingPermission:
+        """Relay a human's choice into the paused ACP request, as the child's own client would.
+
+        Raises ``LookupError`` when there is nothing pending under that id (already answered by
+        the other front door, or the session ended) and ``ValueError`` when the child offered no
+        option of the kind asked for — the answer is only ever one of the child's own options,
+        never an id the caller made up.
+
+        ``decided_by`` names the front door that answered. More than one can be attached now
+        (the GUI's containment modal, a TUI, the Discord bot), so which one a person used is
+        recorded rather than assumed — a decision attributed to the wrong door is a decision
+        nobody can account for afterwards."""
+        session = self._sessions.get(session_id)
+        if session is None or key not in session.pending:
+            raise LookupError(f"no pending permission {key!r} in session {session_id!r}")
+        pending = session.pending[key]
+        wanted = "allow_once" if approve else "reject_once"
+        option = next((o for o in pending.options if o.get("kind") == wanted), None)
+        if option is None or not option.get("optionId"):
+            raise ValueError(f"the session offered no {wanted} option")
+        response = {
+            "jsonrpc": "2.0",
+            "id": pending.request_id,
+            "result": {
+                "outcome": {"outcome": "selected", "optionId": option["optionId"]},
+                # The child cannot tell which front door answered — every answer arrives as the
+                # same JSON-RPC response — so the door is named here, in ACP's `_meta` slot, and
+                # the child puts it on the intervention ledger. Without this a decision made on a
+                # phone reads as a person at the GUI, which is an audit trail nobody can trust.
+                "_meta": {"sierralab": {"decidedBy": decided_by}},
+            },
+        }
+        if not await self.write_raw(session_id, json.dumps(response)):
+            raise LookupError(f"session {session_id!r} has exited")
+        self._settle(session, key, "approved" if approve else "rejected", decided_by)
+        # Tell the driving client its prompt is moot. It ignores a method it does not know;
+        # a client that knows it can dismiss the prompt instead of leaving it to be answered late.
+        self._deliver(
+            session_id,
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "_sierralab/resolved",
+                    "params": {"sessionId": session_id, "requestId": pending.request_id, "toolCallId": pending.tool_call_id, "outcome": "approved" if approve else "rejected", "decidedBy": decided_by},
+                }
+            ),
+        )
+        return pending
+
+    async def call(self, session_id: str, method: str, params: dict[str, Any] | None = None, *, timeout: float = 5.0) -> dict[str, Any]:
+        """Send the child a request of the daemon's own and wait for its answer (the Lab's
+        ``_sierralab/lab/*`` controls). The answer is returned; it never reaches a client."""
+        session = self._sessions.get(session_id)
+        if session is None or not session.alive:
+            raise LookupError(f"no live session {session_id!r}")
+        ident = f"{self.DAEMON_ID_PREFIX}{next(self._call_ids)}"
+        waiter: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+        session.calls[ident] = waiter
+        try:
+            request = {"jsonrpc": "2.0", "id": ident, "method": method, "params": {"sessionId": session_id, **(params or {})}}
+            if not await self.write_raw(session_id, json.dumps(request)):
+                raise LookupError(f"session {session_id!r} has exited")
+            return await asyncio.wait_for(waiter, timeout)
+        finally:
+            session.calls.pop(ident, None)
 
     # ------------------------------------------------------------- lifecycle
 
@@ -206,6 +526,11 @@ class Supervisor:
             logger.exception("daemon: reading session %s failed", session_id)
         finally:
             session.exited = True
+            for key in list(session.pending):
+                self._settle(session, key, "aborted", "session-ended")
+            for waiter in list(session.calls.values()):
+                if not waiter.done():
+                    waiter.cancel()
             logger.info("daemon: session %s exited (rc=%s)", session_id, session.process.returncode)
             self._deliver(session_id, json.dumps({
                 "jsonrpc": "2.0",
@@ -222,6 +547,21 @@ class Supervisor:
         will not re-emit it, it is waiting for the answer. It holds only what
         no one has been handed: a frame a client already received is that
         client's, and replaying it to the next would re-ask answered prompts."""
+        if self.LAB_MARK in line:
+            self._tap_lab(session_id, line)
+        if self.PERMISSION_MARK in line:
+            self._tap_permission(session_id, line)
+        if self.DIFF_MARK in line:
+            self._tap_diff(session_id, line)
+        if self.MEMORY_MARK in line:
+            self._tap_memory(session_id, line)
+        if self.TASK_MARK in line:
+            self._tap_task(session_id, line)
+        if self.LAYA_MARK in line:
+            self._tap_laya(session_id, line)
+        owner = self._sessions.get(session_id)
+        if owner is not None and owner.calls and self.DAEMON_ID_PREFIX in line and self._tap_call_response(owner, line):
+            return
         queue = self._subscribers.get(session_id)
         if queue is None:
             session = self._sessions.get(session_id)
@@ -242,7 +582,15 @@ class Supervisor:
                 logger.warning("daemon: %s subscriber queue overflowed", session_id)
 
     async def write(self, session_id: str, line: str) -> bool:
-        """Send one line to a child's stdin. False if there is no child."""
+        """A line from the *driving client*, to the child's stdin. False if there is no child.
+        True (and nothing sent) for an answer the GUI already gave to the same request."""
+        session = self._sessions.get(session_id)
+        if session is not None and (session.pending or session.answered) and not self._admit_client_frame(session, line):
+            return session.alive
+        return await self.write_raw(session_id, line)
+
+    async def write_raw(self, session_id: str, line: str) -> bool:
+        """Send one line to a child's stdin, no questions asked. False if there is no child."""
         from . import frames  # noqa: PLC0415 — avoids a cycle with frames' own imports
 
         session = self._sessions.get(session_id)
@@ -271,6 +619,11 @@ class Supervisor:
             if session.cwd == target:
                 return session
         return None
+
+    def session(self, session_id: str) -> Session | None:
+        """The live session under this id, for a front door that needs its cwd or liveness
+        (the Discord bot reads a project's settings to know what its destructive line is)."""
+        return self._sessions.get(session_id)
 
     def drain_backlog(self, session_id: str) -> list[str]:
         """Take the backlog and clear it, for handing to an attaching client."""
@@ -324,3 +677,12 @@ class Supervisor:
 
     def sessions(self) -> list[dict[str, Any]]:
         return [session.to_json() for session in self._sessions.values()]
+
+
+def _outcome_of(response: dict[str, Any], pending: PendingPermission) -> str:
+    """How the driving client answered a permission request: approved / rejected / aborted."""
+    outcome = ((response.get("result") or {}).get("outcome") or {}) if isinstance(response.get("result"), dict) else {}
+    if outcome.get("outcome") != "selected":
+        return "aborted"
+    chosen = next((o for o in pending.options if o.get("optionId") == outcome.get("optionId")), None)
+    return "approved" if chosen is not None and str(chosen.get("kind", "")).startswith("allow") else "rejected"

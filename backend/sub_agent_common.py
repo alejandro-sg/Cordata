@@ -55,7 +55,7 @@ DEFAULT_EXECUTION_TIMEOUT = 3600.0
 # doesn't gate it for the top-level agent either. Resolved lazily against
 # agent_common.GENERATED_TOOL_NAMES to avoid a circular import (agent_common
 # imports these tool modules at load time).
-DENIED_TOOLS = {"shell", "python_repl", "file_write", "editor"}
+DENIED_TOOLS = {"shell", "python_repl", "file_write", "editor", "apply_patch"}
 
 # Tools reserved for the top-level orchestrator, excluded even from the
 # "give every safe tool" default below (see resolve_tools) and even if a
@@ -87,6 +87,13 @@ ORCHESTRATOR_ONLY_TOOLS = {
     "set_memory_window",
     "context_usage",
     "set_sandbox_mode",
+    # The Meta-Harness tools (Phase 6/7): spawning the Claude Code CLI is a gated action only the
+    # orchestrator's approval prompt can authorise, and a sub-agent loading or stopping models
+    # would be moving the machine's memory under the orchestrator's feet.
+    "claude_code_engineer",
+    "omlx_resource_manager",
+    "ollama_resource_manager",
+    "context_digest",
     # Not unsafe by itself (open_game writes nothing — see game_tool.py) but
     # its ToolBehavior(state_from_result=...) push only reaches the
     # top-level agui_agent's StrandsAgentConfig (main.py); a sub-agent has
@@ -111,7 +118,7 @@ def tier_model_id(tier: str | None) -> str | None:
     return configured or None
 
 
-def build_sub_agent_model(tier: str | None = None):
+def build_sub_agent_model(tier: str | None = None, role: str | None = None):
     """A sub-agent's model: the SAME provider the orchestrator runs on (local
     oMLX, Anthropic, or an OpenAI-compatible cloud endpoint such as Ollama
     Cloud), at the requested tier.
@@ -124,9 +131,36 @@ def build_sub_agent_model(tier: str | None = None):
     its own and never receives one: the key never enters its tools, prompts or
     environment. Imported lazily: agent_common imports the tool modules that
     import this one.
+
+    The local roles (``omlx_provider.ROLES``: ``architect`` planning, ``digest``) are
+    the exception to "the orchestrator's provider": when ``omlx.prism`` is on and oMLX
+    answers, they run on the Prism models on this machine, with the provider this
+    function would otherwise have returned as the router's failover. The returned model
+    needs ``omlx_provider.hooks_for(model)`` on its Agent (the load/unload lease).
     """
+    base = _provider_model(tier, role)
+    import omlx_provider
+
+    if role in omlx_provider.ROLES and omlx_provider.enabled():
+        return omlx_provider.build_models(role, fallback=base).router
+    return base
+
+
+def _provider_model(tier: str | None, role: str | None):
     import agent_common
 
+    if agent_common.ACTIVE_PROVIDER == "ollama_cloud":
+        # A tier the user configured names a registry alias and beats the role table
+        # (explicit config over defaults). A *role* gets Strands' native ModelRouter
+        # over the cloud candidates — its profile's model first, the others as
+        # failover, reasoning budget by role; a roleless node (a team member) gets
+        # one plain model.
+        import ollama_cloud
+
+        configured = tier_model_id(tier)
+        if role:
+            return ollama_cloud.build_models(role, model=configured or None).router
+        return ollama_cloud.build_single(None, model=configured or None)
     return agent_common.build_model(model_id=tier_model_id(tier))
 
 
@@ -173,6 +207,9 @@ def resolve_tools(tool_names: list[str] | None, caller: Agent, tool_label: str) 
     denied = (
         DENIED_TOOLS
         | agent_common.current_generated_tool_names()
+        # An MCP server's tools reach out to whatever that server is; the orchestrator asks a person
+        # before each one (acp_server.APPROVAL_REQUIRED_TOOLS) and a sub-agent has no one to ask.
+        | set(agent_common.MCP_TOOL_NAMES)
         | ORCHESTRATOR_ONLY_TOOLS
         | registered_proxy_names(caller.tool_registry)
     )
@@ -229,13 +266,20 @@ def build_agent_nodes(agent_specs: list[dict[str, Any]], caller: Agent, tool_lab
         requested = spec.get("tier")
         tier = requested if requested in TIERS else laya_triage.suggested_tier(caller)
         laya_triage.record_team_tier(caller, name, tier)
+        # A node's *profile* ("architect" | "digest") puts it on the local Prism model, with the
+        # load/unload lease that goes with it — the A2A graph's default engine for those jobs.
+        # Any other node runs on the orchestrator's provider, exactly as before.
+        import omlx_provider
+
+        profile = spec.get("profile") or (name if name in omlx_provider.ROLES else None)
+        model = build_sub_agent_model(tier, role=profile if profile in omlx_provider.ROLES else None)
         nodes[name] = Agent(
             name=name,
             system_prompt=f"{base_prompt} {UNTRUSTED_CONTEXT_POLICY}",
-            model=build_sub_agent_model(tier),
+            model=model,
             tools=resolve_tools(spec.get("tools"), caller, tool_label),
             conversation_manager=build_conversation_manager(),
-            hooks=[UntrustedToolResultHooks(), SecretRedactionHooks()],
+            hooks=[UntrustedToolResultHooks(), SecretRedactionHooks(), *omlx_provider.hooks_for(model)],
             callback_handler=None,
         )
     return nodes

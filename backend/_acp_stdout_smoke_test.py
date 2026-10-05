@@ -13,6 +13,7 @@ kind of stray write, then writes one frame the way acp.stdio's transport does.
 """
 
 import os
+os.environ.setdefault("SIERRALAB_REFLECT", "off")  # scripted/live test turns are not lessons (reflect.py)
 import subprocess
 import sys
 from pathlib import Path

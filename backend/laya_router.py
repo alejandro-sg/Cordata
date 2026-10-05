@@ -76,7 +76,7 @@ logger = logging.getLogger(__name__)
 class Target:
     id: str
     description: str
-    kind: str  # orchestrator | specialist | plugin
+    kind: str  # orchestrator | specialist | plugin | tool
     plugin: str | None = None
 
 
@@ -84,11 +84,19 @@ BASE_TARGETS: tuple[Target, ...] = (
     Target("answer", "a conversational answer or explanation; no tools needed", "orchestrator"),
     Target("code", "reading, editing, building or running code and files in this project", "orchestrator"),
     Target("architect", "designing or planning a change before any code is written", "specialist"),
+    Target(
+        "claude_code",
+        "a large refactor or implementation spanning many files that needs coordinated edits and test runs carried out end to end",
+        "tool",
+    ),
     Target("debugger", "fixing a failing command, test, build or error message", "specialist"),
     Target("team", "a large task with several independent parts for a team of specialists", "orchestrator"),
     Target("web", "looking something up on the web", "orchestrator"),
     Target("memory", "recalling or storing something the user said before", "orchestrator"),
 )
+
+#: Which tool a ``kind="tool"`` target routes to (and, in ``_SPECIALIST_TOOLS`` below, back).
+TOOL_FOR_TARGET = {"claude_code": "claude_code_engineer"}
 
 RISK_LEVELS = ("read_only", "edits_files", "destructive")
 COMPLEXITY_LEVELS = ("trivial", "moderate", "hard")
@@ -100,6 +108,10 @@ _HINTS = {
     "team": "this looks like a multi-part task: local_graph for independent parts, local_swarm for sequential ones",
     "architect": "this looks like design work: the architect specialist can plan it first",
     "debugger": "this looks like a failure to fix: the debugger specialist can diagnose and patch it",
+    "claude_code": (
+        "this is a large multi-file change to carry out end to end: hand the whole task to the claude_code_engineer tool "
+        "(it edits files and runs the tests headless) instead of editing the files yourself"
+    ),
 }
 
 COMMAND_QUESTION = {
@@ -141,7 +153,7 @@ class RouteDecision:
     low_confidence: bool = False
     abstained: bool = True
     reason: str = ""
-    action: str = "none"  # dispatch | scope | hint | escalate | none
+    action: str = "none"  # dispatch | scope | tool | hint | escalate | none
     probabilities: dict = field(default_factory=dict)
     risk: str | None = None
     risk_confidence: float = 0.0
@@ -150,6 +162,10 @@ class RouteDecision:
     latency_ms: float | None = None
     error: str | None = None
     escalate_model: str | None = None
+    suppress_hint: bool = False  # the route is confident but the policy declined to act on it
+    #: Which arm the contextual bandit chose at each decision point this turn (`bandit.py`), so the turn's outcome
+    #: can be attributed back to the choices that were made. Empty when the bandit is off. Never affects a guard.
+    choices: dict = field(default_factory=dict)
 
     @property
     def armed(self) -> bool:
@@ -161,7 +177,7 @@ class RouteDecision:
         return "fast" if self.complexity < 0.6 else "strong" if self.complexity > 1.4 else "standard"
 
     def hint(self) -> str | None:
-        if self.abstained or self.target is None:
+        if self.abstained or self.target is None or self.suppress_hint:
             return None
         if self.target.kind == "plugin":
             text = f"this looks like a job for the {self.target.plugin} plugin's tools"
@@ -289,6 +305,16 @@ class LayaRouter:
             decision.action, decision.reason = "dispatch", f"dispatched to the {label} specialist"
         elif decision.target.id == "team" and policy.team_dispatch == "direct":
             decision.action, decision.reason = "dispatch", "dispatched to the team pipeline"
+        elif kind == "tool":
+            # The Claude Code CLI wrapper is the heavy path: acted on only when Laya is not
+            # confident the task is trivial. A small change stays with the orchestrator's own
+            # tools. The turn is still the orchestrator's — "tool" is a strong hint (it names the
+            # tool), never a call made for it: the call goes through the same approval gate.
+            if decision.tier() == "fast":
+                decision.suppress_hint = True
+                decision.action, decision.reason = "none", f"{label} is the heavy path and Laya rates this task trivial; the orchestrator handles it"
+            else:
+                decision.action, decision.reason = "tool", f"routed to the {TOOL_FOR_TARGET.get(label, label)} tool"
         elif kind == "plugin":
             decision.action, decision.reason = "scope", f"tools scoped to the {decision.target.plugin} plugin"
         elif decision.hint():
@@ -354,7 +380,7 @@ def remove_prompt_block(agent: Any, block: dict) -> None:
 
 
 _SHELL_EXIT = re.compile(r"Exit Code:\s*(-?\d+)")
-_SPECIALIST_TOOLS = {"architect": "architect", "debugger": "debugger"}
+_SPECIALIST_TOOLS = {"architect": "architect", "debugger": "debugger", **{tool: target for target, tool in TOOL_FOR_TARGET.items()}}
 
 
 def shell_commands(tool_input: Any) -> list[str]:

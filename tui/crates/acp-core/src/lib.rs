@@ -14,9 +14,10 @@ pub use config::{BackendConfig, DaemonConfig};
 pub use error::{Error, Result};
 pub use events::{
     AppEvent, ConfigChoice, ConfigOptionInfo, FileDiff, HEAL_METHOD, HarnessEvent, HealInfo,
-    LAYA_METHOD, LSP_METHOD, LayaDecision, LayaEvent, LayaOutcome, ModeInfo, PLUGINS_METHOD,
-    SessionInfo, StopReason, TASK_METHOD, TaskInfo, TaskState, ToolCallInfo, ToolCallPatch,
-    ToolKind, ToolStatus, parse_harness, parse_laya,
+    LAB_METHOD, LAYA_METHOD, LSP_METHOD, LabHitl, LabLink, LabMemory, LabPod, LabResources,
+    LabState, LabThreat, LabTrace, LayaDecision, LayaEvent, LayaOutcome, ModeInfo, PLUGINS_METHOD,
+    PodStatus, SessionInfo, StopReason, TASK_METHOD, TaskInfo, TaskState, ToolCallInfo,
+    ToolCallPatch, ToolKind, ToolStatus, parse_harness, parse_laya,
 };
 pub use permission::{ApprovalDecision, PermissionInfo, Unwrapped, unwrap_untrusted};
 pub use session::{SessionHandle, SessionOptions};

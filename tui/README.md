@@ -93,7 +93,7 @@ narrow terminal. Multi-line paste goes into the box as one paste; it doesn't sub
 | key | action |
 |---|---|
 | Enter | send · `Ctrl+J` / `Alt+Enter` newline |
-| `a` / `r` (or Esc) | allow / reject a pending tool call (approval box) |
+| `a` / `r` (or Esc) | allow / reject a pending tool call (approval box) — `y` / `n` work too |
 | `s` | allow and **save the rule** ("Always allow shell(git status)"), when the box offers it |
 | Esc / Ctrl+C | cancel the running turn (not while the approval box is open) · Esc/Ctrl+C clears the box when idle |
 | Up / Down | earlier / later prompts (on the first / last line of the box) |
@@ -102,7 +102,28 @@ narrow terminal. Multi-line paste goes into the box as one paste; it doesn't sub
 | Ctrl+T | temperature picker |
 | Ctrl+R / Ctrl+E | expand reasoning / tool results |
 | `?` (empty box) or F1 | print the help (all keys and commands) |
+| F2 or `/lab` | the **Experimental Lab**: live agent pods, A2A links, Laya threat gauge, E-Stop, dial, guidance — see below |
 | Ctrl+Q | quit |
+
+### The Experimental Lab (F2 / `/lab`)
+
+A live view of every agent in the session (`docs/experimental-lab.md` has the design and the
+protocol). It is drawn in the live region like the other panels, so the transcript stays in your
+scrollback. With it open, keys go to the Lab; Ctrl+C still cancels a turn.
+
+| key | does |
+|---|---|
+| ←/→, `h`/`l`, Tab | select a pod |
+| Enter | inspect: system prompt, tool trace, live stream (Enter/Esc collapses) |
+| `K` | **E-Stop**: isolate the pod and its sub-agents — every model/tool call is refused from then on |
+| `R` | release an isolated pod |
+| `[` / `]` (or `-` / `+`) | the pod's Laya destructiveness dial −/+ 0.05 (it only ever *tightens* the approval gate) |
+| `I` | inject guidance: type, Enter queues it for the pod's next model call, Esc cancels |
+| `Y` / `N` | at the **HITL Intervention Station** (a pending approval, drawn with its diff): approve & execute / reject & discard |
+| `K` at the station | E-Stop: reject the call *and* isolate the pod that asked |
+| Esc, F2 | collapse the inspector, then close |
+
+Run it on the signed-in local Ollama daemon (no API key): `make tui-lab`.
 
 Scrolling is your terminal's: wheel, trackpad, Shift+PageUp/PageDown, or its scrollback search.
 
@@ -224,12 +245,25 @@ cargo test --workspace
 Protocol paths (streaming, permission allow/reject/drop, plan/auto, cancel,
 replay, config options, crash, timeouts, concurrency, orphan-process check) are
 tested end-to-end against `crates/acp-core/tests/fixtures/fake_agent.py`, a
-scripted ACP agent, so they need no model server.
+scripted ACP agent, so they need no model server. That includes a regression test that
+notifications keep flowing while an approval is open (the Lab's telemetry depends on it).
+
+The Lab is also covered end to end, with this binary in a pseudo-terminal against a real backend
+child and a scripted stand-in for the Ollama daemon: `backend/_e2e_lab_tui_smoke_test.py`
+(`docs/experimental-lab.md`, "Tests").
+
+## Undo
+
+Before any call that may change files the backend snapshots the project (`docs/agentic-harness.md`,
+"Checkpoints"), so `auto` mode can be taken back. `/undo` previews the latest turn's changes — files, what
+each would do, and any you edited since — and `/undo apply` reverts them; `/undo <turn> [apply]` names an
+earlier turn and `/checkpoints` lists them. A change that could not be snapshotted, or that writes outside the
+project, is said once (`⚠ not checkpointed …`). Undo is refused while a turn is running.
 
 ## Not done
 
 Provider switching (it's environment on purpose), free-float temperature, skills/MCP management,
 session enumeration (add `list_sessions` to `acp_server.py` first — don't read `backend/sessions/`
-off disk behind the protocol's back), `/compact`, `/new`, snapshots / `/undo`, `@file` mentions,
+off disk behind the protocol's back), `/compact`, `@file` mentions,
 a non-interactive `-p` mode. The full list, with the reference tool for each, is in
 [`docs/harness-parity.md`](../docs/harness-parity.md).

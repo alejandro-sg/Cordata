@@ -25,17 +25,19 @@ import sys
 import tempfile
 from pathlib import Path
 
+os.environ["SIERRALAB_STATE_DB"] = os.path.join(tempfile.mkdtemp(prefix="heal-ledger-"), "state.db")  # remembered fixes go to a private ledger
 os.environ.setdefault("BYPASS_TOOL_CONSENT", "true")
 os.environ.setdefault("STRANDS_NON_INTERACTIVE", "true")
 
 from strands import Agent  # noqa: E402
+from strands import tool as strands_tool  # noqa: E402
 from strands_tools import editor, shell  # noqa: E402
 
 import harness_events  # noqa: E402
 import patch_tool  # noqa: E402
 import specialists  # noqa: E402
 from harness_testing import ScriptedModel, check, last_text, text, tool as call  # noqa: E402
-from self_heal import HealConfig, SelfHealHooks  # noqa: E402
+from self_heal import HealConfig, SelfHealHooks, current_excerpt  # noqa: E402
 
 CHECK = f"{sys.executable} check.py"
 BUGGY = "def add(a, b):\n    return a - b\n"
@@ -209,9 +211,48 @@ def test_state_mismatch() -> None:
         FakeDiagnose([GOOD_PATCH]),
     )
     texts = tool_texts(agent)
-    check("Re-read it with file_read" in texts[0] and "state_mismatch" in phases(events), "a hunk that doesn't match the file → re-read instruction")
-    check("Use a unified diff" in texts[1] and "Re-read" not in texts[1], "a patch in an unreadable format → a format note, not 'state mismatch'")
+    check("State mismatch" in texts[0] and "state_mismatch" in phases(events), "a hunk that doesn't match the file → a state-mismatch note")
+    check("Current calc.py, lines 1" in texts[0] and "def add(a, b):" in texts[0] and "return a - b" in texts[0], "…carrying the file's current lines, so the next patch is written against what is there")
+    check("Use a unified diff" in texts[1] and "State mismatch" not in texts[1], "a patch in an unreadable format → a format note, not 'state mismatch'")
     check("[self-heal]" not in texts[2], "an unknown editor command gets no misleading note")
+    check(current_excerpt(Path.cwd(), "../../etc/passwd", 1) is None, "the excerpt never reaches outside the project")
+    (Path.cwd() / ".env").write_text("TOKEN=abc\n")
+    check(current_excerpt(Path.cwd(), ".env", 1) is None, "…or into a secrets file, even one that exists")
+
+
+def test_claude_code_failing_check() -> None:
+    root = project()
+    (root / "run_tests.sh").write_text(f"#!/bin/sh\n{CHECK}\n")
+
+    @strands_tool(name="claude_code_engineer")
+    def fake_claude(task: str) -> dict:
+        """Stand-in for the Claude Code CLI wrapper: it edited, ran its tests, and they failed."""
+        steps = [{"tool": "Edit", "detail": "calc.py", "ok": True}, {"tool": "Bash", "detail": "bash run_tests.sh", "ok": False}]
+        return {"status": "success", "content": [{"text": "I changed calc.py; the tests still fail."}, {"json": {"tool": "claude_code_engineer", "steps": steps}}]}
+
+    events: list = []
+    unsubscribe = harness_events.subscribe(lambda kind, payload: kind == "heal" and events.append(payload))
+    hooks = SelfHealHooks(config=HealConfig(max_attempts=3), diagnose=FakeDiagnose([GOOD_PATCH]))
+    agent = Agent(
+        model=ScriptedModel([call("claude_code_engineer", {"task": "make the tests pass"}), patch_from_note, call("shell", {"command": CHECK}), text("fixed")]),
+        tools=[fake_claude, patch_tool.apply_patch, shell],
+        hooks=[hooks],
+        callback_handler=None,
+    )
+    agent("have Claude Code fix it")
+    unsubscribe()
+    texts = tool_texts(agent)
+    check("Claude Code finished with `bash run_tests.sh` still failing" in texts[0] and "```diff" in texts[0], "a check Claude Code left failing is reproduced in a copy and healed")
+    check(phases(events)[:2] == ["detected", "diagnosing"] and "verified" in phases(events), f"the same loop as a shell failure ({phases(events)})")
+    check((root / "calc.py").read_text().endswith("a + b\n"), "…and the model applied the verified patch")
+
+    # A check that fails inside the CLI's session but passes in a clean copy is reported as such, not "fixed".
+    (root / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+    diagnose = FakeDiagnose([GOOD_PATCH])
+    hooks = SelfHealHooks(config=HealConfig(max_attempts=3), diagnose=diagnose)
+    agent = Agent(model=ScriptedModel([call("claude_code_engineer", {"task": "x"}), text("ok")]), tools=[fake_claude], hooks=[hooks], callback_handler=None)
+    agent("again")
+    check(diagnose.calls == [] and "passes in a clean copy" in tool_texts(agent)[0], "when it passes in a clean copy the Debugger is not engaged, and the model is told to check for itself")
 
 
 def main() -> None:
@@ -223,6 +264,7 @@ def main() -> None:
     test_real_debugger_agent()
     test_preapproval()
     test_state_mismatch()
+    test_claude_code_failing_check()
     print("\nPASS: self-healing — diagnose, sandbox-verify, iterate, auto-continue, escalate, pre-approval bounds")
 
 

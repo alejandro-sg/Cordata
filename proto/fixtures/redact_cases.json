@@ -1,0 +1,29 @@
+{
+  "comment": "Shared by backend/secret_patterns.py and lab/crates/harness-client/src/redact.rs. `masks`: after scrubbing, none of `gone` may remain and `[REDACTED` must appear. `keeps`: the text must come back unchanged (a reviewer has to be able to read code).",
+  "masks": [
+    {"name": "bearer header", "input": "curl -H 'Authorization: Bearer abcdefghijklmnop1234567890xyz' https://api.example.com", "gone": ["abcdefghijklmnop1234567890xyz"]},
+    {"name": "openai-style key in an export", "input": "export OPENAI_API_KEY=sk-ABCDEF0123456789ABCDEF0123456789", "gone": ["sk-ABCDEF0123456789ABCDEF0123456789"]},
+    {"name": "anthropic key bare", "input": "key is sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUV-0123456789", "gone": ["sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUV-0123456789"]},
+    {"name": "github token", "input": "git clone https://ghp_abcdefghijklmnopqrstuvwxyz0123456789@github.com/o/r", "gone": ["ghp_abcdefghijklmnopqrstuvwxyz0123456789"]},
+    {"name": "github fine-grained", "input": "GITHUB=github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyz", "gone": ["github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyz"]},
+    {"name": "aws access key id", "input": "aws_access_key_id = AKIAIOSFODNN7EXAMPLE", "gone": ["AKIAIOSFODNN7EXAMPLE"]},
+    {"name": "slack token", "input": "SLACK xoxb-123456789012-abcdefghijkl", "gone": ["xoxb-123456789012-abcdefghijkl"]},
+    {"name": "jwt", "input": "token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U end", "gone": ["eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"]},
+    {"name": "pem block", "input": "x\n-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0123456789\nabcdef\n-----END RSA PRIVATE KEY-----\ny", "gone": ["MIIEowIBAAKCAQEA0123456789", "abcdef"]},
+    {"name": "quoted api_key assignment", "input": "api_key = \"a1b2c3d4e5f6g7h8i9j0k1l2\"", "gone": ["a1b2c3d4e5f6g7h8i9j0k1l2"]},
+    {"name": "password in yaml", "input": "password: hunter2hunter2hunter2", "gone": ["hunter2hunter2hunter2"]},
+    {"name": "env file line", "input": "DATABASE_SECRET=Zx9Qm4Lp7Vt2Kc8Rb5Nd3Hs", "gone": ["Zx9Qm4Lp7Vt2Kc8Rb5Nd3Hs"]},
+    {"name": "google api key", "input": "AIzaSyA-1234567890abcdefghijklmnopqrstuv", "gone": ["AIzaSyA-1234567890abcdefghijklmnopqrstuv"]},
+    {"name": "hugging face token", "input": "HF hf_abcdefghijklmnopqrstuvwxyz0123", "gone": ["hf_abcdefghijklmnopqrstuvwxyz0123"]}
+  ],
+  "keeps": [
+    {"name": "a numeric setting", "input": "max_tokens = 4096"},
+    {"name": "a variable named like a token", "input": "token_count = compute_token_budget"},
+    {"name": "a short value", "input": "let key = \"short\";"},
+    {"name": "an env lookup", "input": "API_KEY = os.environ[\"API_KEY\"]"},
+    {"name": "a url in a diff", "input": "+    let url = \"https://example.com/path?x=1\";"},
+    {"name": "plain code", "input": "fn parse(input: &str) -> Result<Ast, Error> {\n    tokenize(input)?.parse()\n}"},
+    {"name": "a vault placeholder", "input": "OPENAI_API_KEY=__openai_api_key__"},
+    {"name": "a git sha", "input": "commit 9dc51f7a8b3c4d5e6f708192a3b4c5d6e7f80912"}
+  ]
+}

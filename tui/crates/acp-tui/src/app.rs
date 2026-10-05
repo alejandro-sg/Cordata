@@ -16,6 +16,7 @@ use tokio::sync::oneshot;
 use crate::commands::{self, Command};
 use crate::config_ui::ConfigPanel;
 use crate::input::Input;
+use crate::lab::LabView;
 use crate::settings::{Settings, Store};
 
 #[derive(Debug)]
@@ -146,6 +147,8 @@ pub enum TabState {
 }
 
 pub struct App {
+    /// An interrupted turn this client should resume on its own, once idle (see `take_auto_resume`).
+    pub auto_resume: Option<String>,
     pub messages: Vec<Message>,
     pub input: Input,
     pub pending: VecDeque<PendingPermission>,
@@ -196,11 +199,14 @@ pub struct App {
     pub diff_expanded: bool,
     /// Every open session, for the footer (empty / one entry: no tab strip).
     pub tabs: Vec<TabBadge>,
+    /// The Experimental Lab view (F2 / `/lab`).
+    pub lab: LabView,
 }
 
 impl App {
     pub fn new() -> Self {
         Self {
+            auto_resume: None,
             messages: Vec::new(),
             input: Input::default(),
             pending: VecDeque::new(),
@@ -233,6 +239,7 @@ impl App {
             tasks: Vec::new(),
             diff_expanded: false,
             tabs: Vec::new(),
+            lab: LabView::default(),
         }
     }
 
@@ -259,6 +266,18 @@ impl App {
             && self.pending.is_empty()
             && self.picker.is_none()
             && self.config.is_none()
+            && !self.lab.open
+    }
+
+    /// The turn to resume on its own, once the session is idle: set when the backend says a loaded session has
+    /// an interrupted turn and `selfHeal.autoResume` allows it. Taken at most once.
+    pub fn take_auto_resume(&mut self) -> Option<Effect> {
+        if self.auto_resume.is_none() || !self.input_enabled() {
+            return None;
+        }
+        let line = self.auto_resume.take()?;
+        self.messages.push(Message::Info(line));
+        Some(self.begin_turn(AUTO_RESUME_MARKER.into()))
     }
 
     /// Can a prompt be sent right now? (Same as `input_enabled`, named for the
@@ -269,6 +288,7 @@ impl App {
 
     /// Start a turn with `text` as the prompt.
     pub(crate) fn begin_turn(&mut self, text: String) -> Effect {
+        self.auto_resume = None;
         self.turn_active = true;
         self.turn_started = Some(Instant::now());
         self.turn_tools = 0;
@@ -441,6 +461,23 @@ impl App {
                 self.messages.push(Message::Heal(info));
             }
             HarnessEvent::Heal(_) => {}
+            HarnessEvent::Lab(state) => self.lab.on_state(*state),
+            HarnessEvent::Resume(event) => {
+                self.auto_resume = event
+                    .get("auto")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                    .then(|| {
+                        let attempts = event.get("attempts").and_then(Value::as_u64).unwrap_or(0);
+                        let max = event.get("max").and_then(Value::as_u64).unwrap_or(2);
+                        format!("↻ resuming the interrupted turn automatically (attempt {}/{max})", attempts + 1)
+                    });
+            }
+            HarnessEvent::Checkpoint(event) => {
+                if let Some(line) = crate::commands::format_checkpoint_event(&event) {
+                    self.messages.push(Message::Info(sanitize(&line)));
+                }
+            }
             HarnessEvent::Plugin(row) => {
                 // Start-up noise stays in the progress bars; problems are worth a line.
                 let status = row
@@ -483,6 +520,12 @@ impl App {
     }
 
     fn on_ext_result(&mut self, tag: &str, result: Result<Value, String>) {
+        // The Lab reports its own controls (a dial turned five times is not five
+        // lines of scrollback).
+        if tag.starts_with("lab/") {
+            self.lab.on_ext_result(tag, result);
+            return;
+        }
         let value = match result {
             Ok(value) => value,
             Err(error) => {
@@ -603,8 +646,17 @@ impl App {
             )));
         }
 
+        // F2 opens the Lab from anywhere — with an approval open too, so the
+        // station can be looked at in context.
+        if key.code == KeyCode::F(2) {
+            return self.lab.toggle();
+        }
+
         if !self.pending.is_empty() {
             return self.on_key_permission(key);
+        }
+        if self.lab.open {
+            return self.on_key_lab(key);
         }
         if self.picker.is_some() {
             return self.on_key_picker(key);
@@ -822,10 +874,16 @@ impl App {
             Command::Plugins(arg) => return self.run_plugins(arg),
             Command::Lsp => return Some(ext("_sierralab/lsp/status", Value::Null, "lsp")),
             Command::Heal => return Some(ext("_sierralab/heal/status", Value::Null, "heal")),
+            Command::Checkpoints => {
+                return Some(ext("_sierralab/checkpoints/list", Value::Null, "checkpoints"));
+            }
+            Command::Undo(arg) => return self.run_undo(arg),
             Command::Agents => self.info(
                 "specialists: architect (plans changes, read-only) · debugger (diagnoses, patches, verifies) — \
-                 Laya dispatches confident routes to them directly; otherwise the agent calls them as tools",
+                 Laya dispatches confident routes to them directly; otherwise the agent calls them as tools. \
+                 /lab (F2) shows them live",
             ),
+            Command::Lab => return self.lab.toggle(),
             Command::New => return Some(Effect::NewSession),
             Command::Sessions => return Some(Effect::ListSessions),
             Command::Switch(arg) => {
@@ -849,6 +907,35 @@ impl App {
             Command::Unknown(name) => self.info(format!("unknown command /{name} — try /help")),
         }
         None
+    }
+
+    /// `/undo` previews undoing the latest turn's changes; `/undo apply` does it. `/undo <turn>` and
+    /// `/undo <turn> apply` name an earlier turn (ids are in `/checkpoints`).
+    fn run_undo(&mut self, arg: Option<String>) -> Option<Effect> {
+        let words: Vec<&str> = arg.as_deref().unwrap_or("").split_whitespace().collect();
+        let (turn, apply) = match words.as_slice() {
+            [] => (None, false),
+            ["apply" | "yes" | "now"] => (None, true),
+            [turn] => (Some(*turn), false),
+            [turn, "apply" | "yes" | "now"] => (Some(*turn), true),
+            _ => {
+                self.info("usage: /undo [turn] [apply] — without 'apply' it only shows what would change");
+                return None;
+            }
+        };
+        if apply && self.turn_active {
+            self.info("a turn is running — stop it (Esc) first, then /undo apply");
+            return None;
+        }
+        let mut params = serde_json::json!({ "apply": apply });
+        if let Some(turn) = turn {
+            params["turn"] = Value::String(turn.to_owned());
+        }
+        Some(ext(
+            "_sierralab/checkpoints/undo",
+            params,
+            if apply { "undo applied" } else { "undo" },
+        ))
     }
 
     /// `/plugins`, `/plugins enable|disable <name>`, `/plugins reload`.
@@ -924,9 +1011,22 @@ impl App {
                 self.diff_expanded = !self.diff_expanded;
                 return None;
             }
-            KeyCode::Char('a' | 'A') => ApprovalDecision::Allow,
+            // The HITL station's own keys, alongside the prompt's: Y approves and
+            // executes, N rejects and discards.
+            KeyCode::Char('a' | 'A' | 'y' | 'Y') => ApprovalDecision::Allow,
             KeyCode::Char('s' | 'S') if offers_always => ApprovalDecision::AllowAlways,
-            KeyCode::Char('r' | 'R') | KeyCode::Esc => ApprovalDecision::Reject,
+            KeyCode::Char('r' | 'R' | 'n' | 'N') | KeyCode::Esc => ApprovalDecision::Reject,
+            // The Lab's E-Stop, from the station: reject this call *and* isolate
+            // the pod that asked for it.
+            KeyCode::Char('k' | 'K') if self.lab.open => {
+                let effect = self.lab.estop_for_pending();
+                self.diff_expanded = false;
+                if let Some(mut pending) = self.pending.pop_front() {
+                    pending.answer(ApprovalDecision::Reject);
+                }
+                self.hint = None;
+                return effect;
+            }
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 // Documented, not a bug: session/cancel is only checked
                 // between streamed events and the server is parked on this
@@ -953,6 +1053,14 @@ impl App {
         }
         self.hint = None;
         None
+    }
+
+    fn on_key_lab(&mut self, key: KeyEvent) -> Option<Effect> {
+        // Ctrl+C still cancels a running turn from inside the Lab.
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            return self.on_ctrl_c();
+        }
+        self.lab.on_key(key)
     }
 
     fn on_key_picker(&mut self, key: KeyEvent) -> Option<Effect> {
@@ -1032,6 +1140,9 @@ impl App {
 
 /// What `/resume-turn` sends: the backend resumes the session's checkpoint.
 pub const RESUME_TURN_MARKER: &str = "[resume interrupted turn]";
+/// What the TUI sends when it resumes on its own (`selfHeal.autoResume`): the backend counts these and
+/// stops after two from the same checkpoint.
+pub const AUTO_RESUME_MARKER: &str = "[auto-resume interrupted turn]";
 
 fn ext(method: &str, params: Value, tag: &str) -> Effect {
     Effect::Ext {
@@ -1105,6 +1216,39 @@ mod tests {
 
     fn ctrl(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    #[test]
+    fn an_interrupted_turn_resumes_once_when_the_backend_allows_it() {
+        let mut app = connected();
+        let notice = |auto: bool, attempts: u64| {
+            AppEvent::Harness(HarnessEvent::Resume(serde_json::json!({
+                "auto": auto, "attempts": attempts, "max": 2, "where": "after_model, cycle 0"
+            })))
+        };
+        app.on_event(notice(false, 2));
+        assert!(app.take_auto_resume().is_none(), "the backend said no: nothing is sent");
+
+        app.on_event(notice(true, 0));
+        let Some(Effect::SendPrompt(text)) = app.take_auto_resume() else {
+            panic!("an idle session with an interrupted turn resumes");
+        };
+        assert_eq!(text, AUTO_RESUME_MARKER);
+        assert!(app.turn_active, "it is a turn like any other");
+        assert!(
+            app.messages.iter().any(|m| matches!(m, Message::Info(t) if t.contains("attempt 1/2"))),
+            "the person is told, with the count"
+        );
+        assert!(app.take_auto_resume().is_none(), "and it is taken once");
+
+        let mut busy = connected();
+        busy.on_event(notice(true, 1));
+        busy.turn_active = true;
+        assert!(busy.take_auto_resume().is_none(), "never on top of a turn in progress");
+        busy.turn_active = false;
+        let Some(Effect::SendPrompt(_)) = busy.take_auto_resume() else {
+            panic!("it waits until the session is idle");
+        };
     }
 
     fn connected() -> App {
@@ -1709,5 +1853,236 @@ mod tests {
         );
         // Non-CSI escapes lose their ESC (+ one byte); the leftover is inert text.
         assert_eq!(sanitize("x\u{1b}]0;evil\u{7}y"), "x0;evily");
+    }
+
+    // ------------------------------------------------------------------- Lab
+
+    fn lab_state(pods: &[(&str, acp_core::PodStatus)]) -> AppEvent {
+        AppEvent::Harness(HarnessEvent::Lab(Box::new(acp_core::LabState {
+            seq: 1,
+            pods: pods
+                .iter()
+                .map(|(name, status)| acp_core::LabPod {
+                    id: (*name).into(),
+                    name: (*name).into(),
+                    role: (*name).into(),
+                    status: *status,
+                    dial: 0.8,
+                    dial_default: 0.8,
+                    ..acp_core::LabPod::default()
+                })
+                .collect(),
+            ..acp_core::LabState::default()
+        })))
+    }
+
+    fn permission(app: &mut App, id: &str) -> oneshot::Receiver<ApprovalDecision> {
+        let (tx, rx) = oneshot::channel();
+        app.on_event(AppEvent::PermissionRequested {
+            info: PermissionInfo {
+                tool_call_id: id.into(),
+                tool_name: "shell".into(),
+                title: "Run shell".into(),
+                kind: ToolKind::Execute,
+                raw_input: None,
+                untrusted_source: false,
+                always_label: None,
+            },
+            decision: tx,
+        });
+        rx
+    }
+
+    fn ext_of(effect: Option<Effect>) -> (String, Value) {
+        match effect.expect("an effect") {
+            Effect::Ext { method, params, .. } => (method, params),
+            other => panic!("expected Ext, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn f2_opens_the_lab_and_it_takes_the_keyboard() {
+        let mut app = connected();
+        let (method, _) = ext_of(app.on_key(key(KeyCode::F(2))));
+        assert_eq!(
+            method, "_sierralab/lab/state",
+            "no snapshot yet: it asks for one"
+        );
+        assert!(app.lab.open && !app.input_enabled());
+        type_text(&mut app, "zzz");
+        assert!(
+            app.input.is_empty(),
+            "keys go to the Lab, not the prompt box"
+        );
+        app.on_event(lab_state(&[("orchestrator", acp_core::PodStatus::Idle)]));
+        assert!(
+            app.on_key(key(KeyCode::F(2))).is_none(),
+            "F2 again closes it"
+        );
+        assert!(!app.lab.open && app.input_enabled());
+    }
+
+    #[test]
+    fn slash_lab_toggles_the_view() {
+        let mut app = connected();
+        app.lab.seen = true;
+        assert!(submit(&mut app, "/lab").is_none());
+        assert!(app.lab.open);
+        assert!(app.on_key(key(KeyCode::Esc)).is_none());
+        assert!(!app.lab.open, "Esc closes it");
+    }
+
+    #[test]
+    fn k_in_the_lab_isolates_the_selected_pod_through_the_backend() {
+        let mut app = connected();
+        app.on_event(lab_state(&[
+            ("orchestrator", acp_core::PodStatus::Executing),
+            ("debugger", acp_core::PodStatus::Synthesizing),
+        ]));
+        app.on_key(key(KeyCode::F(2)));
+        app.on_key(key(KeyCode::Right));
+        let (method, params) = ext_of(app.on_key(key(KeyCode::Char('K'))));
+        assert_eq!(method, "_sierralab/lab/isolate");
+        assert_eq!(params, serde_json::json!({"pod": "debugger"}));
+        assert_eq!(
+            app.lab.pods()[1].status,
+            acp_core::PodStatus::Synthesizing,
+            "the pod keeps its status until the backend reports otherwise"
+        );
+        app.on_event(AppEvent::ExtResult {
+            tag: "lab/isolate".into(),
+            result: Ok(serde_json::json!({"pod": "debugger", "isolated": true, "also": []})),
+        });
+        assert!(
+            !app.messages
+                .iter()
+                .any(|m| matches!(m, Message::Info(_) | Message::Error(_))),
+            "a Lab control reports in the Lab, not the transcript"
+        );
+        assert!(app.lab.notice.as_ref().unwrap().0.contains("ISOLATED"));
+    }
+
+    #[test]
+    fn lab_snapshots_replace_each_other_and_keep_the_selection() {
+        let mut app = connected();
+        app.on_event(lab_state(&[
+            ("orchestrator", acp_core::PodStatus::Idle),
+            ("debugger", acp_core::PodStatus::Idle),
+        ]));
+        app.on_key(key(KeyCode::F(2)));
+        app.on_key(key(KeyCode::Right));
+        app.on_event(lab_state(&[
+            ("orchestrator", acp_core::PodStatus::Idle),
+            ("architect", acp_core::PodStatus::Idle),
+            ("debugger", acp_core::PodStatus::Executing),
+        ]));
+        assert_eq!(
+            app.lab.selected_pod().unwrap().name,
+            "debugger",
+            "selected by name, not position"
+        );
+        assert_eq!(app.lab.busy(), 1);
+    }
+
+    #[test]
+    fn y_and_n_answer_the_hitl_station_like_a_and_r() {
+        let mut app = connected();
+        let mut rx = permission(&mut app, "t1");
+        app.on_key(key(KeyCode::F(2)));
+        assert!(
+            app.lab.open && !app.pending.is_empty(),
+            "the station is open on a pending request"
+        );
+        app.on_key(key(KeyCode::Char('Y')));
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            ApprovalDecision::Allow,
+            "Y = Approve & Execute"
+        );
+        assert!(app.pending.is_empty());
+
+        let mut rx = permission(&mut app, "t2");
+        app.on_key(key(KeyCode::Char('n')));
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            ApprovalDecision::Reject,
+            "N = Reject & Discard"
+        );
+
+        let mut rx = permission(&mut app, "t3");
+        app.on_key(key(KeyCode::Char('a')));
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            ApprovalDecision::Allow,
+            "the prompt's own keys still work"
+        );
+    }
+
+    #[test]
+    fn lab_keys_other_than_the_stations_cannot_answer_or_dodge_a_pending_approval() {
+        let mut app = connected();
+        let mut rx = permission(&mut app, "t1");
+        app.on_key(key(KeyCode::F(2)));
+        for c in ['i', ']', '[', 'l', 'h'] {
+            assert!(
+                app.on_key(key(KeyCode::Char(c))).is_none(),
+                "{c} produced an effect"
+            );
+            assert!(
+                !app.pending.is_empty() && rx.try_recv().is_err(),
+                "{c} slipped past the approval"
+            );
+        }
+        assert!(
+            app.on_key(key(KeyCode::Char('r'))).is_none(),
+            "r is Reject here, not release"
+        );
+        assert_eq!(rx.try_recv().unwrap(), ApprovalDecision::Reject);
+    }
+
+    #[test]
+    fn k_at_the_station_rejects_the_call_and_isolates_the_pod_that_asked() {
+        let mut app = connected();
+        app.on_event(AppEvent::Harness(HarnessEvent::Lab(Box::new(
+            acp_core::LabState {
+                pods: vec![acp_core::LabPod {
+                    name: "debugger".into(),
+                    ..acp_core::LabPod::default()
+                }],
+                hitl: vec![acp_core::LabHitl {
+                    id: "i1".into(),
+                    pod: "debugger".into(),
+                    status: "pending".into(),
+                    ..acp_core::LabHitl::default()
+                }],
+                ..acp_core::LabState::default()
+            },
+        ))));
+        let mut rx = permission(&mut app, "t1");
+        app.on_key(key(KeyCode::F(2)));
+        let (method, params) = ext_of(app.on_key(key(KeyCode::Char('K'))));
+        assert_eq!(method, "_sierralab/lab/isolate");
+        assert_eq!(params, serde_json::json!({"pod": "debugger"}));
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            ApprovalDecision::Reject,
+            "the parked call is rejected too"
+        );
+        assert!(app.pending.is_empty());
+
+        // outside the Lab, k is just a key the modal ignores
+        let mut app = connected();
+        let _rx = permission(&mut app, "t2");
+        assert!(app.on_key(key(KeyCode::Char('K'))).is_none() && !app.pending.is_empty());
+    }
+
+    #[test]
+    fn ctrl_c_still_cancels_a_turn_from_inside_the_lab() {
+        let mut app = connected();
+        type_text(&mut app, "go");
+        app.on_key(key(KeyCode::Enter));
+        app.lab.seen = true;
+        app.on_key(key(KeyCode::F(2)));
+        assert_eq!(app.on_key(ctrl('c')), Some(Effect::Cancel));
     }
 }

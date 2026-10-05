@@ -30,8 +30,14 @@ pub enum Command {
     Lsp,
     /// The self-healing loop's episodes and settings.
     Heal,
+    /// The turns the harness can undo, newest first.
+    Checkpoints,
+    /// Undo a turn's file changes (preview, or `apply`).
+    Undo(Option<String>),
     /// The specialist sub-agents.
     Agents,
+    /// The Experimental Lab: live pods, A2A links, threat gauge, controls (F2).
+    Lab,
     /// Another session in this project (Ctrl+N).
     New,
     /// The open sessions, and saved ones for this folder.
@@ -68,7 +74,16 @@ pub const HELP: &[(&str, &str)] = &[
     ),
     ("/lsp", "language servers for this project"),
     ("/heal", "self-healing episodes and settings"),
+    (
+        "/undo [turn] [apply]",
+        "preview, or with 'apply' undo, a turn's file changes",
+    ),
+    ("/checkpoints", "the turns that can be undone"),
     ("/agents", "the architect and debugger specialists"),
+    (
+        "/lab",
+        "Experimental Lab: live pods, E-Stop, Laya dial, guidance (F2)",
+    ),
     ("/new", "another session in this project (Ctrl+N)"),
     ("/sessions", "open and saved sessions"),
     ("/switch [n]", "show session n (Ctrl+←/→, Alt+1…9)"),
@@ -120,7 +135,10 @@ pub fn parse(input: &str) -> Option<Command> {
         "plugins" | "plugin" | "mcp" => Command::Plugins(arg),
         "lsp" => Command::Lsp,
         "heal" | "self-heal" => Command::Heal,
+        "undo" | "rewind" => Command::Undo(arg),
+        "checkpoints" | "checkpoint" | "history" => Command::Checkpoints,
         "agents" | "specialists" => Command::Agents,
+        "lab" | "pods" => Command::Lab,
         "new" => Command::New,
         "sessions" => Command::Sessions,
         "switch" | "session" => Command::Switch(arg),
@@ -261,6 +279,17 @@ pub fn format_ext(tag: &str, value: &serde_json::Value) -> String {
                 .and_then(Value::as_array)
                 .cloned()
                 .unwrap_or_default();
+            if let Some(memory) = value.get("memory").filter(|m| m.is_object()) {
+                let n = |key: &str| memory.get(key).and_then(Value::as_u64).unwrap_or(0);
+                out.push(format!(
+                    "  memory: {} remembered fix(es) in this project ({} with a patch) · worked {} · failed {} · retired {}",
+                    n("fixes"),
+                    n("with_patch"),
+                    n("uses_ok"),
+                    n("uses_failed"),
+                    n("retired")
+                ));
+            }
             if episodes.is_empty() {
                 out.push("  no failures handled this session".into());
             }
@@ -276,6 +305,86 @@ pub fn format_ext(tag: &str, value: &serde_json::Value) -> String {
                         ""
                     },
                     text(&ep, "root_cause")
+                ));
+            }
+            out.join("\n")
+        }
+        "checkpoints" => {
+            let turns = value
+                .get("turns")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            if value.get("enabled").and_then(Value::as_bool) == Some(false) {
+                return "checkpoints are off (checkpoints.enabled) — nothing is being snapshotted".into();
+            }
+            if turns.is_empty() {
+                return "no turns with checkpoints yet — a snapshot is taken before any call that may change files".into();
+            }
+            let mut out = vec!["turns that can be undone (newest first):".to_owned()];
+            for turn in turns {
+                let files = turn.get("file_count").and_then(Value::as_u64);
+                out.push(format!(
+                    "  {}  {:>2} call(s){}{}  {}",
+                    text(&turn, "turn").chars().take(8).collect::<String>(),
+                    turn.get("calls").and_then(Value::as_u64).unwrap_or(0),
+                    files.map_or(String::new(), |n| format!(" · {n} file(s)")),
+                    if turn.get("undone").and_then(Value::as_bool) == Some(true) {
+                        " · undone"
+                    } else {
+                        ""
+                    },
+                    text(&turn, "last_call")
+                ));
+            }
+            out.push("  /undo shows what undoing the latest would do; /undo apply does it".into());
+            out.join("\n")
+        }
+        "undo" | "undo applied" => {
+            if value.get("ok").and_then(Value::as_bool) == Some(false) {
+                return format!("undo: {}", text(value, "reason"));
+            }
+            let dry = value.get("dry_run").and_then(Value::as_bool) == Some(true);
+            let count = value.get("count").and_then(Value::as_u64).unwrap_or(0);
+            let turn = text(value, "turn");
+            let turn: String = turn.chars().take(8).collect();
+            if count == 0 {
+                return format!("turn {turn}: nothing to change — the project already matches");
+            }
+            let mut out = vec![format!(
+                "{} turn {turn}: {count} file(s)",
+                if dry { "undoing would change" } else { "undid" }
+            )];
+            for file in value
+                .get("files")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .take(12)
+            {
+                out.push(format!("  {:<9} {}", text(file, "action"), text(file, "path")));
+            }
+            if count > 12 {
+                out.push(format!("  … and {} more", count - 12));
+            }
+            let edited = value
+                .get("edited_since")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            if !edited.is_empty() {
+                let names: Vec<&str> = edited.iter().filter_map(Value::as_str).take(5).collect();
+                out.push(format!(
+                    "  ⚠ edited since the turn ended (their changes would be overwritten): {}",
+                    names.join(", ")
+                ));
+            }
+            if dry {
+                out.push("  /undo apply to do it".into());
+            } else if let Some(id) = value.get("undo_with").and_then(Value::as_str) {
+                out.push(format!(
+                    "  to put it back: restore checkpoint {} (the ledger has it)",
+                    id.chars().take(12).collect::<String>()
                 ));
             }
             out.join("\n")
@@ -332,6 +441,43 @@ pub fn format_ext(tag: &str, value: &serde_json::Value) -> String {
     }
 }
 
+/// The one-line notice for a `_sierralab/checkpoint` event, or `None` for a phase that needs no line.
+pub fn format_checkpoint_event(event: &serde_json::Value) -> Option<String> {
+    use serde_json::Value;
+    let text = |key: &str| event.get(key).and_then(Value::as_str).unwrap_or_default();
+    match text("phase") {
+        "unprotected" => Some(format!(
+            "⚠ not checkpointed ({}): changes from {} cannot be undone",
+            text("reason"),
+            text("tool")
+        )),
+        "outside" => {
+            let paths: Vec<&str> = event
+                .get("outside")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect();
+            Some(format!(
+                "⚠ {} writes outside the project ({}) — a checkpoint cannot undo that",
+                text("tool"),
+                paths.join(", ")
+            ))
+        }
+        "restored" => Some(format!(
+            "↶ restored {} file(s){}",
+            event.get("files").and_then(Value::as_u64).unwrap_or(0),
+            if event.get("ok").and_then(Value::as_bool) == Some(false) {
+                " — some could not be restored"
+            } else {
+                ""
+            }
+        )),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,6 +527,60 @@ mod tests {
             parse("/laya stats"),
             Some(Command::Laya(Some("stats".into())))
         );
+    }
+
+    #[test]
+    fn heal_status_reports_what_is_remembered() {
+        let text = format_ext(
+            "heal",
+            &serde_json::json!({"config": {"enabled": true, "max_attempts": 3, "verify": "sandbox", "auto_apply": false},
+                "episodes": [], "memory": {"fixes": 4, "with_patch": 3, "uses_ok": 5, "uses_failed": 1, "retired": 1}}),
+        );
+        assert!(text.contains("memory: 4 remembered fix(es) in this project (3 with a patch) · worked 5 · failed 1 · retired 1"), "{text}");
+        let none = format_ext("heal", &serde_json::json!({"config": {}, "episodes": [], "memory": null}));
+        assert!(!none.contains("memory:"), "{none}");
+    }
+
+    #[test]
+    fn undo_and_checkpoint_commands_parse_and_format() {
+        assert_eq!(parse("/undo"), Some(Command::Undo(None)));
+        assert_eq!(
+            parse("/undo apply"),
+            Some(Command::Undo(Some("apply".into())))
+        );
+        assert_eq!(parse("/checkpoints"), Some(Command::Checkpoints));
+        let preview = serde_json::json!({
+            "ok": true, "dry_run": true, "turn": "34e119c76abc4050", "count": 2,
+            "files": [{"path": "a.txt", "action": "revert"}, {"path": "b.txt", "action": "delete"}],
+            "edited_since": ["a.txt"]
+        });
+        let text = format_ext("undo", &preview);
+        assert!(text.contains("undoing would change turn 34e119c7: 2 file(s)"), "{text}");
+        assert!(text.contains("revert    a.txt") && text.contains("delete    b.txt"), "{text}");
+        assert!(text.contains("edited since the turn ended") && text.contains("/undo apply"), "{text}");
+        let refused = format_ext("undo applied", &serde_json::json!({"ok": false, "reason": "a turn is running"}));
+        assert_eq!(refused, "undo: a turn is running");
+        let listing = format_ext(
+            "checkpoints",
+            &serde_json::json!({"enabled": true, "turns": [
+                {"turn": "34e119c76abc4050", "calls": 3, "file_count": 3, "undone": false, "last_call": "rm old.txt"}
+            ]}),
+        );
+        assert!(listing.contains("34e119c7") && listing.contains("3 call(s) · 3 file(s)"), "{listing}");
+        let off = format_ext("checkpoints", &serde_json::json!({"enabled": false, "turns": []}));
+        assert!(off.contains("checkpoints are off"), "{off}");
+    }
+
+    #[test]
+    fn checkpoint_notices_say_what_cannot_be_undone() {
+        let unprotected = serde_json::json!({"phase": "unprotected", "tool": "shell", "reason": "disk full"});
+        assert_eq!(
+            format_checkpoint_event(&unprotected).as_deref(),
+            Some("⚠ not checkpointed (disk full): changes from shell cannot be undone")
+        );
+        let outside = serde_json::json!({"phase": "outside", "tool": "file_write", "outside": ["/etc/hosts"]});
+        assert!(format_checkpoint_event(&outside).unwrap().contains("/etc/hosts"));
+        assert!(format_checkpoint_event(&serde_json::json!({"phase": "taken"})).is_none());
     }
 
     #[test]

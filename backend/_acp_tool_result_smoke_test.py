@@ -13,6 +13,7 @@ loop and a fake connection records what would have gone to the client.
 
 import asyncio
 import os
+os.environ.setdefault("SIERRALAB_REFLECT", "off")  # scripted/live test turns are not lessons (reflect.py)
 
 import acp
 from strands import Agent, tool

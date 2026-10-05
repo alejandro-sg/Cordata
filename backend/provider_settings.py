@@ -26,7 +26,7 @@ from secret_guard import Secret
 
 _ENV_PATH = Path(__file__).resolve().parent / ".env"
 
-_VALID_PROVIDERS = {"local", "anthropic", "openai_compatible"}
+_VALID_PROVIDERS = {"local", "anthropic", "openai_compatible", "ollama_cloud"}
 
 
 def _update_env_file(updates: dict[str, str]) -> None:
@@ -61,6 +61,7 @@ def get_provider_state() -> dict:
     with no further filtering.
     """
     import agent_common
+    import ollama_cloud
     from settings import OMLX_BASE_URL
 
     return {
@@ -72,6 +73,11 @@ def get_provider_state() -> dict:
         "anthropic": {
             "model_id": agent_common.ACTIVE_ANTHROPIC_MODEL_ID,
             "api_key_set": bool(agent_common.ACTIVE_ANTHROPIC_API_KEY),
+        },
+        "ollama_cloud": {
+            "base_url": ollama_cloud.default_base_url(),
+            "models": list(ollama_cloud.REGISTRY),
+            "roles": {role: {"model": p.model, "effort": p.effort} for role, p in ollama_cloud.ROLES.snapshot().items()},
         },
         "openai_compatible": {
             "base_url": agent_common.ACTIVE_CLOUD_BASE_URL,

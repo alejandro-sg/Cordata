@@ -63,7 +63,7 @@ def token_path() -> Path:
     return settings_store.user_dir() / "daemon.json"
 
 
-def load_or_create_token(port: int = DEFAULT_PORT) -> str:
+def load_or_create_token(port: int = DEFAULT_PORT, grpc_port: int | None = None) -> str:
     """The daemon's token, generated on first run.
 
     Written 0600 in the user's private harness directory. Not in `settings.json`
@@ -98,7 +98,10 @@ def load_or_create_token(port: int = DEFAULT_PORT) -> str:
     except OSError:
         logger.warning("daemon: could not restrict %s to 0600", path)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(json.dumps({"token": token, "port": port}, indent=2) + "\n")
+        record: dict[str, Any] = {"token": token, "port": port}
+        if grpc_port:
+            record["grpcPort"] = grpc_port  # where the GUI's gRPC client finds the bridge
+        handle.write(json.dumps(record, indent=2) + "\n")
     return token
 
 
@@ -106,17 +109,23 @@ class State:
     """What the app carries between requests."""
 
     def __init__(self, port: int = DEFAULT_PORT) -> None:
+        from .discord_bot import DiscordRemote  # noqa: PLC0415 — imports discord lazily, in start()
         from .observer import Observer  # noqa: PLC0415 — observer imports settings lazily
 
         self.supervisor = Supervisor()
         self.token = load_or_create_token(port)
         self.port = port
+        self.grpc_port: int | None = None  # set once the gRPC bridge has bound (daemon/main.py)
         self.started = time.time()
         self._subscribers: set[str] = set()
         # The observer runs only while nobody is attached; `busy` is the daemon's
         # answer to "is a person here", which is what `Observer.wake` needs and
         # what keeps a cycle off a live turn's project.
         self.observer = Observer(busy=self.busy)
+        # The Discord front door (discord_bot.py). Constructed here so `/health` can
+        # report it, started by daemon/main.py once there is a loop to run it on —
+        # and inert unless the environment names a token, an operator and a channel.
+        self.remote = DiscordRemote(self.supervisor)
 
     def busy(self) -> bool:
         return bool(self._subscribers)
@@ -166,11 +175,84 @@ def create_app(port: int = DEFAULT_PORT) -> FastAPI:
         return {
             "ok": True,
             "port": state.port,
+            "grpc_port": state.grpc_port,
             "uptime": time.time() - state.started,
             "sessions": len(sessions),
             "alive": sum(1 for session in sessions if session["alive"]),
             "observer": state.observer.status(),
+            # Ids and reachability, never the token: a credential in a health payload is a
+            # credential in whatever scrapes it.
+            "discord": state.remote.status(),
         }
+
+    def observer_pod() -> dict[str, Any] | None:
+        """The observer is a child process of the daemon, not a pod in any session's
+        process, so the daemon contributes its pod to the Lab view itself. Absent
+        when the observer is switched off (it is off by default)."""
+        status = state.observer.status()
+        if not status.get("enabled"):
+            return None
+        return {
+            "id": "observer",
+            "name": "observer",
+            "role": "observer",
+            "parent": None,
+            "status": "synthesizing" if status.get("cycling") else "idle",
+            "isolated": False,
+            "cycles": status.get("cycles"),
+            "queued": status.get("queued"),
+            "scope": "daemon",
+        }
+
+    @app.get("/lab")
+    async def lab_snapshot(x_daemon_token: str | None = Header(default=None)) -> dict[str, Any]:
+        """The Experimental Lab as JSON: the newest state of every session's pods,
+        links, threat gauge and HITL station, plus the daemon's own observer pod.
+        Read-only — a control (E-Stop, dial, guidance) is an ACP extension request
+        on the session's own connection, never an unauthenticated REST verb."""
+        authorised(x_daemon_token)
+        return {"sessions": state.supervisor.lab_states(), "observer": observer_pod()}
+
+    @app.websocket("/lab/ws")
+    async def lab_socket(websocket: WebSocket, session: str | None = None) -> None:
+        """A read-only stream of Lab state for a remote canvas. Same rules as `/ws`
+        — loopback, token, no browser origins — because the frames carry tool inputs
+        and approval prompts. Doesn't attach to (or displace) the driving client."""
+        if websocket.headers.get("origin"):
+            await websocket.close(code=4403, reason="browser origins are not accepted")
+            return
+        if not state.valid(websocket.query_params.get("token")):
+            await websocket.close(code=4401, reason="bad or missing daemon token")
+            return
+        await websocket.accept()
+        supervisor = state.supervisor
+        feed = supervisor.watch_lab()
+        try:
+            snapshot = {sid: lab for sid, lab in supervisor.lab_states().items() if session in (None, sid)}
+            await websocket.send_text(json.dumps({"type": "snapshot", "sessions": snapshot, "observer": observer_pod()}))
+            last_observer = observer_pod()
+            while True:
+                reader = asyncio.create_task(websocket.receive_text())
+                writer = asyncio.create_task(feed.get())
+                done, pending = await asyncio.wait({reader, writer}, timeout=2.0, return_when=asyncio.FIRST_COMPLETED)
+                for task in pending:
+                    task.cancel()
+                if reader in done:
+                    reader.result()  # raises WebSocketDisconnect when the canvas goes away; anything it sends is ignored
+                if writer in done:
+                    frame = writer.result()
+                    if session in (None, frame["sessionId"]):
+                        await websocket.send_text(json.dumps(frame))
+                current = observer_pod()
+                if current != last_observer:
+                    last_observer = current
+                    await websocket.send_text(json.dumps({"type": "observer", "observer": current}))
+        except (WebSocketDisconnect, RuntimeError):
+            pass
+        except Exception:
+            logger.exception("daemon: lab socket failed")
+        finally:
+            supervisor.unwatch_lab(feed)
 
     @app.post("/observe")
     async def observe(payload: dict, x_daemon_token: str | None = Header(default=None)) -> dict[str, Any]:

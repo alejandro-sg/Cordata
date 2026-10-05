@@ -100,7 +100,14 @@ class CogneeGraphSink(KnowledgeGraphSink):
         if cognee is None:
             return []
         try:
-            return list(self._run(cognee.search(query)))[:limit]
+            found = list(self._run(cognee.search(query)))[:limit]
+            try:
+                import lab
+
+                lab.memory_hit("kg", query, [item if isinstance(item, dict) else {"label": str(item)} for item in found])
+            except Exception:
+                logger.debug("kg: lab report failed", exc_info=True)
+            return found
         except Exception:
             logger.warning("kg: cognee search failed", exc_info=True)
             return []

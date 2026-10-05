@@ -295,6 +295,7 @@ class Observer:
         self._task: asyncio.Task | None = None
         self._cycles = 0
         self._last: dict[str, Any] = {}
+        self._cycling = False  # a pass is in flight — the Lab's observer pod reads this
 
     # ------------------------------------------------------------- wiring
 
@@ -382,6 +383,7 @@ class Observer:
         return {
             "enabled": self.enabled(),
             "running": self._task is not None and not self._task.done(),
+            "cycling": self._cycling,
             "cycles": self._cycles,
             "queued": queued,
             "intervalMinutes": self.interval_minutes(),
@@ -431,6 +433,13 @@ class Observer:
 
     async def cycle(self) -> dict[str, Any] | None:
         """One pass. None when nothing was done, and the reason is logged."""
+        self._cycling = True
+        try:
+            return await self._cycle()
+        finally:
+            self._cycling = False
+
+    async def _cycle(self) -> dict[str, Any] | None:
         self._preempt.clear()
         if not self.enabled():
             return None

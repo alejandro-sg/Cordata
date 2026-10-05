@@ -37,6 +37,7 @@ from settings import (
     CLOUD_OPENAI_BASE_URL,
     CLOUD_OPENAI_MODEL_ID,
     MODEL_PROVIDER,
+    OLLAMA_MODEL_ID,
     OMLX_BASE_URL,
     OMLX_MODEL_ID,
 )
@@ -54,7 +55,7 @@ ACTIVE_MEMORY_WINDOW = 10  # SummarizingConversationManager.preserve_recent_mess
 # settings UI, not a chat tool call — no ToolContext to reach through, so
 # provider_settings.py writes these module globals directly instead of the
 # tool_context.agent.model.update_config() dance model_control_tool.py's
-# tools use). "local" | "anthropic" | "openai_compatible".
+# tools use). "local" | "anthropic" | "openai_compatible" | "ollama_cloud".
 ACTIVE_PROVIDER = MODEL_PROVIDER
 ACTIVE_ANTHROPIC_API_KEY = ANTHROPIC_API_KEY
 ACTIVE_ANTHROPIC_MODEL_ID = ANTHROPIC_MODEL_ID
@@ -119,6 +120,13 @@ def build_model(model_id: str | None = None):
     params: dict = {"max_tokens": _DEFAULT_MAX_TOKENS}
     if ACTIVE_TEMPERATURE is not None:
         params["temperature"] = ACTIVE_TEMPERATURE
+
+    if ACTIVE_PROVIDER == "ollama_cloud":
+        import ollama_cloud
+
+        return ollama_cloud.build_single(
+            "orchestrator", model=model_id or OLLAMA_MODEL_ID or None, params=params
+        )
 
     if ACTIVE_PROVIDER == "openai_compatible":
         return OpenAIModel(
@@ -353,8 +361,12 @@ def current_generated_tool_names() -> set[str]:
 SKILLS_DIR = BACKEND_DIR / "skills"
 
 
-def build_plugins() -> list:
-    return [AgentSkills(skills=[str(SKILLS_DIR)])]
+def build_plugins(extra_skill_dirs: list[str] | None = None) -> list:
+    """The skills a session can read: the ones that ship, plus ``extra_skill_dirs`` (the learned skills that have been
+    promoted for the session's project — ``learned.live_dirs``) and any named in ``SIERRALAB_EXTRA_SKILLS`` (the
+    promotion gate's A/B runs put a candidate there)."""
+    from_env = [p for p in os.environ.get("SIERRALAB_EXTRA_SKILLS", "").split(os.pathsep) if p]
+    return [AgentSkills(skills=[str(SKILLS_DIR), *(extra_skill_dirs or []), *from_env])]
 
 
 def build_conversation_manager() -> SummarizingConversationManager:
@@ -462,6 +474,12 @@ def ensure_provider_ready() -> None:
         rejection = _cloud_key_rejection()
         if rejection:
             raise RuntimeError(f"MODEL_PROVIDER=openai_compatible: {rejection}")
+    elif ACTIVE_PROVIDER == "ollama_cloud":
+        import ollama_cloud
+
+        problem = ollama_cloud.daemon_problem()
+        if problem:
+            raise RuntimeError(f"MODEL_PROVIDER=ollama_cloud: {problem}")
     elif ACTIVE_PROVIDER == "anthropic" and not reveal(ACTIVE_ANTHROPIC_API_KEY):
         raise RuntimeError(
             "MODEL_PROVIDER=anthropic but no API key was found. Export ANTHROPIC_API_KEY, or store it in the macOS "
@@ -481,6 +499,7 @@ def build_agent_for_session(
     use_triage: bool = True,
     untrusted_tools=None,
     checkpointing: bool = False,
+    skill_dirs: list[str] | None = None,
 ) -> Agent:
     """A fully session-bound Agent, for front doors that manage their own
     per-session instances (the ACP server — nothing derives this one for us).
@@ -546,7 +565,7 @@ def build_agent_for_session(
         model=build_model(),
         system_prompt=system_prompt or SYSTEM_PROMPT,
         tools=[*static, *discover_generated_tools(), *mcp, *(extra_tools or [])],
-        plugins=build_plugins(),
+        plugins=build_plugins(skill_dirs),
         hooks=[
             SkillValidationHooks(),
             UntrustedToolResultHooks(extra_untrusted_tools=untrusted_tools if untrusted_tools is not None else MCP_TOOL_NAMES),

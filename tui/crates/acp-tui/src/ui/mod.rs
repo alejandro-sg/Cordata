@@ -3,6 +3,7 @@ pub mod footer;
 pub mod heal;
 mod help;
 mod input;
+mod lab;
 mod laya;
 mod markdown;
 mod panels;
@@ -64,6 +65,9 @@ pub fn welcome_lines(info: &SessionInfo, width: u16) -> Vec<Line<'static>> {
 /// an approval / picker panel in its place), then the footer. It is only as tall
 /// as it needs to be, up to `max_rows`.
 pub fn render_live(app: &App, width: u16, max_rows: u16) -> LiveFrame {
+    if app.lab.open {
+        return lab::render_live(app, width, max_rows);
+    }
     let width = width.max(20);
     let footer_height = 1u16;
     let panel = panels::current(app, width);
@@ -985,5 +989,68 @@ mod tests {
             "{shown}"
         );
         assert!(shown.contains("laya p(ok) 88% ✗ surprised"), "{shown}");
+    }
+
+    #[test]
+    fn the_lab_view_survives_the_real_terminal_pipeline() {
+        use acp_core::{HarnessEvent, LabHitl, LabLink, LabPod, LabState, LabThreat, PodStatus};
+
+        let mut app = connected();
+        let pod = |name: &str, status, model: &str, effort: &str| LabPod {
+            id: name.into(),
+            name: name.into(),
+            role: name.into(),
+            status,
+            model: Some(model.into()),
+            effort: Some(effort.into()),
+            dial: 0.8,
+            dial_default: 0.8,
+            calls: 2,
+            ..LabPod::default()
+        };
+        app.on_event(AppEvent::Harness(HarnessEvent::Lab(Box::new(LabState {
+            seq: 4,
+            session_id: Some("abcdef12-3456".into()),
+            pods: vec![
+                pod("orchestrator", PodStatus::Executing, "glm-5.3-flash", "low"),
+                pod("architect", PodStatus::Idle, "glm-5.3-flash", "high"),
+                pod("debugger", PodStatus::Isolated, "kimi-k2.7-code", "max"),
+            ],
+            links: vec![LabLink {
+                from: "orchestrator".into(),
+                to: "debugger".into(),
+                kind: "delegation".into(),
+                active: false,
+                count: 1,
+                label: String::new(),
+            }],
+            threat: Some(LabThreat {
+                pod: "orchestrator".into(),
+                tool: "shell".into(),
+                score: Some(0.5),
+                confidence: Some(0.4),
+                band: Some("elevated".into()),
+                pending: false,
+            }),
+            hitl: vec![LabHitl::default()],
+            ..LabState::default()
+        }))));
+        app.lab.open = true;
+        let shown = screen(&mut app, 100, 40);
+        println!("{shown}");
+        for needle in [
+            "EXPERIMENTAL LAB",
+            "[EXECUTING ⚡]",
+            "[IDLE 💤]",
+            "[ISOLATED 🛑]",
+            "THREAT",
+            "0.50 ELEVATED",
+            "E-stop",
+        ] {
+            assert!(
+                shown.contains(needle),
+                "missing {needle:?} on the emulated screen:\n{shown}"
+            );
+        }
     }
 }

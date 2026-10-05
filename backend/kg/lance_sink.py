@@ -183,6 +183,7 @@ class LanceGraphSink(KnowledgeGraphSink):
             return []
         found = [row for row in _collapse(_read_jsonl(self._dir / "nodes.jsonl")) if needle in str(row.get("label", "")).lower()]
         found.sort(key=lambda row: float(row.get("last_ts") or 0), reverse=True)
+        _report("kg", query, found[:limit])
         return found[:limit]
 
     def neighbours(self, node_id: str, *, limit: int = 50) -> list[dict[str, Any]]:
@@ -194,7 +195,18 @@ class LanceGraphSink(KnowledgeGraphSink):
             if row.get("source") == node_id or row.get("target") == node_id
         ]
         rows.sort(key=lambda row: float(row.get("last_ts") or 0), reverse=True)
+        _report("kg", f"neighbours of {node_id}", [{"id": f"{r.get('source')}→{r.get('target')}", "label": r.get("kind") or r.get("label")} for r in rows[:limit]])
         return rows[:limit]
+
+
+def _report(source: str, query: str, rows: list[dict[str, Any]]) -> None:
+    """Tell the Lab's memory radar about a graph read. Best effort, never raises."""
+    try:
+        import lab
+
+        lab.memory_hit(source, query, rows)
+    except Exception:
+        logger.debug("kg: lab report failed", exc_info=True)
 
 
 def _collapse(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

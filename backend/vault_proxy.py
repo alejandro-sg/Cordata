@@ -91,7 +91,7 @@ RESERVED = ("ANTHROPIC_API_KEY", "CLOUD_OPENAI_API_KEY", "OLLAMA_API_KEY", "HF_T
 #: not in this list because their egress is not knowable statically — a plugin
 #: that ships its own HTTP client is outside what this can decide, which is
 #: exactly why the vault proxy is pointed at the *process*, not at a tool.
-EGRESS_TOOLS = frozenset({"shell", "python_repl", "http_request"})
+EGRESS_TOOLS = frozenset({"shell", "python_repl", "http_request", "claude_code_engineer"})
 
 #: How long to wait for the vault to accept a connection. Local, so this is
 #: generous; the cost of being wrong is a session that starts without egress.

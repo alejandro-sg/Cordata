@@ -37,6 +37,7 @@ from strands_tools import file_read, shell, think
 
 import harness_events
 import lsp_bridge
+import omlx_provider
 import patch_tool
 
 ARCHITECT_PROMPT = """You are the Architect specialist in a coding harness. You plan changes; you never edit files.
@@ -97,10 +98,10 @@ SPECIALISTS = (ARCHITECT, DEBUGGER)
 READ_ONLY_TOOLS = [file_read, think, *lsp_bridge.LSP_TOOLS]
 
 
-def _model(tier: str | None):
+def _model(tier: str | None, role: str | None = None):
     from sub_agent_common import build_sub_agent_model
 
-    return build_sub_agent_model(tier)
+    return build_sub_agent_model(tier, role=role)
 
 
 def build_specialist(
@@ -113,14 +114,17 @@ def build_specialist(
     tools: list = list(READ_ONLY_TOOLS)
     if spec is DEBUGGER:
         tools += [shell, patch_tool.apply_patch]
+    chosen = model if model is not None else _model(spec.tier, spec.name)
     return Agent(
         name=spec.name,
         description=spec.description,
-        model=model if model is not None else _model(spec.tier),
+        model=chosen,
         system_prompt=f"{spec.prompt}\n\nProject directory: {os.getcwd()}",
         tools=tools,
         interventions=interventions,
-        hooks=hooks or [],
+        # A specialist on a Prism model loads it before it runs and unloads it after
+        # (omlx_provider.PrismLeaseHooks); any other specialist gets nothing extra.
+        hooks=[*(hooks or []), *omlx_provider.hooks_for(chosen)],
         callback_handler=None,
     )
 
@@ -202,7 +206,7 @@ def diagnose(
     task = harness_events.Task("self-heal: debugger diagnosing", session_id=session_id, source="heal")
     agent = Agent(
         name="debugger",
-        model=model if model is not None else _model(DEBUGGER.tier),
+        model=model if model is not None else _model(DEBUGGER.tier, DEBUGGER.name),
         system_prompt=f"{DIAGNOSE_PROMPT}\n\nProject directory: {root}",
         tools=list(READ_ONLY_TOOLS),
         callback_handler=None,

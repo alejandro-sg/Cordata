@@ -373,6 +373,278 @@ pub const TASK_METHOD: &str = "_sierralab/task";
 pub const HEAL_METHOD: &str = "_sierralab/heal";
 pub const PLUGINS_METHOD: &str = "_sierralab/plugins";
 pub const LSP_METHOD: &str = "_sierralab/lsp";
+/// Project snapshots (backend `checkpoints.py`): said when a change could not be snapshotted, when a
+/// call writes outside the project, and when a restore ran. Taking one is not an event.
+pub const CHECKPOINT_METHOD: &str = "_sierralab/checkpoint";
+/// A loaded session has an interrupted turn: `auto` says the client may resume it on its own.
+pub const RESUME_METHOD: &str = "_sierralab/resume";
+/// The Experimental Lab's live state (backend `lab.py`): pods, A2A links, the
+/// threat gauge, staged HITL rows, resources. Controls go back the other way as
+/// `_sierralab/lab/{select,isolate,release,dial,inject}` extension requests.
+pub const LAB_METHOD: &str = "_sierralab/lab";
+
+/// What an agent pod is doing right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PodStatus {
+    #[default]
+    Idle,
+    /// The model call is in flight.
+    Synthesizing,
+    /// A tool call is running.
+    Executing,
+    /// Parked on a human decision (HITL) or held by Laya.
+    Contained,
+    /// E-Stopped: every model and tool call is refused.
+    Isolated,
+}
+
+impl PodStatus {
+    fn parse(text: &str) -> Self {
+        match text {
+            "synthesizing" => PodStatus::Synthesizing,
+            "executing" => PodStatus::Executing,
+            "contained" => PodStatus::Contained,
+            "isolated" => PodStatus::Isolated,
+            _ => PodStatus::Idle,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LabTrace {
+    pub tool: String,
+    pub status: String,
+    pub input: String,
+    pub ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LabMemory {
+    /// `lancedb` | `kg` | `qdrant`
+    pub source: String,
+    pub query: String,
+    pub count: u64,
+    /// `(label, score)` of the first few hits.
+    pub hits: Vec<(String, Option<f64>)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LabPod {
+    pub id: String,
+    pub name: String,
+    pub role: String,
+    pub parent: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub status: PodStatus,
+    pub isolated: bool,
+    /// This pod's Laya destructiveness dial (it only ever tightens the gate).
+    pub dial: f64,
+    pub dial_default: f64,
+    pub calls: u64,
+    pub busy_ms: u64,
+    pub pending_tool: Option<String>,
+    pub guidance_pending: u64,
+    pub messages: u64,
+    pub trace: Vec<LabTrace>,
+    pub memory: Vec<LabMemory>,
+    /// The tail of what the pod is writing (the whole text when inspected).
+    pub stream: String,
+    /// Only present for the pod the client selected (`lab/select`).
+    pub system_prompt: Option<String>,
+    pub guidance: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LabLink {
+    pub from: String,
+    pub to: String,
+    /// `delegation` | `dispatch` | `team` | `pipeline`
+    pub kind: String,
+    pub active: bool,
+    pub count: u64,
+    pub label: String,
+}
+
+/// Laya's reading for the pending tool call (the turn's destructiveness score).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LabThreat {
+    pub pod: String,
+    pub tool: String,
+    pub score: Option<f64>,
+    pub confidence: Option<f64>,
+    pub band: Option<String>,
+    pub pending: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LabHitl {
+    pub id: String,
+    pub pod: String,
+    pub tool: String,
+    pub input: String,
+    /// `pending` | `approved` | `rejected`
+    pub status: String,
+    pub risk_score: Option<f64>,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LabResources {
+    pub cpu_percent: f64,
+    pub rss_mb: f64,
+    pub mcp: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LabState {
+    pub seq: u64,
+    pub session_id: Option<String>,
+    pub focus: Option<String>,
+    pub pods: Vec<LabPod>,
+    pub links: Vec<LabLink>,
+    pub threat: Option<LabThreat>,
+    pub hitl: Vec<LabHitl>,
+    pub resources: LabResources,
+}
+
+fn parse_lab(params: &Value) -> Option<LabState> {
+    if params.get("event").and_then(Value::as_str) != Some("state") {
+        return None;
+    }
+    let text = |value: &Value, key: &str| value.get(key).and_then(Value::as_str).map(str::to_owned);
+    let number = |value: &Value, key: &str| value.get(key).and_then(Value::as_f64);
+    let count = |value: &Value, key: &str| value.get(key).and_then(Value::as_u64).unwrap_or(0);
+    let list = |value: &Value, key: &str| -> Vec<Value> {
+        value
+            .get(key)
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let pods = list(params, "pods")
+        .iter()
+        .filter_map(|pod| {
+            let name = text(pod, "name")?;
+            Some(LabPod {
+                id: text(pod, "id").unwrap_or_else(|| name.clone()),
+                role: text(pod, "role").unwrap_or_else(|| name.clone()),
+                parent: text(pod, "parent"),
+                model: text(pod, "model"),
+                effort: text(pod, "effort"),
+                status: PodStatus::parse(pod.get("status").and_then(Value::as_str).unwrap_or("")),
+                isolated: pod
+                    .get("isolated")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                dial: number(pod, "dial").unwrap_or(0.8),
+                dial_default: number(pod, "dial_default").unwrap_or(0.8),
+                calls: count(pod, "calls"),
+                busy_ms: count(pod, "busy_ms"),
+                pending_tool: text(pod, "pending_tool"),
+                guidance_pending: count(pod, "guidance_pending"),
+                messages: count(pod, "messages"),
+                trace: list(pod, "trace")
+                    .iter()
+                    .map(|row| LabTrace {
+                        tool: text(row, "tool").unwrap_or_default(),
+                        status: text(row, "status").unwrap_or_default(),
+                        input: text(row, "input").unwrap_or_default(),
+                        ms: count(row, "ms"),
+                    })
+                    .collect(),
+                memory: list(pod, "memory")
+                    .iter()
+                    .map(|row| LabMemory {
+                        source: text(row, "source").unwrap_or_default(),
+                        query: text(row, "query").unwrap_or_default(),
+                        count: count(row, "count"),
+                        hits: list(row, "hits")
+                            .iter()
+                            .map(|hit| {
+                                (
+                                    text(hit, "label")
+                                        .or_else(|| text(hit, "id"))
+                                        .unwrap_or_default(),
+                                    number(hit, "score"),
+                                )
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+                stream: text(pod, "stream").unwrap_or_default(),
+                system_prompt: text(pod, "system_prompt"),
+                guidance: list(pod, "guidance")
+                    .iter()
+                    .filter_map(|item| item.as_str().map(str::to_owned))
+                    .collect(),
+                name,
+            })
+        })
+        .collect();
+    let links = list(params, "links")
+        .iter()
+        .filter_map(|link| {
+            Some(LabLink {
+                from: text(link, "from")?,
+                to: text(link, "to")?,
+                kind: text(link, "kind").unwrap_or_default(),
+                active: link.get("active").and_then(Value::as_bool).unwrap_or(false),
+                count: count(link, "count"),
+                label: text(link, "label").unwrap_or_default(),
+            })
+        })
+        .collect();
+    let threat = params
+        .get("threat")
+        .filter(|threat| threat.is_object())
+        .map(|threat| LabThreat {
+            pod: text(threat, "pod").unwrap_or_default(),
+            tool: text(threat, "tool").unwrap_or_default(),
+            score: number(threat, "score"),
+            confidence: number(threat, "confidence"),
+            band: text(threat, "band"),
+            pending: threat
+                .get("pending")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        });
+    let hitl = list(params, "hitl")
+        .iter()
+        .filter_map(|row| {
+            Some(LabHitl {
+                id: text(row, "id")?,
+                pod: text(row, "pod").unwrap_or_default(),
+                tool: text(row, "tool").unwrap_or_default(),
+                input: text(row, "input").unwrap_or_default(),
+                status: text(row, "status").unwrap_or_else(|| "pending".into()),
+                risk_score: row.get("risk").and_then(|risk| number(risk, "score")),
+                note: text(row, "note"),
+            })
+        })
+        .collect();
+    let resources = params
+        .get("resources")
+        .map(|resources| LabResources {
+            cpu_percent: number(resources, "cpu_percent").unwrap_or(0.0),
+            rss_mb: number(resources, "rss_mb").unwrap_or(0.0),
+            mcp: list(resources, "mcp")
+                .iter()
+                .filter_map(|name| name.as_str().map(str::to_owned))
+                .collect(),
+        })
+        .unwrap_or_default();
+    Some(LabState {
+        seq: count(params, "seq"),
+        session_id: text(params, "sessionId"),
+        focus: text(params, "focus"),
+        pods,
+        links,
+        threat,
+        hitl,
+        resources,
+    })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskState {
@@ -429,6 +701,13 @@ pub enum HarnessEvent {
     Plugin(Value),
     /// A language-server event (started / failed / diagnostics), as JSON.
     Lsp(Value),
+    /// A checkpoint notice: `phase` is `unprotected` | `outside` | `restored`.
+    Checkpoint(Value),
+    /// The loaded session has an interrupted turn (`auto`, `where`, `attempts`, `max`).
+    Resume(Value),
+    /// The Experimental Lab's state: always a full snapshot, so a dropped
+    /// notification is healed by the next one.
+    Lab(Box<LabState>),
 }
 
 /// Parse a harness notification; `None` for unknown methods or malformed params.
@@ -463,6 +742,9 @@ pub fn parse_harness(method: &str, params: &Value) -> Option<HarnessEvent> {
         })),
         PLUGINS_METHOD => params.get("plugin").cloned().map(HarnessEvent::Plugin),
         LSP_METHOD => Some(HarnessEvent::Lsp(params.clone())),
+        CHECKPOINT_METHOD => text("phase").map(|_| HarnessEvent::Checkpoint(params.clone())),
+        RESUME_METHOD => Some(HarnessEvent::Resume(params.clone())),
+        LAB_METHOD => parse_lab(params).map(|state| HarnessEvent::Lab(Box::new(state))),
         _ => None,
     }
 }
@@ -775,6 +1057,84 @@ mod laya_tests {
         );
         assert_eq!(parse_harness(TASK_METHOD, &json!({"title": "no id"})), None);
         assert_eq!(parse_harness("_sierralab/unknown", &json!({})), None);
+    }
+
+    #[test]
+    fn parses_a_lab_snapshot() {
+        let Some(HarnessEvent::Lab(lab)) = parse_harness(
+            LAB_METHOD,
+            &json!({
+                "event": "state", "version": 1, "seq": 7, "sessionId": "s1", "focus": "debugger",
+                "pods": [
+                    {"id": "orchestrator", "name": "orchestrator", "role": "orchestrator", "parent": null,
+                     "model": "glm-5.3-flash", "effort": "low", "status": "executing", "isolated": false,
+                     "dial": 0.8, "dial_default": 0.8, "calls": 3, "busy_ms": 1200, "pending_tool": "shell",
+                     "guidance_pending": 1, "messages": 4,
+                     "trace": [{"tool": "shell", "status": "running", "input": "echo hi", "ms": 0}],
+                     "memory": [{"source": "lancedb", "query": "cargo", "count": 2, "hits": [{"id": "t1", "label": "cargo test", "score": 0.12}]}],
+                     "stream": "thinking…"},
+                    {"id": "debugger", "name": "debugger", "role": "debugger", "parent": "orchestrator",
+                     "model": "kimi-k2.7-code", "effort": "max", "status": "contained", "isolated": false,
+                     "dial": 0.5, "system_prompt": "You are the Debugger", "guidance": ["use pytest"]}
+                ],
+                "links": [{"from": "orchestrator", "to": "debugger", "kind": "delegation", "active": true, "count": 2, "label": "fix"}],
+                "threat": {"pod": "debugger", "tool": "shell", "score": 0.92, "confidence": 0.88, "band": "destructive", "pending": true},
+                "hitl": [{"id": "i1", "pod": "debugger", "tool": "apply_patch", "input": "{}", "status": "pending", "risk": {"score": 0.9}}],
+                "resources": {"cpu_percent": 12.5, "rss_mb": 480.0, "mcp": ["pihole"]}
+            }),
+        ) else {
+            panic!()
+        };
+        assert_eq!((lab.seq, lab.focus.as_deref()), (7, Some("debugger")));
+        assert_eq!(lab.pods.len(), 2);
+        let orchestrator = &lab.pods[0];
+        assert_eq!(orchestrator.status, PodStatus::Executing);
+        assert_eq!(orchestrator.effort.as_deref(), Some("low"));
+        assert_eq!(
+            orchestrator.memory[0].hits[0],
+            ("cargo test".to_owned(), Some(0.12))
+        );
+        assert_eq!(orchestrator.trace[0].tool, "shell");
+        let debugger = &lab.pods[1];
+        assert_eq!(
+            (debugger.status, debugger.dial, debugger.parent.as_deref()),
+            (PodStatus::Contained, 0.5, Some("orchestrator"))
+        );
+        assert_eq!(
+            debugger.system_prompt.as_deref(),
+            Some("You are the Debugger")
+        );
+        assert_eq!(lab.links[0].count, 2);
+        assert!(lab.links[0].active);
+        let threat = lab.threat.unwrap();
+        assert_eq!((threat.score, threat.confidence), (Some(0.92), Some(0.88)));
+        assert_eq!(lab.hitl[0].risk_score, Some(0.9));
+        assert_eq!(lab.resources.mcp, ["pihole"]);
+    }
+
+    #[test]
+    fn a_sparse_or_future_lab_payload_is_tolerated() {
+        let Some(HarnessEvent::Lab(lab)) = parse_harness(
+            LAB_METHOD,
+            &json!({"event": "state", "pods": [{"name": "solo", "status": "from_the_future"}, {"no_name": 1}], "threat": null}),
+        ) else {
+            panic!()
+        };
+        assert_eq!(
+            lab.pods.len(),
+            1,
+            "a pod without a name is skipped, not fatal"
+        );
+        assert_eq!(
+            lab.pods[0].status,
+            PodStatus::Idle,
+            "an unknown status reads as idle"
+        );
+        assert!(lab.threat.is_none() && lab.links.is_empty());
+        assert_eq!(
+            parse_harness(LAB_METHOD, &json!({"event": "something_else"})),
+            None
+        );
     }
 
     #[test]

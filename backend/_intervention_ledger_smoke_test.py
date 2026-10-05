@@ -14,6 +14,7 @@ ledger. Run directly:
 import asyncio
 import json
 import os
+os.environ.setdefault("SIERRALAB_REFLECT", "off")  # scripted/live test turns are not lessons (reflect.py)
 import tempfile
 import time
 import types
@@ -36,14 +37,16 @@ def check(condition: bool, label: str) -> None:
 class FakeConn:
     """Just enough of the ACP client for `request_permission`."""
 
-    def __init__(self, option_id: str = "allow") -> None:
+    def __init__(self, option_id: str = "allow", meta: dict | None = None) -> None:
         self.option_id = option_id
+        self.meta = meta
         self.asks: list = []
 
     async def request_permission(self, session_id, tool_call, options, **kwargs):
         self.asks.append((tool_call, list(options)))
         return acp.schema.RequestPermissionResponse(
-            outcome=acp.schema.AllowedOutcome(outcome="selected", option_id=self.option_id)
+            outcome=acp.schema.AllowedOutcome(outcome="selected", option_id=self.option_id),
+            field_meta=self.meta,
         )
 
 
@@ -97,6 +100,33 @@ def test_a_prompt_is_staged_then_resolved() -> None:
     asked = [row for row in events("intervention") if row["payload"]["phase"] == "requested"][0]
     check(asked["payload"]["risk"]["score"] == 0.12, "the request event carries the full risk reading")
     check(asked["session_id"] == "sess-1", "the event is filed under the session")
+
+
+def test_a_relayed_answer_names_its_front_door() -> None:
+    """The daemon stamps `_meta.sierralab.decidedBy` on the answer it relays to the child when
+    the decision came from a remote door (the Discord bot). Every answer reaches the child as the
+    same JSON-RPC response, so without this the ledger would attribute a phone approval to a
+    person at the GUI — an audit trail that cannot answer "who decided this"."""
+    print("\n=== a relayed answer names its front door ===")
+    conn = FakeConn("allow", meta={"sierralab": {"decidedBy": "discord"}})
+    agent = fake_agent(conn)
+
+    asyncio.run(SierraLabAcpAgent._resolve_interrupts(agent, "sess-door", [interrupt("int-door", "shell", {"command": "ls"})]))
+
+    row = state_store.get_intervention("int-door")
+    check(row["status"] == "approved" and row["decided_by"] == "discord", "the ledger names the door that answered, not just 'user'")
+    resolved = [r for r in events("intervention") if r["payload"].get("phase") == "resolved"][0]
+    check(resolved["payload"]["decided_by"] == "discord", "the resolved event carries the door too")
+
+    # A response with no `_meta` at all is a person on the socket, which is what "user" has
+    # always meant — and an unreadable slot must not invent a door.
+    for meta, expected, label in ((None, "user", "a client that says nothing is a person at the socket"),
+                                 ({"sierralab": "not a dict"}, "user", "an unreadable slot falls back rather than guessing"),
+                                 ({"other": {"decidedBy": "discord"}}, "user", "a door named outside the sierralab slot is ignored")):
+        agent = fake_agent(FakeConn("allow", meta=meta))
+        asyncio.run(SierraLabAcpAgent._resolve_interrupts(agent, "sess-plain", [interrupt(f"int-plain-{expected}-{label[:4]}", "shell", {"command": "ls"})]))
+        row = state_store.get_intervention(f"int-plain-{expected}-{label[:4]}")
+        check(row["decided_by"] == expected, label)
 
 
 def test_always_allow_is_recorded_as_a_rule() -> None:
@@ -265,16 +295,19 @@ def test_the_gate_puts_its_reasoning_on_the_prompt() -> None:
 
         plain = _ApprovalHandler(str(Path(_TMP.name)), "build", router_hooks=NoDecision())
         plain.session_agent = agent
-        check("risk" not in json.loads(plain.before_tool_call(event).prompt), "no decision means no risk field, not a zero")
+        risk = json.loads(plain.before_tool_call(event).prompt).get("risk")
+        check(risk is None or risk.get("call") is True, "no turn decision means no turn score, not a zero — any reading shown is the call's own, labelled as such")
 
         bare = _ApprovalHandler(str(Path(_TMP.name)), "build")
-        check("risk" not in json.loads(bare.before_tool_call(event).prompt), "no router hooks at all is the same")
+        risk = json.loads(bare.before_tool_call(event).prompt).get("risk")
+        check(risk is None or risk.get("call") is True, "no router hooks at all is the same")
     finally:
         settings_store.current = real_current
 
 
 if __name__ == "__main__":
     test_a_prompt_is_staged_then_resolved()
+    test_a_relayed_answer_names_its_front_door()
     test_always_allow_is_recorded_as_a_rule()
     test_a_rejected_prompt_is_recorded_as_rejected()
     test_no_client_is_a_rejection_not_a_user_decision()

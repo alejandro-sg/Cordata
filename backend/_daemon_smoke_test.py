@@ -55,6 +55,10 @@ _CHILD.write_text(
     "        # Output that arrives after the client that asked has gone.\n"
     "        time.sleep(0.4)\n"
     "        reply = {'jsonrpc': '2.0', 'method': '_sierralab/late'}\n"
+    "    elif message.get('method') == 'lab/emit':\n"
+    "        # What acp_server.py's Lab sends: a state notification the daemon taps.\n"
+    "        args = message.get('params') or {}\n"
+    "        reply = {'jsonrpc': '2.0', 'method': '_sierralab/lab', 'params': {'event': 'state', 'version': 1, 'seq': args.get('seq'), 'sessionId': args.get('sessionId'), 'pods': [{'name': 'orchestrator', 'status': args.get('status', 'idle')}], 'links': [], 'threat': None, 'hitl': []}}\n"
     "    elif message.get('method') == 'initialize':\n"
     "        reply = {'jsonrpc': '2.0', 'id': message.get('id'), 'result': {'protocolVersion': 1}}\n"
     "    else:\n"
@@ -107,6 +111,55 @@ def test_frames() -> None:
     check(frames.forward_line("{}") == b"{}\n", "a client that omits the newline is still framed correctly")
     check(frames.outbound_line(b'\n') is None, "a blank line on the wire is not a frame")
     check(frames.outbound_line(b'{"a":1}\n') == '{"a":1}', "outbound_line strips framing whitespace")
+
+
+# -------------------------------------------------------------- remote taps
+
+
+def test_remote_taps() -> None:
+    """The daemon fans out `task` and `laya` frames without consuming them: a remote
+    front door (the Discord bot) listens, and a daemon with nobody listening behaves
+    exactly as before. The frame must still reach the backlog either way."""
+    from types import SimpleNamespace
+
+    from daemon.supervisor import Session, Supervisor
+
+    supervisor = Supervisor()
+    seen: dict[str, list[dict]] = {"task": [], "laya": []}
+    stops = [supervisor.listen(topic, seen[topic].append) for topic in seen]
+    supervisor._sessions["s1"] = Session(session_id="s1", cwd="/tmp", process=SimpleNamespace(returncode=None, pid=1))
+
+    task = json.dumps({"jsonrpc": "2.0", "method": "_sierralab/task", "params": {"title": "team plan", "state": "running"}})
+    laya = json.dumps({"jsonrpc": "2.0", "method": "_sierralab/laya", "params": {"route": "cloud", "risk": 0.9}})
+    update = json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1", "update": {"sessionUpdate": "agent_message_chunk"}}})
+    for line in (task, laya, update):
+        supervisor._deliver("s1", line)
+
+    check(seen["task"] == [{"title": "team plan", "state": "running", "session_id": "s1"}], "a task frame reaches the task listener, tagged with its session")
+    check(seen["laya"] == [{"route": "cloud", "risk": 0.9, "session_id": "s1"}], "a laya frame reaches the laya listener, tagged with its session")
+    check(len(supervisor.backlog("s1")) == 3, "tapping does not consume the frame: all three still reach the backlog")
+
+    # A frame that is not a task/laya update notifies nothing — the taps are narrow.
+    seen["task"].clear()
+    seen["laya"].clear()
+    supervisor._deliver("s1", json.dumps({"jsonrpc": "2.0", "method": "_sierralab/task", "params": "not a dict"}))
+    check(not seen["task"] and not seen["laya"], "a malformed task frame notifies nobody instead of raising")
+
+    # A listener that raises must not take the daemon down, and must not stop the
+    # frame from reaching a healthy listener or the backlog.
+    def angry(_: dict) -> None:
+        raise RuntimeError("listener blew up")
+
+    supervisor.listen("laya", angry)
+    seen["laya"].clear()
+    supervisor._deliver("s1", laya)
+    check(seen["laya"] == [{"route": "cloud", "risk": 0.9, "session_id": "s1"}], "a failing listener does not silence the others")
+
+    for stop in stops:
+        stop()
+    seen["task"].clear()
+    supervisor._deliver("s1", task)
+    check(not seen["task"], "an unsubscribed listener stops hearing after stop()")
 
 
 # ------------------------------------------------------------------- token
@@ -176,6 +229,12 @@ def test_daemon() -> None:
         check(health.status_code == 200 and health.json()["ok"] is True, "health answers with the token")
         check(health.json()["sessions"] == 0, "no sessions yet")
         check(health.json()["observer"]["enabled"] is False, "health reports the observer, off by default")
+        # The Discord front door is off unless the environment names a token and an operator, and
+        # `/health` has to say which of those it is missing — a bot that started with no allowlist
+        # would be a front door anyone could walk through.
+        discord = health.json()["discord"]
+        check(discord["enabled"] is False and discord["connected"] is False, "health reports the Discord front door, off by default")
+        check(discord["allowedUser"] is None and discord["reason"] == "not started", "and reports no operator and no configuration it never read")
 
         # The webhook route is a *source*, so it must accept an observation
         # without ever implying one was acted on: no observer is running here,
@@ -341,6 +400,66 @@ def test_daemon() -> None:
         )
 
 
+def test_lab_stream() -> None:
+    """The daemon taps `_sierralab/lab` frames and re-serves them read-only."""
+    app = create_app()
+    with TestClient(app) as client:
+        daemon = app.state.daemon
+        token = daemon.token
+        headers = {"X-Daemon-Token": token}
+        project = _ROOT / "lab-project"
+        project.mkdir()
+
+        check(client.get("/lab").status_code == 401, "GET /lab needs the token")
+        check(client.get("/lab", headers=headers).json() == {"sessions": {}, "observer": None}, "no state and no observer pod when nothing has been sent and the observer is off")
+
+        session_id = client.post("/sessions", json={"cwd": str(project)}, headers=headers).json()["sessionId"]
+
+        def refusal(url: str, **kwargs) -> int:
+            try:
+                with client.websocket_connect(url, **kwargs):
+                    return 0
+            except WebSocketDisconnect as closed:
+                return closed.code
+
+        check(refusal("/lab/ws?token=wrong") == 4401, "the lab socket refuses a wrong token")
+        check(refusal(f"/lab/ws?token={token}", headers={"Origin": "http://evil.test"}) == 4403, "…and a browser origin")
+
+        def emit(driver, seq: int, status: str) -> None:
+            driver.send_text(json.dumps({"jsonrpc": "2.0", "method": "lab/emit", "params": {"sessionId": session_id, "seq": seq, "status": status}}))
+
+        with client.websocket_connect(f"/ws?session={session_id}&token={token}") as driver:
+            check(json.loads(driver.receive_text()).get("method") == "_sierralab/hello", "the driving client attaches")
+            with client.websocket_connect(f"/lab/ws?token={token}") as canvas:
+                first = json.loads(canvas.receive_text())
+                check(first["type"] == "snapshot" and first["sessions"] == {}, "a canvas starts from a snapshot (empty here)")
+                emit(driver, 1, "synthesizing")
+                seen = json.loads(driver.receive_text())
+                check(seen["method"] == "_sierralab/lab" and seen["params"]["seq"] == 1, "the driving client still receives the frame — the tap only reads a copy")
+                frame = json.loads(canvas.receive_text())
+                check(frame["type"] == "state" and frame["sessionId"] == session_id and frame["state"]["pods"][0]["status"] == "synthesizing", f"the canvas receives the state ({frame['state']['pods']})")
+                check(session_id in daemon.supervisor._subscribers and daemon._subscribers == {session_id}, "watching does not displace the driving client")
+                canvas.send_text('{"jsonrpc":"2.0","id":99,"method":"lab/isolate","params":{"pod":"orchestrator"}}')
+                emit(driver, 2, "idle")
+                after = [json.loads(driver.receive_text()) for _ in range(1)]
+                check(all("echo" not in m for m in after), "anything a canvas sends is ignored — the socket is read-only, no control reaches the child")
+                check(json.loads(canvas.receive_text())["state"]["seq"] == 2, "…and it keeps streaming")
+            with client.websocket_connect(f"/lab/ws?token={token}") as late:
+                snapshot = json.loads(late.receive_text())
+                check(snapshot["sessions"][session_id]["seq"] == 2, "a late canvas is drawn from the newest state, not the next change")
+            with client.websocket_connect(f"/lab/ws?token={token}&session=other") as filtered:
+                check(json.loads(filtered.receive_text())["sessions"] == {}, "a session filter excludes other sessions")
+            check(client.get("/lab", headers=headers).json()["sessions"][session_id]["seq"] == 2, "GET /lab serves the same newest state")
+        check(not daemon.supervisor._lab_watchers, "closed canvases are unregistered")
+
+        daemon.observer.enabled = lambda: True  # the observer pod appears once the observer is on
+        pod = client.get("/lab", headers=headers).json()["observer"]
+        check(pod["name"] == "observer" and pod["status"] == "idle" and pod["scope"] == "daemon", f"the daemon contributes the observer pod ({pod})")
+        daemon.observer._cycling = True
+        check(client.get("/lab", headers=headers).json()["observer"]["status"] == "synthesizing", "…SYNTHESIZING while a cycle is in flight")
+        client.delete(f"/sessions/{session_id}", headers=headers)
+
+
 def state_has_no_subscribers(app) -> bool:
     return not app.state.daemon._subscribers
 
@@ -356,9 +475,11 @@ def wait_for_text(socket, timeout: float = 5.0):
 
 def main() -> None:
     test_frames()
+    test_remote_taps()
     test_token_file()
     test_log_redaction()
     test_daemon()
+    test_lab_stream()
 
 
 if __name__ == "__main__":

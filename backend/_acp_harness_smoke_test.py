@@ -36,6 +36,7 @@ os.environ["SIERRALAB_HOME"] = str(ROOT / "home")
 os.environ["LAYA_TRIAGE_MODE"] = "route"
 os.environ["LAYA_TRIAGE_LOG"] = str(ROOT / "laya.jsonl")
 os.environ.setdefault("BYPASS_TOOL_CONSENT", "true")
+os.environ.setdefault("SIERRALAB_REFLECT", "off")  # scripted turns are not lessons; _learning_acp_smoke_test turns it on
 
 import acp  # noqa: E402
 
@@ -71,7 +72,7 @@ def specialist_model(name, steps):
     MODELS[name] = ScriptedModel(steps, model_id=f"{name}-model")
 
 
-specialists._model = lambda tier: ScriptedModel([text("(unused specialist)")])
+specialists._model = lambda tier, role=None: ScriptedModel([text("(unused specialist)")])
 _real_build_specialist = specialists.build_specialist
 
 

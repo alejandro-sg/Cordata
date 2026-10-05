@@ -27,7 +27,8 @@ from pathlib import Path
 
 import uvicorn
 
-from .server import DAEMON_HOST, DEFAULT_PORT, create_app, token_path
+from .grpc_bridge import GrpcBridge, grpc_port_from_env
+from .server import DAEMON_HOST, DEFAULT_PORT, create_app, load_or_create_token, token_path
 
 logger = logging.getLogger("sierralab.daemon")
 
@@ -100,6 +101,8 @@ def read_port() -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sierralab-daemon", description="always-on orchestrator daemon")
     parser.add_argument("--port", type=int, default=None)
+    parser.add_argument("--grpc-port", type=int, default=None, help="the gRPC telemetry bridge's port (default 8766; 0 = any free port; SIERRALAB_GRPC_PORT)")
+    parser.add_argument("--no-grpc", action="store_true", help="do not start the gRPC telemetry bridge")
     parser.add_argument("--log-level", default=os.environ.get("SIERRALAB_DAEMON_LOG", "info"))
     parser.add_argument("--check", action="store_true", help="report whether a daemon is already running, and exit")
     args = parser.parse_args(argv)
@@ -152,7 +155,21 @@ def main(argv: list[str] | None = None) -> int:
         pidfile.parent.mkdir(parents=True, exist_ok=True)
         pidfile.write_text(str(os.getpid()), encoding="utf-8")
         observer = None
+        bridge: GrpcBridge | None = None
         try:
+            if not args.no_grpc:
+                grpc_port = args.grpc_port if args.grpc_port is not None else grpc_port_from_env()
+                bridge = GrpcBridge(app.state.daemon, port=grpc_port)
+                try:
+                    app.state.daemon.grpc_port = await bridge.start()
+                    # The file clients read to find this daemon names the bridge's port too.
+                    load_or_create_token(port, app.state.daemon.grpc_port)
+                except Exception:
+                    # A bridge that cannot start (port taken) must not take the daemon down: the
+                    # WebSocket front door is the one sessions depend on.
+                    logger.exception("daemon: gRPC bridge failed to start; continuing without it")
+                    await bridge.stop()
+                    bridge = None
             # `serve()` inside the task, so the signal handler can reach the
             # shutdown path that stops the children; a bare `server.run()` would
             # return on SIGINT without giving this a chance to run.
@@ -160,10 +177,16 @@ def main(argv: list[str] | None = None) -> int:
             # Started here, not in `create_app`: the observer needs a running
             # event loop, and it is a no-op task when `observer.enabled` is off.
             observer = app.state.daemon.observer.start()
+            # The Discord front door (discord_bot.py), if the environment configures one. Started
+            # here for the same reason the observer is: it needs a running loop. `start()` returns
+            # None and logs why when there is no token, so an unconfigured daemon is unchanged.
+            app.state.daemon.remote.start()
             await stop.wait()
             server.should_exit = True
             await serving
         finally:
+            if bridge is not None:
+                await bridge.stop()
             app.state.daemon.observer.stop()
             if observer is not None:
                 # `stop()` sets the event `_run_child` is racing against, so a
@@ -174,6 +197,10 @@ def main(argv: list[str] | None = None) -> int:
                 except (asyncio.TimeoutError, asyncio.CancelledError):
                     logger.warning("daemon: observer did not stop in time; cancelling")
                     observer.cancel()
+            # A bot left running at shutdown would keep a gateway connection open and could still
+            # answer an approval on a session this daemon is about to kill; `stop()` unsubscribes
+            # from the supervisor first, so nothing new is posted while it is closing.
+            await app.state.daemon.remote.stop()
             await app.state.daemon.supervisor.stop_all()
             pidfile.unlink(missing_ok=True)
 

@@ -145,8 +145,11 @@ def test_live_laya() -> None:
     print(f"   live Laya: route+risk+complexity in one pass — p50 {p50:.1f} ms, p90 {p90:.1f} ms over {len(latencies)} calls")
     for row in decisions[: len(prompts)]:
         print(f"   {row}")
-    check(p50 < 33.0, f"warm decision latency under 33 ms (p50 {p50:.1f} ms)")
-    check(all(d[3] in ("dispatch", "scope", "hint", "escalate", "none") for d in decisions), "every live decision maps to a policy action")
+    # Each routing target is one more criterion in the choice prompt: measured, ~4.5 ms apiece on
+    # this machine (7 targets p50 26.7 ms, 8 targets 31.1 ms). The 33 ms bound was set for 8
+    # targets; the `claude_code` target made it 9 (7 base + claude_code + the plugin above).
+    check(p50 < 38.0, f"warm decision latency under 38 ms (p50 {p50:.1f} ms)")
+    check(all(d[3] in ("dispatch", "scope", "tool", "hint", "escalate", "none") for d in decisions), "every live decision maps to a policy action")
 
 
 def main() -> None:

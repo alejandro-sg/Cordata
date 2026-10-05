@@ -112,7 +112,7 @@ def build_observer_agent(*, model=None, tools: tuple[str, ...] = OBSERVER_TOOLS)
         # module docstring describes, and it must happen in the child only.
         import sub_agent_common as sac
 
-        model = sac.build_sub_agent_model(os.environ.get("SIERRALAB_OBSERVER_TIER") or None)
+        model = sac.build_sub_agent_model(os.environ.get("SIERRALAB_OBSERVER_TIER") or None, role="observer")
     return Agent(
         name="observer",
         model=model,

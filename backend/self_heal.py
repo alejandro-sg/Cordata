@@ -58,7 +58,10 @@ from typing import Any
 
 from strands.hooks import AfterInvocationEvent, AfterToolCallEvent, HookProvider, HookRegistry
 
+import claude_code_tool
+import fix_memory
 import harness_events
+import outcomes
 import patch_tool
 from laya_router import command_ok, normalize_command, shell_commands
 
@@ -77,6 +80,8 @@ class HealConfig:
     auto_apply: bool = False
     verify_timeout: float = 300.0
     auto_continue: bool = True
+    #: Remember verified fixes (fix_memory.py) and try a remembered one, in the sandbox, before asking the Debugger.
+    memory: bool = True
 
 
 @dataclass
@@ -90,6 +95,9 @@ class Episode:
     verify_command: str | None = None
     continuations: int = 0
     started: float = field(default_factory=time.monotonic)
+    #: The remembered fix this episode recorded or recalled (fix_memory.py), confirmed once the command passes for real.
+    fix_id: str | None = None
+    recalled: bool = False
 
 
 def result_text(result: Any) -> str:
@@ -112,14 +120,42 @@ _MISMATCH = re.compile(
 )
 
 
-def edit_failure_note(tool: str, text: str) -> str | None:
+_HUNK = re.compile(r"(?P<path>[^\s:][^:\n]*): hunk (?P<n>\d+) does not match the file \(expected near line (?P<line>\d+)\)")
+
+
+def current_excerpt(root: str | os.PathLike, relative: str, line: int, before: int = 4, after: int = 16, limit: int = 1600) -> str | None:
+    """The file's *current* lines around where a patch expected to find its context, numbered — what the
+    model needs to write a patch that applies, without another round trip to read the file. Confined to the
+    project, and never a secrets file."""
+    try:
+        base = Path(root).resolve()
+        target = (base / relative).resolve()
+        if base not in target.parents or re.search(r"(^|/)(\.env[^/]*|id_rsa[^/]*|id_ed25519[^/]*|[^/]*\.(pem|key|p12|pfx))$", str(target.relative_to(base))):
+            return None
+        lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
+    except (OSError, ValueError):
+        return None
+    first = max(1, line - before)
+    last = min(len(lines), line + after)
+    body = "\n".join(f"{n:>5}  {lines[n - 1]}" for n in range(first, last + 1))
+    if len(body) > limit:
+        body = body[:limit] + "\n…"
+    return f"Current {relative}, lines {first}–{last}:\n```\n{body}\n```" if body else None
+
+
+def edit_failure_note(tool: str, text: str, root: str | os.PathLike | None = None) -> str | None:
     """A note for a failed edit, by cause: the file isn't what the model
     thought (re-read it), or the patch wasn't in a format apply_patch reads.
-    Other errors (an unknown editor command, say) speak for themselves."""
+    Other errors (an unknown editor command, say) speak for themselves. For a hunk that did not match,
+    ``root`` lets the note carry the file's current lines around that spot."""
     if _MISMATCH.search(text):
+        excerpt = None
+        found = _HUNK.search(text) if root is not None else None
+        if found:
+            excerpt = current_excerpt(root, found.group("path").strip(), int(found.group("line")))
         return (
             f"{_HEAL_TAG} State mismatch: the file is not what you expected, so the edit did not apply. "
-            "Re-read it with file_read (or lsp_diagnostics) before editing again; don't retry the same edit blindly."
+            + (f"Here is what it holds now — write the patch against this:\n{excerpt}" if excerpt else "Re-read it with file_read (or lsp_diagnostics) before editing again; don't retry the same edit blindly.")
         )
     if tool == "apply_patch" and "no file changes found" in text:
         return (
@@ -283,10 +319,13 @@ class SelfHealHooks(HookProvider):
             return
         name = event.tool_use.get("name")
         if name in ("editor", "apply_patch") and isinstance(event.result, dict) and event.result.get("status") == "error":
-            note = edit_failure_note(name, result_text(event.result))
+            note = edit_failure_note(name, result_text(event.result), self.root or os.getcwd())
             if note:
                 self._append(event, note)
                 self._emit("state_mismatch", None, tool=name)
+            return
+        if name == claude_code_tool.TOOL_NAME:
+            await self._after_claude_code(event)
             return
         if name != "shell":
             return
@@ -302,7 +341,9 @@ class SelfHealHooks(HookProvider):
         if ok:
             if episode is not None and episode.status == "open":
                 episode.status = "healed"
-                self._emit("healed", episode, seconds=round(time.monotonic() - episode.started, 1))
+                if episode.verified and episode.fix_id:
+                    fix_memory.note_use(episode.fix_id, "confirmed", session_id=self.session_id)
+                self._emit("healed", episode, seconds=round(time.monotonic() - episode.started, 1), recalled=episode.recalled)
                 self._append(event, f"{_HEAL_TAG} Verified: `{command}` now succeeds. The failure is fixed.")
             return
         if ok is None:
@@ -332,11 +373,47 @@ class SelfHealHooks(HookProvider):
         note = await self._heal(episode, failure_report(command, event.result))
         self._append(event, note)
 
+    async def _after_claude_code(self, event: AfterToolCallEvent) -> None:
+        """The Claude Code CLI ran its own checks inside its session; the orchestrator sees only a summary. If
+        the last check it ran after its last edit failed, reproduce it in a throwaway copy — the same sandbox
+        every other verification uses — and, if it really fails, heal it like a failed shell command."""
+        import outcome_hooks
+
+        steps, _cost = outcome_hooks.claude_code_steps(event.result)
+        failing = None
+        for step in steps:
+            if step.get("tool") in ("Bash", "shell") and outcomes.is_verifier(str(step.get("detail") or "")):
+                failing = str(step.get("detail")) if not step.get("ok", True) else None
+        if not failing:
+            return
+        config = self.config
+        key = normalize_command(failing)
+        episode = self.episodes.get(key)
+        if episode is not None and episode.status != "open":
+            return
+        root = self.root or os.getcwd()
+        self._emit("detected", Episode(command=failing), output_tail="Claude Code finished with this check failing")
+        try:
+            with ShadowWorkspace(root) as shadow:
+                code, output = await shadow.run(failing, config.verify_timeout)
+        except Exception as error:
+            code, output = 1, f"sandbox error: {type(error).__name__}: {error}"
+        if code == 0:
+            self._append(event, f"{_HEAL_TAG} Claude Code's last check (`{failing}`) failed inside its session, but passes in a clean copy of the project — it may have been fixed afterwards, or be flaky or environmental. Run it yourself before you report this done.")
+            return
+        episode = self.episodes[key] = Episode(command=failing)
+        note = await self._heal(episode, failure_report(failing, {"content": [{"text": f"Exit Code: {code}\n{output}"}]}))
+        self._append(event, f"{_HEAL_TAG} Claude Code finished with `{failing}` still failing.\n{note}")
+
     async def _heal(self, episode: Episode, failure: str) -> str:
         """Diagnose → (sandbox-verify → re-diagnose)* → a note for the model."""
         config = self.config
         root = self.root or os.getcwd()
         last_output = failure
+        if config.memory and not episode.attempts:
+            remembered = await self._try_remembered(episode, failure, root)
+            if remembered is not None:
+                return remembered
         while len(episode.attempts) < config.max_attempts:
             attempt = len(episode.attempts) + 1
             self._emit("diagnosing", episode, attempt=attempt)
@@ -367,6 +444,11 @@ class SelfHealHooks(HookProvider):
             task.finish("completed" if code == 0 else "failed", f"exit {code}")
             if code == 0:
                 episode.verified = True
+                if config.memory and episode.fix_id is None:
+                    # Remembered against the *first* failure's signature, not the output after an earlier bad patch.
+                    episode.fix_id = fix_memory.record(
+                        root, episode.command, failure, root_cause=diagnosis.root_cause, patch=diagnosis.patch, verify=episode.verify_command, session_id=self.session_id
+                    )
                 episode.attempts.append(f"attempt {attempt}: root cause {diagnosis.root_cause!r}; patch verified in sandbox")
                 self._emit("verified", episode, attempt=attempt, root_cause=diagnosis.root_cause, patch=diagnosis.patch, verify=episode.verify_command)
                 return self._note_verified(episode)
@@ -384,9 +466,51 @@ class SelfHealHooks(HookProvider):
             "Stop retrying; tell the user what was tried:\n" + "\n".join(a.splitlines()[0] for a in episode.attempts)
         )
 
-    def _note_verified(self, episode: Episode) -> str:
+    async def _try_remembered(self, episode: Episode, failure: str, root: str) -> str | None:
+        """A fix remembered for this failure in this project: try it in the sandbox before asking the Debugger.
+
+        Returns the note for the model when it worked. Otherwise ``None`` after leaving a trace in
+        ``episode.attempts`` (so the Debugger is told what was already tried) and recording the miss against
+        the remembered fix, which is how a stale one retires."""
+        recalled = await asyncio.to_thread(fix_memory.recall, root, episode.command, failure)
+        if recalled is None:
+            return None
+        config = self.config
+        self._emit("recalled", episode, fix=recalled.id, similarity=recalled.similarity, root_cause=recalled.root_cause, has_patch=bool(recalled.patch))
+        if not recalled.patch or config.verify != "sandbox":
+            episode.attempts.append(recalled.hint())
+            return None
+        self._emit("verifying", episode, attempt=1, verify=episode.command, recalled=True)
+        stale = False
+        try:
+            with ShadowWorkspace(root) as shadow:
+                try:
+                    await asyncio.to_thread(shadow.apply, recalled.patch)
+                except Exception as error:  # the code has moved on since: the patch no longer applies
+                    stale, code, output = True, 1, f"the remembered patch no longer applies: {error}"
+                else:
+                    code, output = await shadow.run(episode.command, config.verify_timeout)
+        except Exception as error:
+            code, output = 1, f"sandbox error: {type(error).__name__}: {error}"
+        if code == 0:
+            episode.patch, episode.verified, episode.recalled, episode.fix_id = recalled.patch, True, True, recalled.id
+            episode.root_cause, episode.verify_command = recalled.root_cause, episode.command
+            episode.attempts.append(f"attempt 1: remembered fix {recalled.id} verified in sandbox")
+            fix_memory.note_use(recalled.id, "verified", session_id=self.session_id)
+            self._emit("verified", episode, attempt=1, root_cause=recalled.root_cause, patch=recalled.patch, verify=episode.command, recalled=True)
+            return self._note_verified(episode, remembered=True)
+        fix_memory.note_use(recalled.id, "stale" if stale else "failed", session_id=self.session_id)
+        self._emit("recall_failed", episode, fix=recalled.id, stale=stale, output_tail=output[-400:])
+        episode.attempts.append(
+            f"memory: an earlier fix for a similar failure ({' '.join(recalled.root_cause.split())[:200]!r}) "
+            f"{'no longer applies' if stale else 'did not fix it this time'}; diagnose from the failure itself"
+        )
+        return None
+
+    def _note_verified(self, episode: Episode, remembered: bool = False) -> str:
+        source = "A fix remembered from an earlier session of this project (it still applies)" if remembered else "Debugger diagnosis"
         return (
-            f"{_HEAL_TAG} Debugger diagnosis — ROOT CAUSE: {episode.root_cause}\n"
+            f"{_HEAL_TAG} {source} — ROOT CAUSE: {episode.root_cause}\n"
             f"This patch was applied in a sandbox copy of the project and `{episode.verify_command}` passed there:\n"
             f"```diff\n{episode.patch.rstrip()}\n```\n"
             f"Next: apply exactly this patch with apply_patch, then re-run `{episode.verify_command}` to verify it in the real workspace."

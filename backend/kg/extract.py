@@ -194,3 +194,24 @@ def extract_turn(
                 edge("broke", file_node, error)
 
     return list(nodes.values()), list(edges.values())
+
+
+def symbol_rows(path: str, name: str, node_kind: str, language: str, ts: float | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """(nodes, edges) for one function or class the GUI saw change: a ``symbol`` node joined to
+    the ``file`` node a tool call touching the same path would produce (same id, so they merge).
+
+    The label is ``path::name`` and nothing from the body: like the rest of the graph this is
+    structure, not content. Kind and language ride in the label's suffix so a query for "all
+    classes" is a label match, with no property column the sinks would have to agree on."""
+    when = ts if ts is not None else _now()
+    file_id = _ident("file", path)
+    symbol_label = f"{path}::{name}"
+    symbol_id = _ident("symbol", symbol_label)
+    node_base = {"session_id": "", "first_ts": when, "last_ts": when}
+    nodes = [
+        {"id": file_id, "type": "file", "label": path, **node_base},
+        {"id": symbol_id, "type": "symbol", "label": f"{symbol_label} ({node_kind}, {language})" if node_kind else symbol_label, **node_base},
+    ]
+    digest = hashlib.sha1(f"{symbol_id}\x00{file_id}".encode()).hexdigest()[:16]
+    edges = [{"id": f"defined_in:{digest}", "type": "defined_in", "source": symbol_id, "target": file_id, "session_id": "", "first_ts": when, "last_ts": when}]
+    return nodes, edges

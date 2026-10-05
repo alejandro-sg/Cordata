@@ -61,6 +61,8 @@ Answer with ONLY a JSON object, no prose, no fences:
  "agents": [{"name": "snake_case", "role": "one line", "task": "exact self-contained task for this node",
              "tools": ["optional tool names: file_read, think, http_request, http_fetch, agent_memory"],
              "tier": "fast"|"standard"|"strong" (optional),
+             "profile": "architect"|"digest" (optional: architect = design/planning, digest = condensing bulk
+                        context into a short summary; both run on a local model, so use them for that work),
              "depends_on": ["names this node needs first", ...] (optional)}]}
 
 Request:
@@ -146,6 +148,8 @@ def node_specs(plan: dict[str, Any]) -> list[dict[str, Any]]:
             spec["tools"] = list(entry["tools"])
         if entry.get("tier"):
             spec["tier"] = entry["tier"]
+        if entry.get("profile") in ("architect", "digest"):
+            spec["profile"] = entry["profile"]
         if entry.get("depends_on"):
             spec["depends_on"] = list(entry["depends_on"])
         specs.append(spec)

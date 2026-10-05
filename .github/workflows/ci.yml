@@ -61,6 +61,15 @@ jobs:
           python _model_control_smoke_test.py
           python _agent_memory_smoke_test.py
           python _proposer_guardrail_smoke_test.py
+          # The trajectory export and the Laya checkpoint registry. Hermetic: no model, no
+          # network, no eval run (unlike _learning_smoke_test.py, which the gate needs and
+          # which loads the local embedding model at import).
+          python _trajectories_smoke_test.py
+          # The daemon's Discord front door. Hermetic: a fake `discord` module is
+          # installed into sys.modules, so this runs with no token, no gateway and no
+          # network — it asserts the fail-closed config, the operator allowlist on button
+          # clicks, and that steering stays on the Lab's own inject path.
+          python _discord_remote_smoke_test.py
 
   frontend:
     runs-on: ubuntu-latest

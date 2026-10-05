@@ -45,3 +45,11 @@ laya==0.3.21
 python-dotenv==1.2.3
 uvicorn==0.52.4
 fastapi==0.141.1
+# The daemon's outbound-only remote front door (daemon/discord_bot.py): Discord
+# approvals and steering, no inbound port. Imported lazily inside DiscordRemote.start(),
+# so a checkout that never configures a bot never loads it — but it is pinned here so a
+# machine that does configure one gets the version this code was written against
+# (discord.py 2.x's `ui.View`/`ui.button` callbacks, `create_thread`, `Intents`). An
+# upgrade wants a re-run of _discord_remote_smoke_test.py, whose fake module mimics the
+# exact API surface this file reads.
+discord.py==2.6.4

@@ -280,10 +280,25 @@ def search(
         rows = query_builder.to_list()
         for row in rows:
             row.pop("vector", None)
+        _report_read(query, rows)
         return rows
     except Exception:
         logger.debug("trace_store: search failed", exc_info=True)
         return []
+
+
+def _report_read(query: str, rows: list[dict[str, Any]]) -> None:
+    """Tell the Lab's memory radar about a vector read. Best effort, never raises."""
+    try:
+        import lab
+
+        lab.memory_hit(
+            "lancedb",
+            query,
+            [{"id": row.get("id") or row.get("tool"), "label": row.get("text") or row.get("tool"), "score": row.get("_distance")} for row in rows],
+        )
+    except Exception:
+        logger.debug("trace_store: lab report failed", exc_info=True)
 
 
 def record_turn(

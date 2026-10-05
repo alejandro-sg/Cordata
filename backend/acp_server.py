@@ -44,6 +44,7 @@ The agentic harness on top (docs/agentic-harness.md), per session:
 
 import asyncio
 import json
+import collections
 import logging
 import os
 import threading
@@ -56,12 +57,31 @@ import acp
 import acp.stdio
 from strands.interventions import Confirm, Deny, InterventionHandler, Proceed
 
+import checkpoints
 import edit_preview
+import bandit
+import claude_code_tool
+import fix_memory
+import context_digest_tool
 import harness_events
+import intervention_view
 import kg
+import lab as lab_module
+import learned
+import laya_guard
 import laya_risk
+import outcome_hooks
+import outcomes
+import optimize
+import secret_guard
+import stall_guard
 import lsp_bridge
+import ollama_resource_tool
+import omlx_provider
+import omlx_resource_tool
 import patch_tool
+import prompts
+import reflect
 import settings as app_settings
 import settings_store
 import specialists
@@ -85,22 +105,43 @@ from model_control_tool import _context_window_limit, _fetch_available_models  #
 # lists, so keep them in sync by hand when either changes. apply_patch is
 # ACP-only (the harness's patch tool). Plugins added at runtime are gated by
 # PluginHost.requires_approval, not by this static set.
-APPROVAL_REQUIRED_TOOLS = {"shell", "python_repl", "file_write", "editor", "apply_patch", *GENERATED_TOOL_NAMES, *MCP_TOOL_NAMES}
+APPROVAL_REQUIRED_TOOLS = {"shell", "python_repl", "file_write", "editor", "apply_patch", claude_code_tool.TOOL_NAME, *GENERATED_TOOL_NAMES, *MCP_TOOL_NAMES}
 
 # Plan mode runs only these (reading code is part of planning, as in Claude
 # Code's and OpenCode's plan modes); everything else is denied.
-PLAN_MODE_TOOLS = {"file_read", "think", "current_time", "calculator", "architect", *(t.tool_name for t in lsp_bridge.LSP_TOOLS)}
+PLAN_MODE_TOOLS = {"file_read", "think", "current_time", "calculator", "architect", "context_digest", *(t.tool_name for t in lsp_bridge.LSP_TOOLS)}
 
 # editor's read-only commands: like file_read, they never ask (and run in plan mode).
 _EDITOR_READ_COMMANDS = {"view", "find_line"}
 
 
+#: Memory-management calls that only read: they run in plan mode too, and never ask.
+_READ_ONLY_ACTIONS = {
+    "ollama_resource_manager": {"list", "ps", "status"},
+    "omlx_resource_manager": {"status"},
+}
+
+
 def _read_only_call(tool_name: str, tool_input) -> bool:
-    return tool_name == "editor" and isinstance(tool_input, dict) and tool_input.get("command") in _EDITOR_READ_COMMANDS
+    if not isinstance(tool_input, dict):
+        return False
+    if tool_name == "editor":
+        return tool_input.get("command") in _EDITOR_READ_COMMANDS
+    reads = _READ_ONLY_ACTIONS.get(tool_name)
+    return reads is not None and str(tool_input.get("action", "")).strip().lower() in reads
+
+
+def _forced_ask(tool_name: str, tool_input) -> str | None:
+    """Why this call asks for a person even in ``auto`` mode, or None. Pulling or
+    deleting model weights is a multi-gigabyte download / an irreversible delete: no
+    permission mode and no Laya reading waves it through."""
+    if tool_name == "ollama_resource_manager" and ollama_resource_tool.asks_for_approval(tool_input):
+        return "pulling or deleting model weights always needs your approval"
+    return None
 
 
 # A turn Laya rates destructive with confidence arms the gate for these, even in auto mode.
-_ARMABLE_TOOLS = {"shell", "python_repl", "file_write", "editor", "apply_patch"}
+_ARMABLE_TOOLS = {"shell", "python_repl", "file_write", "editor", "apply_patch", claude_code_tool.TOOL_NAME, "ollama_resource_manager"}
 
 _TOOL_KIND: dict[str, str] = {
     "shell": "execute",
@@ -118,8 +159,101 @@ _TOOL_KIND: dict[str, str] = {
     "a2a_client": "fetch",
     "architect": "think",
     "debugger": "other",
+    claude_code_tool.TOOL_NAME: "execute",
+    "context_digest": "think",
+    "ollama_resource_manager": "other",
+    "omlx_resource_manager": "other",
     **{t.tool_name: "search" for t in lsp_bridge.LSP_TOOLS},
 }
+
+
+def _baseline_reward(cwd: str, exclude: str = "") -> float | None:
+    """The mean reward of the project's recent turns that read no learned skill — what a skill's own turns are
+    compared against."""
+    scores = []
+    for record, update in outcomes.recent(40, project=cwd):
+        if record.id == exclude or record.skills:
+            continue
+        scores.append(outcomes.score(record, update).value)
+    return sum(scores) / len(scores) if len(scores) >= 3 else None
+
+
+def _bandit_policy(preferences) -> dict:
+    """The bandit's knobs, read once per turn from settings. ``off`` unless a person turned it on; the bandit
+    itself holds no policy and cannot decide anything these do not hand it."""
+    return {
+        "mode": str(preferences.get("learning.bandit", "off") or "off"),
+        "explore": float(preferences.get("learning.banditExplore", 0.1) or 0.0),
+        "min_pulls": int(float(preferences.get("learning.banditMinPulls", 5) or 5)),
+        "lam": float(preferences.get("learning.banditLambda", 1.0) or 0.0),
+        "mu": float(preferences.get("learning.banditMu", 1.0) or 0.0),
+    }
+
+
+def _bandit_route_arms(decision: "RouteDecision") -> list[str]:
+    """The actions the bandit may choose between for this turn — never more than the base policy already allowed.
+
+    A dispatch may be declined (the orchestrator handles the turn instead); a hint may be dropped; nothing is
+    offered that would *add* an action the policy did not produce. An abstention is left alone — fail-closed is
+    not the bandit's to reopen — and a ``kind="tool"`` target is the ``engine`` point's job, not this one's.
+    """
+    if decision.abstained or decision.target is None:
+        return []
+    if decision.action == "dispatch":
+        return ["dispatch", "hint"]
+    if decision.action == "hint":
+        return ["hint", "none"]
+    if decision.action == "none" and decision.hint():
+        return ["none", "hint"]
+    return []
+
+
+def _bandit_stub(mode: str, decision: "RouteDecision") -> dict:
+    """The ledger-shaped skeleton the bandit derives a context from — the same fields a finished turn record
+    carries, so the context a choice is made in is the context it is later learned from."""
+    return {"mode": mode, "route": {"target": decision.target.id if decision.target else None, "risk": decision.risk, "tier": decision.tier()}}
+
+
+def _maintain(cwd: str) -> None:
+    """Off the turn's path: judge earlier turns' changes, keep the snapshot history bounded, and fold whatever
+    the judging has now made learnable into the bandit's table (a turn only becomes learnable once reconciled)."""
+    outcomes.reconcile(cwd)
+    checkpoints.prune(cwd)
+    _bandit_learn(cwd)
+
+
+def _bandit_learn(cwd: str) -> None:
+    """Rebuild the bandit's table from the project's ledger. A no-op with the bandit off; never raises."""
+    try:
+        preferences = settings_store.current(cwd)
+        policy = _bandit_policy(preferences)
+        if policy["mode"] == "off":
+            return
+        bandit.for_project(cwd).learn(cwd, lam=policy["lam"], mu=policy["mu"])
+    except Exception:
+        logging.getLogger(__name__).debug("bandit: learning pass failed", exc_info=True)
+
+
+def _optimize_artifacts(cwd: str, preferences: dict) -> None:
+    """Draft a sharper variant of a live lesson or prompt overlay whose turns went badly (``optimize.py``). A
+    no-op unless ``learning.optimizePrompts`` is on; never raises. Also off the turn's path, and off during an eval
+    run (``SIERRALAB_REFLECT=off``), where a scripted turn is not evidence about anything."""
+    try:
+        if preferences.get("learning.optimizePrompts", False) is not True:
+            return
+        if os.environ.get("SIERRALAB_REFLECT", "").lower() == "off":
+            return
+        for kind in ("skill", "prompt"):
+            optimize.cycle(cwd, kind=kind, preferences=preferences)
+    except Exception:
+        logging.getLogger(__name__).debug("optimize: drafting pass failed", exc_info=True)
+
+
+def _note_answer(session_id: str, tool_name: str, approved: bool, key: str) -> None:
+    """The person's answer to an approval, for the turn's outcome record."""
+    recorder = outcomes.active(session_id)
+    if recorder is not None:
+        recorder.approval("approved" if approved else "rejected", tool_name, key=key)
 
 
 def _tool_kind(tool_name: str) -> str:
@@ -141,6 +275,20 @@ def _permission_approved(outcome, options: list) -> bool:
         return False
     selected = next((o for o in options if o.option_id == outcome.option_id), None)
     return selected is not None and selected.kind in _ALLOW_KINDS
+
+
+def _answered_by(result) -> str | None:
+    """The front door that answered, when the client said so in ACP's `_meta` slot.
+
+    The daemon relays a permission answer itself when the decision came from a
+    remote door — the Discord bot — and stamps `_meta.sierralab.decidedBy` on the
+    response it writes to this child. Everything else (a TUI, the GUI's modal, a
+    Zed session) sends no `_meta` and is a person on the socket. Returns None
+    rather than a guess when the slot is absent or shaped differently."""
+    meta = getattr(result, "field_meta", None)
+    slot = meta.get("sierralab") if isinstance(meta, dict) else None
+    door = slot.get("decidedBy") if isinstance(slot, dict) else None
+    return str(door) if isinstance(door, str) and door else None
 
 
 def _settled_intervention(
@@ -242,11 +390,17 @@ def _render_swarm_progress(entries: list, reasoning: dict | None = None) -> str:
 #           telling the model to describe its plan instead.
 #   build — today's default: only APPROVAL_REQUIRED_TOOLS pause for a real
 #           permission prompt, everything else runs immediately.
-#   auto  — nothing pauses, ever. Opt-in only; never the default.
+#   auto  — routine calls never pause. Opt-in only; never the default. It does not
+#           lift the floor in before_tool_call: deny rules, the vault's fail-closed
+#           egress, a call Laya rates destructive, and model pulls/deletes still ask.
 _MODES = [
     acp.schema.SessionMode(id="plan", name="Plan", description="Discuss and plan only — no tool actually runs."),
     acp.schema.SessionMode(id="build", name="Build", description="Tools run after your approval (default)."),
-    acp.schema.SessionMode(id="auto", name="Auto", description="Tools run with no approval prompts. Use with caution."),
+    acp.schema.SessionMode(
+        id="auto",
+        name="Auto",
+        description="Routine tool calls run without asking. Still asks: anything Laya rates destructive, deny rules, model pulls/deletes. Use with caution.",
+    ),
 ]
 _MODE_IDS = {mode.id for mode in _MODES}
 _DEFAULT_MODE = "build"
@@ -273,7 +427,13 @@ def _config_options(agent) -> list:
     current_model = config.get("model_id")
     current_temperature = (config.get("params") or {}).get("temperature")
 
-    available_models = _fetch_available_models()
+    import ollama_cloud
+
+    if isinstance(agent.model, ollama_cloud.OllamaCloudModel):
+        # The registry (cloud tags, plus a local one already on disk), not oMLX's list.
+        available_models = [spec.wire_id for spec in ollama_cloud.routable(agent.model.base_url)]
+    else:
+        available_models = _fetch_available_models()
     if current_model and current_model not in available_models:
         available_models = [current_model, *available_models]
 
@@ -329,8 +489,71 @@ class _ApprovalHandler(InterventionHandler):
         self.router_hooks = router_hooks  # RouterHooks: Laya's risk arming
         self.vault = vault  # vault_proxy.VaultStatus: egress proxy health
         self.session_agent = None  # the orchestrator; specialists share this handler
+        self.session_id: str | None = None  # set by _build_session; keys the outcome recorder
+        self.lab = None  # lab.Lab: per-pod Laya dial and the pod name carried on a prompt
+        #: Laya Guard's reading of each call, by tool_use id (bounded): what the Lab's gauge shows for it.
+        self._call_readings: "collections.OrderedDict[str, dict]" = collections.OrderedDict()
+        #: tool_use id → checkpoint id, so a call that pauses for approval and is re-entered on resume is snapshotted once.
+        self._checkpointed: "collections.OrderedDict[str, str | None]" = collections.OrderedDict()
+        self._unprotected_said: set[str] = set()
+        #: The bandit's view of this turn, stashed by the orchestrator thread so a tool call's ask decision is
+        #: made in the same context the turn's other choices were (`SierraLabAcpAgent._apply_bandit`). None when
+        #: the bandit is off or the turn abstained, in which case the ask arm is not consulted at all.
+        self._bandit_decision: "RouteDecision | None" = None
+        self._bandit_route: dict | None = None
 
     def before_tool_call(self, event):
+        """The decision (``_decide``), then — for any call that may change files and was not refused — a
+        snapshot of the project (``checkpoints.py``), so that whatever ``auto`` mode or an approval let
+        through can be undone."""
+        decision = self._decide(event)
+        if not isinstance(decision, Deny):
+            try:
+                self._checkpoint(event)
+            except Exception:
+                logging.getLogger(__name__).debug("checkpoint failed", exc_info=True)
+        return decision
+
+    def _checkpoint(self, event) -> None:
+        tool_name = str(event.tool_use.get("name") or "")
+        tool_input = event.tool_use.get("input")
+        if not checkpoints.writes_files(tool_name, tool_input, GENERATED_TOOL_NAMES):
+            return
+        use_id = str(event.tool_use.get("toolUseId") or "")
+        if use_id and use_id in self._checkpointed:
+            return
+        preferences = settings_store.current(self.cwd)
+        if not preferences.get("checkpoints.enabled", True):
+            return
+        recorder = outcomes.active(self.session_id)
+        pod = self.lab.pod_of(event.agent) if self.lab is not None else None
+        agent = pod.name if pod is not None else str(getattr(event.agent, "name", "") or "")
+        result = checkpoints.take(
+            self.cwd,
+            kind="pre",
+            tool=tool_name,
+            agent=agent,
+            session_id=self.session_id or "",
+            turn=recorder.id if recorder is not None else "",
+            call=laya_guard.render_call(tool_name, tool_input, self.cwd).split(" tool: ", 1)[-1].replace("\n", " ")[:200],
+            paths=outcome_hooks.edit_paths(tool_name, tool_input),
+            max_file_mb=float(preferences.get("checkpoints.maxFileMb", checkpoints.DEFAULT_MAX_FILE_MB)),
+        )
+        if use_id:
+            self._checkpointed[use_id] = result.id
+            while len(self._checkpointed) > 128:
+                self._checkpointed.popitem(last=False)
+        if recorder is not None:
+            recorder.checkpoint(result.ok, result.id, result.reason, len(result.outside))
+        if (not result.ok or result.outside) and (result.reason or "outside") not in self._unprotected_said:
+            # Said once per reason per session, in the ledger and to the client: a change that cannot be
+            # undone is exactly what the person should be told, and not on every call.
+            self._unprotected_said.add(result.reason or "outside")
+            payload = {"event": "checkpoint", "phase": "unprotected" if not result.ok else "outside", "tool": tool_name, "reason": result.reason, "outside": result.outside[:5]}
+            harness_events.emit("checkpoint", payload)
+            state_store.append_event("checkpoint", payload, session_id=self.session_id, source="checkpoints")
+
+    def _decide(self, event):
         """Mode first, with the user's permission rules (settings_store.py) laid
         over it: a ``deny`` rule blocks in every mode — ``auto`` included — and an
         ``allow`` / ``ask`` rule decides whether a call pauses for approval.
@@ -340,6 +563,13 @@ class _ApprovalHandler(InterventionHandler):
         self-heal loop's two bounded pre-approvals, and per-plugin approval."""
         tool_name = event.tool_use.get("name")
         tool_input = event.tool_use.get("input")
+
+        # A step repeated with the same result, over and over, is not run again (stall_guard.py).
+        if self.session_id is not None:
+            who = "orchestrator" if event.agent is self.session_agent else str(getattr(event.agent, "name", "") or "agent")  # as StallHooks names them
+            stalled = stall_guard.for_session(self.session_id).before(who, tool_name, tool_input)
+            if stalled:
+                return Deny(reason=stalled)
 
         # Read once: `evaluate` below and the risk score recorded with the
         # prompt must come from the same settings, or the ledger's explanation
@@ -370,16 +600,27 @@ class _ApprovalHandler(InterventionHandler):
             if tool_name in PLAN_MODE_TOOLS or read_only:
                 return Proceed()
             return Deny(reason=f"Plan mode is active — {tool_name} was not run. Describe the change instead of making it.")
-        armed = (
+        forced = _forced_ask(tool_name, tool_input)
+        # Laya Guard: this call, by this agent, scored on its own — not the turn's one reading, and
+        # not the orchestrator's standing in for a specialist's. A call at or above the calling
+        # agent's gate asks in every mode, auto included; below it, nothing is added or waived.
+        pod = self.lab.pod_of(event.agent) if self.lab is not None else None
+        call_risk = self._call_risk(tool_name, tool_input, read_only, preferences)
+        gate = laya_guard.call_gate(preferences, pod.dial if pod is not None else None)
+        call_armed = call_risk is not None and call_risk.score >= gate
+        turn_armed = (
             self.router_hooks is not None
             and self.session_agent is not None
             and tool_name in _ARMABLE_TOOLS
             and not read_only
-            and self.router_hooks.armed(self.session_agent)
+            and (self.router_hooks.armed(self.session_agent) or self._dial_armed(event, preferences))
         )
+        armed = forced is not None or turn_armed or call_armed or self._bandit_ask(call_risk, gate, preferences)
         if self.mode == "auto" and not armed:
+            self._note_call(event, call_risk, "auto")
             return Proceed()
         if not armed and verdict is not None and verdict.action == "allow":
+            self._note_call(event, call_risk, "allowed")
             return Proceed()
         if not armed and self.heal is not None and self.heal.preapproved(tool_name, tool_input):
             harness_events.emit("heal", {"event": "heal", "phase": "auto_approved", "tool": tool_name})
@@ -392,17 +633,136 @@ class _ApprovalHandler(InterventionHandler):
                 return Proceed()
 
         risk = self._risk(preferences)
+        # The reading shown with the prompt is the higher of the call's and the turn's: it is what made it ask.
+        events = [e for e in ((call_risk.to_event() if call_risk is not None else None), (risk.to_event() if risk else None)) if e]
+        shown = max(events, key=lambda e: e.get("score") or 0.0) if events else None
+        if forced:
+            why = forced
+        elif call_armed:
+            why = f"Laya Guard: {call_risk.reason} — risk {call_risk.score:.2f} is at or above this agent's gate of {gate:.2f}"
+        else:
+            why = "Laya rated this turn destructive — asking even in auto mode"
+        self._note_call(event, call_risk, "asked", shown)
         payload = json.dumps(
             {
                 "name": tool_name,
+                "pod": pod.name if pod is not None else None,
                 "input": tool_input,
                 "tool_use_id": event.tool_use.get("toolUseId"),
                 "always_rule": None if armed else settings_store.suggest_rule(tool_name, tool_input),
-                **({"reason": "Laya rated this turn destructive — asking even in auto mode"} if armed else {}),
-                **({"risk": risk.to_event()} if risk else {}),
+                **({"reason": why} if armed else {}),
+                **({"risk": shown} if shown else {}),
             }
         )
         return Confirm(prompt=payload)
+
+    def _bandit_ask(self, call_risk, gate: float, preferences) -> bool:
+        """Whether the bandit adds an ask for this call — the *only* bandit read inside an approval, and a
+        tighten-only OR-term: it can turn a would-be ``Proceed`` into a ``Confirm`` and can never do the reverse.
+
+        Additive-only by construction, in three ways at once: the only arm that changes anything is ``ask`` (the
+        other, ``none``, is the status quo — there is no arm that *removes* a prompt), the precondition is that the
+        Guard already scored this call **at or above this agent's gate**, and the return is ORed into ``armed`` so
+        nothing downstream can be un-armed by it. Because that precondition is exactly ``call_armed``, with the
+        guard reading the same call the bandit adds nothing in v1 — deliberately. Its job here is to put the *ask*
+        decision on the turn's trajectory (``choices["ask"]``) so a later scorer can be judged against it, and to
+        make the clamp structural rather than a review note. Suppressing a discretionary ask is out of scope for
+        v1 and has no code path.
+
+        False whenever the bandit is off/shadow, the turn is not one the bandit looked at (abstained, or before
+        ``_apply_bandit``), the call is unscored, or the posterior is too thin.
+        """
+        decision = self._bandit_decision
+        stub = self._bandit_route
+        if decision is None or stub is None or call_risk is None:
+            return False
+        try:
+            policy = _bandit_policy(preferences)
+            if policy["mode"] != "live" or float(call_risk.score) < float(gate):
+                return False
+            recorder = outcomes.active(self.session_id)
+            table = bandit.for_project(self.cwd)
+            arm, info = table.choose(
+                "ask",
+                bandit.context(stub, "ask"),
+                ["none", "ask"],
+                "none",
+                mode=policy["mode"],
+                explore=policy["explore"],
+                min_pulls=policy["min_pulls"],
+                lam=policy["lam"],
+                mu=policy["mu"],
+            )
+            bandit.decision_event(info, turn=recorder.id if recorder is not None else "", project=self.cwd)
+            # Record the arm either way: the "none" half is what the "ask" arm is learned against.
+            decision.choices["ask"] = arm
+            return arm == "ask"
+        except Exception:
+            logging.getLogger(__name__).debug("bandit: ask read failed", exc_info=True)
+            return False
+
+    def _call_risk(self, tool_name: str, tool_input, read_only: bool, preferences) -> "laya_guard.CallRisk | None":
+        """Laya Guard's reading of this one call, or None (a tool that only reads, the guard off, or a
+        failure — an unreadable call is never *scored safe*, it is simply not scored)."""
+        if read_only or tool_name not in _ARMABLE_TOOLS:
+            return None
+        try:
+            router = getattr(self.router_hooks, "router", None)
+            return laya_guard.assess_call(tool_name, tool_input, cwd=self.cwd, preferences=preferences, calibrator=getattr(router, "calibrator", None))
+        except Exception:
+            logging.getLogger(__name__).debug("laya guard failed", exc_info=True)
+            return None
+
+    def reading_for(self, tool_use_id: str | None, agent) -> dict | None:
+        """What the gauge should show for the call about to run: the higher of Laya Guard's reading of
+        the call and Laya's of the turn. None when there is neither."""
+        turn = self._risk(settings_store.current(self.cwd))
+        events = [e for e in ((self._call_readings.get(str(tool_use_id)) if tool_use_id else None), (turn.to_event() if turn else None)) if e]
+        return max(events, key=lambda e: e.get("score") or 0.0) if events else None
+
+    def _record_approval(self, event, kind: str, score: float | None) -> None:
+        recorder = outcomes.active(self.session_id)
+        if recorder is not None:
+            recorder.approval(kind, str(event.tool_use.get("name") or ""), score, key=str(event.tool_use.get("toolUseId") or "") or None)
+
+    def _note_call(self, event, call_risk, decision: str, gauge: dict | None = None) -> None:
+        """Show a scored call on its agent's pod and gauge, and leave a trail when auto mode let a
+        call that was not trivially safe run: "who approved that?" must have an answer even when the
+        answer is "auto mode, at 0.55"."""
+        if call_risk is not None or decision == "asked":
+            self._record_approval(event, decision, call_risk.score if call_risk is not None else None)
+        if call_risk is None or self.lab is None:
+            return
+        pod = self.lab.pod_of(event.agent)
+        tool = event.tool_use.get("name") or "tool"
+        reading = call_risk.to_event()
+        tool_use_id = str(event.tool_use.get("toolUseId") or "")
+        if tool_use_id:
+            self._call_readings[tool_use_id] = reading
+            while len(self._call_readings) > 64:
+                self._call_readings.popitem(last=False)
+        if pod is not None:
+            self.lab.note_call(pod.name, tool, reading, decision, gauge=gauge or self.reading_for(tool_use_id, event.agent))
+        safe, _ = laya_risk.thresholds(settings_store.current(self.cwd))
+        if decision == "auto" and call_risk.score >= safe:
+            summary = secret_guard.redact(" ".join(str(event.tool_use.get("input")).split()))[:200]
+            state_store.append_event(
+                "auto_approved",
+                {"pod": pod.name if pod is not None else None, "tool": tool, "score": call_risk.score, "band": call_risk.band, "reason": call_risk.reason, "source": call_risk.source, "call": summary},
+                session_id=self.lab.session_id,
+                source="laya_guard",
+            )
+
+    def _dial_armed(self, event, preferences) -> bool:
+        """The Lab's per-pod Laya dial: a score above this pod's dial arms the gate
+        like a router-armed turn. Tightens only — see ``lab.Lab.dial_armed``."""
+        if self.lab is None:
+            return False
+        pod = self.lab.pod_of(event.agent)
+        if pod is None or pod.dial is None:
+            return False
+        risk = self._risk(preferences)
+        return risk is not None and self.lab.dial_armed(event.agent, risk.score)
 
     def _risk(self, preferences) -> laya_risk.RiskAssessment | None:
         """Laya's 0.0-1.0 destructiveness score for the turn in progress.
@@ -462,7 +822,11 @@ def _project_system_prompt(cwd: str) -> str:
         "operate relative to this directory — explore it first if you're not sure what's there. "
         "For multi-line or multi-file changes prefer apply_patch (a unified diff). After a command or "
         "test fails, read the [self-heal] notes appended to its result: they carry a root cause and, "
-        "usually, a patch already verified in a sandbox copy."
+        "usually, a patch already verified in a sandbox copy. "
+        "For a large refactor or implementation across many files, hand the whole task to claude_code_engineer "
+        "(it runs the Claude Code CLI headless in this project and reports back); judge its result before you "
+        "tell the user it is done. For planning, ask the architect; to condense bulk text, use context_digest. "
+        + ollama_resource_tool.MEMORY_GUIDANCE
     )
 
 
@@ -497,6 +861,20 @@ def _apply_model(agent, value) -> bool:
     """Switch the session's model; False if the provider doesn't offer it."""
     if not isinstance(value, str):
         return False
+    import ollama_cloud
+
+    if isinstance(agent.model, ollama_cloud.OllamaCloudModel):
+        # Through the registry, so a local-weights tag that is not installed is
+        # refused with a reason instead of 404-ing on the next request.
+        try:
+            spec = agent.model.switch_model(value)
+        except (ollama_cloud.UnknownModel, ollama_cloud.ModelUnavailable) as error:
+            logging.getLogger(__name__).warning("model=<%s> | %s, keeping the current model", value, error)
+            return False
+        import agent_common
+
+        agent_common.OLLAMA_MODEL_ID = spec.alias  # new sessions inherit the switch
+        return True
     available = _fetch_available_models()
     if available and value not in available:
         logging.getLogger(__name__).warning("model=<%s> | not offered by the provider, keeping the current model", value)
@@ -557,12 +935,51 @@ def _heal_config(preferences) -> HealConfig:
         max_attempts=int(preferences.get("selfHeal.maxAttempts", 3)),
         verify=preferences.get("selfHeal.verify", "sandbox"),
         auto_apply=preferences.get("selfHeal.autoApply", False) is True,
+        memory=preferences.get("selfHeal.memory", True) is not False,
     )
 
 
 # The marker a client sends (acp-tui's /resume-turn) to continue a turn that a
 # crash or kill interrupted between two checkpoints.
 RESUME_TURN_MARKER = "[resume interrupted turn]"
+#: What a client sends when it resumes on its own (``selfHeal.autoResume``): the same turn, but counted, so a
+#: turn that crashes the process every time it is resumed is tried twice and then left for a person.
+AUTO_RESUME_MARKER = "[auto-resume interrupted turn]"
+MAX_AUTO_RESUMES = 2
+AUTO_RESUME_MAX_AGE = 30 * 60
+
+
+def _is_resume(text: str) -> bool:
+    return text.strip() in (RESUME_TURN_MARKER, AUTO_RESUME_MARKER)
+
+
+def _resume_marker_path(session_id: str) -> Path:
+    return SESSIONS_DIR / f"session_{session_id}.resume.json"
+
+
+def _checkpoint_fingerprint(session_id: str) -> str | None:
+    try:
+        info = _checkpoint_path(session_id).stat()
+    except OSError:
+        return None
+    return f"{info.st_mtime_ns}:{info.st_size}"
+
+
+def _auto_resume_attempts(session_id: str) -> int:
+    """Automatic resumes already spent on *this* checkpoint. A turn that got further before dying wrote a new
+    checkpoint, so its count starts again — only a turn that dies at the same point every time runs out."""
+    try:
+        data = json.loads(_resume_marker_path(session_id).read_text())
+    except (OSError, ValueError):
+        return 0
+    return int(data.get("attempts", 0)) if data.get("fingerprint") == _checkpoint_fingerprint(session_id) else 0
+
+
+def _count_auto_resume(session_id: str) -> None:
+    try:
+        _resume_marker_path(session_id).write_text(json.dumps({"fingerprint": _checkpoint_fingerprint(session_id), "attempts": _auto_resume_attempts(session_id) + 1}))
+    except OSError:
+        pass
 _LAYA_DECIDE_TIMEOUT = 2.0
 _SPECIALIST_CONTEXT_CHARS = 4000
 
@@ -728,6 +1145,40 @@ def _router() -> LayaRouter:
     return _ROUTER
 
 
+def _settle_cancelled_turn(agent) -> None:
+    """Leave a cancelled agent reusable.
+
+    A turn cancelled right after an approval was answered (an E-Stop, or Esc a
+    moment after "Allow") is abandoned while Strands still believes it is mid-
+    resume, so the *next* prompt dies with "must resume from interrupt". It also
+    leaves the model's last tool call without a result, which providers reject.
+    Close both: drop the interrupt state, and answer any dangling tool call with
+    an error result saying it did not run."""
+    state = getattr(agent, "_interrupt_state", None)
+    if state is not None and getattr(state, "activated", False):
+        state.deactivate()
+    messages = getattr(agent, "messages", None)
+    if not messages or messages[-1].get("role") != "assistant":
+        return
+    uses = [block["toolUse"] for block in messages[-1].get("content") or [] if isinstance(block, dict) and "toolUse" in block]
+    if not uses:
+        return
+    message = {
+        "role": "user",
+        "content": [
+            {"toolResult": {"toolUseId": use["toolUseId"], "status": "error", "content": [{"text": "cancelled: this call did not run"}]}}
+            for use in uses
+        ],
+    }
+    messages.append(message)
+    manager = getattr(agent, "_session_manager", None)
+    if manager is not None:
+        try:
+            manager.append_message(message, agent)
+        except Exception:
+            logging.getLogger(__name__).debug("could not persist the cancelled tool results", exc_info=True)
+
+
 class SierraLabAcpAgent:
     """Implements initialize, new_session, load_session, list_sessions, prompt,
     cancel, set_session_mode, set_config_option and the ``_sierralab/*``
@@ -843,7 +1294,10 @@ class SierraLabAcpAgent:
         manager = lsp_bridge.manager_for(cwd)
         manager.enabled = lsp_enabled
 
-        reserved = {"shell", "editor", "file_read", "file_write", "python_repl", "http_request", "apply_patch", "architect", "debugger"}
+        reserved = {
+            "shell", "editor", "file_read", "file_write", "python_repl", "http_request", "apply_patch", "architect", "debugger",
+            claude_code_tool.TOOL_NAME, "omlx_resource_manager", "ollama_resource_manager", "context_digest",
+        }
         plugins = _plugin_host(cwd, reserved, trace_store.enabled(preferences))
         heal = SelfHealHooks(config=lambda: _heal_config(settings_store.current(cwd)), session_id=session_id, root=cwd)
         router_hooks = RouterHooks(router, notify=self._laya_notifier(session_id), plugin_host=plugins)
@@ -857,11 +1311,11 @@ class SierraLabAcpAgent:
         )
         specialist_tools, specialist_agents = specialists.specialist_tools(
             interventions=[handler],
-            hooks_factory=lambda: [lsp_bridge.LspEditHooks(), router_hooks],
+            hooks_factory=lambda: [lsp_bridge.LspEditHooks(), router_hooks, outcome_hooks.OutcomeHooks(session_id), stall_guard.StallHooks(session_id)],
         )
         instructions = settings_store.load_instructions(cwd)
         context = workspace_context.summary(cwd, specialists=list(specialist_agents))
-        system_prompt = _project_system_prompt(cwd) + f"\n\n{context}" + (f"\n\n{instructions}" if instructions else "")
+        system_prompt = _project_system_prompt(cwd) + f"\n\n{context}" + (f"\n\n{instructions}" if instructions else "") + prompts.live_text(cwd)
         # Order matters for AfterInvocationEvent (callbacks run in reverse):
         # self-heal is registered last so it runs first and can set `resume`
         # before the router decides whether the turn is over.
@@ -869,14 +1323,36 @@ class SierraLabAcpAgent:
             session_id,
             interventions=[handler],
             system_prompt=system_prompt,
-            extra_tools=[patch_tool.apply_patch, *specialist_tools],
-            extra_hooks=[lsp_bridge.LspEditHooks(), router_hooks, heal],
+            # The Meta-Harness (Phase 6/7): the Claude Code CLI wrapper, the two memory
+            # managers and the local digest. ACP-only, like the specialists — the web front
+            # door has no vault status to route the CLI's egress through, no approval gate for it.
+            extra_tools=[
+                patch_tool.apply_patch,
+                *specialist_tools,
+                claude_code_tool.claude_code_engineer,
+                omlx_resource_tool.omlx_resource_manager,
+                ollama_resource_tool.ollama_resource_manager,
+                context_digest_tool.context_digest,
+            ],
+            extra_hooks=[lsp_bridge.LspEditHooks(), router_hooks, heal, outcome_hooks.OutcomeHooks(session_id, "orchestrator"), stall_guard.StallHooks(session_id, "orchestrator")],
             exclude_tools={"agent_memory"},
             use_triage=False,
             untrusted_tools=plugins.untrusted_names,
+            skill_dirs=learned.live_dirs(cwd),
             checkpointing=True,
         )
         handler.session_agent = agent
+        handler.session_id = session_id
+        # What a module-level Strands tool cannot read from its arguments: this session's
+        # project, the vault's *live* status (the handler re-probes it), settings, the Lab.
+        claude_code_tool.configure(
+            cwd=lambda: cwd,
+            vault=lambda: handler.vault,
+            preferences=lambda: settings_store.current(cwd),
+            session_id=lambda: session_id,
+            lab=lambda: lab_module.get(),
+        )
+        self._wire_lab(session_id, cwd, agent, handler, specialist_agents)
         if preferences.get("model"):
             _apply_model(agent, preferences.get("model"))
         if preferences.get("temperature"):
@@ -903,6 +1379,32 @@ class SierraLabAcpAgent:
         )
         _touch_index(session_id, cwd)
         return state
+
+    def _wire_lab(self, session_id: str, cwd: str, agent, handler, specialist_agents: dict) -> None:
+        """Register the orchestrator and the specialists as Lab pods and point the
+        Lab's providers (threat reading, MCP list) at this session."""
+        lab = lab_module.get()
+        if lab.session_id not in (None, session_id):
+            lab.reset()  # a different session: its pods are not the previous one's (isolation included)
+        lab.session_id = session_id
+        handler.lab = lab
+        lab.connect_models()
+
+        def risk_event(agent, tool_use=None) -> dict | None:
+            return handler.reading_for((tool_use or {}).get("toolUseId"), agent)
+
+        def mcp_names() -> list[str]:
+            import mcp_manager
+
+            return [str(server.get("name")) for server in mcp_manager.list_servers()]
+
+        lab.risk_provider = risk_event
+        lab.mcp_provider = mcp_names
+        lab.mode_provider = lambda: handler.mode
+        agent.hooks.add_hook(lab.attach(agent, "orchestrator", role="orchestrator"))
+        for name, specialist in specialist_agents.items():
+            specialist.hooks.add_hook(lab.attach(specialist, name, role=name, parent="orchestrator"))
+        lab.emit(force=True)
 
     @staticmethod
     def _start_background(plugins: PluginHost, manager, lsp_enabled: bool) -> None:
@@ -938,13 +1440,23 @@ class SierraLabAcpAgent:
                     where = f"{data['checkpoint'].get('position')}, cycle {data['checkpoint'].get('cycle_index')}"
                 except (OSError, ValueError, KeyError):
                     where = "unknown point"
+                age = time.time() - checkpoint.stat().st_mtime
+                attempts = _auto_resume_attempts(session_id)
+                wanted = settings_store.current(cwd).get("selfHeal.autoResume", True) is not False
+                auto = wanted and age <= AUTO_RESUME_MAX_AGE and attempts < MAX_AUTO_RESUMES
+                if auto:
+                    advice = "Resuming it automatically."
+                elif not wanted:
+                    advice = "Send /resume-turn to continue it from there."
+                elif attempts >= MAX_AUTO_RESUMES:
+                    advice = f"It was resumed automatically {attempts} times from this point and stopped again, so it is not being retried on its own. Send /resume-turn to try once more."
+                else:
+                    advice = "It is too old to resume on its own (over 30 minutes). Send /resume-turn to continue it from there."
                 await self._conn.session_update(
                     session_id=session_id,
-                    update=acp.update_agent_message_text(
-                        f"\n[This session's last turn was interrupted at a checkpoint ({where}). "
-                        "Send /resume-turn to continue it from there.]\n"
-                    ),
+                    update=acp.update_agent_message_text(f"\n[This session's last turn was interrupted at a checkpoint ({where}). {advice}]\n"),
                 )
+                self._send_ext("sierralab/resume", {"sessionId": session_id, "available": True, "auto": bool(auto), "where": where, "ageSeconds": int(age), "attempts": attempts, "max": MAX_AUTO_RESUMES})
             # Approvals this session was parked on when its process went away.
             # The child that was blocked on the prompt is gone, so the request
             # will never arrive again — the ledger row is all that is left of
@@ -1004,6 +1516,11 @@ class SierraLabAcpAgent:
         if state is None or mode_id not in _MODE_IDS:
             return None
         state.handler.mode = mode_id
+        # ACP has no push for a client-initiated change, so another front end watching this
+        # session (the Lab) would never learn of it: publish a snapshot, which carries the mode.
+        lab = lab_module.get()
+        if lab.session_id == session_id:
+            lab.emit(force=True)
         return acp.schema.SetSessionModeResponse()
 
     async def set_config_option(self, config_id: str, session_id: str, value, **kwargs):
@@ -1053,6 +1570,12 @@ class SierraLabAcpAgent:
                 "weights": router.calibrator.weights(),
                 "policy": router.policy.__dict__,
             }
+        if name.startswith("lab/"):
+            return await self._lab_control(name.removeprefix("lab/"), params, session_id)
+        if name.startswith("skills/"):
+            return await self._skills_control(name.removeprefix("skills/"), params, cwd)
+        if name.startswith("checkpoints/"):
+            return await self._checkpoint_control(name.removeprefix("checkpoints/"), params, session_id, cwd)
         if name == "heal/status":
             heal = state.heal if state else None
             episodes = [
@@ -1060,8 +1583,100 @@ class SierraLabAcpAgent:
                 for ep in (heal.episodes.values() if heal else [])
             ]
             config = heal.config if heal else HealConfig()
-            return {"episodes": episodes, "config": config.__dict__}
+            memory = await run_blocking(fix_memory.stats, cwd) if config.memory else None
+            return {"episodes": episodes, "config": config.__dict__, "memory": memory}
         raise acp.RequestError.method_not_found(method)
+
+    async def _skills_control(self, action: str, params: dict, cwd: str) -> dict:
+        """``skills/list`` · ``skills/show`` · ``skills/promote`` · ``skills/reject`` · ``skills/retire``: the learned skills
+        for this project. A person's promote goes through the same filter as the gate's; it skips the evaluation,
+        and the ledger says who did it."""
+        name = str(params.get("name") or "")
+        if action == "list":
+            rows = await run_blocking(learned.list_skills, cwd)
+            return {"skills": [{k: r.get(k) for k in ("name", "status", "scope", "description", "created", "uses", "reason", "signals", "evals", "promoted_by")} for r in rows[:60]],
+                    "promotion": settings_store.current(cwd).get("learning.promotion", "off")}
+        if action == "show":
+            row = learned.find(name, cwd)
+            if row is None:
+                return {"ok": False, "reason": f"no learned skill {name!r}"}
+            return {"ok": True, "skill": {k: row.get(k) for k in ("name", "status", "scope", "description", "signals", "evals", "uses", "rewards", "reason")}, "text": learned.read_text(row)}
+        if action == "promote":
+            return await run_blocking(learned.promote, name, cwd, evidence={"by": "person"}, by="person")
+        if action == "reject":
+            return await run_blocking(learned.reject, name, cwd, str(params.get("reason") or "rejected by a person"))
+        if action == "retire":
+            return await run_blocking(learned.retire, name, cwd, str(params.get("reason") or "retired by a person"), "person")
+        raise acp.RequestError.method_not_found(f"_sierralab/skills/{action}")
+
+    async def _checkpoint_control(self, action: str, params: dict, session_id: str | None, cwd: str) -> dict:
+        """``checkpoints/list`` · ``checkpoints/undo`` · ``checkpoints/restore``. Anything that changes files is a
+        dry run unless the caller says ``apply`` — and is refused while a turn is running, because a restore under a
+        working agent is two writers on one tree. Applied restores are audited in the ledger."""
+        if action == "list":
+            preferences = settings_store.current(cwd)
+            return {
+                "enabled": bool(preferences.get("checkpoints.enabled", True)),
+                "project": cwd,
+                "turns": await run_blocking(checkpoints.turns, cwd, int(params.get("limit") or 8)),
+            }
+        if action not in ("undo", "restore"):
+            raise acp.RequestError.method_not_found(f"_sierralab/checkpoints/{action}")
+        apply = bool(params.get("apply"))
+        if apply and outcomes.active(session_id) is not None:
+            return {"ok": False, "reason": "a turn is running — stop it first, then undo"}
+        paths = [str(p) for p in params.get("paths") or []] or None
+        if action == "undo":
+            result = await run_blocking(lambda: checkpoints.undo_turn(cwd, params.get("turn") or None, dry_run=not apply, paths=paths, session_id=session_id or ""))
+        else:
+            result = await run_blocking(lambda: checkpoints.restore(cwd, str(params.get("id") or ""), paths=paths, dry_run=not apply, session_id=session_id or ""))
+        if apply:
+            audit = {"action": action, "ok": result.get("ok"), "target": result.get("target"), "turn": result.get("turn"), "files": result.get("count"), "undo_with": result.get("undo_with")}
+            state_store.append_event("checkpoint_restore", audit, session_id=session_id, source="checkpoints")
+            harness_events.emit("checkpoint", {"event": "checkpoint", "phase": "restored", "files": result.get("count"), "ok": result.get("ok")})
+        return result
+
+    async def _lab_control(self, action: str, params: dict, session_id: str | None) -> dict:
+        """The Lab Master's controls. Each is audited in the ledger before it takes
+        effect — an E-Stop or a loosened dial is exactly what "who did that?" is for."""
+        lab = lab_module.get()
+        pod = str(params.get("pod") or "")
+        if action == "state":
+            return lab.snapshot()
+        try:
+            if action == "select":
+                lab.select(pod or None)
+                return {"focus": lab.focus}
+            if action not in ("isolate", "release", "dial", "inject", "effort"):
+                raise acp.RequestError.method_not_found(f"_sierralab/lab/{action}")
+            audit = {"action": action, "pod": pod}
+            if action in ("dial", "effort"):
+                audit["value"] = params.get("value")
+            if action == "inject":
+                audit["chars"] = len(str(params.get("text") or ""))
+            state_store.append_event("lab", audit, session_id=session_id, source="lab")
+            if action == "isolate":
+                # The pod and everything it spawned: stopping an orchestrator while
+                # its specialist keeps working would not be a stop.
+                reply = lab.isolate(pod)
+                reply["also"] = []
+                for descendant in lab.descendants(pod):
+                    lab.isolate(descendant, reason=f"parent {pod} isolated")
+                    reply["also"].append(descendant)
+                if pod == "orchestrator" and session_id:
+                    self._cancelled.add(session_id)
+                return reply
+            if action == "release":
+                return lab.release(pod)
+            if action == "dial":
+                return lab.set_dial(pod, float(params.get("value")))
+            if action == "effort":
+                return lab.set_effort(pod, str(params.get("value") or ""))
+            return lab.inject(pod, str(params.get("text") or ""))
+        except KeyError as error:
+            raise acp.RequestError.invalid_params({"error": str(error.args[0] if error.args else error)})
+        except (ValueError, TypeError, PermissionError) as error:
+            raise acp.RequestError.invalid_params({"error": str(error)})
 
     async def ext_notification(self, method: str, params: dict) -> None:
         return None
@@ -1093,7 +1708,9 @@ class SierraLabAcpAgent:
                 always_rule = payload.get("always_rule")
                 why = payload.get("reason")
                 risk = payload.get("risk") or {}
+                pod_name = payload.get("pod") or "orchestrator"
             except (TypeError, ValueError):
+                pod_name = "orchestrator"
                 tool_name, tool_input, tool_use_id, always_rule, why = str(interrupt.reason), None, interrupt.id, None, None
 
             settled = _settled_intervention(interrupt.id, session_id, tool_name, tool_input, since)
@@ -1114,9 +1731,11 @@ class SierraLabAcpAgent:
                 )
                 if not approved and state is not None:
                     state.router_hooks.note_rejection(state.agent)
+                _note_answer(session_id, tool_name, approved, interrupt.id)
                 responses.append({"interruptResponse": {"interruptId": interrupt.id, "response": approved}})
                 continue
 
+            lab_module.get().stage(interrupt.id, pod_name, tool_name, tool_input, risk or None, why)
             state_store.stage_intervention(
                 session_id=session_id,
                 tool=tool_name,
@@ -1148,6 +1767,7 @@ class SierraLabAcpAgent:
 
             approved = False
             option_id = None
+            answered_by = "user" if self._conn is not None else "no-client"
             if self._conn is not None:
                 options = [acp.schema.PermissionOption(option_id="allow", name="Allow", kind="allow_once")]
                 if always_rule:
@@ -1164,22 +1784,46 @@ class SierraLabAcpAgent:
                         raw_input=tool_input,
                     ),
                     options=options,
+                    # ACP's `_meta` slot: the exact command or diff, secret-masked, plus the pod
+                    # and Laya's reading — what the daemon's gRPC bridge hands the GUI's containment
+                    # modal. A client that does not know it (Zed, acp-tui) ignores it.
+                    sierralab=intervention_view.build(
+                        tool_name,
+                        tool_input,
+                        state.cwd if state else os.getcwd(),
+                        interrupt_id=interrupt.id,
+                        pod=pod_name,
+                        risk=risk or None,
+                        reason=why,
+                        armed=bool(why),
+                    ),
                 )
                 approved = _permission_approved(result.outcome, options)
                 option_id = getattr(result.outcome, "option_id", None)
+                # Which front door answered. Under the daemon the answer may have come from the
+                # Discord bot rather than a client on the socket, and the daemon relays that in
+                # ACP's `_meta` slot (supervisor.answer_permission) — the same request the GUI's
+                # containment modal would have answered, told apart only here. A client that
+                # sends no `_meta` is a person at a TUI or the GUI, which is what "user" has
+                # always meant; anything else keeps the door's own name so the ledger can
+                # account for who decided what.
+                answered_by = _answered_by(result) or answered_by
                 if approved and always_rule and option_id == "allow_always":
                     self._remember_always(session_id, always_rule)
             if not approved and state is not None:
                 state.router_hooks.note_rejection(state.agent)
+            _note_answer(session_id, tool_name, approved, interrupt.id)
 
             rule = always_rule if (approved and option_id == "allow_always") else None
+            lab_module.get().resolve(interrupt.id, "approved" if approved else "rejected", answered_by)
             state_store.resolve_intervention(
                 interrupt.id,
                 "approved" if approved else "rejected",
                 # Honest, and it matters: with no client attached nothing was
                 # asked, and a rejection that reads as a user decision would
-                # misattribute a fail-closed default to a person.
-                decided_by="user" if self._conn is not None else "no-client",
+                # misattribute a fail-closed default to a person. `answered_by`
+                # is that name, or the front door that relayed the answer.
+                decided_by=answered_by,
                 rule=rule,
             )
             state_store.append_event(
@@ -1189,7 +1833,7 @@ class SierraLabAcpAgent:
                     "interrupt_id": interrupt.id,
                     "tool": tool_name,
                     "outcome": "approved" if approved else "rejected",
-                    "decided_by": "user" if self._conn is not None else "no-client",
+                    "decided_by": answered_by,
                     "rule": rule,
                     "always": option_id == "allow_always",
                 },
@@ -1273,6 +1917,7 @@ class SierraLabAcpAgent:
 
             async for event in agent.stream_async(agent_input):
                 if session_id in self._cancelled:
+                    _settle_cancelled_turn(agent)
                     return "cancelled", last_result
                 if "tool_interrupt_event" in event:
                     interrupts = event["tool_interrupt_event"].get("interrupts") or []
@@ -1327,7 +1972,9 @@ class SierraLabAcpAgent:
                     rendered = None
                     state = data.get("state") if isinstance(data, dict) else None
                     entries = (state or {}).get("swarm_progress")
-                    if tool_use_id and entries:
+                    if tool_use_id and isinstance(data, dict) and isinstance(data.get("progress"), str):
+                        rendered = data["progress"]  # a tool that narrates its own progress (claude_code_engineer)
+                    elif tool_use_id and entries:
                         rendered = _render_swarm_progress(entries, (state or {}).get("reasoning"))
                     elif tool_use_id and isinstance(data, dict) and tool_use.get("name") in self._specialist_names(session_id):
                         progress = specialist_progress.setdefault(tool_use_id, _SpecialistProgress())
@@ -1379,6 +2026,9 @@ class SierraLabAcpAgent:
                     continue
 
                 if "data" in event:
+                    streaming_pod = lab_module.get().pod_of(agent)
+                    if streaming_pod is not None:
+                        lab_module.get().stream_text(streaming_pod.name, event["data"])
                     await self._conn.session_update(
                         session_id=session_id,
                         update=acp.update_agent_message_text(event["data"]),
@@ -1474,6 +2124,56 @@ class SierraLabAcpAgent:
             decision = RouteDecision(target=None, error=f"Laya not ready within {timeout:g}s")
             return router._abstain(decision, "no decision: Laya still loading")
 
+    def _apply_bandit(self, state: _Session, decision: RouteDecision, text: str) -> dict:
+        """Let the contextual bandit pick among the actions the base policy *already allowed* this turn.
+
+        Runs between ``router.decide`` and ``recorder.set_route``, so what the ledger records — and what the turn is
+        later learned from — is the choice actually taken. Additive-only by construction: the arms are the base
+        decision's own action and a milder one the policy already permits (`_bandit_route_arms`), never a new
+        action, and an abstained decision is left alone — fail-closed is not this module's to reopen. Returns the
+        extra route keys (``choices`` / ``bandit_mode``) for the caller's ``set_route``.
+        """
+        handler = state.handler
+        handler._bandit_decision = decision if not (decision is None or decision.abstained) else None
+        handler._bandit_route = None
+        if decision is None or decision.abstained:
+            return {}
+        policy = _bandit_policy(settings_store.current(state.cwd))
+        if policy["mode"] not in ("shadow", "live"):
+            return {}
+        recorder = outcomes.active(state.handler.session_id)
+        turn = recorder.id if recorder is not None else ""
+        stub = _bandit_stub(state.handler.mode, decision)
+        handler._bandit_route = stub
+        table = bandit.for_project(state.cwd)
+        knobs = {"mode": policy["mode"], "explore": policy["explore"], "min_pulls": policy["min_pulls"], "lam": policy["lam"], "mu": policy["mu"]}
+        choices: dict = {}
+        # engine: the heavy Claude Code path against the orchestrator's own tools. Offered only for a
+        # kind="tool" target, whose two actions the policy already weighs by Laya's complexity reading.
+        if decision.target is not None and decision.target.kind == "tool":
+            arm, info = table.choose("engine", bandit.context(stub, "engine"), ["tool", "none"], decision.action, **knobs)
+            bandit.decision_event(info, turn=turn, project=state.cwd)
+            choices["engine"] = arm
+            if info["acted"]:
+                decision.reason = f"{decision.reason} · bandit chose {arm} over {decision.action}"
+                decision.action, decision.suppress_hint = arm, arm == "none"
+        # route: dispatch vs. hint vs. none, among the ones the base policy allowed.
+        arms = _bandit_route_arms(decision)
+        if arms:
+            arm, info = table.choose("route", bandit.context(stub, "route"), arms, decision.action, **knobs)
+            bandit.decision_event(info, turn=turn, project=state.cwd)
+            choices["route"] = arm
+            if info["acted"]:
+                decision.reason = f"{decision.reason} · bandit chose {arm} over {decision.action}"
+                decision.action = arm
+                if arm == "none":
+                    decision.suppress_hint = True
+                elif arm == "hint":
+                    decision.suppress_hint = False
+        decision.choices.update(choices)
+        # By reference on purpose: the ``ask`` arm is decided later, on a tool call, and lands in this very dict.
+        return {"choices": decision.choices, "bandit_mode": policy["mode"]}
+
     async def _dispatch(self, session_id: str, state: _Session, decision: RouteDecision, text: str) -> str:
         """Run a confidently-routed specialist directly — the orchestrator's
         model call that would only have decided to delegate is skipped. The
@@ -1491,7 +2191,11 @@ class SierraLabAcpAgent:
                 session_id=session_id,
                 update=acp.start_tool_call(tool_use_id, name, kind=_tool_kind(name), status="in_progress", raw_input={"input": text, "routed_by": "laya"}),
             )
-        stop_reason, result = await self._stream(session_id, specialist, prompt, checkpoints=False)
+        lab_module.get().link("orchestrator", name, "dispatch", label="laya")
+        try:
+            stop_reason, result = await self._stream(session_id, specialist, prompt, checkpoints=False)
+        finally:
+            lab_module.get().link("orchestrator", name, "dispatch", active=False, label="laya")
         reply = str(result).strip() if result is not None else ""
         if self._conn is not None:
             await self._conn.session_update(
@@ -1531,6 +2235,7 @@ class SierraLabAcpAgent:
             decision.action, decision.reason = "hint", "team pipeline planning failed; the orchestrator decides"
             return None
 
+        lab_module.get().team_plan(plan)
         tool_use_id = f"team-{uuid.uuid4().hex[:8]}"
         if self._conn is not None:
             await self._conn.session_update(
@@ -1553,6 +2258,7 @@ class SierraLabAcpAgent:
             async for value in team_pipeline.stream_team(plan["task"] or text, plan, state.agent):
                 if "state" in value:
                     state_data = value["state"]
+                    lab_module.get().team_progress(state_data.get("swarm_progress") or [])
                     rendered = _render_swarm_progress(state_data.get("swarm_progress") or [], state_data.get("reasoning"))
                     if rendered and rendered != last_rendered and self._conn is not None:
                         last_rendered = rendered
@@ -1576,6 +2282,7 @@ class SierraLabAcpAgent:
             decision.action, decision.reason = "hint", "team pipeline execution failed; the orchestrator decides"
             return None
 
+        lab_module.get().team_done(plan)
         result = result or {"status": "FAILED", "execution_time_ms": 0, "results": {}}
         succeeded = str(result.get("status", "")).upper() == "COMPLETED"
         summary = "\n".join(f"{name}: {summary}".strip()[:400] for name, summary in (result.get("results") or {}).items())
@@ -1610,7 +2317,81 @@ class SierraLabAcpAgent:
         state.router_hooks.finish_turn(turn, "end_turn", dispatched_ok=succeeded)
         return "end_turn"
 
+    @staticmethod
+    def _tokens_used(state: "_Session") -> tuple[int, int]:
+        """Cumulative (input, output) tokens across the orchestrator and every specialist."""
+        agents = [state.agent, *[getattr(s, "agent", s) for s in (state.specialists or {}).values()]]
+        totals = [outcome_hooks.usage_of(agent) for agent in agents]
+        return sum(t[0] for t in totals), sum(t[1] for t in totals)
+
+    def _learn_from(self, record: "outcomes.TurnRecord", state: "_Session") -> None:
+        """After a turn: judge the learned skills and prompt overlays it had in front of it, and — when it cost
+        something — draft a lesson from it, and rewrite a live artifact whose turns have gone badly. All of it is
+        off the turn's path (a background thread) and none of it can fail the turn."""
+        data = record.to_json()
+        preferences = settings_store.current(state.cwd)
+
+        def run() -> None:
+            try:
+                reward = outcomes.score(record).value
+                baseline = _baseline_reward(state.cwd, exclude=data["id"])
+                if data.get("skills"):
+                    learned.record_use(state.cwd, data["skills"], reward, data["id"], baseline=baseline)
+                overlay_names = prompts.live_names(state.cwd)
+                if overlay_names:
+                    prompts.record_use(state.cwd, overlay_names, reward, data["id"], baseline=baseline)
+                reflect.reflect(data, state.cwd, session_id=data.get("session_id"), preferences=preferences)
+                _optimize_artifacts(state.cwd, preferences)
+                # The turn is judged now; if a reconcile landed it has become learnable, fold it in.
+                _bandit_learn(state.cwd)
+            except Exception:
+                logging.getLogger(__name__).debug("learning from a turn failed", exc_info=True)
+
+        threading.Thread(target=run, name="learn-from-turn", daemon=True).start()
+
     async def prompt(self, session_id: str, prompt: list, **kwargs) -> acp.PromptResponse:
+        """One turn, recorded: the person's prompt to the stop reason becomes one outcome record
+        (``outcomes.py``) — what was asked, what ran, how the approvals went, whether the checks passed,
+        what changed. Recording is a side channel: nothing in it can fail or alter the turn."""
+        state = self._sessions.get(session_id)
+        if state is None:
+            state = self._build_session(session_id, os.getcwd())
+        text = _extract_prompt_text(prompt)
+        recorder = None
+        tokens_before = (0, 0)
+        if text.strip() and not _is_resume(text):
+            try:
+                recorder = outcomes.begin(session_id, goal=text, mode=state.handler.mode, project=state.cwd)
+                recorder.heal_baseline(len(state.heal.episodes))
+                tokens_before = self._tokens_used(state)
+                # Judge what the person did with earlier turns' changes — off the turn's path.
+                threading.Thread(target=_maintain, args=(state.cwd,), name="outcomes-reconcile", daemon=True).start()
+            except Exception:
+                logging.getLogger(__name__).debug("outcomes: could not begin a turn", exc_info=True)
+        stop = "error"
+        try:
+            response = await self._prompt(session_id, prompt, **kwargs)
+            stop = str(getattr(response, "stop_reason", None) or "end_turn")
+            return response
+        except asyncio.CancelledError:
+            stop = "cancelled"
+            raise
+        finally:
+            if recorder is not None:
+                try:
+                    if recorder.checkpointed:
+                        # The project as the turn left it: the other end of "what did this turn change?",
+                        # and the baseline against which a later edit by the person is recognised.
+                        recorder.checkpoint_end(checkpoints.take(state.cwd, kind="end", session_id=session_id, turn=recorder.id).id)
+                    after = self._tokens_used(state)
+                    recorder.usage(max(0, after[0] - tokens_before[0]), max(0, after[1] - tokens_before[1]))
+                    finished = outcomes.finish(session_id, stop, heal_episodes=list(state.heal.episodes.values()))
+                    if finished is not None:
+                        self._learn_from(finished, state)
+                except Exception:
+                    logging.getLogger(__name__).debug("outcomes: could not finish a turn", exc_info=True)
+
+    async def _prompt(self, session_id: str, prompt: list, **kwargs) -> acp.PromptResponse:
         state = self._sessions.get(session_id)
         if state is None:
             # Defensive only — the ACP protocol always calls new_session or
@@ -1635,20 +2416,45 @@ class SierraLabAcpAgent:
             _touch_index(session_id, state.cwd)
 
         self._cancelled.discard(session_id)
+        if text.strip() and not _is_resume(text):
+            lab = lab_module.get()
+            if lab.session_id == session_id:
+                lab.set_mission(text)
 
         checkpoint_file = _checkpoint_path(session_id)
-        if text.strip() == RESUME_TURN_MARKER:
+        if _is_resume(text):
             if not checkpoint_file.exists():
                 if self._conn is not None:
                     await self._conn.session_update(session_id=session_id, update=acp.update_agent_message_text("No interrupted turn to resume."))
                 return acp.PromptResponse(stopReason="end_turn")
+            if text.strip() == AUTO_RESUME_MARKER:
+                if _auto_resume_attempts(session_id) >= MAX_AUTO_RESUMES:
+                    if self._conn is not None:
+                        await self._conn.session_update(session_id=session_id, update=acp.update_agent_message_text(f"Automatic resume already tried {MAX_AUTO_RESUMES} times from this checkpoint; not retrying on its own. /resume-turn tries again."))
+                    return acp.PromptResponse(stopReason="end_turn")
+                _count_auto_resume(session_id)
             data = json.loads(checkpoint_file.read_text())
             agent_input: object = {"checkpointResume": {"checkpoint": data["checkpoint"]}}
         else:
             checkpoint_file.unlink(missing_ok=True)  # a new turn supersedes an abandoned one
+            _resume_marker_path(session_id).unlink(missing_ok=True)
             agent_input = text
             decision = await self._decide(state, text)
             if decision is not None:
+                extra = self._apply_bandit(state, decision, text)
+                recorder = outcomes.active(session_id)
+                if recorder is not None:
+                    recorder.set_route(
+                        {
+                            "target": decision.target.id if decision.target else None,
+                            "action": decision.action,
+                            "tier": decision.tier(),
+                            "abstained": decision.abstained,
+                            "confidence": round(decision.calibrated, 3),
+                            "risk": decision.risk,
+                            **extra,
+                        }
+                    )
                 self._send_ext("sierralab/laya", {"sessionId": session_id, "mode": "route", "router": "v2", **decision.to_event()})
                 if decision.action == "dispatch" and decision.target and decision.target.id in state.specialists:
                     stop_reason = await self._dispatch(session_id, state, decision, text)
@@ -1665,6 +2471,7 @@ class SierraLabAcpAgent:
         stop_reason, _result = await self._stream(session_id, agent, agent_input, checkpoints=True)
         if stop_reason != "cancelled":
             checkpoint_file.unlink(missing_ok=True)
+            _resume_marker_path(session_id).unlink(missing_ok=True)
         return acp.PromptResponse(stopReason=stop_reason if stop_reason in ("end_turn", "max_tokens", "cancelled") else "end_turn")
 
 

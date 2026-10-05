@@ -242,6 +242,29 @@ class FakeAgent:
             await self._harness(session_id)
             return acp.PromptResponse(stopReason="end_turn")
 
+        if "park-lab" in text:
+            # An approval request followed, while it is still open, by a Lab state
+            # notification — the shape of a real session (the Lab keeps reporting
+            # while the agent waits on the human). A client that stops reading
+            # until the request is answered never shows it.
+            tool_id = f"tool-{uuid.uuid4().hex[:8]}"
+            pending = asyncio.create_task(self._conn.request_permission(
+                session_id=session_id,
+                tool_call=acp.schema.ToolCallUpdate(tool_call_id=tool_id, title="Run shell", kind="execute", raw_input={"command": "x"}),
+                options=[
+                    acp.schema.PermissionOption(option_id="allow", name="Allow", kind="allow_once"),
+                    acp.schema.PermissionOption(option_id="reject", name="Reject", kind="reject_once"),
+                ],
+            ))
+            await asyncio.sleep(0.05)
+            await self._conn.ext_notification("sierralab/lab", {
+                "sessionId": session_id, "event": "state", "seq": 7,
+                "pods": [{"name": "debugger", "status": "contained"}],
+                "hitl": [{"id": "i1", "pod": "debugger", "tool": "shell", "status": "pending"}]})
+            await pending
+            await self._say(session_id, "decided")
+            return acp.PromptResponse(stopReason="end_turn")
+
         if "laya" in text:
             await self._conn.ext_notification("sierralab/laya", {
                 "sessionId": session_id, "event": "decision", "mode": "route", "route": "files_and_code",

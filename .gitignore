@@ -33,6 +33,9 @@ frontend/tsconfig.tsbuildinfo
 # Rust ACP TUI build output
 tui/target/
 
+# Rust Lab build output (harness-lab / harness-observer)
+lab/target/
+
 # Shadow-mode triage log (laya_triage.py) — holds user prompts, local only.
 backend/laya_triage.jsonl
 

@@ -33,6 +33,13 @@ OMLX_MODEL_ID = os.getenv("OMLX_MODEL_ID", "Ternary-Bonsai-27B-mlx-2bit")
 # via the settings UI takes effect immediately without needing this module
 # reloaded.
 MODEL_PROVIDER = os.getenv("MODEL_PROVIDER", "local")
+# MODEL_PROVIDER=ollama_cloud (ollama_cloud.py): cloud models served through the
+# *local* Ollama daemon's OpenAI proxy — no API key (the daemon is signed in), no
+# weights pulled. OLLAMA_BASE_URL defaults to http://localhost:11434/v1;
+# OLLAMA_MODEL_ID is a registry alias (glm-5.3-flash | kimi-k2.7-code |
+# laguna-xs-2.1) for the orchestrator, empty = its role profile's model;
+# OLLAMA_ROLE_<ROLE>=<alias>[:low|medium|high|max] overrides one role's model/effort.
+OLLAMA_MODEL_ID = os.getenv("OLLAMA_MODEL_ID", "")
 # Provider API keys are credentials the *agent* must never be able to read —
 # see secret_guard.py. take_secret reads each from the environment once,
 # wraps it in a Secret (prints as "Secret(****)"), and removes it from
@@ -122,8 +129,14 @@ LAYA_GUARD_THRESHOLD = float(os.getenv("LAYA_GUARD_THRESHOLD", "0.75"))
 # docs/laya-triage.md) to swap in a model trained on your own routing decisions.
 # LAYA_MODEL_SUBFOLDER picks one checkpoint out of a repo that bundles several
 # ("multilingual" for the stock repo; leave it empty for a fine-tuned directory).
-LAYA_MODEL = os.getenv("LAYA_MODEL", "convaiinnovations/laya")
-LAYA_MODEL_SUBFOLDER = os.getenv("LAYA_MODEL_SUBFOLDER", "multilingual" if LAYA_MODEL == "convaiinnovations/laya" else "")
+# A checkpoint registered as *live* by `laya_checkpoints.py` wins over the stock repo here, so activating one
+# is the whole of "run on it" — while an explicit LAYA_MODEL in the environment still overrides both, which is
+# what leaves an experiment possible without touching the registry. The resolution is in that module, which is
+# stdlib-only precisely so this import is safe at startup.
+import laya_checkpoints as _laya_checkpoints
+
+LAYA_MODEL, LAYA_MODEL_SUBFOLDER = _laya_checkpoints.resolve()
+LAYA_MODEL_SUBFOLDER = os.getenv("LAYA_MODEL_SUBFOLDER", LAYA_MODEL_SUBFOLDER)
 
 # laya_triage.py — Laya as the orchestrator's fast "System 1" triage, with the
 # LLM kept for generation and tool use. "route" (default) | "shadow" | "off".

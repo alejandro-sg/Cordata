@@ -7,8 +7,11 @@ as native selects), session titles, and load_session's history replay.
 """
 
 import asyncio
+import os
 import sys
 from pathlib import Path
+
+os.environ.setdefault("SIERRALAB_REFLECT", "off")  # live test turns are not lessons (reflect.py)
 
 import acp
 
