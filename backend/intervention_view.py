@@ -31,6 +31,8 @@ import secret_patterns
 
 MAX_DIFF_CHARS = 2_000_000
 MAX_INPUT_CHARS = 100_000
+#: The goal and the agent's own words are a gloss, not the call: a few sentences each.
+MAX_CONTEXT_CHARS = 400
 SHELL_TOOLS = {"shell", "python_repl"}
 EDIT_TOOLS = {"editor", "file_write", "apply_patch"}
 
@@ -42,6 +44,11 @@ def _unified(path: str, old: str | None, new: str, cwd: str) -> str:
     diff = difflib.unified_diff(old_lines, new_lines, fromfile=f"a/{rel}" if old is not None else "/dev/null", tofile=f"b/{rel}")
     out = "".join(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n" for line in diff)
     return out
+
+
+def _clip(text: str, limit: int) -> str:
+    text = " ".join((text or "").split())
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
 def _command(tool_name: str, tool_input: Any) -> str:
@@ -65,8 +72,16 @@ def build(
     risk: dict | None,
     reason: str | None,
     armed: bool,
+    goal: str = "",
+    said: str = "",
+    project: str = "",
 ) -> dict[str, Any]:
-    """The ``_meta.sierralab`` object for one permission request. Never raises."""
+    """The ``_meta.sierralab`` object for one permission request. Never raises.
+
+    ``goal`` is what the person asked this turn, ``said`` what the agent told them just before
+    the call, ``project`` the folder it runs in. They are *context for the person deciding*, never
+    for the gate: a prompt that reads "shell: dd ..." with no why is one nobody can answer, and a
+    remote front door (Discord, a phone) has no transcript beside it to infer one from."""
     redactions = 0
 
     def mask(text: str) -> str:
@@ -109,5 +124,8 @@ def build(
         "risk_band": risk.get("band") or "",
         "armed": armed,
         "reason": mask(reason or ""),
+        "goal": mask(_clip(goal, MAX_CONTEXT_CHARS)),
+        "said": mask(_clip(said, MAX_CONTEXT_CHARS)),
+        "project": project,
         "redactions": redactions,
     }

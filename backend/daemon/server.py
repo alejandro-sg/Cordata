@@ -351,8 +351,14 @@ def create_app(port: int = DEFAULT_PORT) -> FastAPI:
             # only one of them can see.
             await websocket.close(code=4409, reason="session already attached")
             return
-        if session not in {row["sessionId"] for row in supervisor.sessions()}:
+        rows = {row["sessionId"]: row for row in supervisor.sessions()}
+        if session not in rows:
             await websocket.close(code=4404, reason="no such session")
+            return
+        if rows[session].get("owner"):
+            # A conversation another front door is typing into (Discord). Attaching a terminal
+            # would be a second writer on its stdin; the directory lookup already skips these.
+            await websocket.close(code=4409, reason=f"session is driven by {rows[session]['owner']}")
             return
 
         # Claimed before `accept`, which awaits: two clients arriving together

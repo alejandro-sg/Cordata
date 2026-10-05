@@ -100,6 +100,11 @@ class Session:
     answered: "OrderedDict[str, str]" = field(default_factory=OrderedDict)
     #: Requests the daemon itself sent the child (knobs, isolate), awaiting their response.
     calls: dict[str, "asyncio.Future[dict[str, Any]]"] = field(default_factory=dict)
+    #: Who drives this child, when it is not a client on the WebSocket: `"discord"` for a conversation
+    #: the Discord front door opened. An owned session has no subscriber by design, so nothing is
+    #: backlogged for one (nobody will ever drain it), a directory lookup never hands it to a terminal
+    #: (`find_by_cwd`), and the socket refuses to attach to it — two writers to one stdin.
+    owner: str | None = None
 
     @property
     def alive(self) -> bool:
@@ -113,6 +118,7 @@ class Session:
             "started": self.started,
             "alive": self.alive,
             "backlog": len(self.backlog),
+            "owner": self.owner,
         }
 
 
@@ -232,6 +238,8 @@ class Supervisor:
     MEMORY_MARK = '"_sierralab/memory"'
     TASK_MARK = '"_sierralab/task"'
     LAYA_MARK = '"_sierralab/laya"'
+    UPDATE_MARK = '"session/update"'
+    TURN_MARK = '"_sierralab/turn"'
     DAEMON_ID_PREFIX = "daemon-"
     MAX_DIFFS = 8
     MAX_ANSWERED = 256
@@ -318,6 +326,28 @@ class Supervisor:
         except Exception:
             logger.debug("daemon: laya tap failed for %s", session_id, exc_info=True)
 
+    def _tap_update(self, session_id: str, line: str) -> None:
+        """An ACP ``session/update`` (a chunk of the agent's reply, a tool call starting or ending).
+        Fanned out only to a listener that asked for it — the Discord front door, to stream a reply —
+        and never consumed: the frame still goes to whoever owns the session."""
+        try:
+            message = json.loads(line)
+            params = message.get("params") if isinstance(message, dict) else None
+            if isinstance(params, dict) and message.get("method") == "session/update" and isinstance(params.get("update"), dict):
+                self._notify("update", {"session_id": session_id, "acp_session_id": params.get("sessionId"), "update": params["update"]})
+        except Exception:
+            logger.debug("daemon: update tap failed for %s", session_id, exc_info=True)
+
+    def _tap_turn(self, session_id: str, line: str) -> None:
+        """What a finished turn cost (``_sierralab/turn``: seconds, tool calls, tokens in and out)."""
+        try:
+            message = json.loads(line)
+            params = message.get("params") if isinstance(message, dict) else None
+            if isinstance(params, dict) and message.get("method") == "_sierralab/turn":
+                self._notify("turn", {**params, "session_id": session_id})
+        except Exception:
+            logger.debug("daemon: turn tap failed for %s", session_id, exc_info=True)
+
     def _tap_memory(self, session_id: str, line: str) -> None:
         try:
             message = json.loads(line)
@@ -382,15 +412,22 @@ class Supervisor:
         if key in session.pending:
             self._settle(session, key, _outcome_of(message, session.pending[key]), "tui")
             return True
-        return session.answered.get(key) != "gui"
+        # Dropped when *another front door* already answered it — the GUI's modal or the Discord
+        # bot, whichever was first. (This once only knew "gui", so a late terminal answer to a
+        # prompt Discord had settled was forwarded to a child that had already moved on.)
+        return session.answered.get(key) in (None, "tui")
 
-    async def answer_permission(self, session_id: str, key: str, approve: bool, *, decided_by: str = "gui") -> PendingPermission:
+    async def answer_permission(self, session_id: str, key: str, approve: bool, *, decided_by: str = "gui", always: bool = False) -> PendingPermission:
         """Relay a human's choice into the paused ACP request, as the child's own client would.
 
         Raises ``LookupError`` when there is nothing pending under that id (already answered by
         the other front door, or the session ended) and ``ValueError`` when the child offered no
         option of the kind asked for — the answer is only ever one of the child's own options,
         never an id the caller made up.
+
+        ``always`` picks the child's own ``allow_always`` option ("always allow <rule>") instead of
+        ``allow_once`` — only ever an option the child offered, and the child offers none for a call
+        the gate armed, so an always-allow can never be made for something destructive.
 
         ``decided_by`` names the front door that answered. More than one can be attached now
         (the GUI's containment modal, a TUI, the Discord bot), so which one a person used is
@@ -400,7 +437,7 @@ class Supervisor:
         if session is None or key not in session.pending:
             raise LookupError(f"no pending permission {key!r} in session {session_id!r}")
         pending = session.pending[key]
-        wanted = "allow_once" if approve else "reject_once"
+        wanted = ("allow_always" if always else "allow_once") if approve else "reject_once"
         option = next((o for o in pending.options if o.get("kind") == wanted), None)
         if option is None or not option.get("optionId"):
             raise ValueError(f"the session offered no {wanted} option")
@@ -433,9 +470,16 @@ class Supervisor:
         )
         return pending
 
-    async def call(self, session_id: str, method: str, params: dict[str, Any] | None = None, *, timeout: float = 5.0) -> dict[str, Any]:
+    async def call(
+        self, session_id: str, method: str, params: dict[str, Any] | None = None, *, timeout: float = 5.0, qualify: bool = True
+    ) -> dict[str, Any]:
         """Send the child a request of the daemon's own and wait for its answer (the Lab's
-        ``_sierralab/lab/*`` controls). The answer is returned; it never reaches a client."""
+        ``_sierralab/lab/*`` controls). The answer is returned; it never reaches a client.
+
+        ``qualify`` adds the daemon's session id to the params, which the ``_sierralab/*``
+        extension methods read. The core ACP methods (``initialize``, ``session/new``,
+        ``session/prompt``) are typed and take exactly their own fields, so a caller driving
+        a session — the Discord conversation — passes ``qualify=False`` and its own ids."""
         session = self._sessions.get(session_id)
         if session is None or not session.alive:
             raise LookupError(f"no live session {session_id!r}")
@@ -443,16 +487,21 @@ class Supervisor:
         waiter: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         session.calls[ident] = waiter
         try:
-            request = {"jsonrpc": "2.0", "id": ident, "method": method, "params": {"sessionId": session_id, **(params or {})}}
+            body = {"sessionId": session_id, **(params or {})} if qualify else dict(params or {})
+            request = {"jsonrpc": "2.0", "id": ident, "method": method, "params": body}
             if not await self.write_raw(session_id, json.dumps(request)):
                 raise LookupError(f"session {session_id!r} has exited")
             return await asyncio.wait_for(waiter, timeout)
         finally:
             session.calls.pop(ident, None)
 
+    async def notify_child(self, session_id: str, method: str, params: dict[str, Any] | None = None) -> bool:
+        """A JSON-RPC *notification* to the child (no id, no answer): ``session/cancel``."""
+        return await self.write_raw(session_id, json.dumps({"jsonrpc": "2.0", "method": method, "params": params or {}}))
+
     # ------------------------------------------------------------- lifecycle
 
-    async def spawn(self, cwd: str, *, session_id: str | None = None) -> Session:
+    async def spawn(self, cwd: str, *, session_id: str | None = None, owner: str | None = None) -> Session:
         """Start one session process.
 
         `session_id` may be supplied to reattach the daemon's bookkeeping to a
@@ -481,7 +530,7 @@ class Supervisor:
             # child at once with one killpg.
             start_new_session=True,
         )
-        session = Session(ident, target, process)
+        session = Session(ident, target, process, owner=owner)
         self._sessions[ident] = session
         asyncio.create_task(self._pump(ident), name=f"daemon-pump-{ident}")
         return session
@@ -530,8 +579,12 @@ class Supervisor:
                 self._settle(session, key, "aborted", "session-ended")
             for waiter in list(session.calls.values()):
                 if not waiter.done():
-                    waiter.cancel()
+                    # An exception, not `cancel()`: a cancelled future makes `wait_for` raise
+                    # CancelledError into the *caller*, which reads as the caller's own task being
+                    # cancelled. `call` documents LookupError for a session that is gone.
+                    waiter.set_exception(LookupError(f"session {session_id!r} exited"))
             logger.info("daemon: session %s exited (rc=%s)", session_id, session.process.returncode)
+            self._notify("session", {"event": "exited", "session_id": session_id, "returncode": session.process.returncode, "owner": session.owner})
             self._deliver(session_id, json.dumps({
                 "jsonrpc": "2.0",
                 "method": "_sierralab/daemon",
@@ -559,13 +612,17 @@ class Supervisor:
             self._tap_task(session_id, line)
         if self.LAYA_MARK in line:
             self._tap_laya(session_id, line)
+        if self.TURN_MARK in line:
+            self._tap_turn(session_id, line)
+        if self.UPDATE_MARK in line and self._listeners.get("update"):
+            self._tap_update(session_id, line)
         owner = self._sessions.get(session_id)
         if owner is not None and owner.calls and self.DAEMON_ID_PREFIX in line and self._tap_call_response(owner, line):
             return
         queue = self._subscribers.get(session_id)
         if queue is None:
             session = self._sessions.get(session_id)
-            if session is not None:
+            if session is not None and session.owner is None:
                 session.backlog.append(line)
                 if len(session.backlog) > self.BACKLOG_LIMIT:
                     del session.backlog[: len(session.backlog) - self.BACKLOG_LIMIT]
@@ -616,7 +673,7 @@ class Supervisor:
         except (OSError, RuntimeError, ValueError):  # unresolvable, or a NUL byte in it
             return None
         for session in self._sessions.values():
-            if session.cwd == target:
+            if session.cwd == target and session.owner is None:
                 return session
         return None
 

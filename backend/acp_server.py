@@ -260,6 +260,34 @@ def _tool_kind(tool_name: str) -> str:
     return _TOOL_KIND.get(tool_name, "other")
 
 
+def _text_of(blocks) -> str:
+    return " ".join(b["text"] for b in blocks or [] if isinstance(b, dict) and isinstance(b.get("text"), str)).strip()
+
+
+def _turn_context(agent) -> tuple[str, str]:
+    """``(what the person asked, what the agent said just before the call)`` for an approval card.
+
+    The newest assistant message is the one carrying the tool call being asked about, so its text
+    blocks are the agent's own account of why; an older one would be a different step's. The goal is
+    the newest user message that is the person's words rather than a tool result. Either may be empty
+    — that is reported as empty, not guessed at."""
+    goal = said = ""
+    seen_assistant = False
+    for message in reversed(list(getattr(agent, "messages", None) or [])):
+        if not isinstance(message, dict):
+            continue
+        blocks = message.get("content") or []
+        if message.get("role") == "assistant" and not seen_assistant:
+            seen_assistant = True
+            said = _text_of(blocks)
+        elif message.get("role") == "user" and not any(isinstance(b, dict) and "toolResult" in b for b in blocks):
+            text = _text_of(blocks)
+            if text:
+                goal = text
+                break
+    return goal, said
+
+
 _ALLOW_KINDS = {"allow_once", "allow_always"}
 
 
@@ -1511,8 +1539,21 @@ class SierraLabAcpAgent:
         rows.sort(key=lambda r: r.updated_at or "", reverse=True)
         return acp.schema.ListSessionsResponse(sessions=rows[:50])
 
-    async def set_session_mode(self, session_id: str, mode_id: str, **kwargs) -> acp.SetSessionModeResponse | None:
+    def _known(self, session_id: str) -> "_Session | None":
+        """The session this id names — or, for an id this process never minted, the one it is hosting.
+
+        Under the daemon a front door that is not the driving client (the GUI's mode switch, the
+        Discord bot) knows the *daemon's* id for this child, not the ACP id `new_session` made here.
+        An id nobody here owns can only mean "the session in this process", so it is resolved to the
+        newest one rather than silently doing nothing. An id that *is* known is never remapped."""
         state = self._sessions.get(session_id)
+        if state is None and self._last_session:
+            state = self._sessions.get(self._last_session)
+        return state
+
+    async def set_session_mode(self, session_id: str, mode_id: str, **kwargs) -> acp.SetSessionModeResponse | None:
+        state = self._known(session_id)
+        session_id = next((sid for sid, s in self._sessions.items() if s is state), session_id)
         if state is None or mode_id not in _MODE_IDS:
             return None
         state.handler.mode = mode_id
@@ -1524,7 +1565,7 @@ class SierraLabAcpAgent:
         return acp.schema.SetSessionModeResponse()
 
     async def set_config_option(self, config_id: str, session_id: str, value, **kwargs):
-        state = self._sessions.get(session_id)
+        state = self._known(session_id)
         if state is None:
             return None
         if config_id == "model" and isinstance(value, str):
@@ -1796,6 +1837,8 @@ class SierraLabAcpAgent:
                         risk=risk or None,
                         reason=why,
                         armed=bool(why),
+                        project=state.cwd if state else os.getcwd(),
+                        **dict(zip(("goal", "said"), _turn_context(state.agent) if state else ("", ""))),
                     ),
                 )
                 approved = _permission_approved(result.outcome, options)
@@ -2358,12 +2401,12 @@ class SierraLabAcpAgent:
             state = self._build_session(session_id, os.getcwd())
         text = _extract_prompt_text(prompt)
         recorder = None
-        tokens_before = (0, 0)
+        started = time.monotonic()
+        tokens_before = self._tokens_used(state)
         if text.strip() and not _is_resume(text):
             try:
                 recorder = outcomes.begin(session_id, goal=text, mode=state.handler.mode, project=state.cwd)
                 recorder.heal_baseline(len(state.heal.episodes))
-                tokens_before = self._tokens_used(state)
                 # Judge what the person did with earlier turns' changes — off the turn's path.
                 threading.Thread(target=_maintain, args=(state.cwd,), name="outcomes-reconcile", daemon=True).start()
             except Exception:
@@ -2377,6 +2420,7 @@ class SierraLabAcpAgent:
             stop = "cancelled"
             raise
         finally:
+            self._announce_turn(session_id, state, started, tokens_before, stop)
             if recorder is not None:
                 try:
                     if recorder.checkpointed:
@@ -2390,6 +2434,26 @@ class SierraLabAcpAgent:
                         self._learn_from(finished, state)
                 except Exception:
                     logging.getLogger(__name__).debug("outcomes: could not finish a turn", exc_info=True)
+
+    def _announce_turn(self, session_id: str, state: "_Session", started: float, tokens_before: tuple[int, int], stop: str) -> None:
+        """What the turn cost, as ``_sierralab/turn``: a front door that cannot see tokens (the Discord
+        bot, the TUI's status line) shows it without a model call of its own. Never raises."""
+        try:
+            after = self._tokens_used(state)
+            recorder = outcomes.active(session_id)
+            self._send_ext(
+                "sierralab/turn",
+                {
+                    "sessionId": session_id,
+                    "stop": stop,
+                    "seconds": round(time.monotonic() - started, 1),
+                    "tokensIn": max(0, after[0] - tokens_before[0]),
+                    "tokensOut": max(0, after[1] - tokens_before[1]),
+                    "calls": recorder.call_count if recorder is not None else 0,
+                },
+            )
+        except Exception:
+            logging.getLogger(__name__).debug("turn announcement failed", exc_info=True)
 
     async def _prompt(self, session_id: str, prompt: list, **kwargs) -> acp.PromptResponse:
         state = self._sessions.get(session_id)

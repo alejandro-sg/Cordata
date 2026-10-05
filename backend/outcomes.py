@@ -325,6 +325,12 @@ class Recorder:
             if score is not None:
                 self._guard_peak = max(self._guard_peak, float(score))
 
+    @property
+    def call_count(self) -> int:
+        """Distinct tool calls seen so far this turn — for a front door's one-line receipt."""
+        with self._lock:
+            return len(self._seen_calls)
+
     def usage(self, input_tokens: int = 0, output_tokens: int = 0) -> None:
         with self._lock:
             self._usage["input"] += int(input_tokens or 0)
