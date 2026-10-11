@@ -139,6 +139,12 @@ phase12-test:
 	@backend/.venv/bin/python backend/_rejection_memory_smoke_test.py
 	@backend/.venv/bin/python backend/_environment_awareness_smoke_test.py
 
+# The orchestrator (docs/orchestrator-plan.md): the Worker interface and its adapters, the quota ledger and safe-point
+# handoffs, the plan → execute → harden → audit machine, and the dispatch policy. Hermetic: fake CLIs under the real
+# Seatbelt sandbox, scripted models, a throwaway SIERRALAB_HOME.
+orchestrator-test:
+	@backend/.venv/bin/python backend/_worker_conformance_smoke_test.py
+
 # The verification gate against the configured REAL model (spends cloud tokens; Discord off, Laya off, a throwaway
 # SIERRALAB_HOME). Prints what the model did.   make gate-live ARGS="1 3"
 gate-live:
