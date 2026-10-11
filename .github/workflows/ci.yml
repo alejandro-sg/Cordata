@@ -104,6 +104,9 @@ jobs:
           # The orchestrator's Worker interface (docs/orchestrator-plan.md, phase 1): every adapter against a scripted
           # provider. Off macOS the two CLI adapters are skipped (they refuse to run without Seatbelt); Ollama's run.
           python _worker_conformance_smoke_test.py
+          # Phase 2: the quota ledger (windows, soft/hard lines, provider signals, the envelope) and safe-point handoffs —
+          # a provider limit injected at step 2 of 5, rolled back, handed off, resumed elsewhere, the project's tests pass.
+          python _quota_ledger_smoke_test.py
           python _os_context_smoke_test.py
           python _grpc_bridge_smoke_test.py
           python _vision_turn_smoke_test.py

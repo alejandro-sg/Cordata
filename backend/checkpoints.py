@@ -10,6 +10,7 @@ whose message carries who asked for it: session, turn, agent, tool, a redacted o
     turns(project)       the turns that have checkpoints, newest first, each with the files it changed
     undo_turn(project)   put the project back as it was before a turn's first change
     restore(project, c)  put it back as it was at checkpoint ``c`` (optionally only some paths)
+    changes_since(p, c)  what differs now from checkpoint ``c``;  diff_since(p, c): the unified diff of it
 
 Restoring is itself undoable: it snapshots the present first ("restore-from") and says so.
 
@@ -625,6 +626,54 @@ def _scoped_changes(git: _Git, sha: str, paths: list[str]) -> list[dict[str, str
         if status and path:
             out.append({"path": path, "change": {"A": "added", "D": "deleted", "M": "modified", "T": "modified"}.get(status[0], status[0])})
     return out
+
+
+def changes_since(project: str | os.PathLike, target: str, paths: Iterable[str] | None = None) -> list[dict[str, str]] | None:
+    """What differs now from checkpoint ``target`` (``[{"path", "change"}]``, change ``added``/``deleted``/``modified``),
+    optionally only under ``paths``. Snapshots the present into the index only — no commit. ``None`` when it cannot
+    tell (no shadow repository, an unknown checkpoint, a timeout); never an empty list in that case."""
+    root = _real(project)
+    if _unviable(root) is not None or not (shadow_dir(root) / "git" / "HEAD").exists():
+        return None
+    try:
+        with _lock_for(root):
+            git = _Git(root)
+            sha = _resolve(git, target)
+            limit = _safe_paths(root, paths)
+            _add_all(git, int(DEFAULT_MAX_FILE_MB * 1024 * 1024), False)
+            return _name_status(git, sha, cached=True) if not limit else _scoped_changes(git, sha, limit)
+    except subprocess.TimeoutExpired:
+        _clear_stale_lock(root)
+        return None
+    except Exception:
+        logger.debug("changes_since failed", exc_info=True)
+        return None
+
+
+def diff_since(project: str | os.PathLike, target: str, paths: Iterable[str] | None = None, *, max_chars: int = 200_000) -> tuple[str, str]:
+    """``(unified diff, diffstat line)`` of the project now against checkpoint ``target``, optionally only ``paths``.
+    ``("", "")`` when there is nothing to show or it cannot be computed. Secrets files are never in a checkpoint, so
+    never in this diff."""
+    root = _real(project)
+    if _unviable(root) is not None or not (shadow_dir(root) / "git" / "HEAD").exists():
+        return "", ""
+    try:
+        with _lock_for(root):
+            git = _Git(root)
+            sha = _resolve(git, target)
+            limit = _safe_paths(root, paths) or []
+            _add_all(git, int(DEFAULT_MAX_FILE_MB * 1024 * 1024), False)
+            patch = git.out("diff", "--cached", "--no-color", "--no-renames", sha, "--", *limit, timeout=60.0)
+            stat = git.out("diff", "--cached", "--shortstat", sha, "--", *limit).strip()
+    except subprocess.TimeoutExpired:
+        _clear_stale_lock(root)
+        return "", ""
+    except Exception:
+        logger.debug("diff_since failed", exc_info=True)
+        return "", ""
+    if len(patch) > max_chars:
+        patch = patch[:max_chars] + "\n(diff truncated)\n"
+    return patch, stat
 
 
 def _prune_empty_dirs(root: str, directory: str) -> None:

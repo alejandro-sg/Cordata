@@ -24,6 +24,11 @@ JSON is a poor fit for.
   checkpoints    hash -> the checkpoint file it belongs to.
   session_config what settings and permission mode were actually in force for a
                  session, for auditing a decision after the settings changed.
+  quota_* · handoff_packets · orch_runs
+                 the orchestrator's ledger (backend/orchestrator/): provider pools,
+                 usage per worker result, the providers' own window readings,
+                 handoff packets, and each run's durable record. Version 2 —
+                 additive, like every migration here so far.
 
 Writers. The daemon owns *schema creation and migration*; the daemon and every
 child `acp_server.py` then append through their own connection. That is
@@ -64,7 +69,7 @@ logger = logging.getLogger(__name__)
 #: acp_server.py:72-74 documents the same hazard for the same reason.
 DEFAULT_NAME = "state.db"
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # How long a writer waits for another process's lock before giving up. WAL plus
 # append-only writes means this is only ever hit by a checkpoint or a burst of
@@ -151,6 +156,71 @@ CREATE TABLE IF NOT EXISTS session_config (
     settings_json TEXT NOT NULL,
     PRIMARY KEY (session_id, ts)
 );
+
+-- The orchestrator (backend/orchestrator/, docs/orchestrator-plan.md §3.4). Provider pools and their caps, one usage
+-- row per worker result, the provider's own window readings, the handoff packets, and each run's durable record.
+CREATE TABLE IF NOT EXISTS quota_pools (
+    pool_id            TEXT PRIMARY KEY,
+    family             TEXT NOT NULL,
+    model_regex        TEXT NOT NULL,
+    unit               TEXT NOT NULL,
+    soft_threshold_pct REAL NOT NULL DEFAULT 0.80,
+    hard_threshold_pct REAL NOT NULL DEFAULT 0.95,
+    window_seconds     INTEGER NOT NULL DEFAULT 18000,
+    window_limit       REAL,
+    weekly_limit       REAL
+);
+
+CREATE TABLE IF NOT EXISTS quota_usage (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts             REAL NOT NULL,
+    session_id     TEXT NOT NULL,
+    step_id        TEXT,
+    pool_id        TEXT NOT NULL,
+    model          TEXT NOT NULL,
+    tokens_in      INTEGER NOT NULL DEFAULT 0,
+    tokens_out     INTEGER NOT NULL DEFAULT 0,
+    cost_usd       REAL NOT NULL DEFAULT 0.0,
+    is_error_limit INTEGER NOT NULL DEFAULT 0,
+    requests       INTEGER NOT NULL DEFAULT 1,
+    reset_ts       REAL
+);
+CREATE INDEX IF NOT EXISTS quota_usage_pool_ts ON quota_usage(pool_id, ts);
+CREATE INDEX IF NOT EXISTS quota_usage_session ON quota_usage(session_id);
+
+CREATE TABLE IF NOT EXISTS quota_signals (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts          REAL NOT NULL,
+    pool_id     TEXT NOT NULL,
+    window      TEXT NOT NULL,
+    utilization REAL NOT NULL,
+    resets_at   REAL,
+    status      TEXT
+);
+CREATE INDEX IF NOT EXISTS quota_signals_pool_ts ON quota_signals(pool_id, ts);
+
+CREATE TABLE IF NOT EXISTS handoff_packets (
+    handoff_id  TEXT PRIMARY KEY,
+    session_id  TEXT NOT NULL,
+    ts          REAL NOT NULL,
+    step_id     TEXT NOT NULL,
+    from_worker TEXT NOT NULL,
+    to_worker   TEXT,
+    reason      TEXT NOT NULL,
+    packet_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS handoff_packets_session ON handoff_packets(session_id, ts);
+
+CREATE TABLE IF NOT EXISTS orch_runs (
+    run_id      TEXT PRIMARY KEY,
+    created_ts  REAL NOT NULL,
+    updated_ts  REAL NOT NULL,
+    cwd         TEXT NOT NULL,
+    goal        TEXT NOT NULL,
+    state       TEXT NOT NULL,
+    record_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS orch_runs_updated ON orch_runs(updated_ts);
 """
 
 
