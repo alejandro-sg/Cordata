@@ -94,7 +94,14 @@ def summary(record: Any) -> tuple[str, dict[str, Any]]:
         "drift_retries": record.drift_retries,
         "replans": record.replans,
         "warnings": record.warnings,
+        "artifacts": None,
     }
+    try:
+        from orchestrator.machine import artifacts_dir
+
+        data["artifacts"] = str(artifacts_dir(record.run_id))
+    except Exception:
+        pass
     text = f"Orchestrator run {record.run_id}: {record.state}" + (f" — {record.reason}" if record.reason else "") + "."
     if record.plan:
         steps = record.plan.get("steps", [])
@@ -108,6 +115,8 @@ def summary(record: Any) -> tuple[str, dict[str, Any]]:
         text += f"\nChanged {len(data['changed'])} file(s): {', '.join(data['changed'][:15])}{'…' if len(data['changed']) > 15 else ''}"
     for warning in record.warnings[:5]:
         text += f"\nWarning: {warning}"
+    if data["artifacts"]:
+        text += f"\nPlan and walkthrough: {data['artifacts']}/"
     if record.state == "paused":
         text += f"\nEvery worker's quota is spent; resume later with `python -m orchestrator resume {record.run_id}`."
     return text, data

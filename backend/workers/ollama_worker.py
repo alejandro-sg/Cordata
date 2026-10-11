@@ -18,6 +18,7 @@ loop here; moving the work elsewhere is the orchestrator's call.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 import time
@@ -36,6 +37,18 @@ from .base import TaskPacket, Worker, WorkerCapabilities, WorkerEvent, WorkerFam
 from .cli_worker import EFFORTS, MAX_OUTPUT_CHARS, MAX_PROMPT_CHARS, MODEL_NAME, RATE_LIMIT, schema_problem
 
 MAX_READ_CHARS = 40_000
+
+
+class _DropReplayedReasoningNotice(logging.Filter):
+    """Strands' OpenAI model warns on *every* call whose history holds a reasoning block (it drops them from the
+    replayed history, by design). For a worker that thinks on every turn that is one line per model call, saying
+    nothing actionable; the blocks are still dropped."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "reasoningContent is not supported in multi-turn" not in record.getMessage()
+
+
+logging.getLogger("strands.models.openai").addFilter(_DropReplayedReasoningNotice())
 MAX_LIST = 400
 
 

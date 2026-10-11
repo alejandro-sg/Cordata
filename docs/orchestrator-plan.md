@@ -1,6 +1,9 @@
 # Orchestrator plan: plan → execute → harden → audit across Claude Code, Antigravity and Ollama
 
-Status: refined engineering specification and implementation plan, approved 2026-10-10.
+Status: refined engineering specification and implementation plan, approved 2026-10-10 — **implemented** (phases
+0–7). The as-built system, what the CLIs were observed to do, and every place the build departed from this plan
+(agy `--mode plan` is not read-only; agy serves Claude 5.5, not 3.5–4.x; the dispatch rule; what was not consolidated)
+are in [`orchestrator.md`](orchestrator.md). This document is kept as the plan it was.
 Baseline measurements recorded from checkout commit `1817ee9` (`feat/acp-tui-laya-secrets`).
 
 ## 1. The mission, restated

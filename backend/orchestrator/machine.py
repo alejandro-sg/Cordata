@@ -28,6 +28,7 @@ import time
 import uuid
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
 import checkpoints
@@ -104,6 +105,53 @@ def save(record: RunRecord) -> None:
         logger.warning("orchestrator: could not persist run %s", record.run_id, exc_info=True)
 
 
+def artifacts_dir(run_id: str) -> Path:
+    """Where a run's readable artifacts live: ``~/.sierralab/orchestrator/<run_id>/`` (``SIERRALAB_HOME`` moves it)."""
+    import os
+
+    return Path(os.environ.get("SIERRALAB_HOME") or Path.home() / ".sierralab") / "orchestrator" / run_id
+
+
+def walkthrough(record: RunRecord) -> str:
+    """What the run did, for a person: the outcome, each step with its worker, the audit, handoffs and warnings —
+    Antigravity's walkthrough artifact, from the record (no model writes it)."""
+    lines = [f"# Walkthrough — {record.run_id}", "", f"**Goal:** {record.goal}", "", f"**Outcome:** {record.state}" + (f" — {record.reason}" if record.reason else "")]
+    if record.plan:
+        lines += ["", "## Steps"]
+        for step in record.plan.get("steps", []):
+            lines.append(f"- [{step.get('status')}] **{step.get('name')}** (`{step.get('step_id')}`) — {step.get('worker') or 'not run'}" + (f", {step.get('attempts')} attempt(s)" if (step.get("attempts") or 0) > 1 else ""))
+    audit = record.audit or {}
+    if audit:
+        lines += ["", "## Audit", f"- deterministic checks: {'passed' if audit.get('tier1_ok') else 'FAILED'}" + (f"; reviewer verdict: {audit.get('verdict')}" if audit.get("verdict") else "")]
+        lines += [f"- {str(c.get('id'))} ({c.get('kind')}): {'ok' if c.get('ok') else 'FAIL'} — {str(c.get('detail') or '').splitlines()[0] if c.get('detail') else ''}" for c in audit.get("checks", [])]
+        if audit.get("changed"):
+            lines += ["", "## Changed files"] + [f"- `{path}`" for path in audit["changed"][:200]]
+    if record.handoffs or record.drift_retries or record.replans:
+        lines += ["", "## Recovery", f"- handoffs: {len(record.handoffs)} · fix passes: {record.drift_retries} · replans: {record.replans}"]
+    if record.warnings:
+        lines += ["", "## Warnings"] + [f"- {w}" for w in record.warnings]
+    return "\n".join(lines) + "\n"
+
+
+def write_artifacts(record: RunRecord) -> None:
+    """``plan.md`` once there is a plan, ``walkthrough.md`` on every transition (it says where the run stands). Private
+    (0700/0600): the plan quotes the goal, which is the person's own words. Never raises."""
+    import os
+
+    try:
+        target = artifacts_dir(record.run_id)
+        target.mkdir(parents=True, exist_ok=True)
+        os.chmod(target, 0o700)
+        if record.plan:
+            (target / "plan.md").write_text(Plan.from_json(record.plan).render(), encoding="utf-8")
+        (target / "walkthrough.md").write_text(walkthrough(record), encoding="utf-8")
+        for name in ("plan.md", "walkthrough.md"):
+            if (target / name).exists():
+                os.chmod(target / name, 0o600)
+    except OSError:
+        logger.debug("orchestrator: could not write the run's artifacts", exc_info=True)
+
+
 def load(run_id: str) -> RunRecord | None:
     try:
         row = state_store.connect().execute("SELECT record_json FROM orch_runs WHERE run_id = ?", (run_id,)).fetchone()
@@ -169,6 +217,7 @@ class OrchestratorMachine:
         save(self.record)
         state_store.append_event("orchestrator", {"run_id": self.record.run_id, **entry}, session_id=self.record.run_id, source="orchestrator")
         self._emit("state", **entry)
+        write_artifacts(self.record)
         if state in ("done", "failed"):
             self._credit(state == "done")
 
@@ -292,7 +341,7 @@ class OrchestratorMachine:
         ranked = self._usable(self.dispatcher.rank("harden", self.record.task_class, exclude_model_families=families))
         ranked = [c for c in ranked if c.model_family not in families]
         if not ranked:
-            self.record.warnings.append(f"harden skipped: no reviewer outside the executor families ({', '.join(sorted(families))}) has quota")
+            self.record.warnings.append(f"harden skipped: no reviewer from a model family other than the executors' ({', '.join(sorted(families))}) is enabled and has quota")
             return
         candidate = ranked[0]
         snap = checkpoints.take(self.project, kind="pre", tool="orchestrator", agent="harden", session_id=self.record.run_id, turn="harden")

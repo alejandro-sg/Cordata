@@ -32,6 +32,8 @@ cd backend && .venv/bin/python -m orchestrator status
 `status` shows every quota pool's headroom, recent runs and handoffs — from `state.db`, spending nothing. `show
 RUN_ID` prints a run's plan, history and audit; `resume RUN_ID` continues a paused one; `replay` judges the learned
 dispatch policy (below). The TUI's `/status` and Discord's `!status` render the same pools (zero model tokens).
+Every run also writes `~/.sierralab/orchestrator/<run_id>/plan.md` and `walkthrough.md` (what each step did, who did
+it, the audit, the recovery) — Antigravity's artifact model, rendered from the record rather than written by a model.
 
 Settings (`orchestrator.*`, all trust-gated): see [`settings.md`](settings.md). The pools default to conservative
 caps — set `orchestrator.pools` to your plans:
@@ -123,6 +125,18 @@ game tools were never called. Removed: the in-process teams (`local_graph`, `loc
 replaced by `orchestrate`), the browser game demo (`open_game`, `/games/*`, its skill and frontend panel) and the
 web UI's swarm panel. Frozen (kept, out of the default CI path): the Next.js frontend, the GPUI Lab and menu bar,
 oMLX.
+
+`acp_server.py` (3,055 lines) was split by responsibility — `acp_approval.py` (the approval gate and session modes),
+`acp_protocol.py` (tool kinds, rendering, the stdout guard), `acp_session.py` (session record, prompts, startup
+preferences), `acp_learning.py` (bandit and maintenance hooks) — leaving the ACP agent itself at ~1,870 lines. Every
+moved name is re-exported from `acp_server`, so callers and tests are unchanged (one test now patches
+`acp_approval.current_generated_tool_names`, where the gate reads it). The split needed one root-cause fix:
+`agent_common` now pins relative `sys.path` entries before it `chdir`s, so a bare-module import after it works under
+`python -m` too — the import-order rule `acp_server` used to carry in a comment is gone.
+
+Measured, baseline (`d6a0a26`) → now: backend Python outside tests 40,255 → 44,908 lines, of which the orchestrator,
+the workers and the tool are 5,651 new lines — the rest of the backend shrank by ~1,000; the web UI 4,208 → 2,936
+lines (−30 %); `acp_server.py` 3,055 → 1,868.
 
 Not done from the plan, and why:
 

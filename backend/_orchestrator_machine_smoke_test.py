@@ -171,6 +171,11 @@ async def test_accept(root: Path) -> None:
     loaded = machine.load(record.run_id)
     check(loaded is not None and loaded.state == "done" and loaded.plan["plan_id"] == record.plan["plan_id"], "the run is durable in state.db")
     check(any(e["kind"] == "state" for e in events) and any(e["kind"] == "step_result" for e in events), "front doors get state and step events")
+    folder = machine.artifacts_dir(record.run_id)
+    plan_md, walk_md = (folder / "plan.md").read_text(), (folder / "walkthrough.md").read_text()
+    check("## Steps" in plan_md and "calc/mul.py" in plan_md, "the plan is written to disk for a person (plan.md)")
+    check("**Outcome:** done" in walk_md and "claude-fake" in walk_md and "deterministic checks: passed" in walk_md, "…and a walkthrough of what happened (walkthrough.md)")
+    check(oct(folder.stat().st_mode & 0o777) == "0o700" and oct((folder / "plan.md").stat().st_mode & 0o777) == "0o600", "…readable by this user only")
     observed = {(role, ok) for role, _, _, outcome in disp.observed for ok in [outcome.get("ok")] if outcome.get("final")}
     check(observed == {("plan", True), ("execute", True), ("harden", True), ("audit", True)}, f"every role is credited with the run's outcome ({sorted(observed)})")
 
