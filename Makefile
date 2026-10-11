@@ -139,6 +139,11 @@ phase12-test:
 	@backend/.venv/bin/python backend/_rejection_memory_smoke_test.py
 	@backend/.venv/bin/python backend/_environment_awareness_smoke_test.py
 
+# Every hermetic smoke suite, in parallel (backend/run_tests.py): each in its own throwaway SIERRALAB_HOME, longest
+# first, Discord off.   make test ARGS="-k orchestr"   make test ARGS="-j 4"   make test ARGS="--live"
+test:
+	@backend/.venv/bin/python backend/run_tests.py $(ARGS)
+
 # The orchestrator (docs/orchestrator-plan.md): the Worker interface and its adapters, the quota ledger and safe-point
 # handoffs, the plan → execute → harden → audit machine, and the dispatch policy. Hermetic: fake CLIs under the real
 # Seatbelt sandbox, scripted models, a throwaway SIERRALAB_HOME.

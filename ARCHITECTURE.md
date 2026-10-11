@@ -96,6 +96,8 @@ Frozen means kept working and built, not developed; nothing core depends on a fr
 ## Tests
 
 Every mechanism has a hermetic smoke test in `backend/_*_smoke_test.py` (scripted models, the real ACP server object,
-no network); CI runs the ones that need no local service (`.github/workflows/ci.yml`). Rust: `make tui-test`,
+no network). `make test` runs all of them in parallel (`backend/run_tests.py`: each in its own throwaway
+`SIERRALAB_HOME`, longest first — about 3 minutes against ~21 one by one); CI runs the ones that need no local service
+(`.github/workflows/ci.yml`). Rust: `make tui-test`,
 `make lab-test`. Live checks (`_acp_smoke_test.py`, `_ollama_cloud_live_test.py`, `make lab-live`) need the real
 providers and are run by hand — with `SIERRALAB_DISCORD=off`, so a test turn does not page the operator.

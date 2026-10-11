@@ -43,3 +43,6 @@ backend/laya_triage.jsonl
 # docs/settings.md) — never something a clone should inherit.
 .sierralab/settings.local.json
 SIERRALAB.local.md
+
+# Per-machine suite timings run_tests.py schedules by (longest first).
+backend/.test-durations.json
