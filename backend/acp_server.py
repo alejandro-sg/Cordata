@@ -1833,6 +1833,11 @@ class SierraLabAcpAgent:
         if name == "lsp/status":
             manager = lsp_bridge.manager_for(cwd)
             return {"servers": manager.status(), "enabled": manager.enabled}
+        if name == "orchestrator/status":
+            # Quota pools, recent runs and handoffs, read from the ledger — no model call (orchestrator/status.py).
+            from orchestrator.status import status_data
+
+            return await run_blocking(status_data, cwd)
         if name == "laya/stats":
             router = _router()
             return {

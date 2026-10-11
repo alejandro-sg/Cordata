@@ -381,6 +381,9 @@ pub const RESUME_METHOD: &str = "_sierralab/resume";
 /// What a finished turn cost (backend `acp_server._announce_turn`): `seconds`, `calls`, `tokensIn`,
 /// `tokensOut`, `stop`. Sent once per turn, so a status line can show it without a model call of its own.
 pub const TURN_METHOD: &str = "_sierralab/turn";
+/// The orchestrator's run events (backend `orchestrate_tool.py`): `kind` is `state` | `step_dispatch` |
+/// `step_result` | `handoff` | `rollback` | `paused` | `budget_exhausted`, with `run_id` and the fields of that kind.
+pub const ORCHESTRATOR_METHOD: &str = "_sierralab/orchestrator";
 /// The Experimental Lab's live state (backend `lab.py`): pods, A2A links, the
 /// threat gauge, staged HITL rows, resources. Controls go back the other way as
 /// `_sierralab/lab/{select,isolate,release,dial,inject}` extension requests.
@@ -713,6 +716,8 @@ pub enum HarnessEvent {
     /// The Experimental Lab's state: always a full snapshot, so a dropped
     /// notification is healed by the next one.
     Lab(Box<LabState>),
+    /// An orchestrator run event (state change, step, handoff), as JSON.
+    Orchestrator(Value),
 }
 
 /// Parse a harness notification; `None` for unknown methods or malformed params.
@@ -751,6 +756,7 @@ pub fn parse_harness(method: &str, params: &Value) -> Option<HarnessEvent> {
         RESUME_METHOD => Some(HarnessEvent::Resume(params.clone())),
         TURN_METHOD => Some(HarnessEvent::Turn(params.clone())),
         LAB_METHOD => parse_lab(params).map(|state| HarnessEvent::Lab(Box::new(state))),
+        ORCHESTRATOR_METHOD => text("kind").map(|_| HarnessEvent::Orchestrator(params.clone())),
         _ => None,
     }
 }
@@ -958,6 +964,13 @@ mod laya_tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn an_orchestrator_event_parses_when_it_has_a_kind() {
+        let event = parse_harness(ORCHESTRATOR_METHOD, &serde_json::json!({"kind": "handoff", "run_id": "r"}));
+        assert!(matches!(event, Some(HarnessEvent::Orchestrator(_))));
+        assert!(parse_harness(ORCHESTRATOR_METHOD, &serde_json::json!({"run_id": "r"})).is_none());
+    }
 
     #[test]
     fn parses_a_decision() {

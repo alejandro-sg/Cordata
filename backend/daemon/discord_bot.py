@@ -141,6 +141,18 @@ INFO_COLOR = cards.INFO_COLOR
 # --------------------------------------------------------------------------- config
 
 
+
+def _orchestrator_status() -> dict[str, Any] | None:
+    """The orchestrator's pools and handoffs from state.db (no model call); None when it cannot be read."""
+    try:
+        from orchestrator.status import status_data
+
+        return status_data()
+    except Exception:
+        logger.debug("discord: orchestrator status unavailable", exc_info=True)
+        return None
+
+
 @dataclass
 class RemoteConfig:
     """What `from_env` decided, and why. `enabled` is false for every reason this module refuses to
@@ -1254,4 +1266,4 @@ class DiscordRemote:
     async def _reply_status(self, channel: Any) -> None:
         asleep = sum(1 for c in self.chats.all() if not c.daemon_id)
         note = f"{asleep} earlier chat{'s' if asleep != 1 else ''} asleep — reply in {'their threads' if asleep != 1 else 'its thread'} to wake {'them' if asleep != 1 else 'it'}." if asleep else ""
-        await self._send(channel, embed=self._embed(cards.status_card(self._status_rows(), usage=self.chats.totals, note=note)))
+        await self._send(channel, embed=self._embed(cards.status_card(self._status_rows(), usage=self.chats.totals, note=note, quota=_orchestrator_status())))

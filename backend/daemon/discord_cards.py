@@ -486,15 +486,31 @@ def turn_footer(turn: Mapping[str, Any] | None, *, stop: str = "end_turn", secon
     return " · ".join(parts)
 
 
-def status_card(rows: list[Mapping[str, Any]], *, usage: Mapping[str, Any] | None = None, note: str = "") -> dict[str, Any]:
+def quota_fields(quota: Mapping[str, Any] | None) -> list[tuple[str, str, bool]]:
+    """The orchestrator's quota pools as gauges, and its latest handoff (`orchestrator/status.py`'s payload)."""
+    if not quota:
+        return []
+    from orchestrator.status import handoff_line, pool_line
+
+    pools = [p for p in quota.get("pools") or [] if p.get("limit") or p.get("used") or p.get("provider_pct") is not None]
+    fields: list[tuple[str, str, bool]] = []
+    if pools:
+        fields.append(("Quota", "```\n" + "\n".join(pool_line(p) for p in pools)[:980] + "\n```", False))
+    handoffs = quota.get("handoffs") or []
+    if handoffs:
+        fields.append(("Last handoff", clip(handoff_line(handoffs[0]), 200), False))
+    return fields
+
+
+def status_card(rows: list[Mapping[str, Any]], *, usage: Mapping[str, Any] | None = None, note: str = "", quota: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Where every agent stands, from live daemon state. `rows` is one dict per session:
     `project`, `state` (`idle` | `working` | `waiting`), `detail`, `since` (seconds), `pending`, `kind`
-    (`chat` | `watched`), `mission`."""
+    (`chat` | `watched`), `mission`. `quota` (optional) adds the orchestrator's pool gauges."""
     if not rows:
         return {
             "title": "Nothing running",
             "description": "No agent is working right now. Say something here to start a chat." + (f"\n{note}" if note else ""),
-            "fields": [],
+            "fields": quota_fields(quota),
             "color": MUTED_COLOR,
             "footer": "Answered from the daemon's own state — no model call.",
         }
@@ -517,6 +533,7 @@ def status_card(rows: list[Mapping[str, Any]], *, usage: Mapping[str, Any] | Non
             lines.append(f"🟠 {row['pending']} approval{'s' if row['pending'] != 1 else ''} waiting")
         kind = "your chat" if row.get("kind") == "chat" else "terminal/GUI session"
         fields.append((f"{row.get('project', '?')} · {kind}", "\n".join(lines), False))
+    fields += quota_fields(quota)
     footer = "Answered from the daemon's own state — no model call."
     if usage and (usage.get("turns") or 0):
         footer = f"Since the daemon started: {usage['turns']} turn(s) · {fmt_tokens(usage.get('tokensIn'))} in · {fmt_tokens(usage.get('tokensOut'))} out. " + footer

@@ -482,6 +482,11 @@ impl App {
                     self.messages.push(Message::Info(sanitize(&line)));
                 }
             }
+            HarnessEvent::Orchestrator(event) => {
+                if let Some(line) = crate::commands::format_orchestrator_event(&event) {
+                    self.messages.push(Message::Info(sanitize(&line)));
+                }
+            }
             HarnessEvent::Checkpoint(event) => {
                 if let Some(line) = crate::commands::format_checkpoint_event(&event) {
                     self.messages.push(Message::Info(sanitize(&line)));
@@ -904,7 +909,11 @@ impl App {
             Command::Trust => self.run_trust(),
             Command::Memory => self.run_memory(),
             Command::Init => return self.run_init(),
-            Command::Status => self.run_status(),
+            Command::Status => {
+                self.run_status();
+                // The orchestrator's pools and handoffs, read from the ledger by the backend — no model call.
+                return Some(ext("_sierralab/orchestrator/status", Value::Null, "orchestrator"));
+            }
             Command::Plugins(arg) => return self.run_plugins(arg),
             Command::Lsp => return Some(ext("_sierralab/lsp/status", Value::Null, "lsp")),
             Command::Heal => return Some(ext("_sierralab/heal/status", Value::Null, "heal")),

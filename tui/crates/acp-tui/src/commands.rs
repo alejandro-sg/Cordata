@@ -112,7 +112,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("/trust", "trust this folder's project settings"),
     ("/memory", "show the instruction files the agent reads"),
     ("/init", "have the agent draft SIERRALAB.md"),
-    ("/status", "session, mode, model, rules"),
+    ("/status", "session, mode, model, rules, quota pools"),
     ("/clear", "clear the screen (the session continues)"),
     ("/quit", "quit"),
 ];
@@ -167,6 +167,100 @@ pub fn parse(input: &str) -> Option<Command> {
 
 /// An extension reply as the info text `/plugins`, `/lsp`, `/heal` and
 /// `/laya stats` print. Tolerant: unknown shapes fall back to JSON.
+/// A text gauge: `pct` of `width` cells filled. `None` (an uncapped pool) is all dots.
+pub fn gauge(pct: Option<f64>, width: usize) -> String {
+    match pct {
+        None => "·".repeat(width),
+        Some(p) => {
+            let filled = ((p.clamp(0.0, 1.0) * width as f64).round() as usize).min(width);
+            format!("{}{}", "█".repeat(filled), "░".repeat(width - filled))
+        }
+    }
+}
+
+fn compact(n: f64) -> String {
+    if n >= 1_000_000.0 {
+        format!("{:.1}M", n / 1_000_000.0).replace(".0M", "M")
+    } else if n >= 10_000.0 {
+        format!("{:.0}k", n / 1000.0)
+    } else if n.fract() == 0.0 {
+        format!("{n:.0}")
+    } else {
+        format!("{n:.2}").trim_end_matches('0').trim_end_matches('.').to_owned()
+    }
+}
+
+/// The orchestrator's `/status` block: one gauge per quota pool, recent runs, recent handoffs.
+pub fn format_orchestrator_status(value: &serde_json::Value) -> String {
+    use serde_json::Value;
+    let s = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().to_owned();
+    let mut out = vec!["quota pools".to_owned()];
+    for pool in value.get("pools").and_then(Value::as_array).cloned().unwrap_or_default() {
+        let limit = pool.get("limit").and_then(Value::as_f64);
+        let used = pool.get("used").and_then(Value::as_f64).unwrap_or(0.0);
+        let pct = pool.get("pct").and_then(Value::as_f64).unwrap_or(0.0);
+        let provider = pool.get("provider_pct").and_then(Value::as_f64);
+        let capped = limit.is_some() || provider.is_some();
+        let unit = s(&pool, "unit");
+        let amount = match limit {
+            Some(l) => format!("{}/{} {unit}", compact(used), compact(l)),
+            None => format!("{} {unit}", compact(used)),
+        };
+        let source = if s(&pool, "source") == "provider" { " · provider" } else { "" };
+        out.push(format!(
+            "  {:<18} {} {:>4}  {:<9} {amount}{source}",
+            s(&pool, "pool_id"),
+            gauge(capped.then_some(pct), 12),
+            if capped { format!("{:.0}%", pct * 100.0) } else { "—".into() },
+            s(&pool, "level"),
+        ));
+    }
+    let runs = value.get("runs").and_then(Value::as_array).cloned().unwrap_or_default();
+    out.push(if runs.is_empty() { "orchestrator runs  (none)".into() } else { "orchestrator runs".into() });
+    for run in runs {
+        let handoffs = run.get("handoffs").and_then(Value::as_u64).unwrap_or(0);
+        let goal: String = s(&run, "goal").chars().take(70).collect();
+        out.push(format!(
+            "  {} {}: {goal}{}",
+            s(&run, "run_id"),
+            s(&run, "state"),
+            if handoffs > 0 { format!(" · {handoffs} handoff(s)") } else { String::new() }
+        ));
+    }
+    let handoffs = value.get("handoffs").and_then(Value::as_array).cloned().unwrap_or_default();
+    out.push(if handoffs.is_empty() { "handoffs  (none)".into() } else { "handoffs".into() });
+    for item in handoffs {
+        out.push(format!(
+            "  {} · step {} · {} → {}",
+            s(&item, "reason"),
+            s(&item, "step_id"),
+            s(&item, "from_worker"),
+            item.get("to_worker").and_then(Value::as_str).unwrap_or("—")
+        ));
+    }
+    out.join("\n")
+}
+
+/// One line for a live orchestrator event worth a line in the transcript (state changes that end or pause a run,
+/// handoffs, rollbacks); step-level chatter stays in the tool card's progress.
+pub fn format_orchestrator_event(event: &serde_json::Value) -> Option<String> {
+    use serde_json::Value;
+    let s = |k: &str| event.get(k).and_then(Value::as_str).unwrap_or_default().to_owned();
+    match s("kind").as_str() {
+        "handoff" => Some(format!(
+            "⇄ orchestrator handoff ({}): {} → {}",
+            s("reason"),
+            s("from_worker"),
+            event.get("to_worker").and_then(Value::as_str).unwrap_or("none")
+        )),
+        "rollback" => Some(format!("↺ orchestrator rolled back step {}", s("step_id"))),
+        "state" if matches!(s("state").as_str(), "done" | "failed" | "paused" | "budget_exhausted") => {
+            Some(format!("◆ orchestrator run {} {}", s("run_id"), s("state")))
+        }
+        _ => None,
+    }
+}
+
 pub fn format_ext(tag: &str, value: &serde_json::Value) -> String {
     use serde_json::Value;
     let text = |v: &Value, key: &str| {
@@ -176,6 +270,7 @@ pub fn format_ext(tag: &str, value: &serde_json::Value) -> String {
             .to_owned()
     };
     match tag {
+        "orchestrator" => format_orchestrator_status(value),
         "plugins" => {
             let rows = value
                 .get("plugins")
@@ -612,6 +707,39 @@ pub fn format_turn_receipt(event: &serde_json::Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn orchestrator_status_shows_a_gauge_per_pool_and_the_handoffs() {
+        let value = serde_json::json!({
+            "pools": [
+                {"pool_id": "claude_code", "unit": "usd", "used": 11.6, "limit": 20.0, "pct": 0.58, "level": "ok", "source": "meter"},
+                {"pool_id": "antigravity", "unit": "tokens", "used": 7_600_000.0, "limit": 8_000_000.0, "pct": 0.95, "level": "hard", "source": "meter"},
+                {"pool_id": "claude_code_p", "unit": "usd", "used": 1.0, "limit": 20.0, "pct": 0.91, "level": "soft", "provider_pct": 0.91, "source": "provider"},
+                {"pool_id": "ollama_local", "unit": "requests", "used": 4.0, "limit": null, "pct": 0.0, "level": "ok", "source": "meter"}
+            ],
+            "runs": [{"run_id": "run-1", "state": "done", "goal": "add retries", "handoffs": 1}],
+            "handoffs": [{"reason": "provider_rate_limit", "step_id": "s2", "from_worker": "claude_code:sonnet", "to_worker": "antigravity:gemini"}]
+        });
+        let text = format_ext("orchestrator", &value);
+        assert!(text.contains("claude_code        ███████░░░░░  58%  ok        11.6/20 usd"), "{text}");
+        assert!(text.contains("antigravity") && text.contains("7.6M/8M tokens") && text.contains("hard"), "{text}");
+        assert!(text.contains("· provider"), "the provider's own reading is marked: {text}");
+        assert!(text.contains("ollama_local       ············    —"), "an uncapped pool has no gauge: {text}");
+        assert!(text.contains("run-1 done: add retries · 1 handoff(s)"), "{text}");
+        assert!(text.contains("provider_rate_limit · step s2 · claude_code:sonnet → antigravity:gemini"), "{text}");
+    }
+
+    #[test]
+    fn orchestrator_events_worth_a_line() {
+        let handoff = serde_json::json!({"kind": "handoff", "reason": "quota_soft_limit_reached", "from_worker": "a", "to_worker": "b"});
+        assert_eq!(format_orchestrator_event(&handoff).as_deref(), Some("⇄ orchestrator handoff (quota_soft_limit_reached): a → b"));
+        let done = serde_json::json!({"kind": "state", "state": "done", "run_id": "run-9"});
+        assert_eq!(format_orchestrator_event(&done).as_deref(), Some("◆ orchestrator run run-9 done"));
+        let step = serde_json::json!({"kind": "step_dispatch", "step_id": "s1"});
+        assert_eq!(format_orchestrator_event(&step), None, "step chatter stays in the tool card");
+        let executing = serde_json::json!({"kind": "state", "state": "execute"});
+        assert_eq!(format_orchestrator_event(&executing), None);
+    }
 
     #[test]
     fn a_turn_receipt_says_what_it_cost() {

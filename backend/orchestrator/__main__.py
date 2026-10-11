@@ -28,47 +28,6 @@ def _prefs(cwd: str) -> Any:
     return settings_store.current(cwd)
 
 
-def _bar(pct: float | None, width: int = 20) -> str:
-    if pct is None:
-        return "·" * width
-    filled = max(0, min(width, round(pct * width)))
-    return "█" * filled + "░" * (width - filled)
-
-
-def status_data(limit: int = 8) -> dict[str, Any]:
-    """Everything ``status`` shows, as data — the daemon serves the same thing to the TUI and Discord."""
-    from . import config, handoff, machine
-
-    ledger = config.ledger(_prefs(os.getcwd()))
-    pools = [p.to_json() for p in ledger.states()]
-    runs = [
-        {"run_id": r.run_id, "state": r.state, "goal": r.goal[:120], "cwd": r.cwd, "updated": r.updated, "replans": r.replans, "drift_retries": r.drift_retries, "handoffs": len(r.handoffs), "reason": r.reason[:200]}
-        for r in machine.recent(limit)
-    ]
-    handoffs = [{k: p.to_json()[k] for k in ("handoff_id", "session_id", "timestamp", "reason", "step_id", "step_status", "from_worker", "to_worker")} for p in handoff.recent(limit)]
-    return {"pools": pools, "runs": runs, "handoffs": handoffs, "ts": time.time()}
-
-
-def render_status(data: dict[str, Any]) -> str:
-    lines = ["Quota pools"]
-    for pool in data["pools"]:
-        limit = pool["limit"]
-        used = f"{pool['used']:g}/{limit:g} {pool['unit']}" if limit else f"{pool['used']:g} {pool['unit']} (uncapped)"
-        source = " · provider" if pool.get("source") == "provider" else ""
-        lines.append(f"  {pool['pool_id']:20} {_bar(pool['pct'] if limit or pool.get('provider_pct') is not None else None)} {pool['pct'] * 100:5.1f}%  {pool['level']:9} {used}{source}")
-    lines.append("Runs")
-    for run in data["runs"] or []:
-        lines.append(f"  {run['run_id']:16} {run['state']:16} {run['goal'][:60]}" + (f"  ({run['handoffs']} handoff(s))" if run["handoffs"] else ""))
-    if not data["runs"]:
-        lines.append("  (none)")
-    lines.append("Handoffs")
-    for item in data["handoffs"] or []:
-        lines.append(f"  {time.strftime('%H:%M', time.localtime(item['timestamp']))} {item['reason']:26} {item['step_id']:8} {item['from_worker']} → {item['to_worker'] or '—'}")
-    if not data["handoffs"]:
-        lines.append("  (none)")
-    return "\n".join(lines)
-
-
 async def _run(args: argparse.Namespace) -> int:
     from . import config
     from .machine import OrchestratorMachine
@@ -133,8 +92,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "run":
         return asyncio.run(_run(args))
     if args.cmd == "status":
-        data = status_data()
-        print(json.dumps(data, indent=1, default=str) if args.json else render_status(data))
+        from .status import render, status_data
+
+        data = status_data(os.getcwd())
+        print(json.dumps(data, indent=1, default=str) if args.json else render(data, marks=True))
         return 0
     if args.cmd == "show":
         from .machine import load
