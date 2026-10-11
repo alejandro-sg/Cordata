@@ -5,8 +5,6 @@ import "@copilotkit/react-core/v2/styles.css";
 import { useState } from "react";
 import AgentTools from "./AgentTools";
 import ChatPane from "./ChatPane";
-import GameSandbox from "./GameSandbox";
-import GameTools from "./GameTools";
 import { randomId } from "./randomId";
 import SandboxedUiFullscreen from "./SandboxedUiFullscreen";
 import SwarmProgress from "./SwarmProgress";
@@ -27,7 +25,6 @@ export default function Page() {
   const [dark, toggleDark] = useLocalStorageToggle("sierralab-agents:dark", false);
   const [enableInspector, toggleInspector] = useLocalStorageToggle("sierralab-agents:inspector", true);
   const [subAgentsOn, toggleSubAgents] = useLocalStorageToggle("sierralab-agents:subagents", true);
-  const [gamesOn, toggleGames] = useLocalStorageToggle("sierralab-agents:games", true);
   const { sandboxFunctions, approvalUi } = useSandboxFunctionBridge();
 
   return (
@@ -52,7 +49,6 @@ export default function Page() {
         }}
       >
         <AgentTools onToggleDark={toggleDark} />
-        <GameTools />
         <SandboxedUiFullscreen />
         <div className={"app-layout" + (dark ? " dark" : "")}>
           <ThreadSidebar
@@ -71,13 +67,10 @@ export default function Page() {
             onToggleInspector={toggleInspector}
             subAgentsOn={subAgentsOn}
             onToggleSubAgents={toggleSubAgents}
-            gamesOn={gamesOn}
-            onToggleGames={toggleGames}
           />
           <div className="chat-pane">
             <ChatPane threadId={threadId} hasExplicitThreadId={isExplicit} />
           </div>
-          {gamesOn && <GameSandbox onHide={toggleGames} />}
           {subAgentsOn && <SwarmProgress onHide={toggleSubAgents} />}
         </div>
       </CopilotChatConfigurationProvider>

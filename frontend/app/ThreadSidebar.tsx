@@ -28,8 +28,6 @@ export default function ThreadSidebar({
   onToggleInspector,
   subAgentsOn,
   onToggleSubAgents,
-  gamesOn,
-  onToggleGames,
 }: {
   activeThreadId: string;
   onSelect: (id: string) => void;
@@ -40,8 +38,6 @@ export default function ThreadSidebar({
   onToggleInspector: () => void;
   subAgentsOn: boolean;
   onToggleSubAgents: () => void;
-  gamesOn: boolean;
-  onToggleGames: () => void;
 }) {
   const [threads, setThreads] = useState<Thread[]>([]);
   // The laptop hub's conversations (terminal, Discord, menu bar, web) — empty unless hub mode is on.
@@ -117,10 +113,6 @@ export default function ThreadSidebar({
         <label className="thread-sidebar-toggle">
           <input type="checkbox" checked={subAgentsOn} onChange={onToggleSubAgents} />
           Sub-agents panel
-        </label>
-        <label className="thread-sidebar-toggle">
-          <input type="checkbox" checked={gamesOn} onChange={onToggleGames} />
-          Game panel
         </label>
       </div>
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}

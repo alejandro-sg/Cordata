@@ -320,22 +320,6 @@ CopilotKit Inspector (sidebar toggle) → **Frontend Tools** — `shell`, `pytho
 `file_write`, and `toggle_theme` all list there with a `handler` tag, confirming
 registration independent of whether this particular local model chooses to call them.
 
-## Agent-playable browser games
-
-The agent can write a real, self-contained HTML/JS game (via `file_write`, same
-approval-gated path as everything else) and open it in a live panel next to the chat —
-`open_game` announces it, `backend/games_static_api.py` serves it, `frontend/app/
-GameSandbox.tsx` renders it in a sandboxed `<iframe>`. A small `postMessage` contract
-(documented in `backend/skills/build-a-game/SKILL.md`, with copy-pasteable boilerplate) lets
-the agent read and drive the game live — `get_game_state`/`apply_game_move`, both
-`useFrontendTool`s — alongside a human's own direct clicks in the same panel. `open_game`
-statically checks the written file actually implements that contract before declaring the
-game ready, since a model asked for "a tic-tac-toe game" will happily write one that never
-calls the bridge at all. Two sub-agents can play each other, with the top-level agent
-relaying moves — sub-agents have no path to call frontend tools themselves (see
-`sub_agent_common.py`'s own tool-exclusion comments), so this is a hard architectural
-constraint, not a missing feature.
-
 ## Context management
 
 Both `Agent` builders in `agent_common.py` get a `SummarizingConversationManager`

@@ -81,8 +81,8 @@ MEMORY_DUPLICATE_THRESHOLD = float(os.getenv("MEMORY_DUPLICATE_THRESHOLD", "0.97
 MEMORY_SUPERSEDE_THRESHOLD = float(os.getenv("MEMORY_SUPERSEDE_THRESHOLD", "0.90"))
 
 # sandbox_functions_api.py: shared secret the Next.js proxy
-# (frontend/app/api/sandbox/[...path]/route.ts, frontend/app/api/games/
-# [...path]/route.ts) must present on every /sandbox/* and /games/* request.
+# (frontend/app/api/sandbox/[...path]/route.ts) must present on every
+# /sandbox/* request.
 # main.py binds uvicorn to 0.0.0.0, not 127.0.0.1 — this deployment genuinely
 # runs frontend and backend on different LAN machines (see
 # frontend/.env.local.example's BACKEND_URL comment), so "don't expose this

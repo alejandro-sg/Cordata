@@ -46,15 +46,9 @@ from security_headers import register_security_headers
 from model_control_tool import _context_window_limit, _fetch_available_models
 import mcp_manager
 import provider_settings
-# games_static_api before sandbox_functions_api, not just before it in this
-# file's own read order: games_static_api's own import of sandbox_functions_
-# api (which is what actually triggers agent_common's chdir, transitively —
-# see that module's own comment) has to be the first thing to pull in this
-# whole chain, or else sandbox_functions_api's chdir fires first and leaves
-# the bare `games_static_api` name unresolvable via the now-stale '' (cwd)
-# sys.path entry. Confirmed live: the naive order raised "ModuleNotFoundError:
-# No module named 'games_static_api'" at this exact line.
-from games_static_api import register_game_routes
+# sandbox_functions_api pulls in agent_common (and its chdir, transitively —
+# see that module's own comment): every bare-name backend import this file
+# needs has to come before this line.
 from sandbox_functions_api import register_sandbox_routes
 from agent_common import GENERATED_TOOL_NAMES, MCP_TOOL_NAMES, build_plugins, build_template_agent, start_mcp_clients
 from settings import EXTRA_CORS_ORIGINS
@@ -120,51 +114,6 @@ def _context_state(ctx) -> dict:
     if isinstance(ctx.result_data, dict):
         return {"context_usage": ctx.result_data}
     return {}
-
-
-def _game_state(ctx) -> dict:
-    """AG-UI shared-state payload after open_game runs, read by GameSandbox.tsx
-    via useAgent(...).state.active_game.
-
-    ctx.tool_input (verified field, ag_ui_strands/config.py:36) carries the
-    call's own game_id/title straight through — no need to re-derive them.
-    state_from_result fires unconditionally, even when open_game's own
-    _GAME_ID_RE/index.html checks failed and it returned an "Error: ..."
-    string (verified reading ag_ui_strands/agent.py) — checking for that
-    prefix here is what keeps a failed call from ever reaching the frontend
-    as "active" (an empty dict is a verified no-op merge: current_state.
-    update(snapshot) only runs `if snapshot`).
-    """
-    if isinstance(ctx.result_data, str) and ctx.result_data.startswith("Error:"):
-        return {}
-    tool_input = ctx.tool_input if isinstance(ctx.tool_input, dict) else {}
-    game_id, title = tool_input.get("game_id"), tool_input.get("title")
-    if not game_id or not title:
-        return {}
-    # version: a hash of the file's own bytes, not a fresh uuid every call.
-    # Live-reported regression from the first cut of this (a fresh uuid on
-    # every open_game): a human who had already been clicking through a real
-    # game themselves lost all of it the moment the agent re-announced the
-    # *same*, *unchanged* game_id for an unrelated reason (here, "check its
-    # state") — a fresh uuid forces GameSandbox.tsx's <iframe> key to change
-    # regardless of whether anything on disk actually did, wiping its live
-    # JS state (the board) back to whatever the freshly-reloaded script
-    # starts with. Hashing the content instead means the *only* thing that
-    # still forces a remount is the file genuinely changing (e.g. a model
-    # fixing a validation error and calling file_write again before retrying
-    # open_game) — re-announcing identical content is now a no-op key-wise,
-    # so an in-progress human game survives being "reopened".
-    import agent_common
-
-    index_path = agent_common.WORKSPACE_DIR / "games" / game_id / "index.html"
-    try:
-        version = hashlib.sha256(index_path.read_bytes()).hexdigest()[:16]
-    except OSError:
-        # Shouldn't happen — open_game already confirmed this file exists
-        # before ever returning success — but a remount is the safe default
-        # over crashing this callback if it somehow did.
-        version = uuid.uuid4().hex
-    return {"active_game": {"game_id": game_id, "title": title, "version": version}}
 
 
 def _style_context_builder(input_data, user_message: str) -> str:
@@ -233,7 +182,6 @@ agui_agent = StrandsAgent(
             "set_memory_window": ToolBehavior(state_from_result=_model_state),
             "context_usage": ToolBehavior(state_from_result=_context_state),
             "set_sandbox_mode": ToolBehavior(state_from_result=_model_state),
-            "open_game": ToolBehavior(state_from_result=_game_state),
         },
     ),
 )
@@ -567,11 +515,6 @@ def list_workspace_files() -> list[str]:
 # sandbox_functions_api.py's module docstring for why these calls need their
 # own client-side approval gate instead of reusing interrupt_on_call.
 register_sandbox_routes(app, _agent_config_payload)
-
-# /games/<game_id>/* — static file serving for GameSandbox.tsx's iframe, gated
-# by the same shared-secret token as /sandbox/* (see games_static_api.py's
-# own module docstring for why StaticFiles/app.mount couldn't be used here).
-register_game_routes(app)
 
 # No backend route for the chat input's `$` trigger (frontend/app/
 # useQueueingAgentInput.ts): unlike /sandbox/*, a `$ <command>` from the

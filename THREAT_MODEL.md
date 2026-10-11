@@ -106,13 +106,12 @@ plain `strands.Agent` instances directly in Python
 nowhere to pause for a human. `sub_agent_common.DENIED_TOOLS` (`shell`,
 `python_repl`, `file_write`, `editor`) and `ORCHESTRATOR_ONLY_TOOLS`
 (`local_swarm`, `local_graph`, `skill_forge`, `proposer`, the
-model/sandbox-mode control tools, `open_game`) are refused to every
+model/sandbox-mode control tools) are refused to every
 sub-agent regardless of what a spec asks for, or omits — the default
 (`"tools"` unset) hands a sub-agent every tool *not* on either list rather
 than erring toward "give it everything." `resolve_tools` also excludes
 every tool `ag_ui_strands.client_proxy_tool.registered_proxy_names()`
-reports (`toggle_theme`, `get_game_state`, `apply_game_move`, and any
-future `useFrontendTool`) — these get proxied into the top-level agent's
+reports (`toggle_theme`, and any future `useFrontendTool`) — these get proxied into the top-level agent's
 own tool registry, and their proxy body unconditionally returns a fake
 `"success"` with no real effect; a sub-agent given one wouldn't just lack a
 capability, it would silently report doing something that never happened.
@@ -214,7 +213,7 @@ approval on every individual call. Four surfaces, each with its own containment:
 support frontend and backend running on separate LAN machines, which means
 "only reachable from localhost" was never actually true for
 `/sandbox/*` (`sandbox_functions_api.py` — the `openGenerativeUI` bridge
-functions) or `/games/*` (`games_static_api.py` — served game files).
+functions).
 Anything on the same LAN could call `runSnippet` (arbitrary Python)
 directly and skip the frontend's client-side approval card entirely — the
 card is real UI state, but on its own it was never a network-level gate.
@@ -910,10 +909,10 @@ Both are now denied (`sub_agent_common`, `_laya_call_guard_smoke_test.py`).
 - **Frontend** (`frontend/next.config.js`) — `X-Frame-Options: DENY` +
   `Content-Security-Policy: frame-ancestors 'none'` on every page route,
   preventing this app's own UI from being framed by a third-party site
-  (clickjacking). Deliberately *excluded* from `/api/games/*` and
-  `/api/sandbox/*` — those exist specifically to be loaded into this app's
-  own `<iframe sandbox="allow-scripts">` (`GameSandbox.tsx`, the
-  generative-UI renderer), and a frame-blocking header on the content
+  (clickjacking). Deliberately *excluded* from `/api/sandbox/*` — it exists
+  specifically to be loaded into this app's own
+  `<iframe sandbox="allow-scripts">` (the generative-UI renderer), and a
+  frame-blocking header on the content
   meant to be framed would just break that feature. `X-Content-Type-
   Options: nosniff` and `Referrer-Policy: no-referrer` apply everywhere,
   no exception needed — neither interacts with framing.
@@ -922,14 +921,11 @@ Both are now denied (`sub_agent_common`, `_laya_call_guard_smoke_test.py`).
   serves the actual UI a human looks at (every response is either JSON or
   a file meant to be framed by the frontend), so there's no page here for
   a frame-blocking header to protect.
-- **Sandboxed iframes** — both `GameSandbox.tsx` and the existing
-  generative-UI renderer use `sandbox="allow-scripts"` with no
-  `allow-same-origin`, giving the framed content an opaque origin. That
-  means `postMessage` handlers can't authenticate a sender by
-  `event.origin` (it always reads the literal string `"null"`) —
-  `gameSandboxRegistry.ts` authenticates by `event.source` identity
-  (comparing against the exact `iframe.contentWindow` a message was sent
-  to) instead.
+- **Sandboxed iframes** — the generative-UI renderer uses
+  `sandbox="allow-scripts"` with no `allow-same-origin`, giving the framed
+  content an opaque origin, so a `postMessage` sender can only be
+  authenticated by `event.source` identity, never by `event.origin` (it
+  always reads the literal string `"null"`).
 
 ## Known gaps
 

@@ -110,7 +110,6 @@ COLD_TOOLS: dict[str, tuple[str, str]] = {
     "environment_profile": ("toolchain versions, dependency manifests and memory of this project and machine", r"environment|toolchains?|versions?|installed|rustc|node|python3?|\bpip\b|cargo|dependenc|unified memory|\bram\b|machine|profile"),
     "context_digest": ("digest a long file or log locally", r"digest|summari[sz]e|long (file|log|output|document)|\btl;?dr"),
     "set_sandbox_mode": ("change the sandbox mode", r"sandbox"),
-    "open_game": ("open a game", r"\bgames?\b|\bplay\b"),
     "set_memory_window": ("change how much history is kept", r"memory window|context window|history|forget"),
     "set_active_model": ("switch the model", _MODEL_WORDS + r"|switch to|use (a )?(different|other|bigger|smaller)"),
     "set_temperature": ("change the sampling temperature", r"temperature|creative|deterministic|focused"),

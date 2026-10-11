@@ -14,14 +14,6 @@ import { useEffect } from "react";
  * iframe — no CopilotKit internals touched, works with iframes it injects
  * at any point during generation.
  *
- * GameSandbox.tsx's own iframe is explicitly excluded below (`.game-sandbox
- * -frame`) — that panel already has its own dedicated fullscreen button in
- * its header, so a second floating one here would be redundant, and worse:
- * that iframe is deliberately remounted on every open_game call (a fresh
- * `key={game_id}:{version}`, so a human can reopen or fix-and-retry the
- * *same* game_id and actually see the new content) — real, observed churn
- * this MutationObserver was never written to expect.
- *
  * The real bug behind three separate live "Element is not connected"
  * reports, each seemingly surviving its own fix: this effect appends
  * buttons to the DOM *imperatively* (outside React's own tree), but its
@@ -57,7 +49,6 @@ export default function SandboxedUiFullscreen() {
 
     const addButton = (iframe: HTMLIFrameElement) => {
       if (seen.has(iframe)) return;
-      if (iframe.classList.contains("game-sandbox-frame")) return;
       const parent = iframe.parentElement;
       if (!parent) return;
       seen.add(iframe);

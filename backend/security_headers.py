@@ -3,8 +3,8 @@
 Deliberately does NOT set X-Frame-Options / a frame-ancestors CSP here —
 unlike the frontend, this backend has no page of its own a third-party site
 could clickjack (every JSON/API response is meaningless framed either way),
-and two of its routes (games_static_api.py's /games/*, sandbox_functions_
-api.py's /sandbox/*) exist specifically to be loaded into this app's own
+and one of its routes (sandbox_functions_api.py's /sandbox/*) exists
+specifically to be loaded into this app's own
 <iframe sandbox="allow-scripts">, proxied through the frontend. A frame
 header set here would do nothing for the human anyway (the frontend already
 carries the real one — see frontend/next.config.js), and get this backend's

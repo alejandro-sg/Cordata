@@ -15,7 +15,7 @@ agent_common is imported lazily, inside each function, not at module level —
 same reason model_control_tool.py does it: agent_common's own first import
 triggers its os.chdir(WORKSPACE_DIR) side effect, and this module has to
 stay importable before that happens (main.py imports it in the same early,
-pre-chdir block as model_control_tool/games_static_api/sandbox_functions_api
+pre-chdir block as model_control_tool/sandbox_functions_api
 — see that file's own comment on why import order here is load-bearing).
 """
 

@@ -65,8 +65,8 @@ _MAX_READ_BYTES = 200_000
 _logger = logging.getLogger(__name__)
 if SANDBOX_API_TOKEN_AUTO_GENERATED:
     _logger.info(
-        "SANDBOX_API_TOKEN not set — auto-generated one for this process. /sandbox/* and /games/* "
-        "still require it (frontend fetches it from GET /sandbox/_local-token, which only answers "
+        "SANDBOX_API_TOKEN not set — auto-generated one for this process. /sandbox/* "
+        "still requires it (frontend fetches it from GET /sandbox/_local-token, which only answers "
         "same-machine callers); set SANDBOX_API_TOKEN explicitly in backend/.env and "
         "frontend/.env.local instead once this backend is reachable from a different machine than "
         "the frontend's own."
@@ -74,7 +74,7 @@ if SANDBOX_API_TOKEN_AUTO_GENERATED:
 
 
 def _require_sandbox_token(x_sandbox_token: str | None = Header(default=None)) -> None:
-    """FastAPI dependency: reject any /sandbox/* or /games/* request that
+    """FastAPI dependency: reject any /sandbox/* request that
     doesn't carry the shared secret.
 
     SANDBOX_API_TOKEN is never empty (settings.py auto-generates one when

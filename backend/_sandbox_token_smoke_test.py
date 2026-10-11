@@ -2,8 +2,8 @@
 and _require_localhost gates.
 
 SANDBOX_API_TOKEN is never empty (settings.py auto-generates one when
-SANDBOX_API_TOKEN isn't set in the environment) — /sandbox/* and /games/*
-always require the correct token, whether it's the env-configured value or
+SANDBOX_API_TOKEN isn't set in the environment) — /sandbox/* always
+requires the correct token, whether it's the env-configured value or
 the process's own auto-generated one. GET /sandbox/_local-token is how a
 same-machine caller (the Next.js proxy, in the common single-machine case)
 discovers that auto-generated value without it ever being written to disk;

@@ -1,5 +1,5 @@
-// Shared by api/sandbox/[...path]/route.ts and api/games/[...path]/route.ts —
-// both need the same SANDBOX_API_TOKEN value forwarded as X-Sandbox-Token.
+// Used by api/sandbox/[...path]/route.ts, which forwards the SANDBOX_API_TOKEN
+// value as X-Sandbox-Token.
 //
 // backend/settings.py auto-generates SANDBOX_API_TOKEN when it's not set in
 // backend/.env — a fresh secrets.token_hex(32) every backend process start,
