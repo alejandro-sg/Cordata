@@ -119,6 +119,10 @@ pub enum Effect {
     CloseSession,
     /// List the open sessions and the project's saved ones.
     ListSessions,
+    /// List the hub's conversations.
+    ListConversations,
+    /// Continue a hub conversation (by handle) in a new slot.
+    OpenConversation(String),
     Quit,
 }
 
@@ -473,6 +477,11 @@ impl App {
                         format!("↻ resuming the interrupted turn automatically (attempt {}/{max})", attempts + 1)
                     });
             }
+            HarnessEvent::Turn(event) => {
+                if let Some(line) = crate::commands::format_turn_receipt(&event) {
+                    self.messages.push(Message::Info(sanitize(&line)));
+                }
+            }
             HarnessEvent::Checkpoint(event) => {
                 if let Some(line) = crate::commands::format_checkpoint_event(&event) {
                     self.messages.push(Message::Info(sanitize(&line)));
@@ -534,8 +543,33 @@ impl App {
                 return;
             }
         };
+        // The agent forgot some turns: the transcript on screen forgets them too, so what is shown is what it remembers.
+        if tag == "back" && value.get("ok").and_then(Value::as_bool) == Some(true) {
+            let forgotten = value
+                .get("forgot")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
+            self.drop_turns(forgotten);
+        }
         let text = crate::commands::format_ext(tag, &value);
         self.messages.push(Message::Info(sanitize(&text)));
+    }
+
+    /// Remove the last `turns` turns from the transcript: from the `turns`-th most recent user message to the end.
+    fn drop_turns(&mut self, turns: usize) {
+        if turns == 0 {
+            return;
+        }
+        let starts: Vec<usize> = self
+            .messages
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| matches!(m, Message::User(_)))
+            .map(|(i, _)| i)
+            .collect();
+        if let Some(&cut) = starts.iter().rev().nth(turns - 1) {
+            self.messages.truncate(cut);
+        }
     }
 
     fn end_turn(&mut self) {
@@ -878,6 +912,7 @@ impl App {
                 return Some(ext("_sierralab/checkpoints/list", Value::Null, "checkpoints"));
             }
             Command::Undo(arg) => return self.run_undo(arg),
+            Command::Back(arg) => return self.run_back(arg),
             Command::Agents => self.info(
                 "specialists: architect (plans changes, read-only) · debugger (diagnoses, patches, verifies) — \
                  Laya dispatches confident routes to them directly; otherwise the agent calls them as tools. \
@@ -886,6 +921,9 @@ impl App {
             Command::Lab => return self.lab.toggle(),
             Command::New => return Some(Effect::NewSession),
             Command::Sessions => return Some(Effect::ListSessions),
+            Command::Conversations => return Some(Effect::ListConversations),
+            Command::Open(Some(handle)) if !handle.trim().is_empty() => return Some(Effect::OpenConversation(handle.trim().to_owned())),
+            Command::Open(_) => self.info("/open <handle> — the handle is in /conversations, in Discord, and in the menu bar"),
             Command::Switch(arg) => {
                 return match arg.as_deref().map(str::parse::<usize>) {
                     Some(Ok(n)) if n > 0 => Some(Effect::SwitchSession(SwitchTarget::Slot(n))),
@@ -907,6 +945,27 @@ impl App {
             Command::Unknown(name) => self.info(format!("unknown command /{name} — try /help")),
         }
         None
+    }
+
+    /// `/back` takes the *conversation* back one turn (the agent forgets it); `/back <n>` n turns; `/back list` shows the
+    /// checkpoints; `/back to <number>` restores one (including the state a previous `/back` left).
+    fn run_back(&mut self, arg: Option<String>) -> Option<Effect> {
+        let words: Vec<&str> = arg.as_deref().unwrap_or("").split_whitespace().collect();
+        let params = match words.as_slice() {
+            ["list" | "ls"] => return Some(ext("_sierralab/conversation/list", Value::Null, "back list")),
+            [] => serde_json::json!({ "turns": 1 }),
+            [n] if n.parse::<u32>().is_ok() => serde_json::json!({ "turns": n.parse::<u32>().unwrap_or(1) }),
+            ["to", n] if n.parse::<u32>().is_ok() => serde_json::json!({ "index": n.parse::<u32>().unwrap_or(1) }),
+            _ => {
+                self.info("usage: /back [n | list | to <number>] — takes the conversation back; /back list shows the checkpoints");
+                return None;
+            }
+        };
+        if self.turn_active {
+            self.info("a turn is running — stop it (Esc) first, then /back");
+            return None;
+        }
+        Some(ext("_sierralab/conversation/rewind", params, "back"))
     }
 
     /// `/undo` previews undoing the latest turn's changes; `/undo apply` does it. `/undo <turn>` and
@@ -1649,6 +1708,59 @@ mod tests {
             "no info containing {needle:?}: {:?}",
             app.messages
         );
+    }
+
+    #[test]
+    fn back_takes_the_conversation_back_and_the_screen_forgets_what_the_agent_forgot() {
+        let mut app = connected();
+        // /back → one turn; /back 2 → two; /back list → the checkpoints; /back to 3 → that checkpoint.
+        let Some(Effect::Ext { method, params, tag }) = submit(&mut app, "/back") else {
+            panic!("/back asks the backend");
+        };
+        assert_eq!((method.as_str(), tag.as_str()), ("_sierralab/conversation/rewind", "back"));
+        assert_eq!(params["turns"], 1);
+        let Some(Effect::Ext { params, .. }) = submit(&mut app, "/back 2") else { panic!() };
+        assert_eq!(params["turns"], 2);
+        let Some(Effect::Ext { method, tag, .. }) = submit(&mut app, "/back list") else { panic!() };
+        assert_eq!((method.as_str(), tag.as_str()), ("_sierralab/conversation/list", "back list"));
+        let Some(Effect::Ext { params, .. }) = submit(&mut app, "/back to 3") else { panic!() };
+        assert_eq!(params["index"], 3);
+        assert!(submit(&mut app, "/back sideways").is_none());
+        assert_info(&app, "usage: /back");
+
+        // never under a running turn
+        app.turn_active = true;
+        assert!(app.run_back(None).is_none());
+        assert_info(&app, "a turn is running");
+        app.turn_active = false;
+
+        // the reply drops the forgotten turns from the transcript — and only those
+        app.messages.clear();
+        for n in 1..=3 {
+            app.messages.push(Message::User(format!("question {n}")));
+            app.messages.push(Message::Agent(format!("answer {n}")));
+        }
+        app.on_ext_result(
+            "back",
+            Ok(serde_json::json!({"ok": true, "now": 1, "forgot": ["question 2", "question 3"]})),
+        );
+        let users: Vec<&str> = app
+            .messages
+            .iter()
+            .filter_map(|m| if let Message::User(t) = m { Some(t.as_str()) } else { None })
+            .collect();
+        assert_eq!(users, vec!["question 1"], "the screen is back to what the agent remembers");
+        assert!(
+            app.messages.iter().any(|m| matches!(m, Message::Agent(t) if t == "answer 1")),
+            "the kept turn keeps its answer"
+        );
+        assert_info(&app, "went back 2 turn(s)");
+
+        // a refusal drops nothing
+        let before = app.messages.len();
+        app.on_ext_result("back", Ok(serde_json::json!({"ok": false, "reason": "nothing to go back to"})));
+        assert_eq!(app.messages.len(), before + 1);
+        assert_info(&app, "back: nothing to go back to");
     }
 
     #[test]

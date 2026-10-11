@@ -39,10 +39,34 @@ use crate::transport::{BackendTransport, WsTransport};
 type Events = mpsc::UnboundedSender<AppEvent>;
 
 pub(crate) async fn run(
-    options: SessionOptions,
+    mut options: SessionOptions,
     commands: mpsc::UnboundedReceiver<Command>,
     events: Events,
 ) {
+    // A hub conversation is resolved before anything connects: the daemon starts its agent and says
+    // which ACP session to load, and the socket attaches by handle — so this terminal continues the
+    // conversation another door started rather than opening one of its own.
+    let mut hub_url = None;
+    if let BackendTransport::Hub { daemon, conversation } = &options.transport {
+        match crate::hub::open(daemon, conversation, &options.cwd).await {
+            Ok(row) => {
+                hub_url = Some(daemon.conversation_url(&row.handle));
+                options.resume = Some(row.acp_session_id.clone());
+                options.continue_latest = false;
+                let title = if row.title.is_empty() { "new conversation".to_owned() } else { format!("“{}”", row.title) };
+                let _ = events.send(AppEvent::Notice(format!(
+                    "conversation {} · {title} — shared with Discord, the menu bar and the web app; continue it anywhere with its handle",
+                    row.handle
+                )));
+                options.hub_handle = Some(row.handle);
+            }
+            Err(error) => {
+                let _ = events.send(AppEvent::ConnectionError(format!("could not open the conversation: {error}")));
+                let _ = events.send(AppEvent::Closed);
+                return;
+            }
+        }
+    }
     // Only the stdio transport needs the local backend: with `--transport ws`
     // the *daemon* spawns `acp_server.py`, possibly on this machine but not
     // necessarily from this checkout, and validating our own copy would report
@@ -79,6 +103,7 @@ pub(crate) async fn run(
             DynConnectTo::new(agent)
         }
         BackendTransport::Ws { url } => DynConnectTo::new(WsTransport::new(url.clone())),
+        BackendTransport::Hub { .. } => DynConnectTo::new(WsTransport::new(hub_url.clone().unwrap_or_default())),
     };
 
     let session_events = events.clone();
@@ -133,7 +158,7 @@ async fn drive(
             let info = SessionInfo {
                 session_id: session.session_id().to_string(),
                 cwd: cwd.display().to_string(),
-                transport: options.transport.label().to_owned(),
+                transport: transport_label(&options),
                 resumed: true,
                 current_mode,
                 modes,
@@ -153,7 +178,7 @@ async fn drive(
             let info = SessionInfo {
                 session_id: session.session_id().to_string(),
                 cwd: cwd.display().to_string(),
-                transport: options.transport.label().to_owned(),
+                transport: transport_label(&options),
                 resumed: false,
                 current_mode,
                 modes,
@@ -466,4 +491,13 @@ fn permission_response(
         )),
         None => RequestPermissionOutcome::Cancelled,
     })
+}
+
+/// The banner's word for how this session is reached — with the conversation's handle for the hub,
+/// because the handle is what a person types into another door to continue it.
+fn transport_label(options: &SessionOptions) -> String {
+    match &options.hub_handle {
+        Some(handle) => format!("hub · {handle}"),
+        None => options.transport.label().to_owned(),
+    }
 }

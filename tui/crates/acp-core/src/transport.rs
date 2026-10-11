@@ -41,6 +41,10 @@ pub enum BackendTransport {
     /// this directory. `url` carries the token and the cwd (see
     /// [`DaemonConfig::socket_url`]).
     Ws { url: String },
+    /// Join a conversation the daemon holds — shared with Discord, the menu bar and the web app.
+    /// `conversation` is a handle, `latest` (this folder's newest) or `new`; it is resolved when the
+    /// session starts ([`crate::hub::open`]), then attached by handle over the same socket.
+    Hub { daemon: DaemonConfig, conversation: String },
 }
 
 impl fmt::Debug for BackendTransport {
@@ -51,6 +55,7 @@ impl fmt::Debug for BackendTransport {
                 .debug_struct("Ws")
                 .field("url", &redact_token(url))
                 .finish(),
+            Self::Hub { conversation, .. } => f.debug_struct("Hub").field("conversation", conversation).finish_non_exhaustive(),
         }
     }
 }
@@ -70,6 +75,7 @@ impl BackendTransport {
         match self {
             Self::Stdio => "stdio",
             Self::Ws { .. } => "ws",
+            Self::Hub { .. } => "hub",
         }
     }
 }

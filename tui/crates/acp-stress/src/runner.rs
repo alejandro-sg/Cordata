@@ -74,6 +74,7 @@ pub async fn run_scenario(
         resume: None,
         debug_log: None,
         continue_latest: false,
+        hub_handle: None,
     });
 
     let mut outcome = ScenarioOutcome {

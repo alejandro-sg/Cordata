@@ -92,6 +92,19 @@ fn parse_value(entry: &Entry, text: &str) -> Result<Value, String> {
                 .ok_or_else(|| format!("{} takes one of: {}", entry.key, choices.join(", ")))
         }
         Kind::Str => Ok(Value::from(text)),
+        Kind::BundleIds => {
+            let ids: Vec<&str> = text
+                .split([',', ' '])
+                .filter(|id| !id.is_empty())
+                .collect();
+            match ids.iter().find(|id| !crate::settings::is_bundle_id(id)) {
+                Some(bad) => Err(format!(
+                    "{} takes bundle ids like com.apple.Safari ({bad:?} is not one)",
+                    entry.key
+                )),
+                None => Ok(Value::from(ids)),
+            }
+        }
     }
 }
 
@@ -410,6 +423,9 @@ impl App {
                     choices[index.map_or(0, |i| i + 1) % choices.len()],
                 ))
             }
+            // A list of apps is typed (`/settings set capture.allowlist com.apple.Safari`), not cycled:
+            // there is no "next" app to allow.
+            Kind::BundleIds => None,
         }
     }
 
@@ -757,13 +773,20 @@ mod tests {
                 .contains("expanded")
         );
 
-        run(&mut rig.app, "/config set laya.mode shadow project");
+        run(&mut rig.app, "/config set laya.dispatch hint project");
         assert!(
             last_info(&rig.app).contains("next session"),
             "{}",
             last_info(&rig.app)
         );
-        assert_eq!(rig.store.load().text("laya.mode"), Some("shadow"));
+        assert_eq!(rig.store.load().text("laya.dispatch"), Some("hint"));
+        // Laya's own lines are trust-gated: an untrusted project file cannot switch Laya off.
+        run(&mut rig.app, "/config set laya.mode off project");
+        assert_eq!(
+            rig.store.load().text("laya.mode"),
+            None,
+            "laya.mode from an untrusted project file is ignored"
+        );
 
         let effect = run(&mut rig.app, "/config set temperature creative local");
         assert_eq!(

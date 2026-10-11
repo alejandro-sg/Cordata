@@ -576,7 +576,7 @@ mod tests {
         std::fs::create_dir_all(store.cwd.join(".sierralab")).unwrap();
         std::fs::write(
             store.path(crate::settings::Scope::Project),
-            r#"{"laya":{"mode":"shadow"}}"#,
+            r#"{"laya":{"dispatch":"hint"}}"#,
         )
         .unwrap();
         let mut app = connected();
@@ -591,8 +591,8 @@ mod tests {
             "permissions.defaultMode",
             "tui.thinking",
             "expanded",
-            "laya.mode",
-            "shadow",
+            "laya.dispatch",
+            "hint",
             "project",
             "m1",
             "session",

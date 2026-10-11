@@ -378,6 +378,9 @@ pub const LSP_METHOD: &str = "_sierralab/lsp";
 pub const CHECKPOINT_METHOD: &str = "_sierralab/checkpoint";
 /// A loaded session has an interrupted turn: `auto` says the client may resume it on its own.
 pub const RESUME_METHOD: &str = "_sierralab/resume";
+/// What a finished turn cost (backend `acp_server._announce_turn`): `seconds`, `calls`, `tokensIn`,
+/// `tokensOut`, `stop`. Sent once per turn, so a status line can show it without a model call of its own.
+pub const TURN_METHOD: &str = "_sierralab/turn";
 /// The Experimental Lab's live state (backend `lab.py`): pods, A2A links, the
 /// threat gauge, staged HITL rows, resources. Controls go back the other way as
 /// `_sierralab/lab/{select,isolate,release,dial,inject}` extension requests.
@@ -705,6 +708,8 @@ pub enum HarnessEvent {
     Checkpoint(Value),
     /// The loaded session has an interrupted turn (`auto`, `where`, `attempts`, `max`).
     Resume(Value),
+    /// A turn ended: what it cost (`seconds`, `calls`, `tokensIn`, `tokensOut`, `stop`).
+    Turn(Value),
     /// The Experimental Lab's state: always a full snapshot, so a dropped
     /// notification is healed by the next one.
     Lab(Box<LabState>),
@@ -744,6 +749,7 @@ pub fn parse_harness(method: &str, params: &Value) -> Option<HarnessEvent> {
         LSP_METHOD => Some(HarnessEvent::Lsp(params.clone())),
         CHECKPOINT_METHOD => text("phase").map(|_| HarnessEvent::Checkpoint(params.clone())),
         RESUME_METHOD => Some(HarnessEvent::Resume(params.clone())),
+        TURN_METHOD => Some(HarnessEvent::Turn(params.clone())),
         LAB_METHOD => parse_lab(params).map(|state| HarnessEvent::Lab(Box::new(state))),
         _ => None,
     }
@@ -1057,6 +1063,13 @@ mod laya_tests {
         );
         assert_eq!(parse_harness(TASK_METHOD, &json!({"title": "no id"})), None);
         assert_eq!(parse_harness("_sierralab/unknown", &json!({})), None);
+        let Some(HarnessEvent::Turn(turn)) = parse_harness(
+            TURN_METHOD,
+            &json!({"stop": "end_turn", "seconds": 41.3, "calls": 3, "tokensIn": 12400, "tokensOut": 1100}),
+        ) else {
+            panic!("a turn receipt parses");
+        };
+        assert_eq!(turn["tokensIn"], 12400);
     }
 
     #[test]

@@ -34,6 +34,8 @@ pub enum Command {
     Checkpoints,
     /// Undo a turn's file changes (preview, or `apply`).
     Undo(Option<String>),
+    /// Take the *conversation* back: the agent forgets the last turn(s). Files are untouched.
+    Back(Option<String>),
     /// The specialist sub-agents.
     Agents,
     /// The Experimental Lab: live pods, A2A links, threat gauge, controls (F2).
@@ -42,6 +44,10 @@ pub enum Command {
     New,
     /// The open sessions, and saved ones for this folder.
     Sessions,
+    /// The daemon hub's conversations, every door's.
+    Conversations,
+    /// Continue a hub conversation in a new slot, by handle.
+    Open(Option<String>),
     /// Show another session: a number, or the next one.
     Switch(Option<String>),
     /// End the shown session.
@@ -79,13 +85,19 @@ pub const HELP: &[(&str, &str)] = &[
         "preview, or with 'apply' undo, a turn's file changes",
     ),
     ("/checkpoints", "the turns that can be undone"),
+    (
+        "/back [n | list | to <number>]",
+        "take the conversation back n turns — the agent forgets them (files are untouched: /undo)",
+    ),
     ("/agents", "the architect and debugger specialists"),
     (
         "/lab",
         "Experimental Lab: live pods, E-Stop, Laya dial, guidance (F2)",
     ),
-    ("/new", "another session in this project (Ctrl+N)"),
+    ("/new", "another session in this project (Ctrl+N) — a new shared conversation on the hub"),
     ("/sessions", "open and saved sessions"),
+    ("/conversations", "the hub's conversations — shared with Discord, the menu bar and the web app"),
+    ("/open <handle>", "continue a hub conversation here (from /conversations, Discord or the menu bar)"),
     ("/switch [n]", "show session n (Ctrl+←/→, Alt+1…9)"),
     ("/close", "end the shown session"),
     ("/resume-turn", "continue a turn interrupted by a crash"),
@@ -136,11 +148,14 @@ pub fn parse(input: &str) -> Option<Command> {
         "lsp" => Command::Lsp,
         "heal" | "self-heal" => Command::Heal,
         "undo" | "rewind" => Command::Undo(arg),
+        "back" | "forget" => Command::Back(arg),
         "checkpoints" | "checkpoint" | "history" => Command::Checkpoints,
         "agents" | "specialists" => Command::Agents,
         "lab" | "pods" => Command::Lab,
         "new" => Command::New,
         "sessions" => Command::Sessions,
+        "conversations" | "convs" | "chats" => Command::Conversations,
+        "open" | "join" => Command::Open(arg),
         "switch" | "session" => Command::Switch(arg),
         "close" => Command::Close,
         "resume-turn" | "resume" => Command::ResumeTurn,
@@ -340,6 +355,66 @@ pub fn format_ext(tag: &str, value: &serde_json::Value) -> String {
             out.push("  /undo shows what undoing the latest would do; /undo apply does it".into());
             out.join("\n")
         }
+        "back list" => {
+            let rows = value
+                .get("checkpoints")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            if value.get("enabled").and_then(Value::as_bool) == Some(false) {
+                return "this session has no conversation checkpoints (it is not on snapshot storage)".into();
+            }
+            if rows.is_empty() {
+                return "no checkpoints yet — one is taken as each turn starts".into();
+            }
+            let turns = value.get("turns").and_then(Value::as_u64).unwrap_or(0);
+            let mut out = vec![format!(
+                "conversation checkpoints (newest first) — {turns} turn(s) so far; /back goes back one, /back to <number> restores one:"
+            )];
+            for row in rows {
+                let kind = text(&row, "kind");
+                let label = if kind == "turn" {
+                    format!("before turn {}: {}", row.get("turn").and_then(Value::as_u64).unwrap_or(0), text(&row, "prompt"))
+                } else {
+                    format!("↺ {}", text(&row, "prompt"))
+                };
+                out.push(format!(
+                    "  {:>2}  {:>3} msg  {}",
+                    row.get("index").and_then(Value::as_u64).unwrap_or(0),
+                    row.get("messages").and_then(Value::as_u64).unwrap_or(0),
+                    label
+                ));
+            }
+            out.join("\n")
+        }
+        "back" => {
+            if value.get("ok").and_then(Value::as_bool) == Some(false) {
+                return format!("back: {}", text(value, "reason"));
+            }
+            let forgot: Vec<String> = value
+                .get("forgot")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect();
+            let now = value.get("now").and_then(Value::as_u64).unwrap_or(0);
+            let mut out = Vec::new();
+            if forgot.is_empty() {
+                out.push(format!("↶ restored an earlier checkpoint — {now} turn(s) in the conversation"));
+            } else {
+                out.push(format!(
+                    "↶ went back {} turn(s) — the agent no longer remembers:",
+                    forgot.len()
+                ));
+                for prompt in &forgot {
+                    out.push(format!("    · {prompt}"));
+                }
+            }
+            out.push("  files are untouched (/undo for those); /back list shows the state you left, to restore it".into());
+            out.join("\n")
+        }
         "undo" | "undo applied" => {
             if value.get("ok").and_then(Value::as_bool) == Some(false) {
                 return format!("undo: {}", text(value, "reason"));
@@ -478,9 +553,96 @@ pub fn format_checkpoint_event(event: &serde_json::Value) -> Option<String> {
     }
 }
 
+/// "12400" → "12.4k", "1500000" → "1.5M": a token count a person can read at a glance.
+fn human_count(n: u64) -> String {
+    match n {
+        1_000_000.. => format!("{:.1}M", n as f64 / 1_000_000.0),
+        1_000..=999_999 => format!("{:.1}k", n as f64 / 1_000.0),
+        _ => n.to_string(),
+    }
+}
+
+/// The receipt line for a `_sierralab/turn` event: `✓ 41s · 3 tool calls · 12.4k in · 1.1k out`. What a turn
+/// cost, shown every time — a person watching their credits should not have to ask. `None` for a turn that did
+/// nothing worth a line (no time, no tokens). Mirrors `daemon/discord_cards.turn_footer`.
+pub fn format_turn_receipt(event: &serde_json::Value) -> Option<String> {
+    use serde_json::Value;
+    let number = |key: &str| event.get(key).and_then(Value::as_f64).unwrap_or(0.0);
+    let seconds = number("seconds").round() as u64;
+    let took = if seconds < 60 {
+        format!("{seconds}s")
+    } else {
+        format!("{}m {:02}s", seconds / 60, seconds % 60)
+    };
+    let stop = event
+        .get("stop")
+        .and_then(Value::as_str)
+        .unwrap_or("end_turn");
+    if stop == "cancelled" {
+        return Some(format!("■ stopped after {took}"));
+    }
+    let (calls, tokens_in, tokens_out) = (
+        number("calls") as u64,
+        number("tokensIn") as u64,
+        number("tokensOut") as u64,
+    );
+    if seconds == 0 && calls == 0 && tokens_in == 0 && tokens_out == 0 {
+        return None;
+    }
+    let mut parts = vec![format!("✓ {took}")];
+    if calls > 0 {
+        parts.push(format!(
+            "{calls} tool call{}",
+            if calls == 1 { "" } else { "s" }
+        ));
+    }
+    if tokens_in > 0 || tokens_out > 0 {
+        parts.push(format!(
+            "{} in · {} out",
+            human_count(tokens_in),
+            human_count(tokens_out)
+        ));
+    }
+    if stop != "end_turn" && !stop.is_empty() {
+        parts.push(stop.replace('_', " "));
+    }
+    Some(parts.join(" · "))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_turn_receipt_says_what_it_cost() {
+        let line = format_turn_receipt(
+            &serde_json::json!({"stop": "end_turn", "seconds": 41.3, "calls": 3, "tokensIn": 12400, "tokensOut": 1100}),
+        );
+        assert_eq!(
+            line.as_deref(),
+            Some("✓ 41s · 3 tool calls · 12.4k in · 1.1k out")
+        );
+        let one = format_turn_receipt(
+            &serde_json::json!({"seconds": 75, "calls": 1, "tokensIn": 950, "tokensOut": 40}),
+        );
+        assert_eq!(
+            one.as_deref(),
+            Some("✓ 1m 15s · 1 tool call · 950 in · 40 out")
+        );
+        let stopped = format_turn_receipt(&serde_json::json!({"stop": "cancelled", "seconds": 12}));
+        assert_eq!(stopped.as_deref(), Some("■ stopped after 12s"));
+        let long = format_turn_receipt(
+            &serde_json::json!({"stop": "max_tokens", "seconds": 3, "tokensIn": 2_500_000, "tokensOut": 8000}),
+        );
+        assert_eq!(
+            long.as_deref(),
+            Some("✓ 3s · 2.5M in · 8.0k out · max tokens")
+        );
+        assert!(
+            format_turn_receipt(&serde_json::json!({})).is_none(),
+            "a turn that did nothing needs no line"
+        );
+    }
 
     #[test]
     fn parses_commands_with_and_without_arguments() {
@@ -523,6 +685,8 @@ mod tests {
         assert_eq!(parse("/mcp"), Some(Command::Plugins(None)));
         assert_eq!(parse("/switch 2"), Some(Command::Switch(Some("2".into()))));
         assert_eq!(parse("/resume-turn"), Some(Command::ResumeTurn));
+        assert_eq!(parse("/conversations"), Some(Command::Conversations));
+        assert_eq!(parse("/open c3f9a1e"), Some(Command::Open(Some("c3f9a1e".into()))));
         assert_eq!(
             parse("/laya stats"),
             Some(Command::Laya(Some("stats".into())))
@@ -539,6 +703,28 @@ mod tests {
         assert!(text.contains("memory: 4 remembered fix(es) in this project (3 with a patch) · worked 5 · failed 1 · retired 1"), "{text}");
         let none = format_ext("heal", &serde_json::json!({"config": {}, "episodes": [], "memory": null}));
         assert!(!none.contains("memory:"), "{none}");
+    }
+
+    #[test]
+    fn back_parses_and_formats_the_checkpoints_and_the_result() {
+        assert_eq!(parse("/back"), Some(Command::Back(None)));
+        assert_eq!(parse("/back 2"), Some(Command::Back(Some("2".into()))));
+        assert_eq!(parse("/forget"), Some(Command::Back(None)));
+        let listing = format_ext(
+            "back list",
+            &serde_json::json!({"enabled": true, "turns": 3, "checkpoints": [
+                {"index": 1, "id": "a", "turn": 3, "prompt": "explain the biggest one", "kind": "turn", "messages": 4},
+                {"index": 2, "id": "b", "turn": 2, "prompt": "as it was before going back to turn 2", "kind": "before-back", "messages": 6}
+            ]}),
+        );
+        assert!(listing.contains("3 turn(s) so far") && listing.contains("before turn 3: explain the biggest one"), "{listing}");
+        assert!(listing.contains("↺ as it was before going back"), "{listing}");
+        let off = format_ext("back list", &serde_json::json!({"enabled": false, "turns": 0, "checkpoints": []}));
+        assert!(off.contains("not on snapshot storage"), "{off}");
+        let done = format_ext("back", &serde_json::json!({"ok": true, "now": 1, "forgot": ["now list the files"]}));
+        assert!(done.contains("went back 1 turn(s)") && done.contains("· now list the files") && done.contains("/undo"), "{done}");
+        let restored = format_ext("back", &serde_json::json!({"ok": true, "now": 3, "forgot": []}));
+        assert!(restored.contains("restored an earlier checkpoint — 3 turn(s)"), "{restored}");
     }
 
     #[test]

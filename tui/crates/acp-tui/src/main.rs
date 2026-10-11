@@ -12,7 +12,7 @@ use std::panic;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use acp_core::{AppEvent, BackendConfig, BackendTransport, SessionHandle, SessionOptions};
+use acp_core::{AppEvent, BackendConfig, BackendTransport, DaemonConfig, SessionHandle, SessionOptions, hub};
 use anyhow::{Context, Result};
 use clap::Parser;
 use crossterm::cursor::Show;
@@ -56,12 +56,19 @@ struct Args {
     #[arg(long, hide = true)]
     server_script: Option<PathBuf>,
 
-    /// How to reach the agent: `stdio` spawns a backend process for this
-    /// terminal; `ws` attaches to the always-on daemon, which keeps the
-    /// session alive across a dropped terminal and lets several clients
-    /// reattach to it.
-    #[arg(long, value_enum, default_value_t = Transport::Stdio)]
+    /// How to reach the agent: `hub` joins a conversation the daemon holds —
+    /// the same one Discord, the menu bar and the web app continue; `stdio`
+    /// spawns a backend process for this terminal only; `ws` attaches to the
+    /// daemon's per-folder session; `auto` (the default) is `hub` when the
+    /// daemon is running and `stdio` when it is not.
+    #[arg(long, value_enum, default_value_t = Transport::Auto)]
     transport: Transport,
+
+    /// The hub conversation to join: a handle (`c3f9a1e`), `latest` (this
+    /// folder's newest — the default, so a terminal picks up where any door
+    /// left off) or `new`.
+    #[arg(long, value_name = "HANDLE")]
+    conversation: Option<String>,
 
     /// Daemon URL, overriding the one built from ~/.sierralab/daemon.json
     /// (which supplies the port and the token). Only meaningful with
@@ -72,6 +79,8 @@ struct Args {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum Transport {
+    Auto,
+    Hub,
     Stdio,
     Ws,
 }
@@ -100,13 +109,23 @@ struct Workspace {
 
 impl Workspace {
     fn spawn(&mut self, resume: Option<String>, continue_latest: bool) -> usize {
+        self.spawn_in(resume, continue_latest, None)
+    }
+
+    /// A slot on a particular hub conversation (`new`, a handle) instead of the workspace's own.
+    fn spawn_in(&mut self, resume: Option<String>, continue_latest: bool, conversation: Option<String>) -> usize {
+        let transport = match (&self.transport, conversation) {
+            (BackendTransport::Hub { daemon, .. }, Some(conversation)) => BackendTransport::Hub { daemon: daemon.clone(), conversation },
+            (transport, _) => transport.clone(),
+        };
         let (handle, mut rx) = SessionHandle::spawn(SessionOptions {
             backend: self.backend.clone(),
             cwd: self.cwd.clone(),
-            transport: self.transport.clone(),
+            transport,
             resume,
             debug_log: self.debug_log.clone(),
             continue_latest,
+            hub_handle: None,
         });
         let number = self.next_number;
         self.next_number += 1;
@@ -252,7 +271,18 @@ async fn main() -> Result<()> {
         None => std::env::current_dir()?,
     };
 
+    let hub_for = |conversation: Option<String>| -> Result<BackendTransport> {
+        Ok(BackendTransport::Hub { daemon: DaemonConfig::discover()?, conversation: conversation.unwrap_or_else(|| "latest".into()) })
+    };
     let transport = match (args.transport, args.daemon_url) {
+        (Transport::Hub, _) => hub_for(args.conversation.clone())?,
+        // `--resume` / `--continue` name a terminal-only session, so they keep the stdio backend.
+        (Transport::Auto, _) if args.resume.is_some() || args.continue_latest => BackendTransport::Stdio,
+        (Transport::Auto, _) => match DaemonConfig::discover() {
+            Ok(daemon) if hub::reachable(&daemon).await => BackendTransport::Hub { daemon, conversation: args.conversation.clone().unwrap_or_else(|| "latest".into()) },
+            _ if args.conversation.is_some() => anyhow::bail!("--conversation needs the daemon — start it with `make daemon`"),
+            _ => BackendTransport::Stdio,
+        },
         (Transport::Stdio, None) => BackendTransport::Stdio,
         // A flag that is accepted and then ignored is worse than one that
         // complains: `--daemon-url` with stdio means the user thinks they are
@@ -287,7 +317,11 @@ async fn main() -> Result<()> {
     drop(guard);
     for slot in &workspace.slots {
         if let Some(info) = &slot.app.session {
-            println!("resume this session:  acp-tui --resume {}", info.session_id);
+            match info.transport.strip_prefix("hub · ") {
+                // A hub conversation is continued by handle, from here or any other door.
+                Some(handle) => println!("continue this conversation anywhere:  acp-tui --conversation {handle}  (or /open {handle})"),
+                None => println!("resume this session:  acp-tui --resume {}", info.session_id),
+            }
         }
     }
     for slot in &mut workspace.slots {
@@ -416,7 +450,12 @@ async fn run(
                     Ok(())
                 }
                 Effect::NewSession => {
-                    if matches!(workspace.transport, BackendTransport::Ws { .. }) {
+                    if matches!(workspace.transport, BackendTransport::Hub { .. }) {
+                        // Another conversation on the hub: visible to every door from its first turn.
+                        workspace.active = workspace.spawn_in(None, false, Some("new".into()));
+                        banner = Some(workspace.banner());
+                        last = None;
+                    } else if matches!(workspace.transport, BackendTransport::Ws { .. }) {
                         // The daemon hands out one session per directory and
                         // refuses a second client on it (4409), so a second slot
                         // here could only fail to connect — say why instead.
@@ -463,6 +502,35 @@ async fn run(
                         ),
                         None => Ok(()),
                     }
+                }
+                Effect::ListConversations => {
+                    match &workspace.transport {
+                        BackendTransport::Hub { daemon, .. } => match hub::list(daemon, None).await {
+                            Ok(rows) if rows.is_empty() => workspace.app().messages.push(Message::Info("no conversations yet".into())),
+                            Ok(rows) => {
+                                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or_default();
+                                let mut text = String::from("conversations (shared with Discord, the menu bar and the web app — /open <handle>):");
+                                for row in rows.iter().take(15) {
+                                    text.push_str("\n  ");
+                                    text.push_str(&row.summary(now));
+                                }
+                                workspace.app().messages.push(Message::Info(text));
+                            }
+                            Err(error) => workspace.app().messages.push(Message::Error(format!("could not list conversations: {error}"))),
+                        },
+                        _ => workspace.app().messages.push(Message::Info("/conversations needs the daemon's hub — start it (`make daemon`) and run acp-tui again".into())),
+                    }
+                    Ok(())
+                }
+                Effect::OpenConversation(handle) => {
+                    if matches!(workspace.transport, BackendTransport::Hub { .. }) {
+                        workspace.active = workspace.spawn_in(None, false, Some(handle));
+                        banner = Some(workspace.banner());
+                        last = None;
+                    } else {
+                        workspace.app().messages.push(Message::Info("/open needs the daemon's hub — start it (`make daemon`) and run acp-tui again".into()));
+                    }
+                    Ok(())
                 }
                 Effect::SendPrompt(text) => with_handle(workspace, |h| h.send_prompt(text)),
                 Effect::Cancel => with_handle(workspace, SessionHandle::cancel),

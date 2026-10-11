@@ -35,6 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         resume: None,
         debug_log,
         continue_latest: false,
+        hub_handle: None,
     });
 
     let mut permission_cards = 0;

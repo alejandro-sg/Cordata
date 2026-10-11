@@ -98,6 +98,9 @@ pub enum Kind {
     Bool,
     Str,
     Float(f64, f64),
+    /// A list of app bundle ids (`capture.allowlist`): reverse-DNS labels only, so no path, pattern
+    /// or shell fragment can be stored where an app identity is matched.
+    BundleIds,
 }
 
 /// Where a change takes effect.
@@ -303,6 +306,48 @@ pub const SCHEMA: &[Entry] = &[
         applies: Applies::NextSession,
         help: "start the project's language servers for diagnostics after edits",
     },
+    Entry {
+        key: "context.outlineLines",
+        kind: Kind::Float(100.0, 20000.0),
+        applies: Applies::NextSession,
+        help: "a whole-file read over this many lines returns an outline and how to read a range (500)",
+    },
+    Entry {
+        key: "preflight.enabled",
+        kind: Kind::Bool,
+        applies: Applies::NextSession,
+        help: "check an edit (syntax, linter, language server) before it is asked about or applied",
+    },
+    Entry {
+        key: "preflight.maxRetries",
+        kind: Kind::Float(0.0, 10.0),
+        applies: Applies::NextSession,
+        help: "failed checks sent back to the agent per file per turn before it is told to stop (3)",
+    },
+    Entry {
+        key: "preflight.tests",
+        kind: Kind::Str,
+        applies: Applies::NextSession,
+        help: "a test command run in a throwaway copy after an edit passes the static checks (runs code)",
+    },
+    Entry {
+        key: "preflight.rollback",
+        kind: Kind::Bool,
+        applies: Applies::NextSession,
+        help: "when the agent cannot make its edit pass, put the turn's files back as they were",
+    },
+    Entry {
+        key: "reasoning.adaptive",
+        kind: Kind::Bool,
+        applies: Applies::NextSession,
+        help: "Ollama Cloud reasoning effort follows workspace size and the turn's complexity",
+    },
+    Entry {
+        key: "learning.rejections",
+        kind: Kind::Bool,
+        applies: Applies::NextSession,
+        help: "learn a rule from each change you reject and hold later turns to it",
+    },
     // Mirror of backend/settings_store.py's SCHEMA. Both front doors reject an
     // unknown key with a warning, so a key added on one side and not the other
     // shows up as a spurious warning in whichever door is behind.
@@ -373,6 +418,42 @@ pub const SCHEMA: &[Entry] = &[
         help: "refuse egress when the vault is unreachable, or fall back to a plain proxy",
     },
     Entry {
+        key: "capture.enabled",
+        kind: Kind::Bool,
+        applies: Applies::NextSession,
+        help: "let the menu-bar deck read the screen context of apps you allow (read from your user file only)",
+    },
+    Entry {
+        key: "capture.allowlist",
+        kind: Kind::BundleIds,
+        applies: Applies::NextSession,
+        help: "bundle ids the menu-bar deck may read, e.g. com.apple.Safari — empty reads nothing",
+    },
+    Entry {
+        key: "capture.denylist",
+        kind: Kind::BundleIds,
+        applies: Applies::NextSession,
+        help: "bundle ids the menu-bar deck must not read, on top of the built-in never-read list",
+    },
+    Entry {
+        key: "capture.screenshot",
+        kind: Kind::Bool,
+        applies: Applies::NextSession,
+        help: "let the menu-bar deck capture the frontmost window as an image (Screen Recording)",
+    },
+    Entry {
+        key: "capture.screenshotCloud",
+        kind: Kind::Bool,
+        applies: Applies::NextSession,
+        help: "allow a captured screenshot to reach a cloud model (off: local models only)",
+    },
+    Entry {
+        key: "capture.visionModel",
+        kind: Kind::Str,
+        applies: Applies::NextSession,
+        help: "the vision model a screenshot turn runs on; unset: screenshots are never sent",
+    },
+    Entry {
         key: "observer.enabled",
         kind: Kind::Bool,
         applies: Applies::NextSession,
@@ -409,6 +490,78 @@ pub const SCHEMA: &[Entry] = &[
         help: "spend cap per Claude Code CLI run (--max-budget-usd)",
     },
     Entry {
+        key: "claudeCode.model",
+        kind: Kind::Str,
+        applies: Applies::NextSession,
+        help: "model alias for Claude Code CLI runs (empty = the CLI's own; default sonnet)",
+    },
+    Entry {
+        key: "claudeCode.effort",
+        kind: Kind::Enum(&["default", "low", "medium", "high", "xhigh", "max"]),
+        applies: Applies::NextSession,
+        help: "effort level for Claude Code CLI runs (default medium)",
+    },
+    Entry {
+        key: "context.coldTools",
+        kind: Kind::Bool,
+        applies: Applies::NextSession,
+        help: "send rarely-used tools only when a turn needs them (cuts ~60% of per-call overhead)",
+    },
+    Entry {
+        key: "context.toolOutputChars",
+        kind: Kind::Float(2000.0, 200000.0),
+        applies: Applies::NextSession,
+        help: "most characters of one tool result the model reads (head and tail kept)",
+    },
+    Entry {
+        key: "context.agedOutputChars",
+        kind: Kind::Float(0.0, 20000.0),
+        applies: Applies::NextSession,
+        help: "shorten older tool output to this many characters (0 = off)",
+    },
+    Entry {
+        key: "context.offload",
+        kind: Kind::Bool,
+        applies: Applies::NextSession,
+        help: "set a big tool result aside and read it back by slice, instead of cutting it (off = cut head and tail)",
+    },
+    Entry {
+        key: "context.summaryModel",
+        kind: Kind::Enum(&["fast", "main"]),
+        applies: Applies::NextSession,
+        help: "who summarises a long chat: the fast model tier when one is configured, or the session's own model",
+    },
+    Entry {
+        key: "context.webFetch",
+        kind: Kind::Enum(&["agentic", "markdown"]),
+        applies: Applies::NextSession,
+        help: "web_fetch returns an analyst's answer about the page (agentic) or the page as markdown",
+    },
+    Entry {
+        key: "context.maxSteps",
+        kind: Kind::Float(0.0, 500.0),
+        applies: Applies::NextSession,
+        help: "model calls one turn may make before it pauses and offers to continue (0 = no cap, default 50)",
+    },
+    Entry {
+        key: "context.maxTurnUsage",
+        kind: Kind::Float(0.0, 50000000.0),
+        applies: Applies::NextSession,
+        help: "tokens one turn may spend before it pauses and offers to continue (0 = no cap)",
+    },
+    Entry {
+        key: "context.skillSearch",
+        kind: Kind::Bool,
+        applies: Applies::NextSession,
+        help: "list only the skills that fit the request (embedding search, Laya deciding); off lists all",
+    },
+    Entry {
+        key: "context.skillsListed",
+        kind: Kind::Float(1.0, 12.0),
+        applies: Applies::NextSession,
+        help: "how many skills are listed in the prompt per turn",
+    },
+    Entry {
         key: "omlx.prism",
         kind: Kind::Bool,
         applies: Applies::NextSession,
@@ -441,9 +594,37 @@ const TRUST_GATED_KEYS: &[&str] = &[
     "vault.egressPolicy",
     "kg.sink",
     "claudeCode.maxBudgetUsd",
+    "claudeCode.model",
+    "claudeCode.effort",
+    "context.coldTools",
+    "context.toolOutputChars",
+    "context.agedOutputChars",
+    "context.offload",
+    "context.summaryModel",
+    "context.webFetch",
+    "context.maxSteps",
+    "context.maxTurnUsage",
+    "context.skillSearch",
+    "context.skillsListed",
     "learning.promotion",
     "learning.optimizePrompts",
     "learning.bandit",
+    "laya.mode",
+    "laya.callGuard",
+    "laya.riskSafe",
+    "laya.riskDestroy",
+    "context.outlineLines",
+    "preflight.enabled",
+    "preflight.maxRetries",
+    "preflight.tests",
+    "preflight.rollback",
+    "learning.rejections",
+    "capture.enabled",
+    "capture.allowlist",
+    "capture.denylist",
+    "capture.screenshot",
+    "capture.screenshotCloud",
+    "capture.visionModel",
 ];
 
 static SECRET_VALUE: LazyLock<Regex> = LazyLock::new(|| {
@@ -590,8 +771,36 @@ fn check(key: &str, value: &Value, location: &str) -> Result<(), String> {
                 ));
             }
         }
+        Kind::BundleIds => {
+            let ok = value.as_array().is_some_and(|items| {
+                items
+                    .iter()
+                    .all(|item| item.as_str().is_some_and(is_bundle_id))
+            });
+            if !ok {
+                return Err(format!(
+                    "{location}: '{key}' must be a list of bundle ids, e.g. [\"com.apple.Safari\"]"
+                ));
+            }
+        }
     }
     Ok(())
+}
+
+/// Reverse-DNS, at least two labels, each starting with a letter or digit — the same shape
+/// `harness_capture::policy::acceptable` and `backend/settings_store.py` accept.
+pub fn is_bundle_id(text: &str) -> bool {
+    let labels: Vec<&str> = text.split('.').collect();
+    labels.len() >= 2
+        && labels.iter().all(|label| {
+            label
+                .chars()
+                .next()
+                .is_some_and(|first| first.is_ascii_alphanumeric())
+                && label
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+        })
 }
 
 fn read_json(path: &Path, warnings: &mut Vec<String>) -> Map<String, Value> {

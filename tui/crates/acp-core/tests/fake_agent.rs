@@ -25,6 +25,7 @@ fn start(resume: Option<&str>) -> (SessionHandle, UnboundedReceiver<AppEvent>) {
         resume: resume.map(str::to_owned),
         debug_log: None,
         continue_latest: false,
+        hub_handle: None,
     })
 }
 

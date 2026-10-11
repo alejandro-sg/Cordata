@@ -260,6 +260,10 @@ each would do, and any you edited since — and `/undo apply` reverts them; `/un
 earlier turn and `/checkpoints` lists them. A change that could not be snapshotted, or that writes outside the
 project, is said once (`⚠ not checkpointed …`). Undo is refused while a turn is running.
 
+`/back` is the other undo: it takes the *conversation* back, so the agent forgets the last turn (`/back 2` the last two) and the
+screen drops them with it; files are not touched. `/back list` shows the checkpoints (one is taken as each turn starts) and
+`/back to <number>` restores one — including the state a `/back` left, so a `/back` can itself be undone.
+
 ## Not done
 
 Provider switching (it's environment on purpose), free-float temperature, skills/MCP management,

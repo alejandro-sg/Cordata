@@ -153,6 +153,11 @@ impl DaemonConfig {
     /// the daemon's to mint, and a client that has just started does not know
     /// it. Attaching to a *running* session in the same directory is exactly
     /// what someone reconnecting after a dropped terminal wants.
+    /// The socket URL for one hub conversation, by handle (see [`crate::hub`]).
+    pub fn conversation_url(&self, handle: &str) -> String {
+        format!("ws://127.0.0.1:{}/ws?token={}&conversation={}", self.port, percent_encode(&self.token), percent_encode(handle))
+    }
+
     pub fn socket_url(&self, cwd: &Path) -> String {
         format!(
             "ws://127.0.0.1:{}/ws?token={}&cwd={}",
@@ -168,7 +173,7 @@ impl DaemonConfig {
 /// Hand-rolled to avoid a dependency for twenty lines: a `cwd` is a path, so
 /// it routinely contains `/` and spaces, and neither survives a query string
 /// unescaped — the daemon would resolve the wrong directory, or none.
-fn percent_encode(value: &str) -> String {
+pub(crate) fn percent_encode(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for byte in value.as_bytes() {
         match byte {

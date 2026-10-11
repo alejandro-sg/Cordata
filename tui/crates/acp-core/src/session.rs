@@ -34,6 +34,8 @@ pub struct SessionOptions {
     /// With no `resume`, ask the backend (`session/list`) for the newest session
     /// in `cwd` and load that one; a fresh session when there is none.
     pub continue_latest: bool,
+    /// The hub conversation this session joined, once resolved (set by the connection, not callers).
+    pub hub_handle: Option<String>,
 }
 
 #[derive(Debug)]

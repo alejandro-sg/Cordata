@@ -6,6 +6,7 @@ pub mod config;
 pub mod connection;
 pub mod error;
 pub mod events;
+pub mod hub;
 pub mod permission;
 pub mod session;
 pub mod transport;
