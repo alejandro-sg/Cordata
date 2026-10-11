@@ -46,6 +46,9 @@ const runtime = new CopilotRuntime({
     // Must match agui_agent.name in backend/main.py and the `agent` prop in app/layout.tsx
     sierralab_agent: new HttpAgent({
       url: BACKEND_URL,
+      // Hub mode (backend/hub_client.py): the backend's agent endpoint drives agents on the laptop and
+      // requires this token. Harmless when the backend runs its own agent.
+      headers: process.env.SANDBOX_API_TOKEN ? { "X-Sandbox-Token": process.env.SANDBOX_API_TOKEN } : undefined,
       fetch: (url, requestInit) => undiciFetch(url, { ...requestInit, dispatcher: noTimeoutDispatcher } as never) as unknown as Promise<Response>,
     }),
   },

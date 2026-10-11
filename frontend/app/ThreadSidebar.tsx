@@ -44,6 +44,8 @@ export default function ThreadSidebar({
   onToggleGames: () => void;
 }) {
   const [threads, setThreads] = useState<Thread[]>([]);
+  // The laptop hub's conversations (terminal, Discord, menu bar, web) — empty unless hub mode is on.
+  const [shared, setShared] = useState<{ handle: string; title: string; origin: string; busy: boolean }[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const refresh = () => {
@@ -51,6 +53,10 @@ export default function ThreadSidebar({
       .then((res) => res.json())
       .then((data) => setThreads(data.threads ?? []))
       .catch(() => setThreads([]));
+    fetch("/api/hub/conversations")
+      .then((res) => res.json())
+      .then((data) => setShared(data.enabled ? data.conversations ?? [] : []))
+      .catch(() => setShared([]));
   };
 
   useEffect(() => {
@@ -68,6 +74,21 @@ export default function ThreadSidebar({
       <button className="thread-sidebar-new" onClick={onNew}>
         + New chat
       </button>
+      {shared.length > 0 && (
+        <div className="thread-sidebar-list">
+          <p className="thread-sidebar-empty">Shared with terminal · Discord · menu bar</p>
+          {shared.map((c) => (
+            <button
+              key={c.handle}
+              className={"thread-sidebar-item" + (c.handle === activeThreadId ? " active" : "")}
+              onClick={() => onSelect(c.handle)}
+            >
+              <span className="thread-sidebar-name">{(c.busy ? "● " : "") + (c.title || c.handle)}</span>
+              <span className="thread-sidebar-time">{c.handle} · from {c.origin}</span>
+            </button>
+          ))}
+        </div>
+      )}
       <div className="thread-sidebar-list">
         {threads.length === 0 && <p className="thread-sidebar-empty">No conversations yet</p>}
         {threads.map((t) => (
