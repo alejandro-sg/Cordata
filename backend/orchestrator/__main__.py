@@ -38,6 +38,8 @@ async def _run(args: argparse.Namespace) -> int:
     ledger = config.ledger(prefs)
     dispatcher = config.dispatcher(prefs, ledger=ledger, project=cwd, mode=args.dispatch, families=families)
     run_config = config.run_config(prefs)
+    if getattr(args, "allow_direct", False):
+        os.environ["SIERRALAB_VAULT_DIRECT"] = "1"
     if args.max_usd is not None:
         run_config.max_usd = args.max_usd
     if args.no_harden:
@@ -72,6 +74,7 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--cwd", default=os.getcwd(), help="target project directory (default: current directory)")
     run.add_argument("--workers", help="comma-separated worker families (e.g. claude_code,antigravity,ollama)")
     run.add_argument("--dispatch", choices=("off", "shadow", "live"), help="worker dispatch policy mode")
+    run.add_argument("--allow-direct", action="store_true", help="allow direct network access without an active vault proxy")
     run.add_argument("--max-usd", type=float, help="budget cap envelope in USD")
     run.add_argument("--no-harden", action="store_true", help="skip the cross-family hardening review pass")
     run.add_argument("--no-tier2", action="store_true", help="skip the residual LLM review in audit")

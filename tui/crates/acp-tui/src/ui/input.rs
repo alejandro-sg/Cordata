@@ -76,20 +76,29 @@ pub fn render(buffer: &mut Buffer, area: Rect, app: &App) -> Option<(u16, u16)> 
     );
     let visible = inner.height as usize;
     let first = (cursor_row + 1).saturating_sub(visible);
-    let lines: Vec<Line> = rows
-        .iter()
-        .skip(first)
-        .take(visible)
-        .enumerate()
-        .map(|(i, row)| {
-            // `› ` marks the first row of the prompt; wrapped rows indent under it.
-            let lead = if first + i == 0 { "› " } else { "  " };
-            Line::from(vec![
-                ratatui::text::Span::styled(lead, Style::new().fg(border)),
-                ratatui::text::Span::raw(row.clone()),
-            ])
-        })
-        .collect();
+    let lines: Vec<Line> = if app.input.is_empty() && enabled {
+        vec![Line::from(vec![
+            ratatui::text::Span::styled("› ", Style::new().fg(border)),
+            ratatui::text::Span::styled(
+                "Ask a question, request code edits, or type / for commands...",
+                Style::new().fg(Color::DarkGray),
+            ),
+        ])]
+    } else {
+        rows.iter()
+            .skip(first)
+            .take(visible)
+            .enumerate()
+            .map(|(i, row)| {
+                // `› ` marks the first row of the prompt; wrapped rows indent under it.
+                let lead = if first + i == 0 { "› " } else { "  " };
+                Line::from(vec![
+                    ratatui::text::Span::styled(lead, Style::new().fg(border)),
+                    ratatui::text::Span::raw(row.clone()),
+                ])
+            })
+            .collect()
+    };
 
     Paragraph::new(lines).block(block).render(area, buffer);
     enabled.then(|| {

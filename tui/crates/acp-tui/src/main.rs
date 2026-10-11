@@ -75,6 +75,10 @@ struct Args {
     /// `--transport ws`.
     #[arg(long, value_name = "URL")]
     daemon_url: Option<String>,
+
+    /// Initial prompt to send once connected (like Claude Code / agy "prompt").
+    #[arg(value_name = "PROMPT")]
+    prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -108,12 +112,18 @@ struct Workspace {
 }
 
 impl Workspace {
-    fn spawn(&mut self, resume: Option<String>, continue_latest: bool) -> usize {
-        self.spawn_in(resume, continue_latest, None)
+    fn spawn(&mut self, resume: Option<String>, continue_latest: bool, initial_prompt: Option<String>) -> usize {
+        self.spawn_in(resume, continue_latest, None, initial_prompt)
     }
 
     /// A slot on a particular hub conversation (`new`, a handle) instead of the workspace's own.
-    fn spawn_in(&mut self, resume: Option<String>, continue_latest: bool, conversation: Option<String>) -> usize {
+    fn spawn_in(
+        &mut self,
+        resume: Option<String>,
+        continue_latest: bool,
+        conversation: Option<String>,
+        initial_prompt: Option<String>,
+    ) -> usize {
         let transport = match (&self.transport, conversation) {
             (BackendTransport::Hub { daemon, .. }, Some(conversation)) => BackendTransport::Hub { daemon: daemon.clone(), conversation },
             (transport, _) => transport.clone(),
@@ -139,6 +149,7 @@ impl Workspace {
         });
         let mut app = App::new();
         app.attach_store(settings::Store::discover(&self.cwd));
+        app.initial_prompt = initial_prompt;
         self.slots.push(Slot {
             number,
             handle: Some(handle),
@@ -307,7 +318,7 @@ async fn main() -> Result<()> {
         debug_log: args.debug_log,
         events: tx,
     };
-    workspace.spawn(args.resume, args.continue_latest);
+    workspace.spawn(args.resume, args.continue_latest, args.prompt);
 
     install_panic_hook();
     let guard = TerminalGuard::enter()?;
@@ -441,6 +452,9 @@ async fn run(
         if let Some(effect) = workspace.app().take_auto_resume() {
             effects.push(effect);
         }
+        if let Some(effect) = workspace.app().take_initial_prompt() {
+            effects.push(effect);
+        }
         for effect in effects {
             let outcome = match effect {
                 Effect::Quit => return Ok(()),
@@ -452,7 +466,7 @@ async fn run(
                 Effect::NewSession => {
                     if matches!(workspace.transport, BackendTransport::Hub { .. }) {
                         // Another conversation on the hub: visible to every door from its first turn.
-                        workspace.active = workspace.spawn_in(None, false, Some("new".into()));
+                        workspace.active = workspace.spawn_in(None, false, Some("new".into()), None);
                         banner = Some(workspace.banner());
                         last = None;
                     } else if matches!(workspace.transport, BackendTransport::Ws { .. }) {
@@ -465,7 +479,7 @@ async fn run(
                                 .into(),
                         ));
                     } else {
-                        workspace.active = workspace.spawn(None, false);
+                        workspace.active = workspace.spawn(None, false, None);
                         banner = Some(workspace.banner());
                         last = None;
                     }
@@ -524,7 +538,7 @@ async fn run(
                 }
                 Effect::OpenConversation(handle) => {
                     if matches!(workspace.transport, BackendTransport::Hub { .. }) {
-                        workspace.active = workspace.spawn_in(None, false, Some(handle));
+                        workspace.active = workspace.spawn_in(None, false, Some(handle), None);
                         banner = Some(workspace.banner());
                         last = None;
                     } else {

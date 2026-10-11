@@ -205,11 +205,14 @@ pub struct App {
     pub tabs: Vec<TabBadge>,
     /// The Experimental Lab view (F2 / `/lab`).
     pub lab: LabView,
+    /// An initial prompt provided from CLI invocation (e.g. `sierra "prompt"`).
+    pub initial_prompt: Option<String>,
 }
 
 impl App {
     pub fn new() -> Self {
         Self {
+            initial_prompt: None,
             auto_resume: None,
             messages: Vec::new(),
             input: Input::default(),
@@ -282,6 +285,20 @@ impl App {
         let line = self.auto_resume.take()?;
         self.messages.push(Message::Info(line));
         Some(self.begin_turn(AUTO_RESUME_MARKER.into()))
+    }
+
+    /// An initial prompt provided from CLI invocation, sent once the session connects and is idle. Taken at most once.
+    pub fn take_initial_prompt(&mut self) -> Option<Effect> {
+        if self.initial_prompt.is_none() || !self.input_enabled() {
+            return None;
+        }
+        let prompt = self.initial_prompt.take()?;
+        let trimmed = prompt.trim().to_owned();
+        if trimmed.is_empty() {
+            return None;
+        }
+        self.messages.push(Message::User(sanitize(&trimmed)));
+        Some(self.begin_turn(trimmed))
     }
 
     /// Can a prompt be sent right now? (Same as `input_enabled`, named for the
@@ -743,7 +760,13 @@ impl App {
         }
 
         match key.code {
-            KeyCode::Tab => return self.cycle_mode(true),
+            KeyCode::Tab => {
+                if self.input.text().starts_with('/') {
+                    self.complete_slash_command();
+                    return None;
+                }
+                return self.cycle_mode(true);
+            }
             KeyCode::BackTab => return self.cycle_mode(false),
             KeyCode::Esc => return self.on_escape(),
             _ => {}
@@ -779,7 +802,12 @@ impl App {
             }
             KeyCode::Up if self.input.on_first_line() => self.history_back(),
             KeyCode::Down if self.input.on_last_line() => self.history_forward(),
-            KeyCode::Char(c) => self.input.insert(c),
+            KeyCode::Char(c) => {
+                self.input.insert(c);
+                if self.hint.as_deref().is_some_and(|h| h.starts_with("commands:")) {
+                    self.hint = None;
+                }
+            }
             KeyCode::Backspace => self.input.backspace(),
             KeyCode::Delete => self.input.delete(),
             KeyCode::Left => self.input.left(),
@@ -789,6 +817,41 @@ impl App {
             _ => {}
         }
         None
+    }
+
+    fn complete_slash_command(&mut self) {
+        let current = self.input.text();
+        if !current.starts_with('/') || current.contains(' ') {
+            return;
+        }
+        let prefix = current;
+        let matches: Vec<&str> = commands::HELP
+            .iter()
+            .map(|(cmd, _)| cmd.split_whitespace().next().unwrap_or(cmd))
+            .filter(|cmd| cmd.starts_with(prefix))
+            .collect();
+
+        if matches.is_empty() {
+            return;
+        }
+
+        if matches.len() == 1 {
+            let completed = format!("{} ", matches[0]);
+            self.input.set_text(&completed);
+            self.hint = None;
+        } else {
+            let mut common = matches[0].to_owned();
+            for m in &matches[1..] {
+                while !m.starts_with(&common) && !common.is_empty() {
+                    common.pop();
+                }
+            }
+            if common.len() > prefix.len() {
+                self.input.set_text(&common);
+            }
+            let list = matches.join(", ");
+            self.hint = Some(format!("commands: {list}"));
+        }
     }
 
     /// Esc: interrupt a running turn (like Ctrl+C), else clear what's typed.
@@ -2205,5 +2268,33 @@ mod tests {
         app.lab.seen = true;
         app.on_key(key(KeyCode::F(2)));
         assert_eq!(app.on_key(ctrl('c')), Some(Effect::Cancel));
+    }
+
+    #[test]
+    fn initial_prompt_is_dispatched_once_connected() {
+        let mut app = App::new();
+        app.initial_prompt = Some("what is this project".into());
+        assert!(app.take_initial_prompt().is_none(), "not connected yet");
+        app.conn = ConnState::Connected;
+        let effect = app.take_initial_prompt();
+        assert_eq!(effect, Some(Effect::SendPrompt("what is this project".into())));
+        assert!(app.take_initial_prompt().is_none(), "taken once");
+        assert!(matches!(app.messages.last(), Some(Message::User(u)) if u == "what is this project"));
+    }
+
+    #[test]
+    fn slash_command_tab_autocompletion() {
+        let mut app = connected();
+        type_text(&mut app, "/hel");
+        app.on_key(key(KeyCode::Tab));
+        assert_eq!(app.input.text(), "/help ");
+
+        app.input.clear();
+        type_text(&mut app, "/he");
+        app.on_key(key(KeyCode::Tab));
+        assert_eq!(app.input.text(), "/he");
+        assert!(app.hint.as_deref().unwrap().contains("commands:"));
+        assert!(app.hint.as_deref().unwrap().contains("/help"));
+        assert!(app.hint.as_deref().unwrap().contains("/heal"));
     }
 }

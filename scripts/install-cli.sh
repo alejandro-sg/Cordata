@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the `orchestrator` and `sierra` CLIs to ~/.local/bin
+# Install the `orchestrator`, `sierra`, and `acp-tui` CLIs to ~/.local/bin
 # so they can be invoked from any project directory or terminal.
 
 set -euo pipefail
@@ -9,19 +9,29 @@ TARGET_DIR="${HOME}/.local/bin"
 
 mkdir -p "$TARGET_DIR"
 
+if [[ ! -x "$REPO_ROOT/tui/target/release/acp-tui" ]]; then
+  echo "Building release acp-tui binary..."
+  (cd "$REPO_ROOT/tui" && cargo build --release -p acp-tui)
+fi
+
+ln -sf "$REPO_ROOT/tui/target/release/acp-tui" "$TARGET_DIR/acp-tui"
 ln -sf "$REPO_ROOT/bin/orchestrator" "$TARGET_DIR/orchestrator"
 ln -sf "$REPO_ROOT/bin/orchestrator" "$TARGET_DIR/sierra"
 
 chmod +x "$REPO_ROOT/bin/orchestrator"
+chmod +x "$TARGET_DIR/acp-tui"
 chmod +x "$TARGET_DIR/orchestrator"
 chmod +x "$TARGET_DIR/sierra"
 
-echo "✓ Installed orchestrator and sierra to $TARGET_DIR"
+echo "✓ Installed orchestrator, sierra, and acp-tui to $TARGET_DIR"
 echo ""
-echo "Try running:"
-echo "  orchestrator --help"
-echo "  orchestrator status"
-echo "  orchestrator \"Add retries to the HTTP client and test them\""
+echo "Interactive Assistant (Claude Code & Antigravity style):"
+echo "  sierra                              # Start interactive TUI session"
+echo "  sierra \"what is this project\"       # Start TUI with initial query"
+echo ""
+echo "Autonomous Multi-Worker Orchestration:"
+echo "  sierra status                       # Headroom & recent runs"
+echo "  sierra run \"Goal\"                   # Multi-worker batch run"
 echo ""
 if [[ ":$PATH:" != *":$TARGET_DIR:"* ]]; then
   echo "! Note: $TARGET_DIR is not yet in your PATH."
