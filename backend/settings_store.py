@@ -98,6 +98,20 @@ SCHEMA: dict[str, tuple] = {
     "learning.banditMinPulls": ("float", 1.0, 100.0),
     "learning.banditLambda": ("float", 0.0, 1.0),
     "learning.banditMu": ("float", 0.0, 1.0),
+    # The orchestrator (backend/orchestrator/, docs/orchestrator-plan.md): who may work (`workers`, a comma list of
+    # claude_code · antigravity · ollama), how dispatch learns (`dispatch`: off = always strongest, shadow = learn and
+    # log but act as off, live = act on what was learned), the per-plan envelope (`maxUsd`, `maxTokens`), the quota
+    # pools (`pools`, a JSON list — orchestrator/quota_ledger.py), and whether harden and the Tier-2 audit run.
+    # Trust-gated, every one: they decide what is spent, by whom, and how much checking happens.
+    "orchestrator.workers": ("str",),
+    "orchestrator.dispatch": ("enum", ("off", "shadow", "live")),
+    "orchestrator.maxUsd": ("float", 0.0, 100.0),
+    "orchestrator.maxTokens": ("float", 0.0, 100000000.0),
+    "orchestrator.pools": ("str",),
+    "orchestrator.harden": ("bool",),
+    "orchestrator.tier2": ("bool",),
+    "orchestrator.lambda": ("float", 0.0, 2.0),
+    "orchestrator.mu": ("float", 0.0, 2.0),
     "lsp.enabled": ("bool",),
     # Large files (code_nav.py): a whole-file read of a file over this many lines comes back as an outline of its
     # classes and functions plus how to read a range or one symbol, instead of the file. Trust-gated like the other
@@ -227,7 +241,10 @@ TRUST_GATED_KEYS = frozenset(
      "laya.mode", "laya.callGuard", "laya.riskSafe", "laya.riskDestroy",
      "context.outlineLines", "preflight.enabled", "preflight.maxRetries", "preflight.tests", "preflight.rollback", "learning.rejections",
      # What the menu bar may read off the screen. The menubar is stricter still (user file only).
-     "capture.enabled", "capture.allowlist", "capture.denylist", "capture.screenshot", "capture.screenshotCloud", "capture.visionModel"}
+     "capture.enabled", "capture.allowlist", "capture.denylist", "capture.screenshot", "capture.screenshotCloud", "capture.visionModel",
+     # What the orchestrator may spend, on whom, and how much it checks.
+     "orchestrator.workers", "orchestrator.dispatch", "orchestrator.maxUsd", "orchestrator.maxTokens", "orchestrator.pools",
+     "orchestrator.harden", "orchestrator.tier2", "orchestrator.lambda", "orchestrator.mu"}
 )
 
 #: A bundle id as `capture.allowlist` accepts it: reverse-DNS labels, nothing that could be a path, a

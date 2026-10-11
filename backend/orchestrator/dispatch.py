@@ -9,7 +9,9 @@
    past its hard line; the harden role excludes every model family that executed the change. The bandit only ever
    *orders* what passed the gates — it cannot add a candidate a gate removed (the "nothing learned may lower a gate"
    invariant, held here by construction: gates filter, scores sort).
-3. **Learned order.** ``Q̂`` is the candidate's win rate for this role and task class from the bandit table
+3. **Learned order — the cheapest competent first.** Arms whose ``Q̂`` is statistically indistinguishable from the best
+   arm's (within one standard error) are *competent*; they go first, cheapest first (cost + μ·scarcity). The rest
+   follow by the score above. ``Q̂`` is the candidate's win rate for this role and task class from the bandit table
    (``bandit.Bandit``, contexts ``orch|<role>|<class>|<point>``). A candidate with fewer than ``min_pulls`` outcomes
    borrows the learned value of its **tier** (``fast`` · ``standard`` · ``strong``) and **effort** — the two decision
    points the in-session harness reserved and never acted on; here they have a per-task seam, so they are acted on.
@@ -35,6 +37,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import bandit as bandit_mod
+import state_store
 
 from .executor import Candidate
 from .quota_ledger import QuotaLedger
@@ -48,6 +51,10 @@ TIER_PRIOR_Q = {"fast": 0.55, "standard": 0.7, "strong": 0.8}
 TIER_PRICE = {"fast": 0.08, "standard": 0.3, "strong": 1.0}
 POINT_FOR_ROLE = {"plan": "planner_pool", "execute": "executor_pool", "harden": "reviewer_pool", "audit": "reviewer_pool"}
 POINTS = ("planner_pool", "executor_pool", "reviewer_pool", "tier", "effort")
+#: The smallest quality gap the policy treats as "as good": two arms within it are interchangeable on quality.
+MIN_TOLERANCE = 0.01
+#: Pseudo-outcomes an arm's estimate is shrunk toward its tier's with.
+SHRINK = 20.0
 
 _CLASSES = (
     ("docs", r"\b(readme|docs?|documentation|docstring|comment|changelog|typo)\b"),
@@ -120,6 +127,11 @@ class LearnedDispatcher:
     rng: random.Random = field(default_factory=random.Random)
     available: Callable[[Spec], bool] = lambda spec: True
     decisions: list[dict[str, Any]] = field(default_factory=list)
+    #: Write final outcomes to the ledger (off for offline training, which must not log what it replays).
+    log_outcomes: bool = True
+    #: How many standard errors below the best arm still counts as "as good" (0 = only ``MIN_TOLERANCE``).
+    z: float = 1.5
+    _last: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.table is None:
@@ -149,21 +161,26 @@ class LearnedDispatcher:
         assert self.table is not None
         return ((self.table.contexts.get(context) or {}).get("arms") or {}).get(arm) or {}
 
-    def quality(self, spec: Spec, role: str, task_class: str) -> float:
-        point = POINT_FOR_ROLE.get(role, "executor_pool")
-        own = self._stat(ctx(role, task_class, point), spec.key)
-        n = int(own.get("n", 0) or 0)
-        if n >= self.min_pulls:
-            return (float(own.get("wins", 0.0)) + 1.0) / (n + 2.0)
-        # Too few outcomes of its own: borrow its tier's (and effort's) learned value, else the tier prior.
+    def prior(self, spec: Spec, role: str, task_class: str) -> float:
+        """What a candidate's tier (and, when it names one, its effort) has earned in this context — every arm of that
+        tier pooled, so it fills up fast — else the tier's prior. The ``tier`` and ``effort`` decision points, acted on."""
         borrowed = []
-        for point_name, arm in (("tier", spec.tier), ("effort", spec.candidate.effort or "default")):
+        points = [("tier", spec.tier)] + ([("effort", spec.candidate.effort)] if spec.candidate.effort else [])
+        for point_name, arm in points:
             stat = self._stat(ctx(role, task_class, point_name), arm)
-            if int(stat.get("n", 0) or 0) >= self.min_pulls:
-                borrowed.append((float(stat.get("wins", 0.0)) + 1.0) / (int(stat["n"]) + 2.0))
-        prior = sum(borrowed) / len(borrowed) if borrowed else TIER_PRIOR_Q.get(spec.tier, 0.6)
-        # Shrink toward the prior with whatever own evidence exists.
-        return (float(own.get("wins", 0.0)) + prior * 2.0) / (n + 2.0)
+            n = int(stat.get("n", 0) or 0)
+            if n >= self.min_pulls:
+                borrowed.append((float(stat.get("wins", 0.0)) + 1.0) / (n + 2.0))
+        return sum(borrowed) / len(borrowed) if borrowed else TIER_PRIOR_Q.get(spec.tier, 0.6)
+
+    def quality(self, spec: Spec, role: str, task_class: str) -> float:
+        """Q̂: the candidate's own win rate shrunk toward its tier's (``SHRINK`` pseudo-outcomes). One arm's few
+        outcomes are noisy; picking the best of several noisy estimates is the winner's curse — it picks whoever got
+        lucky. Shrinking toward the pooled tier value keeps same-tier arms close until their own evidence separates
+        them, which is what lets the cheaper of two equals win."""
+        own = self._stat(ctx(role, task_class, POINT_FOR_ROLE.get(role, "executor_pool")), spec.key)
+        n = int(own.get("n", 0) or 0)
+        return (float(own.get("wins", 0.0)) + SHRINK * self.prior(spec, role, task_class)) / (n + SHRINK)
 
     def cost(self, spec: Spec, role: str, task_class: str) -> float:
         own = self._stat(ctx(role, task_class, POINT_FOR_ROLE.get(role, "executor_pool")), spec.key)
@@ -182,6 +199,57 @@ class LearnedDispatcher:
     def score(self, spec: Spec, role: str, task_class: str) -> float:
         return self.quality(spec, role, task_class) - self.lam * self.cost(spec, role, task_class) - self.mu * self.scarcity(spec)
 
+    def _evidence(self, spec: Spec, role: str, task_class: str) -> int:
+        return int(self._stat(ctx(role, task_class, POINT_FOR_ROLE.get(role, "executor_pool")), spec.key).get("n", 0) or 0)
+
+    def _tier_stat(self, tier: str, role: str, task_class: str) -> tuple[float, int]:
+        stat = self._stat(ctx(role, task_class, "tier"), tier)
+        n = int(stat.get("n", 0) or 0)
+        if n < self.min_pulls:
+            return TIER_PRIOR_Q.get(tier, 0.6), 0
+        return (float(stat.get("wins", 0.0)) + 1.0) / (n + 2.0), n
+
+    def cheapest_competent(self, specs: list[Spec], role: str, task_class: str, scored: dict[str, float]) -> list[Spec]:
+        """The plan's rule — *the cheapest worker whose expected quality satisfies the threshold* — decided where the
+        evidence is: first between **tiers** (every arm of a tier pooled, so the estimates are tight), then between the
+        arms of the competent tiers.
+
+        A tier is competent when its pooled Q̂ is within ``z`` standard errors of the difference (at least
+        ``MIN_TOLERANCE``) of the best tier's. Inside a competent tier an arm is competent unless its own evidence puts
+        it significantly below its tier. Competent arms go first, cheapest (plus quota scarcity) first; the rest follow
+        by score. With no evidence (fewer than ``min_pulls`` outcomes for the best tier) the tolerance is the minimum and
+        the tier priors decide — strongest first."""
+        tiers = sorted({s.tier for s in specs}, key=lambda t: -TIER_RANK.get(t, 1))
+        stats = {t: self._tier_stat(t, role, task_class) for t in tiers}
+        best = max(tiers, key=lambda t: (stats[t][0], TIER_RANK.get(t, 1)))
+        q_best, n_best = stats[best]
+        competent_tiers = set()
+        for tier in tiers:
+            q, n = stats[tier]
+            if n_best < self.min_pulls or n < self.min_pulls:
+                tolerance = MIN_TOLERANCE
+            else:
+                se = (q_best * (1 - q_best) / (n_best + 2) + q * (1 - q) / (n + 2)) ** 0.5
+                tolerance = max(MIN_TOLERANCE, self.z * se)
+            if q >= q_best - tolerance:
+                competent_tiers.add(tier)
+        competent: list[Spec] = []
+        for spec in specs:
+            if spec.tier not in competent_tiers:
+                continue
+            own = self._stat(ctx(role, task_class, POINT_FOR_ROLE.get(role, "executor_pool")), spec.key)
+            n = int(own.get("n", 0) or 0)
+            q_tier = stats[spec.tier][0]
+            if n >= self.min_pulls:
+                q_own = (float(own.get("wins", 0.0)) + 1.0) / (n + 2.0)
+                if q_own < q_tier - max(MIN_TOLERANCE, 2.0 * (q_tier * (1 - q_tier) / (n + 2)) ** 0.5):
+                    continue  # this arm is significantly worse than its tier
+            competent.append(spec)
+        rest = [s for s in specs if s not in competent]
+        competent.sort(key=lambda s: (self.cost(s, role, task_class) + self.mu * self.scarcity(s), -self.quality(s, role, task_class)))
+        rest.sort(key=lambda s: (-scored[s.key], -TIER_RANK.get(s.tier, 1)))
+        return competent + rest
+
     # ------------------------------------------------------------------ the policy
 
     def rank(self, role: str, task_class: str, *, exclude_model_families: set[str] | None = None) -> list[Candidate]:
@@ -190,7 +258,7 @@ class LearnedDispatcher:
         if self.mode not in ("shadow", "live") or not specs:
             return [s.candidate for s in default]
         scored = {s.key: round(self.score(s, role, task_class), 4) for s in specs}
-        learned = sorted(specs, key=lambda s: (-scored[s.key], -TIER_RANK.get(s.tier, 1)))
+        learned = self.cheapest_competent(specs, role, task_class, scored)
         acted = self.mode == "live"
         if acted and len(learned) > 1 and self.explore > 0 and self.rng.random() < self.explore:
             pick = self.rng.randrange(1, len(learned))
@@ -207,12 +275,15 @@ class LearnedDispatcher:
             "scores": scored,
         }
         self.decisions.append(info)
-        bandit_mod.decision_event(info, turn=f"orch:{role}:{task_class}")
+        self._last[(role, task_class)] = info
+        if self.log_outcomes:
+            bandit_mod.decision_event(info, turn=f"orch:{role}:{task_class}")
         return [s.candidate for s in chosen]
 
     def observe(self, role: str, task_class: str, candidate: Candidate, outcome: dict[str, Any]) -> None:
-        """Fold one outcome in: ``ok`` (bool), ``cost_usd`` / ``tokens`` (what it spent). Cost is normalised by the
-        candidate's spec price when no dollar figure exists (subscription and local pools)."""
+        """Fold one outcome in: ``ok`` (bool) and ``norm_cost`` (relative cost; the spec's price when absent). A
+        ``final`` outcome (the run's verdict) is also written to the ledger as an ``orch_outcome`` event — the rows
+        ``replay`` judges a policy on."""
         spec = next((s for s in self.specs if s.key == candidate.key), None)
         if spec is None or self.table is None:
             return
@@ -221,7 +292,17 @@ class LearnedDispatcher:
         value = (1.0 if ok else 0.0) - self.lam * cost
         point = POINT_FOR_ROLE.get(role, "executor_pool")
         for point_name, arm in ((point, spec.key), ("tier", spec.tier), ("effort", candidate.effort or "default")):
-            self.table.observe_arm(ctx(role, task_class, point_name), arm, value=value, win=ok, cost=cost)
+            self.table.observe_arm(ctx(role, task_class, point_name), arm, value=value, win=ok, cost=cost, save=False)
+        if self.log_outcomes:
+            self.table.save()  # offline training keeps its table in memory
+        if outcome.get("final") and self.log_outcomes:
+            decision = self._last.get((role, task_class), {})
+            state_store.append_event(
+                "orch_outcome",
+                {"role": role, "task_class": task_class, "arm": spec.key, "tier": spec.tier, "effort": candidate.effort, "ok": ok, "cost": round(cost, 4),
+                 "mode": self.mode, "propensity": decision.get("propensity"), "default": decision.get("default")},
+                source="orchestrator",
+            )
 
 
 # ---------------------------------------------------------------------- offline judging
@@ -255,3 +336,46 @@ def replay(logs: Iterable[Logged], choose: Callable[[str, str, list[str]], str],
         "cost_per_task": round(cost / matched, 4) if matched else None,
         "cost_per_success": round(cost / wins, 4) if wins else None,
     }
+
+
+def logged_from_ledger(limit: int = 5000) -> list[Logged]:
+    """The ``orch_outcome`` rows in ``state.db``, oldest first."""
+    rows = list(reversed(state_store.recent_events(kind="orch_outcome", limit=limit)))
+    out = []
+    for row in rows:
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        try:
+            out.append(Logged(str(payload["role"]), str(payload["task_class"]), str(payload["arm"]), bool(payload["ok"]), float(payload.get("cost", 0.0))))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def evaluate(logs: list[Logged], specs: list[Spec], *, train_fraction: float = 0.5, lam: float = 0.3, min_pulls: int = 3, z: float = 1.5) -> dict[str, Any]:
+    """Train a learned policy on the first part of ``logs`` and judge it, and the always-strongest default, by replay on
+    the rest. Offline: an in-memory table, nothing written to the ledger."""
+    import os
+    import tempfile
+
+    cut = int(len(logs) * train_fraction)
+    train, test = logs[:cut], logs[cut:]
+    table = bandit_mod.Bandit(None, path=os.path.join(tempfile.mkdtemp(prefix="replay-"), "table.json"))
+    learner = LearnedDispatcher(specs=specs, mode="live", lam=lam, mu=0.0, explore=0.0, min_pulls=min_pulls, table=table, log_outcomes=False, z=z)
+    by_key = {s.key: s for s in specs}
+    for row in train:
+        spec = by_key.get(row.arm)
+        if spec is not None:
+            learner.observe(row.role, row.task_class, spec.candidate, {"ok": row.ok, "norm_cost": row.cost})
+
+    def arms(role: str) -> list[str]:
+        return [s.key for s in specs if role in s.roles]
+
+    def learned(role: str, task_class: str, _arms: list[str]) -> str:
+        ranked = learner.rank(role, task_class)
+        return ranked[0].key if ranked else ""
+
+    def strongest(role: str, task_class: str, _arms: list[str]) -> str:
+        ranked = LearnedDispatcher.default_order([s for s in specs if role in s.roles])
+        return ranked[0].key if ranked else ""
+
+    return {"train": len(train), "test": len(test), "learned": replay(test, learned, arms), "strongest": replay(test, strongest, arms)}
