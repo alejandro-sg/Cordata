@@ -65,11 +65,45 @@ jobs:
           # network, no eval run (unlike _learning_smoke_test.py, which the gate needs and
           # which loads the local embedding model at import).
           python _trajectories_smoke_test.py
-          # The daemon's Discord front door. Hermetic: a fake `discord` module is
-          # installed into sys.modules, so this runs with no token, no gateway and no
-          # network — it asserts the fail-closed config, the operator allowlist on button
-          # clicks, and that steering stays on the Lab's own inject path.
+          # The daemon's Discord front door. Hermetic: a fake `discord` module is installed
+          # into sys.modules and the real Supervisor drives a scripted ACP child, so this runs
+          # with no token, no gateway, no model and no network — it asserts the fail-closed
+          # config, the operator allowlist, that an agent *answers* (a chat is a real turn),
+          # that approval cards say what/where/why and collapse when decided, and that an
+          # agent's words cannot ping anyone.
           python _discord_remote_smoke_test.py
+          # The token diet (context_diet.py): cold tools, the tool-result cap, history ageing — through a real
+          # Strands loop on a scripted model; the SDK features adopted for it (ContextOffloader, per-turn limits,
+          # native cancel, proactive compression). No model, no network.
+          python _context_diet_smoke_test.py
+          python _offload_acp_smoke_test.py
+          # The SDK's vended shell and editor (core_tools.py): exit codes in text, defaults, a stop that kills the command.
+          python _core_tools_smoke_test.py
+          # Conversations on disk: snapshot sessions and the migration from the legacy layout (session_store.py).
+          python _session_store_smoke_test.py
+          python _diet_acp_smoke_test.py
+          python _skill_search_smoke_test.py
+          # The daemon (second front doors, owned sessions), the observer (no model call on an unchanged tree)
+          # and the guard's `dd` rule; all hermetic.
+          python _daemon_smoke_test.py
+          python _observer_smoke_test.py
+          python _laya_call_guard_smoke_test.py
+          python _settings_schema_parity_smoke_test.py
+          # Phase 11/12 (system_audit_report.md): the audit's security and memory fixes, code navigation (search,
+          # outlines, the large-file hook), preflight (edits checked before anyone is asked), rejection memory, and
+          # environment awareness (MCP discovery and resources, the profiler, adaptive effort). Hermetic: scripted
+          # models, a fake oMLX, the echo MCP fixture; the rust-analyzer check skips where it is not installed.
+          python _phase11_hardening_smoke_test.py
+          python _code_nav_smoke_test.py
+          python _preflight_smoke_test.py
+          python _rejection_memory_smoke_test.py
+          python _environment_awareness_smoke_test.py
+          # Phase 13, the menu-bar deck's screen context: the never-read list held equal to the Rust client's, the
+          # wrapped + masked block, `SubmitTurn` on a real loopback bridge (policy re-check, audit, log line), and a
+          # screenshot turn through the real ACP server on a mock-transport Ollama model (vision tag, image gone after).
+          python _os_context_smoke_test.py
+          python _grpc_bridge_smoke_test.py
+          python _vision_turn_smoke_test.py
 
   frontend:
     runs-on: ubuntu-latest

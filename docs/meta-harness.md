@@ -135,6 +135,7 @@ One service, `sierralab.harness.v1.Harness`, on loopback:
 | `SetKnob` | unary | `reasoning_effort` / Laya dial, mid-execution |
 | `UnloadMemory` | unary | the emergency unload — oMLX/Ollama weights out |
 | `GetDiff` | unary | the body of a diff a frame only referenced |
+| `SubmitTurn` | unary | a turn from the menu-bar deck, with the screen context the person attached |
 | `Ping` | unary | liveness + schema version, what the reconnect loop probes |
 
 What it is and is not:
@@ -143,6 +144,12 @@ What it is and is not:
   human's click forwarded into the paused ACP request, restricted to the options the *child
   offered*; a knob is the child's own `_sierralab/lab/*` control called on the user's behalf; the
   unload is the same `memory_budget` code the agent's tools use.
+  **`SubmitTurn` is the one exception**, and a deliberate one: it *starts* a turn. It still decides
+  nothing about it — a daemon-owned conversation gets a real turn through `Chats.send`, a session
+  another client drives gets text guidance on the steer path (the daemon never issued its
+  `session/new`), and no session opens a `menubar:<cwd>` conversation. It accepts and returns (a
+  turn may run for hours), re-checks the app against the never-read list before forwarding, and
+  audits the context by size only. `THREAT_MODEL.md`, "OS context capture", has the policy.
 * It is **loopback-only and token-gated**: `127.0.0.1` is not configurable, and every RPC needs the
   `x-daemon-token` metadata (the 0600 secret in `daemon.json`) compared in constant time. Loopback
   is not an authorization boundary, which is why the token is there even without TLS.

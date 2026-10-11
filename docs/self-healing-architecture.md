@@ -11,7 +11,7 @@ Every Strands/CopilotKit API named below is grounded in a live MCP doc query aga
 
 | Concern | Current implementation |
 |---|---|
-| Agent definition | `backend/agent_common.py` — `build_template_agent()` (AG-UI, session-less) / `build_agent_for_session()` (ACP, session-bound). Single `TOOLS` list: `shell, editor, file_read, file_write, python_repl, http_request, current_time, calculator, think, agent_memory, local_swarm`. |
+| Agent definition | `backend/agent_common.py` — `build_template_agent()` (AG-UI, session-less) / `build_agent_for_session()` (ACP, session-bound). Single `TOOLS` list: `shell, editor, file_read, file_write, python_repl, http_request, agent_memory, local_swarm`. |
 | Model | `build_model()` → `OpenAIModel(base_url=OMLX_BASE_URL, model_id="DeepSeek-R1-Distill-Qwen-32B-4bit")` — 100% local oMLX, no cloud calls. |
 | AG-UI transport | `backend/main.py` — `StrandsAgent(agent=build_template_agent(), config=StrandsAgentConfig(...))` served by `create_strands_app(agui_agent, "/")`. This is exactly the `ag_ui_strands` integration path CopilotKit's docs describe for AWS Strands. |
 | HITL (backend) | `main.py:27,48` — `_APPROVAL_REQUIRED_TOOLS = ["shell", "python_repl", "file_write"]`, each wrapped `ToolBehavior(interrupt_on_call=True)` in `StrandsAgentConfig.tool_behaviors`. |

@@ -48,11 +48,23 @@ other value is replaced by the higher scope.
 | `selfHeal.memory` | `true` · `false` | next session | remember sandbox-verified fixes (failure signature → patch, per project) and try a remembered one in the sandbox before asking the Debugger; a fix that stops working retires itself (`docs/self-healing-architecture.md`) |
 | `selfHeal.autoResume` | `true` · `false` | next session | continue a turn a crash interrupted on its own when the session reloads (twice at most per checkpoint, never over 30 minutes old; approvals still ask) |
 | `selfHeal.autoApply` | `true` · `false` | next session | apply sandbox-verified fixes without asking (needs a trusted folder; see `THREAT_MODEL.md`) |
-| `lsp.enabled` | `true` · `false` | next session | start the project's language servers for diagnostics after edits |
+| `lsp.enabled` | `true` · `false` | next session | start the project's language servers for diagnostics after edits (in an untrusted folder rust-analyzer runs without build scripts, proc-macros or `cargo check` — the repo's own code) |
+| `preflight.enabled` | `true` · `false` | next session | check every `apply_patch` / `file_write` / `editor` change **before** it is asked about or applied — syntax, `ruff` (on PATH), the language server's errors on the unsaved text — and send what it newly breaks back to the agent instead (`docs/agentic-harness.md`; trust-gated) |
+| `preflight.maxRetries` | 0–10 | next session | failed checks sent back per file per turn before the turn is told to stop editing (default 3; trust-gated) |
+| `preflight.tests` | a command | next session | also run this (e.g. `pytest -x -q`) in a throwaway copy with the edit applied; a failure the copy *without* the edit shows too is not blamed. Runs the project's code, so it is trust-gated, and skipped while the vault refuses egress (default empty) |
+| `preflight.rollback` | `true` · `false` | next session | when the agent runs out of attempts, put back the files the turn changed (from its first checkpoint; undoable) (default `true`; trust-gated) |
+| `reasoning.adaptive` | `true` · `false` | next session | Ollama Cloud: the orchestrator's `reasoning_effort` follows the project's size and Laya's reading of each turn's complexity — never below the role's level (the Lab dial, `OLLAMA_ROLE_ORCHESTRATOR`), never `max` unless chosen (default `true`) |
+| `learning.rejections` | `true` · `false` | next session | turn each change you reject into a rule (the ReflectionAgent, one tool-less model call; your note, if you gave one, is the reason) that later turns in this project are held to — `python backend/rejection_memory.py list` to read them, `forget <id>` to drop one (default `true`; trust-gated) |
 | `vault.enabled` | `true` · `false` | next session | run tool subprocesses through the Agent Vault credential proxy (see below) |
 | `vault.addr` | url | next session | where the vault's proxy listens (default `http://127.0.0.1:14322`) |
 | `vault.vault` | name | next session | which vault credentials are drawn from |
 | `vault.egressPolicy` | `deny` · `proxy` | next session | vault unreachable: refuse egress, or route through the address without credentials |
+| `capture.enabled` | `true` · `false` | next launch | the menu-bar deck may read screen context at all (see below); off by default |
+| `capture.allowlist` | list of bundle ids | next launch | apps the deck may read, e.g. `["com.apple.Safari"]`; empty reads nothing |
+| `capture.denylist` | list of bundle ids | next launch | apps the deck must not read, on top of the built-in never-read list |
+| `capture.screenshot` | `true` · `false` | next launch | the deck may capture one window as an image (Screen Recording) |
+| `capture.screenshotCloud` | `true` · `false` | next launch | a screenshot may go to a cloud vision model; off: local only |
+| `capture.visionModel` | model tag | next turn | the vision model a screenshot turn runs on (Ollama); unset: screenshots are never sent |
 | `observer.enabled` | `true` · `false` | next cycle | the daemon's background observer (see below); off by default |
 | `observer.intervalMinutes` | 1–1440 | next cycle | how long between observations (default 30) |
 | `memory.traces` | `true` · `false` | next session | record execution traces to the local LanceDB corpus |
@@ -184,9 +196,12 @@ stranger's repo switch off the approval prompts, so **project and local `allow` 
 itself is always trusted. `/permissions` marks ignored rules `← ignored: folder not trusted`.
 
 The same gate covers the keys that decide how much the harness protects you or where data goes:
-`selfHeal.autoApply`, `vault.enabled`, `vault.addr`, `vault.vault`, `vault.egressPolicy` and
-`kg.sink`. A repo that could set them could switch off the egress proxy you turned on, make its
-refusal fail open, or point its address at a host of its own. Set in the user file, or in a folder you
+`selfHeal.autoApply`, `vault.enabled`, `vault.addr`, `vault.vault`, `vault.egressPolicy`,
+`kg.sink`, Laya's own lines (`laya.mode`, `laya.callGuard`, `laya.riskSafe`, `laya.riskDestroy`),
+`preflight.*`, `learning.rejections` and `capture.*`. A repo that could set them could switch off the egress proxy you turned on, make its
+refusal fail open, point its address at a host of its own, raise the destructive line past every score, or switch
+off the checks in front of its own edits. The full list is `TRUST_GATED_KEYS` in `backend/settings_store.py`
+(mirrored in the TUI; `_settings_schema_parity_smoke_test.py` holds the two to it). Set in the user file, or in a folder you
 trusted, they apply; from an untrusted project or local file they are ignored and reported as a
 warning.
 
@@ -262,6 +277,30 @@ not been run against a real Cognee install** — with it missing, `kg.sink:
 (substring over labels) and `.neighbours` (the edges touching a node). Tests:
 `backend/_kg_smoke_test.py`.
 
+## Screen context (`capture.*`)
+
+What the menu-bar deck (`make lab-menubar`, `lab/crates/harness-menubar`) may read off the screen.
+Stricter than any other key here: the menubar reads `capture.*` **only from the user file** — a
+project's file is ignored with a warning even in a trusted folder, so a cloned repository can never
+grant itself a window. You rarely edit these by hand: the deck's **Always allow <app>** button adds
+the app and switches capture on, and **Add screenshot** switches `capture.screenshot` on.
+
+```json
+{ "capture": { "enabled": true, "allowlist": ["com.apple.Safari", "com.microsoft.VSCode"],
+               "screenshot": true, "screenshotCloud": false, "visionModel": "qwen2.5vl:7b" } }
+```
+
+- Password managers, Keychain Access and Passwords are **never read**, whatever these say — a constant
+  (`harness_client::policy`, mirrored in `backend/os_context.py`), not a setting.
+- A screenshot is sent only when `visionModel` names a model the session's Ollama daemon serves: a
+  local tag that is installed (nothing is ever pulled), or a `:cloud` tag when `screenshotCloud` is on.
+  The turn runs on it once, then the session's model is back and the image is removed from the history.
+- Accessibility (title, selection) and Screen Recording (screenshot) are macOS permissions you grant in
+  System Settings; the deck's Grant buttons open the prompt. `make lab-menubar-app` builds a signed
+  `Sierralab.app` so the grant belongs to it.
+
+See `THREAT_MODEL.md`, "OS context capture".
+
 ## Observer (`observer.*`)
 
 Off by default, and only meaningful under `make daemon`: it is the one part of
@@ -272,7 +311,7 @@ tails of any log files named by `SIERRALAB_OBSERVER_LOGS`, hands that to a
 read-only agent, and writes `nightly_briefing.md` (override:
 `SIERRALAB_OBSERVER_BRIEFING`) in `~/.sierralab/`.
 
-The observer holds `file_read` and `think`, and nothing else: the daemon runs
+The observer holds `file_read`, and nothing else: the daemon runs
 the commands, not the model, and the briefing is written by the daemon from the
 text the child prints. A client attaching kills any cycle in flight, and no
 cycle starts while one is attached — a briefing written over a project someone
@@ -287,6 +326,38 @@ ledger keeps the record (`interventions.kind = 'observation'` plus an
 `observation` event, readable with `state_store.recent_events(kind="observation")`).
 Tests: `backend/_observer_smoke_test.py`.
 
+## Token economy
+
+What a model call costs is mostly what it re-sends: the system prompt, every tool's schema, and the whole
+conversation so far. `context_diet.py` trims the last two without removing a capability, and the shell and editor are the
+SDK's own vended tools (`core_tools.py`), a fifth of the size of the ones they replaced. Measured through the real ACP
+server, a plain turn carries 9.0 KB of tool schema, down from 44.1 KB. `SHELL_DEFAULT_TIMEOUT` (seconds, default 900)
+is how long a `shell` command may run when the model names no timeout. Defaults are on;
+every `context.*` and `claudeCode.*` key here is trust-gated (a cloned repo cannot change what you spend).
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `context.coldTools` | `true` | Hide rarely-used tools (`http_request`, the model/resource managers, `claude_code_engineer`, …) unless the turn mentions their subject, they were used in the last three turns, or Laya routes the turn to `web`. The prompt lists what is hidden; the agent loads one with `enable_tools` and has it on its next step. Measured through the real ACP server: 43.6 KB → 15.1 KB of tool schema per call (−65%). |
+| `context.toolOutputChars` | `6000` | The most characters of one tool result the model reads (Strands' own `context_manager="auto"` uses 1,500 tokens, the default its docs report as best on ContextBench). Over it, the result is **offloaded** (`context.offload`) — or, with offloading off, cut keeping its head *and* tail (an error or exit code is at one end) and saying how much was left out. |
+| `context.offload` | `true` | Set an over-limit tool result aside whole instead of cutting it — Strands' `ContextOffloader`. The full result is written to `~/.sierralab/offloaded/<session>/` (dir `0700`, files `0600`, registered credentials masked first, deleted after 7 days); the model reads a head+tail preview and a reference, and `retrieve_offloaded_content` returns only the slice it asks for (a regex with context lines, or a line range). Nothing is lost, and a command is never run twice just to see its middle. The read-back is fenced as untrusted data. A specialist's report, the Claude Code CLI's result and the swarm/graph tools are the answer itself and are never offloaded. `false` cuts instead. |
+| `context.summaryModel` | `fast` | Who writes the summary when a long chat is compacted (it is a model call you pay for): the **fast model tier** (`MODEL_TIER_FAST`) when one is configured, or `main` for the session's own model. With no fast tier set, both are the same model and nothing changes. |
+| `context.webFetch` | `agentic` | What `web_fetch` returns: `agentic` — an analyst model reads the page and answers your prompt about it, so the page never enters the conversation (the analyst runs on the fast model tier when one is configured) — or `markdown`, the page itself (a long one is set aside by the offloader). |
+| `context.maxSteps` | `50` | Model calls one turn may make before it pauses (Strands' per-invocation `limits`). The turn stops with ACP's `max_turn_requests`, says why, keeps its history valid, and carries on at "continue" with a fresh budget. A loop that will not converge cannot run on spending your tokens. `0` = no cap. |
+| `context.maxTurnUsage` | `0` | Tokens one turn may spend (input + output, all calls) before it pauses the same way. `0` = no cap. |
+| `context.skillSearch` | `true` | List only the few skills that fit the request — embedding search, Laya deciding which, if any, clearly fits — instead of all 49 on every call. The agent has a `search_skills` tool for the rest. `false` lists them all (19 KB). |
+| `context.skillsListed` | `4` | How many skills are listed per turn. |
+| `context.outlineLines` | `500` | A whole-file read (`file_read` mode `view`, `editor` `view` with no range) of a source file over this many lines comes back as its **outline** — classes, functions, methods with line ranges — plus how to read what is needed (`code_outline` with a symbol, a line range, `code_search`). Ahead of the offloader, so the file is never in context or on disk twice. Data files (`.json`, `.log`, …) are left to the offloader. |
+| `context.agedOutputChars` | `1200` | Tool results older than the newest 8 messages are shortened to this many characters; so are huge old tool *inputs* (a whole file the agent wrote). The first message (the task) is never touched, every tool call keeps its result. `0` turns ageing off. |
+| `claudeCode.model` | `sonnet` | Model alias for Claude Code CLI runs (`""` = the CLI's own default, which is its largest model). |
+| `claudeCode.effort` | `medium` | `default` · `low` · `medium` · `high` · `xhigh` · `max`. |
+| `claudeCode.maxBudgetUsd` | `5` | Dollar cap per run. |
+
+Not settings, but worth knowing: the observer (`observer.enabled`) reuses its last reading of a project whose
+evidence has not changed — no model call at all on an unchanged tree. On Ollama Cloud the **debugger runs at
+reasoning effort `max`** (thinking tokens count); `OLLAMA_ROLE_DEBUGGER=kimi-k2.7-code:high` in `backend/.env`
+is the cheaper setting. Tests: `backend/_context_diet_smoke_test.py` (the hook through a real Strands loop) and
+`backend/_diet_acp_smoke_test.py` (through the real ACP server, with the byte measurement).
+
 ## Discord remote control (environment only, not settings)
 
 There is deliberately no `discord.*` settings key. Enabling the daemon's Discord
@@ -298,17 +369,27 @@ follows the same Keychain path as the provider keys (see `.env.example` and
 | Variable | Meaning |
 | --- | --- |
 | `DISCORD_BOT_TOKEN` | The bot token. Prefer `make discord-key` (Keychain service `sierralab-discord-bot-token`) or export it; **not** a file value. Read once at startup, then removed from the process environment and masked everywhere. |
-| `ALLOWED_USER_ID` | The one Discord user id allowed to approve, reject or steer (Developer Mode → Copy ID). Required — with no allowlist the bot stays off. |
-| `TELEMETRY_CHANNEL_ID` | The channel the bot announces in, opens task threads under, and reads steering replies from. |
+| `ALLOWED_USER_ID` | The one Discord user id allowed to chat, approve, deny or steer (Developer Mode → Copy ID). Required — with no allowlist the bot stays off. |
+| `TELEMETRY_CHANNEL_ID` | The channel the bot announces in and takes new chats from; chats and task threads open under it. |
 | `SIERRALAB_DISCORD` | `0`/`off`/`false`/`no` disables the bot even when the three above are set (kill switch, checked before the token is read). |
+| `SIERRALAB_DISCORD_CWD` | The folder a new chat works in. Unset: your newest terminal/GUI session's folder, else `~/.sierralab/discord-workspace`. `!new <folder>` picks one per chat. |
 
-All three of the first row's names must be present and parse (the ids as
+All three of the first rows' names must be present and parse (the ids as
 integers) for the bot to start; otherwise it logs the reason and is a no-op.
 `GET /health` reports `discord: {enabled, connected, allowedUser, channel,
-reason}` — never the token. Message Content Intent must be enabled for the
+reason, threads, chats, liveChats}` — never the token. Message Content Intent must be enabled for the
 application in the Discord Developer Portal, or `discord.PrivilegedIntentsRequired`
-is logged as the actionable message it is rather than crashing the daemon.
-Tests: `backend/_discord_remote_smoke_test.py` (hermetic, fake `discord`).
+is logged as the actionable message it is rather than crashing the daemon. The bot also needs
+*Send Messages*, *Create Public Threads*, *Send Messages in Threads*, *Add Reactions* and *Embed Links* in
+the channel (without thread permission, the channel itself becomes the one chat).
+
+Commands (plain text, anywhere the bot listens): `!status` · `!stop` · `!mode auto|build|plan` ·
+`!new <folder>` · `!usage` · `!help`. Chats are persisted in `~/.sierralab/discord_chats.json` (0600, newest 40);
+at most three agent processes run at once and an idle one is stopped after 20 minutes — the next reply in its
+thread starts a new process and `session/load`s the conversation.
+
+Tests: `backend/_discord_remote_smoke_test.py` — hermetic: a fake `discord` module, and the real `Supervisor`
+driving `fixtures/fake_acp_chat_child.py`, a scripted agent that speaks the ACP wire.
 
 ## Checking the result
 

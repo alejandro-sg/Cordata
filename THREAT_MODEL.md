@@ -141,6 +141,18 @@ the project files arrive with a cloned repository:
   also activates any `allow` rules a cloned repo already ships in that folder. Review them with
   `/permissions`.
 
+- **A stranger's repo cannot lower Laya's lines either** (Phase 11 audit). `laya.callGuard`,
+  `laya.riskDestroy`, `laya.riskSafe` and `laya.mode` used to be settable from an untrusted
+  project file: `callGuard: off` or `riskDestroy: 1.0` removed every per-call ask that bounds
+  `auto`, and a prompt-injected agent that wrote that file (a 0.4-scored shell redirect, see
+  below) could do it for the next session. They are trust-gated now, with `preflight.*`,
+  `learning.rejections` and `context.outlineLines` (`TRUST_GATED_KEYS`; the TUI's mirror is held to
+  it by `_settings_schema_parity_smoke_test.py`).
+- **A shell write to a policy file is scored like `file_write` to it.** `printf … > .sierralab/settings.json`,
+  `tee` / `cp` / `mv` / `sed -i` into a settings file or any MCP declaration (`.mcp.json`, `mcp.json`,
+  `mcp.local.json`, `.cursor/` / `.vscode/mcp.json`, `backend/mcp_servers.json`) scores 0.9 and asks in
+  every mode; it used to score 0.4 ("overwrites a file") and run in `auto`.
+
 **What this does not do.** Rules are not a sandbox: a pattern can't anticipate everything an
 allowed program can do (`allow shell(npm *)` includes `npm exec`). Instruction files
 (`SIERRALAB.md`, and — as a fallback — a repo's own `AGENTS.md` / `CLAUDE.md`) are read into the
@@ -349,6 +361,63 @@ session's own connection — there is no REST verb for any of them).
 * **A stale approval cannot be answered.** A request whose originating connection is gone is shown
   but not approvable, because the agent may already have been resumed by the other client — the
   window does not get to act on a picture of the past. See "Known gaps".
+* **`SubmitTurn` is the one RPC that makes the bridge a participant.** Every other RPC relays or
+  reports; this one *starts* something — a turn from the menu-bar deck, carrying the screen context
+  the person attached. It is bounded the way the rest are: token-gated, it decides nothing about the
+  turn itself (a daemon-owned conversation gets a real turn through `Chats.send`, the primitive
+  Discord uses; a session another client drives only gets text *guidance* through the existing
+  steer path, because the daemon never issued its `session/new` and a second turn would be a second
+  writer to one stdin), and it accepts and returns rather than holding a turn that may run for hours.
+  The context is re-checked here before it is forwarded — see "OS context capture" below.
+
+### OS context capture (the menu-bar deck)
+
+`lab/crates/harness-menubar` reads what the person is looking at — the frontmost app, its window
+title, the selected text, optionally a screenshot of one window — and sends it with a prompt. Screen
+content is the most sensitive input this harness has, and the requirement is the person's own:
+*"I should be able to dictate what the agent can see. I can't have it view my secrets."*
+
+* **Deny by default, per app.** `capture.enabled` is off and `capture.allowlist` empty on a fresh
+  install, and an empty allowlist reads nothing. An app is added only by the person — the deck's
+  "Always allow <app>" button, or their own settings file. Bundle-id-shaped values only (no names,
+  paths or patterns), checked in Rust, Python and the TUI alike.
+* **User scope only.** `capture.*` is read by the menubar from the *user* settings file; a project's
+  `.sierralab/settings.json` that sets it is ignored with a warning even when the project is trusted —
+  a cloned repository must never grant itself the ability to read windows. The keys are also
+  trust-gated in `settings_store.py` and the TUI.
+* **A never-read list no setting can lift** — password managers, Keychain Access, Passwords — matched
+  on bundle id, case-insensitively, including helpers under an entry (`me.proton.pass.electron`). It
+  is a constant in `harness_client::policy`, mirrored in `backend/os_context.py`, and a test holds the
+  two equal. Rust refuses to read such an app; the daemon refuses to forward one (`SubmitTurn` →
+  refused and audited), so a scripted gRPC client that skips the Rust policy gets nowhere.
+* **Never in the background.** Nothing is read until the person clicks Capture (or presses `c`) in the
+  deck; summoning the deck only records *which* app was frontmost, which costs no permission. Secure
+  event input (a password field focused anywhere) and a focused secure text field each mean the app is
+  named and nothing else is read.
+* **Masked before it leaves the process, previewed before it is sent.** Titles and selections go
+  through `harness_client::redact::scrub` (the patterns `backend/secret_patterns.py` is tested
+  against) in Rust, so the checklist shows exactly what would be sent; the daemon masks again before
+  rendering. Partial success is shown per field with its reason (`✗ selected text — Accessibility is
+  not granted`), never as a blank.
+* **Wrapped as data.** The context reaches the model through a `ContextInjector` for one turn, with the
+  selection inside `prompt_security.wrap_untrusted` guard markers — a web page's selection can say
+  "ignore your instructions" — and it is cleared when the turn ends.
+* **Screenshots are narrower still.** One window (never the screen), only for an allowed app, never
+  under secure input, at most 2048 px on the long side and 4 MiB of JPEG, captured with
+  ScreenCaptureKit under its own Screen Recording permission. Pixels cannot be masked, so their
+  defences are policy: a screenshot reaches a model only when `capture.visionModel` names one, a
+  cloud one only with `capture.screenshotCloud`, only on the Ollama provider (where the tag says
+  whether it is local) and never by pulling weights; the turn runs on that model once, the session's
+  model is put back, and the image is stripped from the history and the saved snapshot when the turn
+  ends. Mid-turn checkpoints are off for that turn so no copy is left on disk. Guidance to a session
+  another client drives is text only.
+* **Audited by size, never by content.** `submit_turn` rows record the app, which fields were present
+  and how long, the redaction count, the screenshot's byte count and which model (if any) received
+  it. The daemon's log line carries a short masked excerpt so a person can confirm what was sent.
+* **The OS is the real boundary.** Accessibility and Screen Recording are TCC grants the person makes
+  in System Settings; the deck only ever asks when its Grant button is clicked. A bundled, signed
+  build (`make lab-menubar-app`) is what keeps those grants attached to this app rather than to a
+  terminal.
 
 ### The Claude Code CLI runs as a sandboxed child, egress only through the vault
 
@@ -419,9 +488,10 @@ observer is even on rather than implying anything was acted on.
 
 ### Discord remote control (outbound only)
 
-The daemon can carry the same approvals and steering conversation to Discord
-(`daemon/discord_bot.py`), so an unattended run is not parked forever on a
-prompt nobody can see. The direction is what makes it tolerable:
+The daemon can carry the approvals conversation to Discord (`daemon/discord_bot.py`) so an unattended run is
+not parked forever on a prompt nobody can see, and — since it is the one place a person is reliably
+reachable — lets that person *talk to an agent* from it (`daemon/chat.py`). The direction is what makes it
+tolerable:
 
 * **Outbound WebSocket only.** discord.py opens a client connection to Discord's
   gateway. The daemon listens on no new port, registers no webhook, and exposes
@@ -434,35 +504,94 @@ prompt nobody can see. The direction is what makes it tolerable:
   `SIERRALAB_DISCORD=0` is a kill switch checked before the token is even read.
   An unparseable id disables the bot with a logged reason and never raises into
   daemon startup.
-* **Zero-trust click.** Approve/Reject callbacks (`_click`) check
-  `interaction.user.id == ALLOWED_USER_ID` as their **first** statement and
-  return before touching any state; anyone else's press is a no-op that gets an
-  ephemeral refusal, not a decision. A click is not a credential: the id is
-  compared to a configured operator, and Discord's own interaction signing is
-  just what delivers it. Approving relays through `Supervisor.answer_permission`
-  — the *same* arbitration the GUI and TUI use, so the second front door to
-  answer loses harmlessly (`_settle`) and the decision is attributed
-  (`decided_by="discord"`) in `state.db` and the `_sierralab/resolved` frame.
-* **Steering reuses the Lab's path.** A reply in the telemetry channel or a
-  task thread becomes `_sierralab/lab/inject` (the same call `lab.py:inject`
-  serves), capped at 2000 characters and acknowledged by length only; it is
-  gated by the same author check as a click, so an unauthorized message is
-  dropped before anything is injected. It is *guidance*, consumed by the model's
-  next call — it does not bypass a permission prompt or run anything itself.
-* **Nothing new is trusted into the transcript.** Embed bodies are built from
-  the child's own `PendingPermission.meta` (already the masked view the GUI
-  uses), passed through `secret_guard.redact` again, and every post is
-  length-capped. The token is read once through the same `take_secret`/
-  Keychain path as the provider keys, removed from the process environment, and
-  masked in logs and tool results; it is never a settings key and never appears
-  in `/health`, which reports only `enabled` / `connected` / the operator id.
+* **Zero-trust click and message.** Button callbacks (`_click`) and `on_message` check the author against
+  `ALLOWED_USER_ID` as their **first** statement and return before touching any state; anyone else's press is
+  a no-op that gets an ephemeral refusal, and anyone else's message is dropped in silence (a reply would tell a
+  stranger the bot is listening). A click is not a credential: the id is compared to a configured operator, and
+  Discord's own interaction signing is just what delivers it. Approving relays through
+  `Supervisor.answer_permission` — the *same* arbitration the GUI and TUI use, so the second front door to
+  answer loses harmlessly (`_settle`; a late terminal answer is dropped whichever door settled first), and the
+  decision is attributed (`decided_by="discord"`) in `state.db` and the `_sierralab/resolved` frame.
+* **A chat is an agent the operator can start — the new capability, and what bounds it.** A message from the
+  operator opens a daemon-owned `acp_server.py` child (`Session.owner`). It is the *same* agent with the *same*
+  gate: every shell/edit approval, every Laya-armed destructive call (in every mode, `auto` included), the vault
+  egress rule and the checkpoints apply unchanged, and the approval prompts reach Discord and nowhere else —
+  so a compromised Discord operator account can start agents and approve what they ask, exactly as a compromised
+  GUI session could, and no more. Bounds: at most three such processes at once (`chat.MAX_LIVE`; a fourth first stops the least-recently-used *idle* one, and is
+  refused with a message — not queued — only while all three are mid-turn), an idle one is stopped after 20 minutes, the conversation store is
+  `~/.sierralab/discord_chats.json` mode 0600 holding ids, folders, token counts and a short title (the first 80 characters of the opening message, secret-masked — never the conversation, which lives in the agent's own session files), a chat starts in
+  the folder named by `SIERRALAB_DISCORD_CWD` / your newest session / a private workspace and **says which in its
+  first line along with its mode**, and `!mode` can only pick among the three modes the TUI offers. An owned
+  session is invisible to a terminal's directory lookup and refused by the socket (`4409`): one writer per stdin.
+* **Offloaded tool output is a new place data rests — and what keeps it harmless.** A tool result over
+  `context.toolOutputChars` is written whole to `~/.sierralab/offloaded/<session>/` (`context_offload.py`, Strands'
+  `ContextOffloader`) so the model can read a slice back instead of re-running a command. It can hold anything
+  a tool printed, so: the directory is `0700` and each file `0600`; the write is on the host, never through the
+  agent's sandbox, and registered credentials are masked *before* it (the plugin runs ahead of `SecretRedactionHooks`
+  on `AfterToolCallEvent`, so it masks for itself); files are deleted after seven days; and the read-back
+  (`retrieve_offloaded_content`) is wrapped in the untrusted-data guard, because the stored copy predates that
+  wrap and a pattern slice may not include the lines the guard sat around. The model supplies only a reference
+  (a tool-call id the SDK sanitises: no `..`, no backslash, one namespace per session) — not a path. The same
+  secrets the session files already hold are all it adds; `context.offload: false` stops it.
+* **The agent's shell and editor are the SDK's vended tools, on the host — not a new boundary.** `core_tools.py` swaps the
+  deprecated `strands_tools.shell` / `editor` for `strands.vended_tools.shell` / `file_editor`, routed through
+  `HarnessSandbox` (the SDK's `NotASandboxLocalEnvironment` — `sh -c` on the host with the full environment, exactly the
+  authority the old tool had). Nothing is added or removed on the gate: the names (`shell`, `editor`) and parameters that
+  the approval handler, Laya Guard, the settings rules, checkpoints and the diff preview key on are unchanged, and a hook
+  ordered ahead of them only (a) defaults the timeout, (b) resolves a relative editor path to an absolute one *before*
+  the gate sees it, so a path rule is matched against the real path, and (c) turns the SDK's JSON result into text with an
+  exit code. A cancelled turn now kills the running command's process group instead of abandoning it.
+* **The web tools are the SDK's, and keep the same fences.** `http_request` and `web_fetch` (`core_tools.py`) replace the
+  deprecated `strands_tools.http_request`. Both are in `vault_proxy.EGRESS_TOOLS`, so an unreachable vault refuses them
+  (fail closed); both results pass through the untrusted-data wrap; and the HTTP client is built *per call* so the vault's
+  proxy and CA environment, which can appear after a session began, is always the one in force. A 4xx/5xx body — text
+  from outside that the SDK drops and the harness now returns — is fenced before the model reads it. `web_fetch` adds a
+  model reading a whole page: an analyst with **no tools**, so an injection in the page can colour its answer but cannot
+  act, and the answer is fenced as derived-from-untrusted. What goes: the old tool's auth modes (the model never held
+  credentials; the secret guard still blocks a registered one in a request's input), and `calculator`, `think` and
+  `current_time` (a model-reasoned tool, a nested model loop, and a clock — the date now rides along as ephemeral context).
+* **Conversations are one private file each, and not the prompt.** Sessions are `SnapshotSessionManager` snapshots under a
+  0700 directory, files 0600 (`session_store.py`) — the permission the legacy `session_<id>/` files never had. The system
+  prompt is deliberately not stored, so a prompt-injection that landed in a block of it cannot outlive its session, and a
+  settings or instruction change takes effect on resume. Migration from the legacy layout is additive; the legacy
+  directories (default permissions) remain until you delete them. **"Go back" forgets, it does not erase:** a turn taken
+  back is out of the agent's memory but still on disk in the session's immutable checkpoints (newest 50, same 0600
+  protection) — that is what lets a `/back` be undone — so the conversation holds as many copies of what was said as it
+  has checkpoints, and deleting the session directory is what removes them.
+* **A runaway turn is bounded, and a stop reaches the tool.** `context.maxSteps` (default 50) and
+  `context.maxTurnUsage` pause a turn (ACP `max_turn_requests`, history intact); `session/cancel` now calls
+  `agent.cancel()` on the running agent, and `claude_code_engineer` polls the signal and kills its CLI's process
+  group — before, a stop abandoned the stream and left the CLI spending Claude Code usage until its timeout.
+* **"Allow routine steps" is the mode switch, not a new bypass.** The button sets the chat to `auto`, which
+  already means "calls below Laya's gate run, calls at or above it still ask". A destructive call gets *Allow
+  once*, *Deny* or *Deny & stop* — never *Always allow* (the gate offers no always-rule for an armed call, and
+  `answer_permission(always=True)` selects only an option the child itself listed).
+* **A card that cannot be delivered is a denial.** If a chat's approval cannot be posted (Discord down, no
+  permission), the call is *denied* with `decided_by="discord:undeliverable"` — never left parked forever, never
+  waved through. `!stop` denies pending approvals before cancelling, because a child parked on a prompt never
+  reaches a cancel.
+* **Steering reuses the Lab's path.** A reply in a terminal/GUI session's thread, or a message sent mid-turn in
+  a chat, becomes `_sierralab/lab/inject` (the same call `lab.py:inject` serves), capped at 2000 characters and
+  acknowledged with a reaction (never echoed); it is *guidance*, consumed by the model's next call — it does
+  not bypass a permission prompt or run anything itself.
+* **An agent's words cannot reach anyone.** Everything a model wrote is posted with mentions disabled
+  (`allowed_mentions=none`; only the operator ping on a destructive card is allowed) and secret-masked, so
+  `@everyone` in a reply is text, and a registered credential in a reply is `[REDACTED]`.
+* **Nothing new is trusted into the transcript.** Card bodies are built from the child's own
+  `PendingPermission.meta` (already the masked view the GUI uses), passed through `secret_guard.redact` again,
+  and every post is length-capped. The *context* on a card (what the person asked, what the agent said) is
+  masked in the child and clipped to a few sentences. The token is read once through the same `take_secret`/
+  Keychain path as the provider keys, removed from the process environment, and masked in logs and tool results;
+  it is never a settings key and never appears in `/health`, which reports counts and ids only.
+* **Questions about status cost nothing and touch nothing.** "What are you working on?" / `!status` /
+  `!usage` are answered from state the daemon already holds (the supervisor, the Lab snapshots, each turn's own
+  `_sierralab/turn` receipt); no model is called and no session is interrupted.
 
-What this does not do: it does not add a timeout to an unanswered prompt (a
-parked child stays parked if nobody answers on any door), and it does not
-authenticate *which human* the operator is beyond the configured snowflake — a
-compromised operator account is a compromised approver, the same as a
-compromised GUI session. A standalone `make tui` session with no daemon has no
-Discord, because only the daemon holds the supervisor this relays through.
+What this does not do: it does not add a timeout to an unanswered prompt (a parked child stays parked if nobody
+answers on any door — except a chat's undeliverable card, above), and it does not authenticate *which human* the
+operator is beyond the configured snowflake — a compromised operator account is a compromised approver and, now,
+a compromised agent-starter, the same as a compromised GUI session. A standalone `make tui` session with no
+daemon has no Discord, because only the daemon holds the supervisor this relays through.
 
 ## Prompt-injection hardening
 
@@ -632,6 +761,47 @@ the literal-value masking above rather than to any body inspection. And
 `auto` mode with the vault *off* is unchanged — this narrows one path, it does
 not make an ungated agent safe.
 
+**Coverage, widened by the Phase 11 audit.** The fail-closed refusal used to apply to a fixed name list
+(`shell`, `python_repl`, `http_request`, `web_fetch`, `claude_code_engineer`). It now also covers
+`a2a_client` (a remote agent), `skill_forge` (its researcher sub-agent holds `http_request`), every
+*generated* skill (it runs inside this process and can open its own connection), every external MCP
+plugin tool and `mcp_resources` (a plugin server is a process started with whatever proxy environment
+existed then). Sub-agents (swarm, graph, team pipeline) have no gate for a refusal to reach, so while
+egress is blocked their kit simply has no `http_request` / `web_fetch` (`vault_proxy.egress_blocked`).
+A generated skill's AST gate now bans raw sockets, `ctypes`, `multiprocessing`, `pty` and every
+process-spawning spelling (`os.posix_spawn`, `os.exec*`, `asyncio.create_subprocess_*`,
+`from os import system`, `getattr(os, "popen")`, `__import__`, `importlib.import_module`) — the
+narrow check that keeps a generated tool from stepping around the proxy variables.
+
+### Language servers run no project code in an untrusted folder
+
+A language server is started for every project a session opens, before anyone is asked anything.
+rust-analyzer, by default, runs every `build.rs` and expands proc-macros (compiled crate code) when it
+loads a workspace, and `cargo check` on save — in a cloned repository, code execution on session open.
+In a folder that is not trusted it is now started with build scripts, proc-macros and check-on-save
+off (as `initializationOptions` and in answer to its `workspace/configuration` request), with its own
+experimental type diagnostics on instead; `/trust` restores the full set. Preflight never sends
+`didSave` at all (`check_texts`), so it never triggers a build in any folder. Residual:
+`typescript-language-server` / tsserver can load a plugin a repository's `tsconfig.json` names from its
+`node_modules`; not restricted here.
+
+### Preflight and rejection memory
+
+Preflight's static checks read code and run nothing of the project's: syntax in process, `ruff` (a `ruff` on
+`PATH`; a repository's own `.venv/bin/ruff` only in a trusted folder), the language server on unsaved text.
+`preflight.tests` *does* run the project's code — in a throwaway copy, with the session user's privileges
+(gap 6) — so the key is trust-gated and the step is skipped while the vault refuses egress. A preflight
+refusal only ever *withholds* an edit; it approves nothing, and the gate after it is unchanged. Its rollback
+restores from the shadow checkpoint repository, never the person's git, and checkpoints the present first.
+
+Rejection memory writes text that later reaches the model as a constraint, so its sources are bounded: only
+a person's rejection is captured (a fail-closed "no client" rejection is not), the ReflectionAgent has no
+tools and reads the diff and the note as data, a model-written rule must pass `textfilter` (no URL, no
+command, nothing about approvals or safeguards) and be phrased as "Do not / Never / Avoid / Always / Prefer";
+only the person's own note bypasses the filter, as the operator's words. The store is per user
+(`~/.sierralab/preferences/`, 0600), never from a repository, and a rule can only constrain — it never
+waives an ask, lowers a score or overrides a deny.
+
 ### Laya Guard and `auto` mode
 
 `auto` mode removes prompts, so it lets everything through that nothing else stops. Before Laya
@@ -787,7 +957,8 @@ Acknowledged, not fixed:
    multi-user system with real roles. Fine for the one-person-one-machine
    case this is built for; would need real auth before being anything
    else.
-5. **`a2a_client` and `http_request` are ungated egress.** Both fetch-kind
+5. **`a2a_client` and `http_request` are ungated egress** (with the vault off — with it on and
+   refusing, both are refused; see "Agent Vault is egress-only"). Both fetch-kind
    tools send network requests to a model-chosen endpoint without an approval
    prompt (the same deliberate trade-off in both cases: read-only fetches are
    what a research turn is *for*). For `a2a_client` the outbound body is
@@ -824,3 +995,8 @@ Acknowledged, not fixed:
     the CLI keeps only the allowlisted environment and the deny list, and an approved shell call
     it makes is unconfined like any other (gap 1). The profile covers the CLI's children, not the
     backend's own tools.
+12. **A screenshot cannot be masked.** The deck masks the text it captures, but pixels go as they
+    are: a token visible in an allowed window is in the image. The defences are policy — the
+    allowlist, the never-read list, secure input, one window, local-only unless the person opts in,
+    and a preview before sending — not redaction. An ad-hoc-signed build also loses its TCC grants
+    on every rebuild, which is a nuisance rather than a hole (the grant goes, not the check).

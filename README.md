@@ -8,6 +8,11 @@ own local model server (built and tested against oMLX on Apple Silicon; any
 OpenAI-compatible `/v1/chat/completions` server works — see `OMLX_BASE_URL`/`OMLX_MODEL_ID`
 below).
 
+How the pieces fit — processes, a turn end to end, and which document holds the detail — is in
+[`ARCHITECTURE.md`](ARCHITECTURE.md); the latest audit (security fixes, memory fixes, what was removed) is
+[`system_audit_report.md`](system_audit_report.md). For fast code search, install ripgrep (`brew install ripgrep`);
+`code_search` falls back to a slower Python search without it.
+
 ## Quick start
 
 Prerequisites: Python 3.12+, Node 22+, and an OpenAI-API-compatible local model server
@@ -152,7 +157,12 @@ window onto the daemon's gRPC telemetry — Containment Modal, Laya gauge, live 
 tree-sitter observer that reports changed *symbols*:
 [`docs/meta-harness.md`](docs/meta-harness.md). **`make lab-demo`** opens that window against a
 scripted daemon — a team to watch, an approval to answer, a 10,000-line diff, an autonomy switch
-and a steer bar that work — with no model, key or token spent. **Laya Guard** scores every tool
+and a steer bar that work — with no model, key or token spent. **`make lab-menubar`** puts the
+same harness in the menu bar: a status icon that turns cyan while agents run and amber when one
+needs you, and a deck on `⌘⇧Space` from any app that can attach what you are looking at — the app,
+its window title, your selection, optionally one window's screenshot — only for apps you allowed,
+masked and previewed before it is sent (see "Screen context" in
+[`docs/experimental-lab.md`](docs/experimental-lab.md#screen-context)). **Laya Guard** scores every tool
 call by every agent, so even `auto` mode stops at anything destructive ([`docs/agentic-harness.md`](docs/agentic-harness.md#laya-guard-every-call-by-every-agent)).
 
 ## Terminal clients (Rust)
@@ -190,23 +200,56 @@ cycle in flight. A deploy hook or CI job can feed it with `POST /observe`. Keys 
 [`docs/settings.md`](docs/settings.md); what it can and can't do:
 [`THREAT_MODEL.md`](THREAT_MODEL.md), "The background observer writes nothing".
 
-An unattended daemon can also carry approvals and steering to Discord — outbound WebSocket only,
-no inbound port, no webhook. Configure it with the environment (there are no settings keys, and the
-token never goes in a file):
+The daemon also puts agents in Discord — outbound WebSocket only, no inbound port, no webhook.
+Configure it with the environment (there are no settings keys, and the token never goes in a file):
 
 ```bash
 make discord-key                               # store the bot token in the Keychain, verified against Discord
 export ALLOWED_USER_ID=... TELEMETRY_CHANNEL_ID=...
-make daemon                                    # the bot announces "Daemon Connected" in the channel
+make daemon                                    # the bot announces itself once in the channel
 ```
 
-The bot is off unless all three are set and both ids parse; a stranger's Approve click is refused
-ephemerally and changes nothing, and an approval relays through the same arbitration the GUI and TUI
-use (first answer wins). Multi-step work opens a `🧵 Task: …` thread, and a reply there — or
-`> steer: …` in the channel — is fed to the orchestrator through the Lab's existing inject path.
-Message Content Intent must be on for the application. Details:
-[`THREAT_MODEL.md`](THREAT_MODEL.md), "Discord remote control"; the names:
-[`docs/settings.md`](docs/settings.md).
+What it does once it is up:
+
+- **Talk to an agent.** Write in the channel and a thread opens with an agent that *answers* — a real
+  prompt turn, streamed into the thread, with a receipt under it (`✓ 41s · 3 tool calls · 12.4k in ·
+  1.1k out`). Reply in the thread to continue; a message sent while it is working steers it at its
+  next step (acknowledged with a 📨 reaction, not a paragraph). A chat is an agent process of its own,
+  reaped when idle and restored from disk on your next reply — even after a daemon restart.
+- **Ask where things stand.** "What are you working on?" or `!status` is answered from the daemon's
+  own state — no model call, nothing spent, and the agent is not interrupted to say it.
+- **Decide only what needs deciding.** An approval card says *what, where and why* ("The agent wants to
+  run a shell command in *my-project*. You asked: … It said: …") before how risky; its buttons do what
+  they say (**Allow**, **Deny**, and on a destructive call **Deny & stop**); only a destructive call
+  pings you; **Allow routine steps in this chat** ends the routine prompts while destructive calls keep
+  asking; and a decided card collapses to one line — also when the GUI or terminal answered first.
+- `!stop` · `!mode auto|build|plan` · `!new <folder>` · `!usage` · `!help`. A terminal/GUI session shows
+  up as a thread too; a reply there steers it (it cannot answer — something else is driving it).
+
+The bot is off unless all three names are set and both ids parse; a stranger's click or message is
+dropped and changes nothing, and an approval relays through the same arbitration the GUI and TUI use
+(first answer wins). Message Content Intent must be on for the application. A new chat starts in
+`SIERRALAB_DISCORD_CWD`, else your newest terminal session's folder, else a private workspace — and
+says which in its first line. Details: [`THREAT_MODEL.md`](THREAT_MODEL.md), "Discord remote control";
+the names: [`docs/settings.md`](docs/settings.md).
+
+### Spending fewer tokens
+
+Every model call re-sends the system prompt, every tool's schema and the whole conversation. Measured
+here, an agent session carried **~43 KB of tool schema (≈10.8k tokens) on every call**; a plain turn now
+sends ~9 KB (−80%). Rarely-used tools (`calculator`, `think`, the model/resource managers, the
+Claude Code CLI, …) are loaded only when a turn mentions them, and the shell and editor are the Strands SDK's own
+vended tools, a fifth of the size of the ones they replaced. The agent can always load a hidden tool with
+`enable_tools`, so nothing is unavailable, just not paid for until needed. A big tool result is set aside
+whole (Strands' `ContextOffloader`: the model reads a head+tail preview and pulls the slice it needs, so a
+command is never re-run to see its middle), and tool output older than the newest few messages shrinks to a
+stub. A turn that will not converge pauses after 50 steps instead of spending (and "continue" resumes it),
+stopping a turn now really stops what it is running (a shell command, the Claude Code CLI), and history is summarised before the window overflows
+rather than after a rejected call. Skills are found by meaning instead of listed wholesale: the 49 that ship were 19 KB of the system prompt on every call; now the few that fit the request are listed (embedding search, with Laya — the local classifier — deciding which, if any, clearly fits and telling the model once), and a `search_skills` tool reaches the rest. A plain "hello" went from ~16k to ~5k input tokens. Beyond that:
+the observer makes no model call when nothing changed since its last cycle, and Claude Code CLI runs
+default to a mid-size model at medium effort (they spend your Claude Code usage). Switches are in
+[`docs/settings.md`](docs/settings.md#token-economy); every Discord turn shows what it cost. What the Strands SDK
+offers, and what this harness does and does not use of it, is in [`docs/strands-sdk-audit.md`](docs/strands-sdk-audit.md).
 
 Preferences work the way Claude Code's and Kilo's do: layered `settings.json` files (user / project /
 local), `allow` / `ask` / `deny` permission rules, "always allow" from the approval prompt, and
@@ -304,9 +347,15 @@ earlier — a long thread's prefill stays bounded instead of growing every turn.
 
 ## Conversation history & memory
 
-Every thread/session gets its own [`FileSessionManager`](https://github.com/strands-agents/sdk-python)
-writing to `backend/sessions/` — full conversation state persists across backend restarts,
-keyed by the AG-UI `threadId` (web) or the ACP `session_id` (editor).
+Every thread/session is a [`SnapshotSessionManager`](https://strandsagents.com/docs/user-guide/sdk/agents/session-management/)
+snapshot under `backend/sessions/session/<id>/` (`backend/session_store.py`) — one atomic JSON file per conversation
+(messages, agent state, a compaction summary, any interrupt in flight), private to you (0700/0600), persisted across
+backend restarts and keyed by the AG-UI `threadId` (web) or the ACP `session_id` (editor). The system prompt is
+*not* saved: a session always runs on the prompt built for it now. A conversation written by the older
+`FileSessionManager` (`backend/sessions/session_<id>/`) is migrated the first time it is opened, exactly and
+additively — the old directory is never touched — or all at once with `python session_store.py migrate --all`.
+Each turn is checkpointed as it starts, so `/back` (TUI) or `!back` (Discord) takes the conversation back — the agent
+forgets the last turn or turns, files are untouched (`/undo` is for those) — and `/back to <number>` undoes a `/back`.
 
 **Long-term semantic memory** is `agent_memory` (`backend/agent_memory_tool.py`): store,
 retrieve (semantic search), list, delete — backed by the Qdrant container (below) and a
@@ -465,7 +514,7 @@ door, with real parity on the things that matter for using it day to day:
   the model directly, and a bare reference becomes a pointer the model can act on with
   `file_read`.
 - **Session resume** (`session/load`) — reopening a past conversation replays its full
-  history into Zed's chat view from the same on-disk `FileSessionManager` the web front
+  history into Zed's chat view from the same on-disk session the web front
   door uses, keyed by session id. (Session mode resets to Build on reload — it isn't
   persisted across restarts, only conversation history is.)
 

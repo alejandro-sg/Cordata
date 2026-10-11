@@ -103,6 +103,79 @@ scrollback). Keys are in `tui/README.md`.
 * **HITL Intervention Station** — a pending approval with its diff (`d` for all of it):
   `[Y] Approve & Execute`, `[N] Reject & Discard`, `[K] E-Stop` (reject + isolate the pod that asked).
 
+## The menu bar
+
+`make lab-menubar` (`lab/crates/harness-menubar`) is the same harness as a menu-bar app: an
+accessory app (`NSApplicationActivationPolicy::Accessory`, so no Dock icon and no window on
+launch) with a status item and a deck.
+
+* **The icon is the state**, from the same telemetry the Lab draws (`harness_client::deck`):
+  a thin ring when idle, a filled cyan disc while a pod is executing, an amber disc when
+  something is waiting for you. The idle glyph is a *template* image so macOS tints it for a
+  light or dark menu bar; the other two are never tinted, because their colour is the message.
+  The badge count lives in the tooltip, not on the glyph.
+* **Three states, no fourth.** Offline is not a menu-bar state — the daemon being unreachable
+  asks nothing of the person, so it is said in words in the deck's status strip rather than
+  guessed from a colour.
+* **The deck** (`⌘⇧Space`, or a click) is a 420×520 popover pinned under the status item: the
+  state in words, the approvals that *interrupt*, the three newest notices, and a composer that
+  submits a turn over the bridge (`SubmitTurn`). Esc closes the composer first, then the deck.
+  A click outside closes it too — polled from AppKit, never observed, because a global event
+  monitor would cost Accessibility, the same permission the capture needs.
+* **The hotkey is Carbon `RegisterEventHotKey`**, so it needs neither Accessibility nor Input
+  Monitoring. `⌘⇧Space` is the default; if another app holds it the next binding in the list is
+  tried, and if every one is taken the failure is a chip in the deck rather than a keystroke
+  that silently does nothing. Clicking the status item always works.
+* **Approvals must not block, here either.** The same rule as the Lab's containment modal
+  (`deck::interrupts`, one implementation shared by both): a `risk_score >= 0.8`, or an unscored
+  `armed` request, opens the deck by itself; a `0.58` one waits in the list and never takes over.
+
+Two front doors may run at once — the daemon already arbitrates them (latest-wins telemetry,
+intervention fan-out, first answer wins). Only the Lab runs the workspace observer.
+
+### Screen context
+
+The deck can attach what you are looking at to a turn — and only what you allowed:
+
+1. **Summon it over the app** (hotkey or click). The deck remembers which app was frontmost — the
+   one thing that costs no permission — and takes the keyboard (closing it hands the keyboard back).
+2. **Capture** (or `c`). Off by default: the first time, the deck names the app and offers
+   **Always allow <app>**, which adds its bundle id to `capture.allowlist` in your *user* settings.
+   Password managers, Keychain Access and Passwords never get that button.
+3. **The checklist** shows each field as it would be sent — `✓ window title`, `✓ selected text (2
+   masked)`, `✗ selected text — Accessibility is not granted [Grant Accessibility]` — already
+   masked, so you approve what goes, not what will be masked later. **Don't send** drops it.
+4. **Add screenshot** (optional) captures that app's frontmost window only (ScreenCaptureKit,
+   ≤2048 px, ≤4 MiB JPEG), and says where it may go: a local vision model, or a cloud one only with
+   `capture.screenshotCloud`. It is used only when `capture.visionModel` names a model; the turn
+   runs on it once and the image is removed from the history afterwards.
+5. **Send** — the context goes with this turn only, as wrapped untrusted data (`os_context.py`),
+   and the daemon logs what arrived: `grpc: submit_turn … context app='Safari' (com.apple.Safari)
+   title='…' selection=42 chars '…'`.
+
+Permissions are macOS's: Accessibility for the title and selection, Screen Recording for the image.
+Grant them to a bundled build — `make lab-menubar-app INSTALL=1` builds `~/Applications/Sierralab.app`
+(`LSUIElement`, signed; set `SIGN_IDENTITY` to a code-signing certificate so a grant survives
+rebuilds — ad-hoc signing makes every rebuild a new app to macOS). Policy and its limits:
+`THREAT_MODEL.md`, "OS context capture"; settings: `docs/settings.md`, "Screen context".
+
+**Checking it.** `make lab-menubar-selftest` cycles the three icons and prints where AppKit placed
+the status item (the window server's own list does not report status items to an unprivileged
+process). `make lab-menubar-deck-selftest` opens the deck over whatever app is frontmost and prints
+whether it became key, which app it recorded as the target, the backdrop (Liquid Glass or the blur
+fallback) and the frontmost app after it closed. `make lab-live` drives a capture (from a fake OS
+source) through the real Rust client and Python bridge and reads the daemon's log and ledger. What
+no script can check — the real Carbon hotkey over another app, the TCC prompts, the glass's look,
+a real selection from Safari — is a hand check:
+
+```bash
+make lab-menubar-app INSTALL=1
+```
+
+then open `~/Applications/Sierralab.app`, grant it Accessibility, select text in Safari, press
+`⌘⇧Space`, Capture, Always allow, type a prompt, Enter, and read `~/.sierralab/daemon.log` (or the
+demo's `daemon.log`) for the `submit_turn` line.
+
 ## Protocol
 
 Backend → client: the ACP extension notification `_sierralab/lab`, always a **full snapshot**
@@ -178,3 +251,8 @@ All of these run offline unless marked live; none needs the cloud.
 | `backend/_daemon_smoke_test.py` | the `/lab` tap and read-only socket |
 | `tui/` `cargo test --workspace` | event parsing, keys → requests, rendering (incl. through the emulated terminal), approvals-don't-block-notifications |
 | `backend/_ollama_cloud_live_test.py`, `backend/_e2e_lab_live_test.py` | **live**: the real daemon, real glm/kimi, real Laya; asserts nothing was pulled |
+| `lab/` `cargo test --workspace` (`make lab-test`) | the tray's three states and the tiering rule (`0.58` does not take over, `0.93` does), the hotkey's fallback list and its failure message, the deck's placement arithmetic (edges, a second display, a deck taller than the space under the icon) and the deck itself in headless GPUI: rows, composer, hotkey-error chip, Esc |
+
+Not covered by any test, and checked by hand instead: the real `NSStatusItem`, the real Carbon
+hotkey over another app, `--deck-selftest` (a popover window with a transparent background cannot
+be created headlessly), and TCC prompts later.

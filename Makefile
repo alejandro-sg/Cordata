@@ -1,4 +1,4 @@
-.PHONY: setup up down restart status logs daemon daemon-install daemon-uninstall daemon-status deploy-mini deploy-mini-frontend deploy-mini-backend tui tui-build tui-test lab lab-demo lab-build lab-test lab-live proto evals evals-validate learning-test laya-test laya-export laya-eval stress tui-cloud tui-lab stress-cloud key check-key discord-key laya-watch settings
+.PHONY: phase12-test gate-live setup up down restart status logs daemon daemon-install daemon-uninstall daemon-status deploy-mini deploy-mini-frontend deploy-mini-backend tui tui-build tui-test lab lab-demo lab-build lab-test lab-live lab-menubar lab-menubar-selftest lab-menubar-deck-selftest lab-menubar-demo lab-menubar-app proto evals evals-validate learning-test laya-test laya-export laya-eval stress tui-cloud tui-lab stress-cloud key check-key discord-key laya-watch settings
 
 setup:
 	@scripts/setup.sh
@@ -68,6 +68,35 @@ lab-demo:
 lab-build:
 	@cd lab && cargo build --release
 
+# The menu-bar door (lab/crates/harness-menubar, docs/experimental-lab.md): the same harness in the
+# menu bar — a three-state icon driven by the same telemetry, and the deck on a hotkey. Needs the
+# daemon running with its gRPC bridge, exactly like `make lab`.   make lab-menubar
+lab-menubar:
+	@cd lab && cargo run -q -p harness-menubar
+
+# A ten-second eyeball check with no daemon at all: the icon cycles idle → working → needs you, then
+# starts over, so the three glyphs can be looked at side by side.   make lab-menubar-selftest
+lab-menubar-selftest:
+	@cd lab && cargo run -q -p harness-menubar -- --tray-selftest
+
+# Opens the deck itself, prints where it landed, closes it and exits. A popover window with a
+# transparent background cannot be created in a headless test, so this is the only check there is.
+#   make lab-menubar-deck-selftest
+lab-menubar-deck-selftest:
+	@cd lab && cargo run -q -p harness-menubar -- --deck-selftest
+
+# The menu bar against the same scripted daemon the window uses, plus a held destructive command —
+# which is what turns the icon amber.   make lab-menubar-demo WATCH=~/proj
+lab-menubar-demo:
+	@scripts/lab-demo.sh --menubar
+
+# The deck as a real menu-bar app (lab/target/Sierralab.app, LSUIElement, signed), so the
+# Accessibility grant belongs to it rather than to your terminal. INSTALL=1 copies it to
+# ~/Applications; SIGN_IDENTITY="<cert>" keeps the grant across rebuilds (see the script).
+#   make lab-menubar-app INSTALL=1
+lab-menubar-app:
+	@scripts/package-menubar.sh $(if $(INSTALL),--install,)
+
 # The Rust client against the *real* Python bridge (not the Rust fake): wire compatibility, the
 # approval round trip, the knobs, the unload, the diff, ingest — then the ledger is checked.
 lab-live:
@@ -100,6 +129,20 @@ learning-test:
 	@backend/.venv/bin/python backend/_bandit_smoke_test.py
 	@backend/.venv/bin/python backend/_learning_smoke_test.py
 	@backend/.venv/bin/python backend/_optimize_smoke_test.py
+
+# Phase 11/12 (system_audit_report.md): the audit's fixes, code navigation, preflight, rejection memory and
+# environment awareness. Hermetic (scripted models), also in CI.
+phase12-test:
+	@backend/.venv/bin/python backend/_phase11_hardening_smoke_test.py
+	@backend/.venv/bin/python backend/_code_nav_smoke_test.py
+	@backend/.venv/bin/python backend/_preflight_smoke_test.py
+	@backend/.venv/bin/python backend/_rejection_memory_smoke_test.py
+	@backend/.venv/bin/python backend/_environment_awareness_smoke_test.py
+
+# The verification gate against the configured REAL model (spends cloud tokens; Discord off, Laya off, a throwaway
+# SIERRALAB_HOME). Prints what the model did.   make gate-live ARGS="1 3"
+gate-live:
+	@cd backend && SIERRALAB_DISCORD=off .venv/bin/python _phase12_gate_live_test.py $(ARGS)
 
 # The trajectory export and the checkpoint registry. Hermetic — no model, no network, so unlike learning-test
 # this one runs in CI.
