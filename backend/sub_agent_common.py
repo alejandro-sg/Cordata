@@ -17,6 +17,7 @@ from strands.agent.conversation_manager import SummarizingConversationManager
 import laya_triage
 from prompt_security import UNTRUSTED_CONTEXT_POLICY, SecretRedactionHooks, UntrustedToolResultHooks
 import settings
+import vault_proxy
 
 DEFAULT_SYSTEM_PROMPT = "You are a helpful AI assistant specializing in collaborative problem solving."
 
@@ -91,6 +92,8 @@ ORCHESTRATOR_ONLY_TOOLS = {
     # orchestrator's approval prompt can authorise, and a sub-agent loading or stopping models
     # would be moving the machine's memory under the orchestrator's feet.
     "claude_code_engineer",
+    # `web_fetch` runs a model call of its own over a whole page: a swarm node does not get to spend that on its own.
+    "web_fetch",
     "omlx_resource_manager",
     "ollama_resource_manager",
     "context_digest",
@@ -172,7 +175,7 @@ def build_conversation_manager() -> SummarizingConversationManager:
     reply, lossy for a sub-agent mid-way through several handoffs and tool
     calls in a long-running swarm/graph. No summarization_agent given, so
     Strands uses the sub-agent's own (local) model to write the summary."""
-    return SummarizingConversationManager(preserve_recent_messages=10)
+    return SummarizingConversationManager(preserve_recent_messages=10, proactive_compression=True)
 
 
 def resolve_tools(tool_names: list[str] | None, caller: Agent, tool_label: str) -> list:
@@ -212,6 +215,9 @@ def resolve_tools(tool_names: list[str] | None, caller: Agent, tool_label: str) 
         | set(agent_common.MCP_TOOL_NAMES)
         | ORCHESTRATOR_ONLY_TOOLS
         | registered_proxy_names(caller.tool_registry)
+        # A sub-agent has no approval gate, so the vault's fail-closed refusal cannot reach its calls: while the vault
+        # blocks egress (vault.egressPolicy: deny, vault down) its kit simply has no network tools.
+        | (vault_proxy.SUB_AGENT_EGRESS_TOOLS if vault_proxy.egress_blocked() else frozenset())
     )
     available = caller.tool_registry.registry
 

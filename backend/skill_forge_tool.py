@@ -41,7 +41,11 @@ real tool call, agent_common has already finished importing.
 from pathlib import Path
 
 from strands import Agent, tool
-from strands_tools import file_read, http_request, python_repl, think
+from strands_tools import file_read, python_repl
+
+# The SDK's vended http_request (core_tools), not strands_tools' — deprecated in strands-agents-tools 0.8.9, an error
+# log in 0.9.0; the rest of the harness moved off it in the context-diet work and this one was left behind.
+from core_tools import http_request
 
 from prompt_security import SecretRedactionHooks, UntrustedToolResultHooks
 
@@ -66,14 +70,14 @@ _BACKEND_DIR = Path(__file__).resolve().parent
 # reliability, and each sub-agent here has exactly one job.
 _DEBUGGER_PROMPT = (
     "You are a debugging specialist. You will be given a failing tool name, "
-    "the arguments it was called with, and a stack trace. Call think first, "
+    "the arguments it was called with, and a stack trace. Reason first, "
     "then respond with: root cause, whether it looks transient or "
     "code-level, and a concrete fix sketch. Do not write any files yourself."
 )
 
 _WRITER_PROMPT = (
     "You are a tool-writing specialist. You will be given a diagnosis and "
-    "fix sketch. Call think to check the fix against the diagnosis, then "
+    "fix sketch. Check the fix against the diagnosis, then "
     "draft exactly one new tool: a single @tool-decorated Python function, "
     "with a docstring, that implements the fix. Do not call file_write or "
     "any other tool to save it — you have no way to create a file that a "
@@ -104,7 +108,7 @@ def _run_debugger(build_model, stack_trace: str, failing_tool: str, attempted_ar
     agent = Agent(
         model=build_model(),
         system_prompt=_DEBUGGER_PROMPT,
-        tools=[think, file_read, http_request],
+        tools=[file_read, http_request],
         hooks=[UntrustedToolResultHooks(), SecretRedactionHooks()],
         callback_handler=None,
     )
@@ -114,11 +118,11 @@ def _run_debugger(build_model, stack_trace: str, failing_tool: str, attempted_ar
 
 def _run_writer(build_model, diagnosis: str) -> str:
     # No file_write/editor here — see module docstring and skill_forge's own
-    # docstring for why. think only.
+    # docstring for why. No tools at all.
     agent = Agent(
         model=build_model(),
         system_prompt=_WRITER_PROMPT,
-        tools=[think],
+        tools=[],
         callback_handler=None,
     )
     return str(agent(diagnosis))

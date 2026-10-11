@@ -23,7 +23,7 @@ import re
 import uuid
 
 from ag_ui_strands import StrandsAgent, StrandsAgentConfig, ToolBehavior, create_strands_app
-from fastapi import HTTPException
+from fastapi import Header, HTTPException
 from pydantic import BaseModel
 
 # Imported before agent_common: importing agent_common chdirs the process
@@ -38,6 +38,7 @@ from pydantic import BaseModel
 # import WORKSPACE_DIR` does the loading transitively). Putting it after
 # agent_common's own import here breaks with exactly the ModuleNotFoundError
 # this comment warns about, even though both look equally "early".
+from core_tools import CoreToolHooks
 from skill_validation_hooks import SkillValidationHooks
 from laya_triage import triage_hooks
 from prompt_security import SecretRedactionHooks, UntrustedToolResultHooks
@@ -192,10 +193,10 @@ def _style_context_builder(input_data, user_message: str) -> str:
 
 def session_manager_provider(run_input):
     """Give each AG-UI thread its own durable Strands session on local disk."""
+    import session_store
     from agent_common import SESSIONS_DIR
-    from strands.session.file_session_manager import FileSessionManager
 
-    return FileSessionManager(session_id=run_input.thread_id, storage_dir=str(SESSIONS_DIR))
+    return session_store.session_manager(run_input.thread_id, SESSIONS_DIR)
 
 
 agui_agent = StrandsAgent(
@@ -210,6 +211,7 @@ agui_agent = StrandsAgent(
     # from backend/skills_generated/ before it executes — the second,
     # independent gate on generated tools, on top of the approval below.
     hooks=[
+        CoreToolHooks(),  # the SDK's shell/editor, fitted to the harness (core_tools.py)
         SkillValidationHooks(),
         UntrustedToolResultHooks(extra_untrusted_tools=MCP_TOOL_NAMES),
         SecretRedactionHooks(),
@@ -236,15 +238,68 @@ agui_agent = StrandsAgent(
     ),
 )
 
+# The conversation hub (hub_client.py): with SIERRALAB_HUB_GRPC set, a web turn runs in the laptop
+# daemon's hub — the same conversations as the terminal, Discord and the menu bar — instead of in the
+# local agent above. That endpoint then drives agents on the laptop, so it is no longer open to whatever
+# can reach this port: it requires the frontend's X-Sandbox-Token (the Next.js server sends it).
+import hub_client  # noqa: E402
+
+HUB = hub_client.configured()
+
+
+def _require_hub_token(x_sandbox_token: str | None = Header(default=None)) -> None:
+    import hmac  # noqa: PLC0415
+
+    from settings import SANDBOX_API_TOKEN  # noqa: PLC0415
+
+    if not x_sandbox_token or not hmac.compare_digest(x_sandbox_token, SANDBOX_API_TOKEN):
+        raise HTTPException(status_code=401, detail="the hub needs the frontend's X-Sandbox-Token")
+
+
+def _hub_threads() -> "hub_client.ThreadMap":
+    from agent_common import SESSIONS_DIR  # noqa: PLC0415
+
+    return hub_client.ThreadMap(SESSIONS_DIR / "hub_threads.json")
+
+
 app = create_strands_app(
-    agui_agent,
+    hub_client.HubAgent(HUB, _hub_threads()) if HUB is not None else agui_agent,
     "/",
     # localhost:3000 always allowed (a fresh single-machine checkout needs no
     # config); anything past that is your own deployment's own origin(s) —
     # see settings.py's EXTRA_CORS_ORIGINS comment.
     origins=["http://localhost:3000", *EXTRA_CORS_ORIGINS],
+    auth=_require_hub_token if HUB is not None else None,
 )
 register_security_headers(app)
+
+
+@app.get("/hub/conversations")
+async def hub_conversations(x_sandbox_token: str | None = Header(default=None)) -> dict:
+    """The hub's conversations for the sidebar: every door's, newest first. `enabled: false` when this
+    backend runs its own agent instead."""
+    if HUB is None:
+        return {"enabled": False, "conversations": []}
+    _require_hub_token(x_sandbox_token)
+    try:
+        return {"enabled": True, "reachable": True, "conversations": await hub_client.list_conversations(HUB)}
+    except Exception as error:  # the laptop is asleep, or the tunnel is down
+        return {"enabled": True, "reachable": False, "error": hub_client._unreachable(error), "conversations": []}
+
+
+@app.get("/hub/conversations/{handle}")
+async def hub_conversation(handle: str, x_sandbox_token: str | None = Header(default=None)) -> dict:
+    """One conversation's last few turns, from every door — what the web app shows above the chat when
+    a conversation started elsewhere is opened here."""
+    if HUB is None:
+        raise HTTPException(status_code=404, detail="this backend is not connected to the hub")
+    _require_hub_token(x_sandbox_token)
+    if not hub_client.HANDLE.match(handle):
+        raise HTTPException(status_code=400, detail="not a conversation handle")
+    try:
+        return {"handle": handle, "turns": await hub_client.history(HUB, handle)}
+    except Exception as error:
+        return {"handle": handle, "turns": [], "error": hub_client._unreachable(error)}
 
 
 @app.on_event("startup")

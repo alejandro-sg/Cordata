@@ -54,6 +54,8 @@ DEFAULT_BASE_URL = "http://localhost:11434/v1"
 DUMMY_API_KEY = "ollama"
 #: Same reasoning as agent_common._DEFAULT_MAX_TOKENS — thinking tokens count against it.
 DEFAULT_MAX_TOKENS = 16384
+#: See `agent_common.UNKNOWN_CONTEXT_WINDOW`; `OLLAMA_CLOUD_CONTEXT_WINDOW` overrides it.
+DEFAULT_CONTEXT_WINDOW = 128_000
 
 REASONING_LEVELS = ("low", "medium", "high", "max")
 ReasoningEffort = Literal["low", "medium", "high", "max"]
@@ -297,6 +299,9 @@ class OllamaCloudModel(OpenAIModel):
             self.reasoning.set(reasoning_effort)
         self._transport = transport
         params = {"max_tokens": DEFAULT_MAX_TOKENS, **(model_config.pop("params", None) or {})}
+        # The window is set by the hosted model, not by this process. A planning number rather than a fact (see
+        # `agent_common.UNKNOWN_CONTEXT_WINDOW`) so Strands' proactive compression has something to measure against.
+        model_config.setdefault("context_window_limit", int(os.getenv("OLLAMA_CLOUD_CONTEXT_WINDOW") or DEFAULT_CONTEXT_WINDOW))
         super().__init__(
             client_args={"api_key": DUMMY_API_KEY, "base_url": self.base_url},
             model_id=self.spec.wire_id,

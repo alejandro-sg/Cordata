@@ -247,6 +247,12 @@ class LayaRouter:
         self.calibrator = calibrator or Calibrator()
         self.policy = policy or Policy()
 
+    @property
+    def predict(self) -> Callable[..., dict | None]:
+        """The forward pass this router asks its questions with — shared, so the skill decider
+        (`skill_search.SkillDecider`) asks Laya through the same lazily-loaded instance and the same calibrator."""
+        return self._predict
+
     # --------------------------------------------------------------- turns
 
     def decide(self, text: str, targets: list[Target]) -> RouteDecision:

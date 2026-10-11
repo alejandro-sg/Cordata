@@ -59,7 +59,7 @@ task, answer exactly {"agents": false}.
 Answer with ONLY a JSON object, no prose, no fences:
 {"task": "one sentence for the whole team",
  "agents": [{"name": "snake_case", "role": "one line", "task": "exact self-contained task for this node",
-             "tools": ["optional tool names: file_read, think, http_request, http_fetch, agent_memory"],
+             "tools": ["optional tool names: file_read, http_request, http_fetch, agent_memory"],
              "tier": "fast"|"standard"|"strong" (optional),
              "profile": "architect"|"digest" (optional: architect = design/planning, digest = condensing bulk
                         context into a short summary; both run on a local model, so use them for that work),

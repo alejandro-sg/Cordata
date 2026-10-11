@@ -49,6 +49,10 @@ GB = 1024**3
 #: a 32 GB 4-bit model is a minute or more from a cold disk.
 LOAD_TIMEOUT = 300.0
 REQUEST_TIMEOUT = 10.0
+#: How long an unload waits for the server's memory figure to fall after the model reads as unloaded. A 27B Prism model is
+#: ~7 GB of Metal buffers; a server that flips the flag but keeps the buffers (an MLX cache that was not cleared) still
+#: holds them, and that is a leak only the pool figure shows.
+UNLOAD_SETTLE = 3.0
 
 
 class OmlxError(RuntimeError):
@@ -165,6 +169,8 @@ class OmlxManager:
         self._transport = transport or _urllib_transport
         key = api_key if api_key is not None else os.getenv("OMLX_API_KEY", "")
         self._headers = {"Accept": "application/json", **({"Authorization": f"Bearer {key}"} if key else {})}
+        #: model id -> bytes the pool still held after the model was unloaded (see ``unload``). Empty is healthy.
+        self.unreclaimed: dict[str, int] = {}
 
     def _call(self, method: str, path: str, *, timeout: float = REQUEST_TIMEOUT) -> tuple[int, Any]:
         return self._transport(method, f"{self.root}{path}", b"" if method == "POST" else None, self._headers, timeout)
@@ -232,16 +238,46 @@ class OmlxManager:
             raise OmlxError(f"oMLX refused to load {row.id}: HTTP {code} {self._detail(payload)}")
         return self._await(row.id, loaded=True, timeout=min(timeout, 60.0))
 
-    def unload(self, model: str) -> OmlxModelStatus:
+    def unload(self, model: str, *, settle: float = UNLOAD_SETTLE) -> OmlxModelStatus:
         """Drop ``model`` from memory. Idempotent; a pinned model is refused by oMLX
-        itself and reported here, not retried around."""
-        row = self.resolve(model)
+        itself and reported here, not retried around.
+
+        "Unloaded" is checked twice: the model's own flag, and then the pool — the server's
+        ``current_model_memory`` must fall by at least half the model's resident size within
+        ``settle`` seconds. A server that reports the model gone but still holds its buffers is
+        recorded in ``unreclaimed`` (and logged) rather than trusted: that memory is not back in
+        macOS's hands until the server releases it or restarts."""
+        status = self.status()
+        row = self.resolve(model, status)
         if not row.loaded and not row.loading:
             return row
+        before, size = status.memory_bytes, row.size_bytes
         code, payload = self._call("POST", f"/v1/models/{urllib.parse.quote(row.id, safe='')}/unload")
         if code != 200:
             raise OmlxError(f"oMLX refused to unload {row.id}: HTTP {code} {self._detail(payload)}")
-        return self._await(row.id, loaded=False, timeout=30.0)
+        row = self._await(row.id, loaded=False, timeout=30.0)
+        self._verify_reclaimed(row.id, before, size, settle)
+        return row
+
+    def _verify_reclaimed(self, model_id: str, before: int, size: int, settle: float) -> None:
+        if size <= 0 or before <= 0:
+            self.unreclaimed.pop(model_id, None)
+            return
+        deadline = time.monotonic() + max(0.0, settle)
+        while True:
+            try:
+                now = self.status().memory_bytes
+            except OmlxError:
+                return  # cannot tell; the flag already said unloaded
+            if before - now >= size // 2:
+                self.unreclaimed.pop(model_id, None)
+                return
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.2)
+        held = max(0, size - max(0, before - now))
+        self.unreclaimed[model_id] = held
+        logger.warning("omlx: %s reads as unloaded but the pool still holds %.1f GB of it (restart oMLX to reclaim)", model_id, held / GB)
 
     def unload_all(self) -> list[OmlxModelStatus]:
         """Every loaded, unpinned model. The emergency path: keeps going past a

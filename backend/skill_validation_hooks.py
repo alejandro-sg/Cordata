@@ -47,9 +47,25 @@ _WRITE_TOOL_NAMES = {"file_write", "editor"}
 # banned as specific calls, per docs/self-healing-architecture.md §2 step 4a.
 # Not a general Python sandbox — a narrow check against the shell-escape
 # patterns a generated tool has no legitimate reason to need.
-_BANNED_MODULES = {"subprocess"}
-_BANNED_CALL_NAMES = {"eval", "exec"}
-_BANNED_ATTR_CALLS = {("os", "system")}
+#
+# Widened by the Phase 11 audit (system_audit_report.md): a generated tool runs
+# *in the agent's process*, so a raw socket, a spawned child with its own
+# environment, or a foreign-function call reaches the network around the Agent
+# Vault's proxy variables. The process-spawning and raw-network modules go
+# wholesale; every os-level spawn goes by name, including `from os import …`
+# and `getattr(os, "…")` spellings.
+_BANNED_MODULES = {"subprocess", "socket", "ctypes", "multiprocessing", "pty", "pexpect", "_posixsubprocess"}
+_BANNED_CALL_NAMES = {"eval", "exec", "__import__"}
+_BANNED_OS_CALLS = {
+    "system", "popen", "fork", "forkpty", "posix_spawn", "posix_spawnp",
+    "execl", "execle", "execlp", "execlpe", "execv", "execve", "execvp", "execvpe",
+    "spawnl", "spawnle", "spawnlp", "spawnlpe", "spawnv", "spawnve", "spawnvp", "spawnvpe",
+}
+_BANNED_ATTR_CALLS = {("os", name) for name in _BANNED_OS_CALLS} | {
+    ("asyncio", "create_subprocess_exec"),
+    ("asyncio", "create_subprocess_shell"),
+    ("importlib", "import_module"),
+}
 
 _SYNTHETIC_LITERALS = {
     "str": '"synthetic-test-value"',
@@ -85,6 +101,9 @@ def find_banned_usage(tree: ast.AST) -> str | None:
         elif isinstance(node, ast.ImportFrom):
             if node.module and node.module.split(".")[0] in _BANNED_MODULES:
                 return f"imports banned module '{node.module}'"
+            for alias in node.names:
+                if node.module and (node.module, alias.name) in _BANNED_ATTR_CALLS:
+                    return f"imports banned '{node.module}.{alias.name}'"
         elif isinstance(node, ast.Call):
             func = node.func
             if isinstance(func, ast.Name) and func.id in _BANNED_CALL_NAMES:
@@ -92,6 +111,10 @@ def find_banned_usage(tree: ast.AST) -> str | None:
             if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
                 if (func.value.id, func.attr) in _BANNED_ATTR_CALLS:
                     return f"calls banned '{func.value.id}.{func.attr}'"
+            if isinstance(func, ast.Name) and func.id == "getattr" and len(node.args) >= 2:
+                target, name = node.args[0], node.args[1]
+                if isinstance(target, ast.Name) and isinstance(name, ast.Constant) and (target.id, name.value) in _BANNED_ATTR_CALLS:
+                    return f"reaches banned '{target.id}.{name.value}' through getattr"
     return None
 
 

@@ -1,5 +1,5 @@
 # Pinned exactly, not left open — several of these (ag_ui_strands especially,
-# still pre-1.0 at 0.4.0) have internals this codebase reads source for and
+# still pre-1.0 at 0.4.1) have internals this codebase reads source for and
 # relies on directly (StrandsInterruptHook's exact attach point, the
 # StateSnapshotEvent shape, tool_behaviors semantics — see skill_forge_tool.py
 # and local_graph_tool.py's own comments for two concrete examples this
@@ -13,12 +13,14 @@
 # is reachable) before it lands here, not something that happens silently on
 # a fresh checkout.
 ag-ui-protocol==0.1.22
-ag_ui_strands==0.4.0
-strands-agents[openai,anthropic]==1.55.1
+ag_ui_strands==0.4.1
+strands-agents[openai,anthropic]==1.57.2
 # the A2A extra: strands.agent.a2a_agent.A2AAgent (a2a_client_tool.py) needs
 # the a2a-sdk protocol package — pip pulls a2a-sdk==0.3.26 with it
-strands-agents[a2a]==1.55.1
-strands-agents-tools==0.8.8
+strands-agents[a2a]==1.57.2
+strands-agents-tools==0.8.9
+# core_tools.shape_pdf_result: file_read on a PDF returns its text, not bytes a local model can't read
+pypdf==6.19.0
 agent-client-protocol==0.12.1
 qdrant-client==1.19.0
 sentence-transformers==6.0.1

@@ -49,6 +49,8 @@ import logging
 import os
 import re
 import shutil
+import signal
+import threading
 import time
 import uuid
 from collections.abc import AsyncGenerator, Callable
@@ -79,6 +81,12 @@ ALLOW_ENV = "SIERRALAB_CLAUDE_ALLOW"
 DEFAULT_TIMEOUT = 1800.0
 MAX_TIMEOUT = 3600.0
 DEFAULT_BUDGET_USD = 5.0
+#: What a run uses unless the person said otherwise (`claudeCode.model` / `claudeCode.effort`). A run spends the
+#: person's Claude Code usage, and the CLI's own default is its largest model at a high effort — a poor default
+#: for "implement this feature", which a mid-size model at medium effort does at a fraction of the cost. A
+#: person who wants the big one sets it; the model is never asked to.
+DEFAULT_MODEL = "sonnet"
+DEFAULT_EFFORT = "medium"
 MAX_TASK_CHARS = 20_000
 MAX_RESULT_CHARS = 8_000
 CONTEXT_HITS = 5
@@ -453,6 +461,16 @@ def _setting(preferences: Any, key: str, default: Any) -> Any:
     return default if value is None else value
 
 
+def kill_group(pid: int | None) -> None:
+    """SIGKILL the CLI's process group (it and whatever it started). Nothing to do for a pid that is gone."""
+    if not pid:
+        return
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
 async def run_engineer(
     task: str,
     *,
@@ -460,6 +478,7 @@ async def run_engineer(
     model: str | None = None,
     timeout_seconds: float = DEFAULT_TIMEOUT,
     effort: str | None = None,
+    cancel_signal: threading.Event | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """Run one Claude Code task. Yields ``{"progress": text}`` while it runs and, last, the
     Strands ``ToolResult``. Never raises for an operational failure."""
@@ -479,6 +498,12 @@ async def run_engineer(
     if _setting(preferences, "claudeCode.enabled", True) is False:
         yield _error("claude_code_engineer is switched off (claudeCode.enabled is false).", {"reason": "disabled"})
         return
+    if model is None:
+        configured = str(_setting(preferences, "claudeCode.model", DEFAULT_MODEL) or "").strip()
+        model = configured if configured and _MODEL.fullmatch(configured) else None
+    if effort is None:
+        level = str(_setting(preferences, "claudeCode.effort", DEFAULT_EFFORT) or "").strip().lower()
+        effort = None if level in ("", "default") else level
 
     root = str(Path(rt.cwd()).resolve())
     binary = find_binary()
@@ -524,6 +549,8 @@ async def run_engineer(
     stderr_text = ""
     reason = ""
     timed_out = False
+    cancelled = False
+    watcher: asyncio.Task | None = None
     freed: dict[str, Any] = {}
     context = MemoryContext()
     before: dict[str, tuple[int, int]] | None = None
@@ -570,20 +597,25 @@ async def run_engineer(
                 return
 
             def kill() -> None:
-                import signal
-
-                pid = sandbox.last_pid
-                if pid:
-                    try:
-                        os.killpg(pid, signal.SIGKILL)
-                    except (ProcessLookupError, PermissionError):
-                        pass
+                kill_group(sandbox.last_pid)
 
             pod.killers.append(kill)
 
         task_bar.update(message="running claude")
         last_emit = 0.0
         timeout = min(max(float(timeout_seconds), 1.0), MAX_TIMEOUT)
+        if cancel_signal is not None:
+            # Strands' cancellation is cooperative for a running tool (docs: agent-loop → Cancellation): it stops the loop
+            # around the tool, never inside it. A run of the CLI spends the person's Claude Code usage for as long as it
+            # lives, so this tool looks at the signal itself — the moment the person stops the turn, so does the CLI.
+            async def watch_cancel() -> None:
+                nonlocal cancelled
+                while not cancel_signal.is_set():
+                    await asyncio.sleep(0.1)
+                cancelled = True
+                kill_group(sandbox.last_pid)
+
+            watcher = asyncio.create_task(watch_cancel())
         try:
             async for item in sandbox.execute_argv_streaming(argv, stdin=prompt, timeout=timeout, cwd=root, env=proxy_env):
                 if isinstance(item, StreamChunk):
@@ -644,6 +676,8 @@ async def run_engineer(
             except Exception:  # a diff for the GUI is a courtesy; the run's result stands without it
                 logger.debug("claude_code: could not publish the diff", exc_info=True)
     finally:
+        if watcher is not None:
+            watcher.cancel()
         if pod is not None and lab is not None:
             lab.external_done(pod_name, ok=exit_code == 0, summary=(state.final or {}).get("result", "") if state.final else state.text)
         if exit_code is None and not timed_out:
@@ -651,7 +685,9 @@ async def run_engineer(
 
     final = state.final or {}
     result_text = secret_guard.redact(str(final.get("result") or state.text or "").strip())[:MAX_RESULT_CHARS]
-    ok = exit_code == 0 and not timed_out and final.get("is_error") is not True
+    if cancelled:
+        reason = "cancelled by the person — the CLI was stopped"
+    ok = exit_code == 0 and not timed_out and not cancelled and final.get("is_error") is not True
     if state.final is None and exit_code == 0 and not result_text:
         result_text = "(the CLI exited 0 but produced no result event)"
     data: dict[str, Any] = {
@@ -706,11 +742,11 @@ async def claude_code_engineer(
 ) -> AsyncGenerator[dict[str, Any], None]:
     """Hand a large, many-file coding task to the Claude Code CLI and read back what it did.
 
-    Use this for complex refactors and multi-file implementations that need many coordinated
-    edits and test runs — not for questions, small one-file edits or planning (do those
-    yourself, or ask the architect). It runs headless in this project, edits files and runs
-    the project's tests, then returns its report, the files it changed and its cost. Judge the
-    result: if it failed or the change is incomplete, say so and decide what to do next.
+    Every run spends the person's Claude Code usage, so use it sparingly: only for complex refactors and
+    multi-file implementations that need many coordinated edits and test runs, and never for questions,
+    small or one-file edits, or planning (do those yourself, or ask the architect). It runs headless in
+    this project, edits files and runs the project's tests, then returns its report, the files it changed
+    and its cost. Judge the result: if it failed or the change is incomplete, say so and decide what next.
 
     Args:
         task: The whole task, self-contained: the goal, constraints, and how to verify it.
@@ -718,5 +754,5 @@ async def claude_code_engineer(
         model: Optional Claude model alias or id (omit for the CLI's default).
         timeout_seconds: Wall-clock limit (default 1800, max 3600).
     """
-    async for value in run_engineer(task, files=files, model=model, timeout_seconds=float(timeout_seconds)):
+    async for value in run_engineer(task, files=files, model=model, timeout_seconds=float(timeout_seconds), cancel_signal=tool_context.cancel_signal):
         yield value

@@ -33,15 +33,20 @@ from dataclasses import dataclass
 from typing import Any
 
 from strands import Agent
-from strands_tools import file_read, shell, think
+from strands_tools import file_read
 
+from core_tools import HarnessSandbox, CoreToolHooks, shell
+
+import code_nav
+import code_search
 import harness_events
 import lsp_bridge
 import omlx_provider
 import patch_tool
 
 ARCHITECT_PROMPT = """You are the Architect specialist in a coding harness. You plan changes; you never edit files.
-Work: read the relevant code (file_read, lsp_symbols, lsp_definition, lsp_references), then answer with
+Work: find the relevant code (code_search, code_outline, lsp_symbols, lsp_definition, lsp_references) and read only
+the parts you need (code_outline with a symbol, file_read with a line range), then answer with
 1. Goal — one sentence.
 2. Files — each file to change and why.
 3. Steps — ordered, concrete.
@@ -50,14 +55,14 @@ Work: read the relevant code (file_read, lsp_symbols, lsp_definition, lsp_refere
 Be specific to this repository; cite paths and symbols you actually read."""
 
 DEBUGGER_PROMPT = """You are the Debugger specialist in a coding harness. You fix failures.
-Work: read the failure, inspect the code it points at (file_read, lsp_diagnostics, lsp_definition), find the root
+Work: read the failure, inspect the code it points at (code_search, code_outline, lsp_diagnostics, lsp_definition), find the root
 cause, then fix it with apply_patch (a unified diff) and re-run the failing command with shell to verify.
 Change as little as possible; never weaken or delete a test to make it pass.
 End with: ROOT CAUSE: <one line>  FIX: <what you changed>  VERIFIED: <command and result>."""
 
 DIAGNOSE_PROMPT = """You are the Debugger specialist in a coding harness's self-healing loop.
-You receive a failed command and its output. Investigate with your read-only tools (file_read, lsp_diagnostics,
-lsp_definition, lsp_references), then answer in exactly this format:
+You receive a failed command and its output. Investigate with your read-only tools (code_search, code_outline,
+file_read, lsp_diagnostics, lsp_definition, lsp_references), then answer in exactly this format:
 
 ROOT CAUSE: <one line>
 PATCH:
@@ -95,7 +100,7 @@ DEBUGGER = SpecialistSpec(
 )
 SPECIALISTS = (ARCHITECT, DEBUGGER)
 
-READ_ONLY_TOOLS = [file_read, think, *lsp_bridge.LSP_TOOLS]
+READ_ONLY_TOOLS = [file_read, code_search.code_search, code_nav.code_outline, *lsp_bridge.LSP_TOOLS]
 
 
 def _model(tier: str | None, role: str | None = None):
@@ -115,18 +120,23 @@ def build_specialist(
     if spec is DEBUGGER:
         tools += [shell, patch_tool.apply_patch]
     chosen = model if model is not None else _model(spec.tier, spec.name)
-    return Agent(
+    sandbox = HarnessSandbox()
+    agent = Agent(
         name=spec.name,
         description=spec.description,
         model=chosen,
+        sandbox=sandbox,
         system_prompt=f"{spec.prompt}\n\nProject directory: {os.getcwd()}",
         tools=tools,
         interventions=interventions,
         # A specialist on a Prism model loads it before it runs and unloads it after
         # (omlx_provider.PrismLeaseHooks); any other specialist gets nothing extra.
-        hooks=[*(hooks or []), *omlx_provider.hooks_for(chosen)],
+        # The Debugger re-runs the failing command with `shell`: its result is shaped like the orchestrator's (core_tools.py).
+        hooks=[*([CoreToolHooks()] if spec is DEBUGGER else []), *(hooks or []), *omlx_provider.hooks_for(chosen)],
         callback_handler=None,
     )
+    sandbox.bind(agent)  # cancelling the orchestrator hands the specialist the same signal; its running command ends with it
+    return agent
 
 
 def specialist_tools(

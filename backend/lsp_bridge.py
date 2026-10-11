@@ -180,6 +180,32 @@ def uri_to_path(uri: str) -> str:
     return unquote(urlparse(uri).path)
 
 
+#: What a language server must not do in a folder the person has not trusted: run the project's own code. rust-analyzer
+#: runs every `build.rs` and expands proc-macros (compiled crate code) when it loads a workspace, and `cargo check` on
+#: save; in a cloned repository that is code execution on session open, before anyone was asked anything. Off until
+#: `/trust` — the same line plugins and settings use. Answered both as `initializationOptions` and to the server's
+#: `workspace/configuration` request, since rust-analyzer reads either.
+#: In exchange, rust-analyzer's own (experimental) type diagnostics are switched on, so a type mismatch still shows
+#: without `cargo check` — it reads the code, it does not build it.
+UNTRUSTED_OPTIONS: dict[str, dict] = {
+    "rust": {
+        "cargo": {"buildScripts": {"enable": False}},
+        "procMacro": {"enable": False},
+        "checkOnSave": False,
+        "diagnostics": {"experimental": {"enable": True}},
+    },
+}
+
+
+def folder_trusted(root: str) -> bool:
+    try:
+        import settings_store  # noqa: PLC0415
+
+        return bool(settings_store.current(root).trusted)
+    except Exception:
+        return False
+
+
 class LspError(RuntimeError):
     pass
 
@@ -187,10 +213,12 @@ class LspError(RuntimeError):
 class LspClient:
     """One running language server."""
 
-    def __init__(self, spec: ServerSpec, command: tuple[str, ...], root: str) -> None:
+    def __init__(self, spec: ServerSpec, command: tuple[str, ...], root: str, trusted: bool = True) -> None:
         self.spec = spec
         self.command = command
         self.root = str(Path(root).resolve())
+        self.trusted = trusted
+        self.restricted = None if trusted else UNTRUSTED_OPTIONS.get(spec.name)
         self._ids = itertools.count(1)
         self._pending: dict[int, tuple[threading.Event, list]] = {}
         self._write_lock = threading.Lock()
@@ -198,6 +226,9 @@ class LspClient:
         self.diagnostics: dict[str, list] = {}  # uri -> diagnostics
         self._diag_version: dict[str, int] = {}  # uri -> how many publishes seen
         self.versions: dict[str, int] = {}  # uri -> document version we sent
+        # One document conversation at a time: `sync` (after a real edit) and `check_text` (a proposed one, preflight.py)
+        # both move a document's version, and interleaved they would leave the server holding the wrong text.
+        self._doc_lock = threading.RLock()
         self._tasks: dict[str, harness_events.Task] = {}
         self.alive = False
         self.capabilities: dict = {}
@@ -282,7 +313,7 @@ class LspClient:
         if "id" in message:  # a request from the server
             result: Any = None
             if method == "workspace/configuration":
-                result = [None for _ in params.get("items", [])]
+                result = [self._configuration(str(item.get("section") or "")) for item in params.get("items", [])]
             elif method == "workspace/workspaceFolders":
                 result = [{"uri": path_to_uri(self.root), "name": Path(self.root).name}]
             self._send({"jsonrpc": "2.0", "id": message["id"], "result": result})
@@ -311,6 +342,13 @@ class LspClient:
         elif kind == "end" and token in self._tasks:
             self._tasks.pop(token).finish("completed", value.get("message"))
 
+    def _configuration(self, section: str) -> Any:
+        """The answer to one ``workspace/configuration`` item: the restricted options in an untrusted folder (rust-analyzer
+        asks for its ``rust-analyzer`` section), else nothing — the server's own defaults."""
+        if self.restricted is not None and self.spec.name == "rust" and section.startswith("rust-analyzer"):
+            return self.restricted
+        return None
+
     # ---------------------------------------------------------- protocol
 
     def initialize(self, timeout: float = 30.0) -> None:
@@ -323,6 +361,7 @@ class LspClient:
                 "rootPath": self.root,
                 "workspaceFolders": [{"uri": root_uri, "name": Path(self.root).name}],
                 "clientInfo": {"name": "sierralab-agents", "version": "0.1"},
+                **({"initializationOptions": self.restricted} if self.restricted is not None else {}),
                 "capabilities": {
                     "window": {"workDoneProgress": True},
                     "workspace": {"configuration": True, "workspaceFolders": True, "symbol": {}},
@@ -346,21 +385,67 @@ class LspClient:
         path = str(Path(path).resolve())
         uri = path_to_uri(path)
         text = Path(path).read_text(encoding="utf-8", errors="replace")
-        version = self.versions.get(uri)
-        if version is None:
-            self.versions[uri] = 1
-            self.notify(
-                "textDocument/didOpen",
-                {"textDocument": {"uri": uri, "languageId": self.spec.language_id(path), "version": 1, "text": text}},
-            )
-        else:
-            self.versions[uri] = version + 1
-            self.notify(
-                "textDocument/didChange",
-                {"textDocument": {"uri": uri, "version": version + 1}, "contentChanges": [{"text": text}]},
-            )
-            self.notify("textDocument/didSave", {"textDocument": {"uri": uri}, "text": text})
+        with self._doc_lock:
+            version = self.versions.get(uri)
+            if version is None:
+                self.versions[uri] = 1
+                self.notify(
+                    "textDocument/didOpen",
+                    {"textDocument": {"uri": uri, "languageId": self.spec.language_id(path), "version": 1, "text": text}},
+                )
+            else:
+                self.versions[uri] = version + 1
+                self.notify(
+                    "textDocument/didChange",
+                    {"textDocument": {"uri": uri, "version": version + 1}, "contentChanges": [{"text": text}]},
+                )
+                self.notify("textDocument/didSave", {"textDocument": {"uri": uri}, "text": text})
         return uri
+
+    def check_text(self, path: str, text: str, timeout: float = 5.0) -> list:
+        """The server's diagnostics for ``text`` as ``path``'s contents (``check_texts`` with one file)."""
+        return self.check_texts([(path, text)], timeout)[str(Path(path).resolve())]
+
+    def check_texts(self, files: list[tuple[str, str]], timeout: float = 5.0) -> dict[str, list]:
+        """The server's diagnostics for proposed contents of several files *at once* — an edit judged by the real
+        compiler front end without writing it (preflight.py). All the files change together in the server's memory, so
+        a multi-file edit (a rename and its callers) is judged as the whole it is, not file by file against the old
+        version of the others. No ``didSave`` (rust-analyzer does not run ``cargo check``; nothing executes). Afterwards
+        the server's view is put back to what is on disk, and a document that was not open before is closed."""
+        resolved = [(str(Path(path).resolve()), text) for path, text in files]
+        out: dict[str, list] = {}
+        with self._doc_lock:
+            seen = {}
+            opened_here = []
+            for path, text in resolved:
+                uri = path_to_uri(path)
+                seen[uri] = self.publishes(uri)
+                if uri not in self.versions:
+                    opened_here.append(uri)
+                    self.versions[uri] = 1
+                    self.notify("textDocument/didOpen", {"textDocument": {"uri": uri, "languageId": self.spec.language_id(path), "version": 1, "text": text}})
+                else:
+                    self.versions[uri] += 1
+                    self.notify("textDocument/didChange", {"textDocument": {"uri": uri, "version": self.versions[uri]}, "contentChanges": [{"text": text}]})
+            try:
+                deadline = time.monotonic() + timeout
+                for path, _text in resolved:
+                    uri = path_to_uri(path)
+                    out[path] = self.wait_for_diagnostics(uri, seen[uri], max(0.5, deadline - time.monotonic()))
+            finally:
+                for path, _text in resolved:
+                    uri = path_to_uri(path)
+                    if uri in opened_here:
+                        self.versions.pop(uri, None)
+                        self.notify("textDocument/didClose", {"textDocument": {"uri": uri}})
+                        continue
+                    try:
+                        disk = Path(path).read_text(encoding="utf-8", errors="replace")
+                    except OSError:
+                        disk = ""
+                    self.versions[uri] += 1
+                    self.notify("textDocument/didChange", {"textDocument": {"uri": uri, "version": self.versions[uri]}, "contentChanges": [{"text": disk}]})
+        return out
 
     def wait_for_diagnostics(self, uri: str, seen: int, timeout: float, settle: float = 0.4) -> list:
         """Diagnostics published after ``seen`` publishes, waiting up to
@@ -447,7 +532,7 @@ class LspManager:
                 return None
             task = harness_events.Task(f"lsp: starting {Path(command[0]).name}", source="lsp")
             try:
-                client = LspClient(spec, command, self.root)
+                client = LspClient(spec, command, self.root, trusted=folder_trusted(self.root))
                 client.initialize()
             except Exception as error:
                 self._failed[spec.name] = f"{type(error).__name__}: {error}"

@@ -122,7 +122,13 @@ _SENSITIVE_PATH = re.compile(
 _ENV_FILE = re.compile(r"(^|/)\.env(\.[^/]*)?$", re.IGNORECASE)
 _ENV_TEMPLATE = re.compile(r"\.env\.(example|sample|template|dist)$", re.IGNORECASE)
 #: Files that decide what the harness asks about: editing one is how a prompt would be talked out of existing.
-_POLICY_FILE = re.compile(r"(^|/)(\.sierralab/settings(\.local)?\.json|\.claude/settings(\.local)?\.json|SIERRALAB\.md|\.mcp\.json)$", re.IGNORECASE)
+#: The MCP declarations are among them: every one `plugin_host` reads (`.mcp.json`, `mcp.json`, `mcp.local.json`,
+#: `.sierralab/`, `.cursor/` and `.vscode/mcp.json`, the backend's own `mcp_servers.json`) names a command that is started
+#: as the user the next time a session opens.
+_POLICY_FILE = re.compile(
+    r"(^|/)(\.sierralab/settings(\.local)?\.json|\.claude/settings(\.local)?\.json|SIERRALAB\.md|\.?mcp(\.local)?\.json|mcp_servers\.json)$",
+    re.IGNORECASE,
+)
 _CI_FILE = re.compile(r"(^|/)(\.github/workflows/|\.gitlab-ci|Jenkinsfile|azure-pipelines|\.circleci/)", re.IGNORECASE)
 _BUILD_FILE = re.compile(r"(^|/)(Dockerfile|docker-compose[^/]*|Makefile|setup\.py|pyproject\.toml|package\.json|Cargo\.toml)$", re.IGNORECASE)
 _LOCK_FILE = re.compile(r"(^|/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|poetry\.lock|uv\.lock|Gemfile\.lock)$", re.IGNORECASE)
@@ -224,6 +230,8 @@ _NET_WRITE = re.compile(r"\bcurl\b[^|;&]*(\s-X\s*(POST|PUT|DELETE|PATCH)\b|\s(-d
 _REMOTE = re.compile(r"(^|\s)(ssh|scp|rsync|sftp|nc|ncat|telnet|socat)\s")
 _INSTALL = re.compile(r"\b(pip3?|pipx|npm|pnpm|yarn|bun|gem|cargo|go)\s+(install|add|i|get)\b|\buv\s+(pip\s+install|add|tool\s+install)\b|\bbrew\s+(install|upgrade|reinstall)\b|\b(apt(-get)?|dnf|yum|port)\s+install\b")
 _UNINSTALL = re.compile(r"\b(pip3?|npm|pnpm|yarn|brew|cargo)\s+(uninstall|remove|rm)\b")
+#: Where a redirect writes: `> file`, `>> file` — not `2>&1`, not a here-string.
+_REDIRECT_TARGET = re.compile(r"(?:^|[^<>&0-9])>>?\s*([^\s;&|<>()]+)")
 _SUBSHELL = re.compile(r"\b(?:ba|z|da)?sh\s+-c\s+('([^']*)'|\"([^\"]*)\")|\beval\s+('([^']*)'|\"([^\"]*)\")")
 
 
@@ -273,6 +281,21 @@ def _short_flags(tokens: list[str]) -> str:
 
 def _targets(tokens: list[str]) -> list[str]:
     return [t for t in tokens if not t.startswith("-")]
+
+
+def _write_destinations(head: str, tokens: list[str], segment: str) -> list[str]:
+    """The files a shell segment writes, as far as its text says: redirect targets, `tee`/`touch`/`truncate` arguments,
+    the destination of `cp`/`mv`/`ln`/`install`/`rsync`, and the files of an in-place `sed`/`perl`. Used to hold a shell
+    write to the same line as the equivalent `file_write` — the two used to disagree by half a point."""
+    found = [m.group(1) for m in _REDIRECT_TARGET.finditer(segment) if not m.group(1).startswith("/dev/")]
+    args = _targets(tokens[1:])
+    if head in ("tee", "touch", "truncate"):
+        found += args
+    elif head in ("mv", "cp", "ln", "install", "rsync") and args:
+        found.append(args[-1])
+    elif head in ("sed", "perl") and len(args) > 1:
+        found += args[1:]
+    return found
 
 
 def _rm(tokens: list[str], cwd: str) -> tuple[float, str]:
@@ -412,6 +435,12 @@ def _shell_segment(segment: str, cwd: str, depth: int = 0) -> tuple[float, str]:
         take(0.5, "installs packages, which runs other people's code")
     if _UNINSTALL.search(low):
         take(0.55, "uninstalls packages")
+
+    for target in _write_destinations(head, tokens, segment):
+        resolved = _expand(target, cwd)
+        if resolved is not None and _POLICY_FILE.search(resolved):
+            take(0.9, "writes a file that decides what the harness asks about")
+            break
 
     if head == "rm" or head == "rmdir":
         take(*(_rm(tokens, cwd) if head == "rm" else (0.5, "removes a directory")))

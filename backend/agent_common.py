@@ -4,23 +4,35 @@
 - ``acp_server.py``  — Agent Client Protocol over stdio, for ACP editors (e.g. Zed)
 
 One agent definition (model, tools, system prompt), two transports. Each
-front door gives every thread/session its own on-disk FileSessionManager, so
+front door gives every thread/session its own on-disk session (session_store.py: snapshots), so
 conversation history and whatever the agent has learned persist across
 backend restarts regardless of which door was used.
 """
 
 import asyncio
 import importlib.util
+import logging
 import os
 from pathlib import Path
+from typing import Any
 
 from strands import Agent
 from strands.agent.conversation_manager import SummarizingConversationManager
 from strands.models.openai import OpenAIModel
-from strands.session.file_session_manager import FileSessionManager
 from strands.tools.decorator import DecoratedFunctionTool
-from strands.vended_plugins.skills import AgentSkills
-from strands_tools import calculator, current_time, editor, file_read, file_write, http_request, python_repl, shell, think
+from strands_tools import file_read, file_write, python_repl
+
+import code_nav
+import code_search
+import core_tools
+import session_store
+# Imported here, before the chdir below, because their callers import them lazily (`build_plugins`, the offloader's
+# store path, the skill index cache) — and a bare-module import after the process has moved into workspace/ finds nothing
+# when the entry point put a *relative* directory on sys.path (the `uvicorn main:app` of the Dockerfile).
+import settings_store  # noqa: F401
+import skill_search  # noqa: F401
+import sub_agent_common  # noqa: F401
+from core_tools import CoreToolHooks, HarnessSandbox, editor, http_request, shell, web_fetch
 
 from agent_memory_tool import agent_memory
 from local_graph_tool import local_graph
@@ -63,25 +75,16 @@ ACTIVE_CLOUD_BASE_URL = CLOUD_OPENAI_BASE_URL
 ACTIVE_CLOUD_API_KEY = CLOUD_OPENAI_API_KEY
 ACTIVE_CLOUD_MODEL_ID = CLOUD_OPENAI_MODEL_ID
 
-# oMLX's /v1/models introspection (model_control_tool._context_window_limit)
-# has no cloud equivalent — neither Anthropic nor an arbitrary OpenAI-
-# compatible endpoint expose max context length over their API. Prefix-
-# matched fallback so the context-usage display (main.py's _context_state)
-# still shows a "/ limit" for known model families; an unrecognized model id
-# just shows usage with no limit rather than a guessed-wrong number.
-_KNOWN_CONTEXT_LIMITS = {
-    "claude-": 200_000,
-    "gpt-": 128_000,
-    "o1": 128_000,
-    "o3": 128_000,
-}
+# Where a model's context window comes from: oMLX reports it (model_control_tool._context_window_limit, from
+# /v1/models); for Anthropic and OpenAI ids the SDK's own table (strands.models._defaults, refreshed every release —
+# 1.57.2 added Sonnet 5.5, Opus 5.5, Fable 5.1) fills it in when the config does not set one; an Ollama-cloud model
+# gets `ollama_cloud.DEFAULT_CONTEXT_WINDOW`; anything else gets `UNKNOWN_CONTEXT_WINDOW` (below), so the context-usage
+# display (main.py's _context_state) and proactive compression always have a number to measure against.
+def _with_window(model):
+    if model.context_window_limit is None:
+        model.update_config(context_window_limit=UNKNOWN_CONTEXT_WINDOW)
+    return model
 
-
-def _known_context_limit(model_id: str) -> int | None:
-    for prefix, limit in _KNOWN_CONTEXT_LIMITS.items():
-        if model_id.startswith(prefix):
-            return limit
-    return None
 
 # Well above oMLX's own server-side default — without this, a genuinely
 # long reply hits MaxTokensReachedException mid-generation and gets
@@ -89,6 +92,13 @@ def _known_context_limit(model_id: str) -> int | None:
 # live during a multi-step dashboard-building task). Doesn't affect latency
 # until the model actually needs that many tokens.
 _DEFAULT_MAX_TOKENS = 16384
+
+# What a model's context window is assumed to be when nothing says. Strands' proactive compression (below) needs *a*
+# number — without one it falls back to 200,000 and logs a warning on every model call — and 128k is the smallest window
+# among the current flagship models, so a guess can make summarisation come a little early but never lets it come
+# too late for a model that is bigger. A model whose real limit is known (oMLX reports it, the Anthropic/OpenAI tables
+# have it) uses that.
+UNKNOWN_CONTEXT_WINDOW = 128_000
 
 
 def build_model(model_id: str | None = None):
@@ -109,12 +119,13 @@ def build_model(model_id: str | None = None):
         anthropic_params: dict = {}
         if ACTIVE_TEMPERATURE is not None:
             anthropic_params["temperature"] = ACTIVE_TEMPERATURE
-        return AnthropicModel(
-            client_args={"api_key": reveal(ACTIVE_ANTHROPIC_API_KEY)},
-            model_id=model_id or ACTIVE_ANTHROPIC_MODEL_ID,
-            max_tokens=_DEFAULT_MAX_TOKENS,
-            params=anthropic_params,
-            context_window_limit=_known_context_limit(model_id or ACTIVE_ANTHROPIC_MODEL_ID),
+        return _with_window(
+            AnthropicModel(
+                client_args={"api_key": reveal(ACTIVE_ANTHROPIC_API_KEY)},
+                model_id=model_id or ACTIVE_ANTHROPIC_MODEL_ID,
+                max_tokens=_DEFAULT_MAX_TOKENS,
+                params=anthropic_params,
+            )
         )
 
     params: dict = {"max_tokens": _DEFAULT_MAX_TOKENS}
@@ -129,11 +140,12 @@ def build_model(model_id: str | None = None):
         )
 
     if ACTIVE_PROVIDER == "openai_compatible":
-        return OpenAIModel(
-            client_args={"api_key": reveal(ACTIVE_CLOUD_API_KEY), "base_url": ACTIVE_CLOUD_BASE_URL},
-            model_id=model_id or ACTIVE_CLOUD_MODEL_ID,
-            params=params,
-            context_window_limit=_known_context_limit(model_id or ACTIVE_CLOUD_MODEL_ID),
+        return _with_window(
+            OpenAIModel(
+                client_args={"api_key": reveal(ACTIVE_CLOUD_API_KEY), "base_url": ACTIVE_CLOUD_BASE_URL},
+                model_id=model_id or ACTIVE_CLOUD_MODEL_ID,
+                params=params,
+            )
         )
 
     from model_control_tool import _context_window_limit
@@ -142,7 +154,7 @@ def build_model(model_id: str | None = None):
         client_args={"api_key": "not-needed", "base_url": OMLX_BASE_URL},
         model_id=model_id or ACTIVE_MODEL_ID,
         params=params,
-        context_window_limit=_context_window_limit(model_id or ACTIVE_MODEL_ID),
+        context_window_limit=_context_window_limit(model_id or ACTIVE_MODEL_ID) or UNKNOWN_CONTEXT_WINDOW,
     )
 
 
@@ -308,12 +320,12 @@ _STATIC_TOOLS = [
     shell,
     editor,
     file_read,
+    code_search.code_search,
+    code_nav.code_outline,
     file_write,
     python_repl,
     http_request,
-    current_time,
-    calculator,
-    think,
+    web_fetch,
     agent_memory,
     local_swarm,
     local_graph,
@@ -361,23 +373,74 @@ def current_generated_tool_names() -> set[str]:
 SKILLS_DIR = BACKEND_DIR / "skills"
 
 
-def build_plugins(extra_skill_dirs: list[str] | None = None) -> list:
-    """The skills a session can read: the ones that ship, plus ``extra_skill_dirs`` (the learned skills that have been
+def build_plugins(
+    extra_skill_dirs: list[str] | None = None,
+    *,
+    decider: Any = None,
+    preferences: Any = None,
+    notify: Any = None,
+) -> list:
+    """The skills a session can reach: the ones that ship, plus ``extra_skill_dirs`` (the learned skills that have been
     promoted for the session's project — ``learned.live_dirs``) and any named in ``SIERRALAB_EXTRA_SKILLS`` (the
-    promotion gate's A/B runs put a candidate there)."""
+    promotion gate's A/B runs put a candidate there).
+
+    Not listed in the prompt wholesale — 49 skills were 19 KB on every model call. ``skill_search`` lists the few that
+    fit the request (embedding search, with Laya deciding when ``decider`` is given) and gives the agent
+    ``search_skills`` for the rest; every skill stays one search away. ``context.skillSearch: false`` lists them all."""
+    import skill_search
+
     from_env = [p for p in os.environ.get("SIERRALAB_EXTRA_SKILLS", "").split(os.pathsep) if p]
-    return [AgentSkills(skills=[str(SKILLS_DIR), *(extra_skill_dirs or []), *from_env])]
+    # `from_env` are candidates under measurement (promote.py's A/B arms): pinned, so the arm really shows the model the lesson.
+    plugins = skill_search.build_skill_plugins(
+        [str(SKILLS_DIR), *(extra_skill_dirs or [])], decider=decider, preferences=preferences, notify=notify, pinned_sources=from_env
+    )
+    # What `current_time` was for, without the tool: the date and time ride along with each message (core_tools.clock).
+    return [*plugins, core_tools.clock()]
 
 
-def build_conversation_manager() -> SummarizingConversationManager:
+def _fast_model():
+    """The fast tier's model (`MODEL_TIER_FAST`), or None when none is configured — callers then use the session's own.
+    For the jobs that rewrite or read text rather than reason: a compaction summary, a web page's analyst."""
+    import sub_agent_common  # noqa: PLC0415 — imports the tool modules that import this one
+
+    if not sub_agent_common.tier_model_id("fast"):
+        return None
+    try:
+        return sub_agent_common.build_sub_agent_model("fast")
+    except Exception:
+        logging.getLogger(__name__).debug("could not build the fast-tier model", exc_info=True)
+        return None
+
+
+def _summarizer_agent(which: str) -> Agent | None:
+    """A dedicated agent for writing summaries on the *fast* model tier (`MODEL_TIER_FAST`), or None for "the session's own
+    model" (what Strands does when it is given none).
+
+    A summary is rewritten history, not new reasoning — a smaller model does it well, and it is a model call the person
+    pays for each time a long chat is compacted. Nothing changes until a fast tier is configured: with none, the summary
+    comes from the session's own model exactly as before. `context.summaryModel: main` opts out even then."""
+    if which == "main":
+        return None
+    model = _fast_model()
+    return Agent(model=model, callback_handler=None) if model is not None else None
+
+
+def build_conversation_manager(summarizer: str = "fast") -> SummarizingConversationManager:
     """Context management: summarize older turns instead of just dropping them.
 
     No ``summarization_agent`` given, so Strands uses the parent agent's own
     model to write the summary — same local oMLX model, no extra config. This
     also helps the oMLX memory-guard issue documented earlier: a long thread's
     prefill stays bounded instead of growing every turn.
+
+    ``proactive_compression`` (Strands docs: conversation-management → Proactive Context Compression): by default a
+    manager only reduces *after* the provider rejects a request for being too long — a whole wasted round trip (and on a
+    metered model, its tokens). With it, the projected input is compared with the model's context window before every
+    call and the history is summarised first once it passes 70%.
     """
-    return SummarizingConversationManager(preserve_recent_messages=ACTIVE_MEMORY_WINDOW)
+    return SummarizingConversationManager(
+        preserve_recent_messages=ACTIVE_MEMORY_WINDOW, proactive_compression=True, summarization_agent=_summarizer_agent(summarizer)
+    )
 
 
 # Kept short deliberately: tool-specific guidance (agent_memory, local_swarm,
@@ -398,7 +461,7 @@ def build_template_agent() -> Agent:
     Used by the AG-UI (web) front door: ag_ui_strands derives one real,
     session-bound Agent per thread from this template plus the
     ``session_manager_provider`` it's given (see main.py) — it owns the
-    per-thread FileSessionManager wiring itself.
+    per-thread session wiring itself.
 
     No ``plugins=`` here on purpose: ag_ui_strands does not carry constructor
     params like ``plugins`` over to the per-thread agents it derives from this
@@ -500,6 +563,12 @@ def build_agent_for_session(
     untrusted_tools=None,
     checkpointing: bool = False,
     skill_dirs: list[str] | None = None,
+    skill_options: dict | None = None,
+    offloader: Any = None,
+    summarizer: str = "fast",
+    project_root: str | None = None,
+    web_fetch_mode: str = "agentic",
+    extra_plugins: list | None = None,
 ) -> Agent:
     """A fully session-bound Agent, for front doors that manage their own
     per-session instances (the ACP server — nothing derives this one for us).
@@ -557,24 +626,37 @@ def build_agent_for_session(
     ones started after the next restart.
     """
     ensure_provider_ready()
-    static = [t for t in _STATIC_TOOLS if getattr(t, "tool_name", None) not in exclude_tools]
+    # `web_fetch` is built per session: its analyst runs on the fast model tier when one is configured, else on this
+    # session's own model (core_tools.py), and `context.webFetch` picks agentic (an answer) or markdown (the page).
+    static = [t for t in _STATIC_TOOLS if getattr(t, "tool_name", None) not in {*exclude_tools, "web_fetch"}]
+    model = build_model()
+    web_usage = core_tools.UsageTally()  # what the web_fetch analyst spends — its own agent, so outside the session's metrics
+    if "web_fetch" not in exclude_tools:
+        static.append(core_tools.web_fetch_tool(mode=web_fetch_mode, model=_fast_model() or model, tally=web_usage))
     # With a plugin host (untrusted_tools given) MCP servers are hot-swappable
     # plugins it registers itself; the process-start MCP snapshot is not added.
     mcp = [] if untrusted_tools is not None else _MCP_CLIENTS
-    return Agent(
-        model=build_model(),
+    # The SDK's local environment, whose running commands also end when the turn is cancelled (core_tools.HarnessSandbox).
+    sandbox = HarnessSandbox()
+    agent = Agent(
+        model=model,
+        sandbox=sandbox,
         system_prompt=system_prompt or SYSTEM_PROMPT,
         tools=[*static, *discover_generated_tools(), *mcp, *(extra_tools or [])],
-        plugins=build_plugins(skill_dirs),
+        plugins=[*build_plugins(skill_dirs, **(skill_options or {})), *([offloader] if offloader is not None else []), *(extra_plugins or [])],
         hooks=[
+            CoreToolHooks(project_root),
+            # A whole-file read of a long file becomes its outline (context.outlineLines), ahead of the offloader.
+            code_nav.LargeFileHooks(code_nav.threshold_from(lambda: settings_store.current(project_root or os.getcwd())), root=project_root),
             SkillValidationHooks(),
             UntrustedToolResultHooks(extra_untrusted_tools=untrusted_tools if untrusted_tools is not None else MCP_TOOL_NAMES),
             SecretRedactionHooks(),
             *(triage_hooks(notify=triage_notify) if use_triage else []),
             *(extra_hooks or []),
         ],
-        conversation_manager=build_conversation_manager(),
-        session_manager=FileSessionManager(session_id=session_id, storage_dir=str(SESSIONS_DIR)),
+        conversation_manager=build_conversation_manager(summarizer),
+        # Snapshots (session_store.py); a conversation from the old layout is migrated on first use.
+        session_manager=session_store.session_manager(session_id, SESSIONS_DIR),
         interventions=interventions,
         checkpointing=checkpointing,
         # The default handler prints the streamed reply to stdout — which for the
@@ -582,3 +664,7 @@ def build_agent_for_session(
         # Events reach the client through stream_async, not through printing.
         callback_handler=None,
     )
+    sandbox.bind(agent)
+    agent.web_usage = web_usage  # read by the per-turn receipt and the turn budget (acp_server)
+    session_store.forget_prompt_bookkeeping(agent)  # a restored state may name a prompt block this fresh prompt does not have
+    return agent

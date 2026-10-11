@@ -105,6 +105,7 @@ _TOOL_ROUTE = {
     "local_swarm": "team",
     "local_graph": "team",
     "http_request": "web_research",
+    "web_fetch": "web_research",
     "shell": "files_and_code",
     "python_repl": "files_and_code",
     "file_read": "files_and_code",

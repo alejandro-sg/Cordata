@@ -52,7 +52,14 @@ def summary(root: str | os.PathLike, plugins: list[str] | None = None, specialis
     for spec, command in lsp_bridge.detect(root):
         servers.append(f"{spec.name} ({Path(command[0]).name})" if command else f"{spec.name} (no language server installed)")
     if servers:
-        lines.append("Languages / language servers: " + ", ".join(servers) + " — use lsp_diagnostics / lsp_definition / lsp_references / lsp_symbols for exact answers; edits report fresh diagnostics automatically.")
+        lines.append("Languages / language servers: " + ", ".join(servers) + " — use code_search to find a name, then lsp_definition / lsp_references / lsp_hover / lsp_symbols for exact answers; edits are checked before they are applied and report fresh diagnostics after.")
+
+    try:
+        import env_profile  # noqa: PLC0415
+
+        lines.append(env_profile.profile(root).line())
+    except Exception:
+        pass
 
     files = [str(path) for _scope, path in settings_store.instruction_files(root)]
     if files:

@@ -40,6 +40,15 @@ def _announce(event: str, payload: dict[str, Any]) -> None:
     harness_events.emit("memory", {"event": event, "runtime": "omlx", **payload})
 
 
+def _unreclaimed(manager: omlx_manager.OmlxManager, ids: list[str]) -> str:
+    """The unload went through but the pool did not shrink (``OmlxManager.unload``): say so, with the one fix."""
+    held = {model: manager.unreclaimed[model] for model in ids if manager.unreclaimed.get(model)}
+    if not held:
+        return ""
+    gb = sum(held.values()) / omlx_manager.GB
+    return f" — but oMLX still holds {gb:.1f} GB for {', '.join(held)}; restart the oMLX server to give it back to macOS"
+
+
 def _describe(status: omlx_manager.OmlxStatus) -> str:
     loaded = status.loaded
     rows = "\n".join(f"  {row.id}  {row.size_gb:.1f} GB" for row in loaded) or "  (nothing loaded)"
@@ -72,7 +81,8 @@ def omlx_resource_manager(action: str, model: str = "") -> dict:
             status = manager.status()
             _announce("unload_all", {"models": [row.id for row in dropped], "memory_gb": round(status.memory_gb, 2)})
             names = ", ".join(row.id for row in dropped) or "nothing was loaded"
-            return _result(True, f"unloaded: {names}\n{_describe(status)}", {"action": action, "unloaded": [row.id for row in dropped], **status.to_json()})
+            held = _unreclaimed(manager, [row.id for row in dropped])
+            return _result(True, f"unloaded: {names}{held}\n{_describe(status)}", {"action": action, "unloaded": [row.id for row in dropped], **status.to_json()})
 
         if not model.strip():
             return _result(False, f"{action} needs a model", {"action": action})
@@ -87,7 +97,8 @@ def omlx_resource_manager(action: str, model: str = "") -> dict:
         row = manager.unload(model.strip())  # action == "unload"
         status = manager.status()
         _announce("unload", {"model": row.id, "memory_gb": round(status.memory_gb, 2)})
-        return _result(True, f"unloaded {row.id}\n{_describe(status)}", {"action": action, "model": row.id, **status.to_json()})
+        held = _unreclaimed(manager, [row.id])
+        return _result(True, f"unloaded {row.id}{held}\n{_describe(status)}", {"action": action, "model": row.id, **status.to_json()})
     except memory_budget.MemoryBudgetExceeded as error:
         return _result(False, str(error), {"action": action, "model": model, "headroom": error.headroom.to_json() if error.headroom else None})
     except omlx_manager.OmlxError as error:

@@ -170,6 +170,10 @@ def command_missing(result: Any) -> bool:
     return bool(re.search(r"Exit Code:\s*127\b", text)) or "command not found" in text
 
 
+def command_timed_out(result: Any) -> bool:
+    return bool(re.search(r"Exit Code:\s*124\b", result_text(result)))
+
+
 # ------------------------------------------------------------- the sandbox
 
 
@@ -358,6 +362,19 @@ class SelfHealHooks(HookProvider):
             )
             self._emit("command_missing", None, command=command)
             return
+        if command_timed_out(event.result):
+            # Exit 124: the command was waiting on something — input, the network, or on macOS a privacy prompt for
+            # ~/Downloads, ~/Documents or ~/Desktop. A patch fixes none of these, and a Debugger asked anyway once
+            # invented "not executable inside the sandbox", which the model then repeated as a refusal for the rest of
+            # the conversation.
+            self._append(
+                event,
+                f"{_HEAL_TAG} `{command}` timed out: it was waiting, not broken. Retry once with a longer timeout; if it "
+                "touches ~/Downloads, ~/Documents or ~/Desktop, macOS may have been asking the user for permission. "
+                "If it times out again, tell the user — don't conclude the path is off-limits.",
+            )
+            self._emit("command_timed_out", None, command=command)
+            return
         if episode is None or episode.status != "open":
             episode = self.episodes[key] = Episode(command=command)
             self._emit("detected", episode, output_tail=result_text(event.result)[-600:])
@@ -441,6 +458,10 @@ class SelfHealHooks(HookProvider):
                     code, output = await shadow.run(episode.verify_command, config.verify_timeout)
             except Exception as error:
                 code, output = 1, f"sandbox error: {type(error).__name__}: {error}"
+            if code == 0:
+                # The command passing is not the whole bar: a patch that also breaks a file's syntax, its lint or its
+                # type check is handed back like a failed run (preflight.py — the same checks an edit gets before the gate).
+                code, output = await asyncio.to_thread(self._static_check, root, diagnosis.patch, code, output)
             task.finish("completed" if code == 0 else "failed", f"exit {code}")
             if code == 0:
                 episode.verified = True
@@ -465,6 +486,20 @@ class SelfHealHooks(HookProvider):
             f"{_HEAL_TAG} The Debugger could not produce a verified fix in {len(episode.attempts)} attempt(s). "
             "Stop retrying; tell the user what was tried:\n" + "\n".join(a.splitlines()[0] for a in episode.attempts)
         )
+
+    @staticmethod
+    def _static_check(root: str, patch: str, code: int, output: str) -> tuple[int, str]:
+        try:
+            import lsp_bridge  # noqa: PLC0415
+            import preflight  # noqa: PLC0415
+
+            report = preflight.check(root, "apply_patch", {"patch": patch}, manager=lsp_bridge.manager_for(root))
+        except Exception:
+            return code, output
+        if report.ok:
+            return code, output
+        problems = "\n".join(p.render() for p in report.problems[: preflight.MAX_PROBLEMS])
+        return 1, f"The command passed with this patch, but the patch introduces problems the files did not have before:\n{problems}"
 
     async def _try_remembered(self, episode: Episode, failure: str, root: str) -> str | None:
         """A fix remembered for this failure in this project: try it in the sandbox before asking the Debugger.

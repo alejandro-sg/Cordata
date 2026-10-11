@@ -48,6 +48,12 @@ DEMO_MODELS = {
 
 async def serve(home: Path, workspace: Path, grpc_port: int) -> None:
     configure_environment(home)
+    # The daemon's own log, as a file in the throwaway home rather than on stdout: the bridge says
+    # there what each menu-bar turn carried (`grpc: submit_turn …`), which is what a person — or
+    # `_lab_gui_live_smoke_test.py` — reads to confirm a capture arrived.
+    import logging
+
+    logging.basicConfig(filename=str(home / "daemon.log"), level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     # Imported after the environment is set.
     import memory_budget
     import ollama_cli
@@ -82,7 +88,7 @@ async def serve(home: Path, workspace: Path, grpc_port: int) -> None:
                     omlx.loaded[name] = 1.0
 
     refiller = asyncio.create_task(refill())
-    print(f"demo daemon ready: gRPC 127.0.0.1:{port}, home {home}, workspace {workspace}", flush=True)
+    print(f"demo daemon ready: gRPC 127.0.0.1:{port}, home {home}, workspace {workspace}, log {home / 'daemon.log'}", flush=True)
     try:
         await stop.wait()
     finally:

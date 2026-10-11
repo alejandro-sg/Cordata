@@ -21,6 +21,10 @@ the same name replaces an earlier one):
 
     backend   backend/mcp_servers.json           (the web settings UI's file)
     user      ~/.sierralab/mcp.json
+    project   <cwd>/.vscode/mcp.json, <cwd>/.cursor/mcp.json, <cwd>/mcp.json
+              (other editors' declarations: a repository set up for VS Code or
+              Cursor brings its servers along — VS Code's ``servers`` / ``type``
+              shape is read too, ``${workspaceFolder}`` is the project)
     project   <cwd>/.mcp.json, <cwd>/.sierralab/mcp.json   (committed with a repo)
     local     <cwd>/.sierralab/mcp.local.json    (this machine only)
 
@@ -102,6 +106,11 @@ def mcp_config_paths(cwd: str | os.PathLike) -> list[tuple[str, Path]]:
     return [
         ("backend", BACKEND_DIR / "mcp_servers.json"),
         ("user", settings_store.user_dir() / "mcp.json"),
+        # Other editors' files first, so the project's own declarations win a name clash. All are "project": a command
+        # a cloned repository names, started only in a trusted folder.
+        ("project", cwd / ".vscode" / "mcp.json"),
+        ("project", cwd / ".cursor" / "mcp.json"),
+        ("project", cwd / "mcp.json"),
         ("project", cwd / ".mcp.json"),
         ("project", cwd / ".sierralab" / "mcp.json"),
         ("local", cwd / ".sierralab" / "mcp.local.json"),
@@ -116,11 +125,36 @@ def _read_servers(path: Path, warnings: list[str]) -> dict:
     except (OSError, ValueError) as error:
         warnings.append(f"{path}: unreadable ({error})")
         return {}
-    servers = data.get("mcpServers", data) if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        servers = None
+    elif "mcpServers" in data:
+        servers = data["mcpServers"]
+    elif isinstance(data.get("servers"), dict):  # VS Code: {"inputs": [...], "servers": {...}}
+        servers = data["servers"]
+    else:
+        servers = data
     if not isinstance(servers, dict):
         warnings.append(f"{path}: expected an object of MCP servers")
         return {}
     return servers
+
+
+#: VS Code's ``type`` → the transport names the SDK's loader uses.
+_VSCODE_TYPES = {"stdio": "stdio", "http": "streamable-http", "sse": "sse"}
+
+
+def _editor_shaped(raw: dict, cwd: Path) -> tuple[dict, str | None]:
+    """An entry from another editor's file, in this harness's shape: ``type`` → ``transport``, ``${workspaceFolder}`` →
+    the project. Returns the entry and why it cannot be used (a VS Code ``${input:…}`` is a value VS Code prompts for;
+    nothing here can answer that prompt)."""
+    text = json.dumps(raw)
+    if "${input:" in text:
+        return raw, "needs a value VS Code prompts for (${input:…}); declare it in .sierralab/mcp.json instead"
+    if "${workspaceFolder" in text:
+        raw = json.loads(text.replace("${workspaceFolder}", str(cwd)).replace("${workspaceFolderBasename}", cwd.name))
+    if "type" in raw and "transport" not in raw and raw["type"] in _VSCODE_TYPES:
+        raw = {**{k: v for k, v in raw.items() if k != "type"}, "transport": _VSCODE_TYPES[raw["type"]]}
+    return raw, None
 
 
 def discover_specs(cwd: str | os.PathLike, paths: list[tuple[str, Path]] | None = None) -> tuple[list[PluginSpec], list[str]]:
@@ -131,6 +165,10 @@ def discover_specs(cwd: str | os.PathLike, paths: list[tuple[str, Path]] | None 
         for name, raw in _read_servers(path, warnings).items():
             if not isinstance(raw, dict) or not _NAME.match(str(name)):
                 warnings.append(f"{path}: server {name!r} skipped (bad name or not an object)")
+                continue
+            raw, unusable = _editor_shaped(raw, Path(cwd))
+            if unusable:
+                warnings.append(f"{path}: server {name!r} skipped — {unusable}")
                 continue
             if raw.get("disabled"):
                 continue
@@ -264,14 +302,18 @@ class PluginHost:
         anything of its own). Spawning a server is a launch-time action, not a
         gated tool call, so trust is the gate here; a plugin tool *call* still
         prompts like any MCP tool regardless. Plugins this backend or the
-        user's own file declared start regardless of trust; an untrusted
-        project plugin stays ``stopped`` and can be started by hand later."""
+        user's own file declared start regardless of trust, and so do the
+        built-ins; an untrusted project plugin stays ``stopped`` and can be
+        started by hand later."""
         trusted = self.trusted
         disabled = self.persisted_disabled()
         for name, spec in list(self._specs.items()):
             if name in disabled:
                 self._state[name].status = "disabled"
-            elif spec.autostart and (trusted or spec.source in ("backend", "user")):
+            # Built-ins are this harness's own tools (the LSP tools, the memory store): nothing a repository declared,
+            # so trust is not their gate. They used to wait for /trust like a project's server, which left every
+            # untrusted folder without lsp_* tools while the language servers themselves were running.
+            elif spec.autostart and (trusted or spec.source in ("backend", "user") or spec.transport == "builtin"):
                 self.enable(name)
             else:
                 self._state[name].status = "disabled"
@@ -387,6 +429,13 @@ class PluginHost:
                     return self._specs.get(name)
         return None
 
+    def requires_approval_for_server(self, name: str) -> bool | None:
+        """Whether a call into server ``name`` asks (None: no such external server) — ``mcp_resources`` reads use it."""
+        spec = self._specs.get(str(name or ""))
+        if spec is None or spec.transport == "builtin":
+            return None
+        return self.requires_approval_for_spec(spec)
+
     def requires_approval(self, tool_name: str) -> bool | None:
         """None: not a plugin tool. Otherwise whether build mode should ask.
         ``approval: allow`` counts only from a source that needs no trust or a
@@ -399,6 +448,8 @@ class PluginHost:
         return True
 
     def _is_untrusted_output(self, tool_name: str) -> bool:
+        if tool_name == RESOURCE_TOOL:
+            return True  # a server's data, like its tools' output
         spec = self.owner(tool_name)
         return spec is not None and spec.transport != "builtin" and spec.untrusted_output
 
@@ -454,6 +505,43 @@ class PluginHost:
             "description": spec.description,
         }
 
+    def resource_call(self, server: str, action: str, uri: str = "") -> str:
+        """``mcp_resources`` (``resources_tool``). Never raises: a failure is the tool's text."""
+        action = (action or "list").strip().lower()
+        if action not in RESOURCE_ACTIONS:
+            return f"mcp_resources: unknown action {action!r}; use one of {', '.join(RESOURCE_ACTIONS)}"
+        with self._lock:
+            spec, state = self._specs.get(server), self._state.get(server)
+        if spec is None or state is None or spec.transport == "builtin":
+            running = [row["name"] for row in self.status() if row["status"] == "running" and row["transport"] != "builtin"]
+            return f"mcp_resources: no MCP server named {server!r}" + (f"; running: {', '.join(running)}" if running else "; none is running")
+        if state.status != "running" or state.client is None:
+            return f"mcp_resources: {server} is {state.status}" + (f" ({state.error})" if state.error else "")
+        try:
+            if action == "list":
+                rows = state.client.list_resources_sync().resources
+                if not rows:
+                    return f"{server} offers no resources (try action=\"templates\")."
+                return f"{server} resources ({len(rows)}):\n" + "\n".join(
+                    f"- {r.uri}" + (f" — {r.name}" if getattr(r, "name", None) else "") + (f": {r.description}" if getattr(r, "description", None) else "") for r in rows[:100]
+                )
+            if action == "templates":
+                listing = state.client.list_resource_templates_sync()
+                # The mcp package spells it either way across versions (camelCase on the wire, snake_case in newer models).
+                rows = getattr(listing, "resource_templates", None) or getattr(listing, "resourceTemplates", None) or []
+                if not rows:
+                    return f"{server} offers no resource templates."
+                return f"{server} resource templates ({len(rows)}; fill the {{placeholders}} and read the URI):\n" + "\n".join(
+                    f"- {getattr(t, 'uri_template', None) or getattr(t, 'uriTemplate', '')}" + (f" — {t.name}" if getattr(t, "name", None) else "") + (f": {t.description}" if getattr(t, "description", None) else "") for t in rows[:100]
+                )
+            if not uri.strip():
+                return "mcp_resources: read needs a uri"
+            if re.search(r"\{[^}]*\}", uri):
+                return f"mcp_resources: {uri!r} still has template placeholders; fill them in first"
+            return _resource_text(state.client.read_resource_sync(uri.strip()).contents) or f"{uri} is empty"
+        except Exception as error:  # an MCP error is the server's answer, not a crash of the turn
+            return f"mcp_resources: {server} could not {action}: {type(error).__name__}: {str(error)[:300]}"
+
     def requires_approval_for_spec(self, spec: PluginSpec) -> bool:
         return not (spec.approval == "allow" and (not spec.needs_trust or self.trusted))
 
@@ -465,6 +553,87 @@ class PluginHost:
         with self._lock:
             row = self._row(name)
         harness_events.emit("plugins", {"event": "changed", "plugin": row})
+
+
+RESOURCE_TOOL = "mcp_resources"
+RESOURCE_ACTIONS = ("list", "templates", "read")
+MAX_RESOURCE_CHARS = 12_000
+
+
+def _resource_text(contents: Any) -> str:
+    parts = []
+    for item in contents or []:
+        text = getattr(item, "text", None)
+        if isinstance(text, str):
+            parts.append(text)
+        elif getattr(item, "blob", None) is not None:
+            parts.append(f"[binary resource, {getattr(item, 'mime_type', None) or getattr(item, 'mimeType', None) or 'unknown type'}, not shown]")
+    joined = "\n".join(parts)
+    return joined if len(joined) <= MAX_RESOURCE_CHARS else joined[:MAX_RESOURCE_CHARS] + f"\n…[{len(joined) - MAX_RESOURCE_CHARS:,} more characters]"
+
+
+def resources_tool(host: "PluginHost") -> Any:
+    """``mcp_resources`` — the *resources* and *resource templates* of the MCP servers running for this project (the MCP
+    spec's other half: a server's data, addressed by URI or by an RFC 6570 template such as ``postgres://{table}/schema``),
+    through the SDK's own ``MCPClient.list_resources_sync`` / ``list_resource_templates_sync`` / ``read_resource_sync``.
+
+    Listing is metadata and never asks; ``read`` is a call into the server like any of its tools — it asks unless that
+    server is ``approval: allow`` in a trusted declaration (``acp_server``), is refused while the vault blocks egress, and
+    its result is fenced as untrusted third-party output."""
+    from strands import tool  # noqa: PLC0415
+
+    @tool(name=RESOURCE_TOOL)
+    def mcp_resources(server: str, action: str = "list", uri: str = "") -> str:
+        """Read an MCP server's resources: list them, list its resource templates, or read one by URI.
+
+        Args:
+            server: The MCP server's name (as in the "MCP servers connected" line).
+            action: "list" (resources), "templates" (URI templates to fill in), or "read".
+            uri: For "read": the resource URI — one from "list", or a template with its {placeholders} filled in.
+        """
+        return host.resource_call(server, action, uri)
+
+    return mcp_resources
+
+
+def capabilities_text(host: "PluginHost", limit: int = 900) -> str:
+    """One short block for the model: which MCP servers this project has, what each offers, and which are waiting for
+    ``/trust`` — so a server discovered in the workspace is something the agent knows it can use (or ask for), not
+    only a schema in its tool list. Empty when the project has none. Builtin plugins (memory, LSP) are not listed."""
+    running, blocked = [], []
+    trusted = host.trusted
+    for row in host.status():
+        if row.get("transport") == "builtin":
+            continue
+        tools = [str(t) for t in row.get("tools") or []]
+        name = str(row.get("name"))
+        about = f" — {row['description']}" if row.get("description") else ""
+        if row.get("status") == "running" and tools:
+            shown = ", ".join(tools[:6]) + (f", … ({len(tools)} in all)" if len(tools) > 6 else "")
+            running.append(f"{name}{about}: {shown}")
+        elif row.get("status") == "blocked" or (row.get("source") in ("project", "local") and not trusted and row.get("status") != "running"):
+            blocked.append(name)
+    if not running and not blocked:
+        return ""
+    lines = []
+    if running:
+        lines.append(
+            "MCP servers connected for this project (their tools are in your tool list; mcp_resources lists and reads their "
+            "resources and resource templates): " + "; ".join(running)
+        )
+    if blocked:
+        lines.append(f"Declared but not started until the person runs /trust: {', '.join(blocked)}.")
+    text = "\n".join(lines)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def capabilities_injector(host: "PluginHost") -> Any:
+    """``capabilities_text`` handed to the model with each message the person sends (a Strands ``ContextInjector``:
+    ephemeral, never stored, so it is always the plugins running *now* — one that started in the background after the
+    session began is mentioned from the next message on)."""
+    from strands.vended_plugins.context_injector import ContextInjector  # noqa: PLC0415
+
+    return ContextInjector(lambda context: capabilities_text(host) or None, name="sierralab:mcp", trigger="userTurn")
 
 
 async def run_blocking(fn: Callable, *args, **kwargs):

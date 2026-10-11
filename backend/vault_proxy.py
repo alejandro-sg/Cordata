@@ -91,7 +91,25 @@ RESERVED = ("ANTHROPIC_API_KEY", "CLOUD_OPENAI_API_KEY", "OLLAMA_API_KEY", "HF_T
 #: not in this list because their egress is not knowable statically — a plugin
 #: that ships its own HTTP client is outside what this can decide, which is
 #: exactly why the vault proxy is pointed at the *process*, not at a tool.
-EGRESS_TOOLS = frozenset({"shell", "python_repl", "http_request", "claude_code_engineer"})
+#: `a2a_client` calls a remote agent and `skill_forge`'s researcher sub-agent holds `http_request` — both were missing
+#: from this list until the Phase 11 audit, so a blocked vault did not stop them.
+EGRESS_TOOLS = frozenset({"shell", "python_repl", "http_request", "web_fetch", "claude_code_engineer", "a2a_client", "skill_forge"})
+#: The egress tools a sub-agent can be handed (swarm, graph, team pipeline): dropped from its kit while egress is blocked.
+SUB_AGENT_EGRESS_TOOLS = frozenset({"http_request", "web_fetch"})
+
+_LAST: "VaultStatus | None" = None
+
+
+def egress_blocked() -> bool:
+    """Whether the vault this process installed (or last re-probed) refuses egress. For code that builds agents with
+    no approval gate of their own — a sub-agent's kit is decided here, not at a prompt."""
+    return _LAST is not None and _LAST.blocks_egress
+
+
+def _remember(status: "VaultStatus") -> "VaultStatus":
+    global _LAST
+    _LAST = status
+    return status
 
 #: How long to wait for the vault to accept a connection. Local, so this is
 #: generous; the cost of being wrong is a session that starts without egress.
@@ -362,7 +380,7 @@ def reprobe(
     """
     if not status.blocks_egress or not check_health(status.addr):
         return status
-    return _route_through(status.addr, environ if environ is not None else os.environ, token)
+    return _remember(_route_through(status.addr, environ if environ is not None else os.environ, token))
 
 
 def install(
@@ -393,7 +411,7 @@ def install(
     except (AttributeError, TypeError):
         enabled = False
     if not enabled:
-        return VaultStatus(enabled=False)
+        return _remember(VaultStatus(enabled=False))
 
     addr = addr_from(preferences)
     policy = _policy(preferences)
@@ -406,7 +424,7 @@ def install(
         logger.warning("vault: %s is up at %s but no %s on PATH", DEFAULT_BINARY, addr, DEFAULT_BINARY)
 
     if health_ok:
-        return _route_through(addr, target, token)
+        return _remember(_route_through(addr, target, token))
 
     if policy == "proxy":
         # The user asked to keep working without credentials rather than stop:
@@ -414,18 +432,18 @@ def install(
         # which is the property that matters. What is lost is substitution.
         applied = build_proxy_env(addr, environ=target, placeholders_too=False)
         target.update(applied)
-        return VaultStatus(
+        return _remember(VaultStatus(
             enabled=True,
             ok=True,
             credentialed=False,
             addr=addr,
             reason=f"the vault at {addr} is unreachable; routing through it anyway without credentials",
             env=applied,
-        )
+        ))
 
-    return VaultStatus(
+    return _remember(VaultStatus(
         enabled=True,
         ok=False,
         addr=addr,
         reason=f"the vault at {addr} is unreachable and vault.egressPolicy is 'deny'",
-    )
+    ))

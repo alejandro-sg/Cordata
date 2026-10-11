@@ -8,7 +8,7 @@ its stdin/stdout, so don't print anything else to stdout:
     python acp_server.py
 
 A conversation resumes across restarts and across front doors: this uses
-the same on-disk FileSessionManager keyed by session id that main.py uses
+the same on-disk session (session_store.py) keyed by session id that main.py uses
 keyed by AG-UI threadId (see agent_common.py).
 
 Parity with the AG-UI front door, and with Zed's own bundled Claude Code
@@ -61,6 +61,10 @@ import checkpoints
 import edit_preview
 import bandit
 import claude_code_tool
+import context_diet
+import context_offload
+import session_store
+import skill_search
 import fix_memory
 import context_digest_tool
 import harness_events
@@ -90,13 +94,21 @@ import team_pipeline
 import trace_store
 import vault_proxy
 import workspace_context
+import adaptive_effort
+import code_nav
+import code_search
+import env_profile
+import os_context
+import plugin_host
+import preflight
+import rejection_memory
 from laya_router import BASE_TARGETS, LayaRouter, Policy, RouteDecision, RouterHooks, plugin_targets, summarize_stats
 from plugin_host import PluginHost, PluginSpec, run_blocking
 from self_heal import HealConfig, SelfHealHooks
 
 # Last: importing agent_common chdirs the process into backend/workspace/, after
 # which bare-module imports only resolve when this file runs as a script.
-from agent_common import GENERATED_TOOL_NAMES, MCP_TOOL_NAMES, SESSIONS_DIR, build_agent_for_session, start_mcp_clients  # noqa: E402
+from agent_common import GENERATED_TOOL_NAMES, MCP_TOOL_NAMES, SESSIONS_DIR, build_agent_for_session, current_generated_tool_names, start_mcp_clients  # noqa: E402
 from model_control_tool import _context_window_limit, _fetch_available_models  # noqa: E402
 
 # Set-identical to main.py's _APPROVAL_REQUIRED_TOOLS — both gate `editor`
@@ -105,11 +117,11 @@ from model_control_tool import _context_window_limit, _fetch_available_models  #
 # lists, so keep them in sync by hand when either changes. apply_patch is
 # ACP-only (the harness's patch tool). Plugins added at runtime are gated by
 # PluginHost.requires_approval, not by this static set.
-APPROVAL_REQUIRED_TOOLS = {"shell", "python_repl", "file_write", "editor", "apply_patch", claude_code_tool.TOOL_NAME, *GENERATED_TOOL_NAMES, *MCP_TOOL_NAMES}
+APPROVAL_REQUIRED_TOOLS = {"shell", "python_repl", "file_write", "editor", "apply_patch", claude_code_tool.TOOL_NAME, plugin_host.RESOURCE_TOOL, *GENERATED_TOOL_NAMES, *MCP_TOOL_NAMES}
 
 # Plan mode runs only these (reading code is part of planning, as in Claude
 # Code's and OpenCode's plan modes); everything else is denied.
-PLAN_MODE_TOOLS = {"file_read", "think", "current_time", "calculator", "architect", "context_digest", *(t.tool_name for t in lsp_bridge.LSP_TOOLS)}
+PLAN_MODE_TOOLS = {"file_read", "code_search", "code_outline", "environment_profile", "architect", "context_digest", *(t.tool_name for t in lsp_bridge.LSP_TOOLS)}
 
 # editor's read-only commands: like file_read, they never ask (and run in plan mode).
 _EDITOR_READ_COMMANDS = {"view", "find_line"}
@@ -119,6 +131,8 @@ _EDITOR_READ_COMMANDS = {"view", "find_line"}
 _READ_ONLY_ACTIONS = {
     "ollama_resource_manager": {"list", "ps", "status"},
     "omlx_resource_manager": {"status"},
+    # Listing an MCP server's resources or templates is metadata; reading one is a call into the server and asks.
+    plugin_host.RESOURCE_TOOL: {"list", "templates"},
 }
 
 
@@ -151,7 +165,7 @@ _TOOL_KIND: dict[str, str] = {
     "apply_patch": "edit",
     "file_read": "read",
     "http_request": "fetch",
-    "think": "think",
+    "web_fetch": "fetch",
     "agent_memory": "other",
     "local_swarm": "other",
     "local_graph": "other",
@@ -163,6 +177,7 @@ _TOOL_KIND: dict[str, str] = {
     "context_digest": "think",
     "ollama_resource_manager": "other",
     "omlx_resource_manager": "other",
+    context_offload.RETRIEVE_TOOL: "read",
     **{t.tool_name: "search" for t in lsp_bridge.LSP_TOOLS},
 }
 
@@ -256,6 +271,20 @@ def _note_answer(session_id: str, tool_name: str, approved: bool, key: str) -> N
         recorder.approval("approved" if approved else "rejected", tool_name, key=key)
 
 
+def _laya_loaded() -> bool:
+    """Whether Laya's weights are in memory — asked, never triggered: a turn must not wait on a model load."""
+    from prompt_security import laya_ready
+
+    return laya_ready()
+
+
+def _route_of(router_hooks, agent) -> str | None:
+    """The id of the route Laya chose for the turn in progress ("web", "code", …), or None."""
+    decision = router_hooks.current(agent)
+    target = getattr(decision, "target", None)
+    return getattr(target, "id", None)
+
+
 def _tool_kind(tool_name: str) -> str:
     return _TOOL_KIND.get(tool_name, "other")
 
@@ -317,6 +346,14 @@ def _answered_by(result) -> str | None:
     slot = meta.get("sierralab") if isinstance(meta, dict) else None
     door = slot.get("decidedBy") if isinstance(slot, dict) else None
     return str(door) if isinstance(door, str) and door else None
+
+
+def _answer_note(result) -> str:
+    """What the person wrote about a rejection, when a front door relayed it (`_meta.sierralab.note`). Their text, capped."""
+    meta = getattr(result, "field_meta", None)
+    slot = meta.get("sierralab") if isinstance(meta, dict) else None
+    note = slot.get("note") if isinstance(slot, dict) else None
+    return str(note).strip()[:500] if isinstance(note, str) else ""
 
 
 def _settled_intervention(
@@ -531,9 +568,17 @@ class _ApprovalHandler(InterventionHandler):
         self._bandit_route: dict | None = None
 
     def before_tool_call(self, event):
-        """The decision (``_decide``), then — for any call that may change files and was not refused — a
-        snapshot of the project (``checkpoints.py``), so that whatever ``auto`` mode or an approval let
-        through can be undone."""
+        """Preflight for an edit (``preflight.py`` — before anyone is asked about it), then the decision
+        (``_decide``), then — for any call that may change files and was not refused — a snapshot of the
+        project (``checkpoints.py``), so that whatever ``auto`` mode or an approval let through can be undone.
+
+        Only an edit takes the async path (the registry awaits it): its checks wait on a linter and a language
+        server, and they run on a worker thread so the event loop keeps streaming and honouring cancel."""
+        if self._wants_preflight(event):
+            return self._preflighted(event)
+        return self._gate(event)
+
+    def _gate(self, event):
         decision = self._decide(event)
         if not isinstance(decision, Deny):
             try:
@@ -541,6 +586,72 @@ class _ApprovalHandler(InterventionHandler):
             except Exception:
                 logging.getLogger(__name__).debug("checkpoint failed", exc_info=True)
         return decision
+
+    def _wants_preflight(self, event) -> bool:
+        """An edit that would otherwise go ahead or be asked about. Plan mode and a deny rule refuse it anyway, so
+        it is not worth checking."""
+        tool_name = str(event.tool_use.get("name") or "")
+        tool_input = event.tool_use.get("input")
+        if self.mode == "plan" or not preflight.is_edit(tool_name, tool_input):
+            return False
+        preferences = settings_store.current(self.cwd)
+        if preferences.get("preflight.enabled", True) is False:
+            return False
+        manager = lsp_bridge.manager_for(self.cwd) if preferences.get("lsp.enabled", True) is not False else None
+        if not preflight.applicable(tool_name, tool_input, manager, str(preferences.get("preflight.tests", "") or "")):
+            return False
+        verdict = settings_store.evaluate(preferences, tool_name, tool_input, self.cwd)
+        return not (verdict is not None and verdict.action == "deny")
+
+    async def _preflighted(self, event):
+        try:
+            refusal = await asyncio.to_thread(self._preflight, event)
+        except Exception:
+            logging.getLogger(__name__).warning("preflight failed; the edit goes to the gate unchecked", exc_info=True)
+            refusal = None
+        if refusal is not None:
+            return Deny(reason=refusal)
+        return self._gate(event)
+
+    def _preflight(self, event) -> str | None:
+        """The refusal to hand the agent, or None when the edit may go on to the gate (preflight.py: the loop)."""
+        tool_name = str(event.tool_use.get("name") or "")
+        tool_input = event.tool_use.get("input")
+        preferences = settings_store.current(self.cwd)
+        recorder = outcomes.active(self.session_id)
+        turn = recorder.id if recorder is not None else ""
+        track = preflight.tracker(self.session_id or "")
+        stopped = track.stopped(turn)
+        if stopped:
+            return stopped
+        manager = lsp_bridge.manager_for(self.cwd) if preferences.get("lsp.enabled", True) is not False else None
+        egress_blocked = self.vault is not None and self.vault.blocks_egress
+        report = preflight.check(
+            self.cwd,
+            tool_name,
+            tool_input,
+            manager=manager,
+            # A test command runs the project's code, which may reach the network: not while the vault refuses egress.
+            tests="" if egress_blocked else str(preferences.get("preflight.tests", "") or ""),
+            trusted=bool(getattr(preferences, "trusted", False)),
+        )
+        if report.ok:
+            track.passed(turn, report.files)
+            if report.ran and not report.cached:
+                preflight.announce("passed", self.session_id, tool_name, report)
+            return None
+        retries = max(0, int(float(preferences.get("preflight.maxRetries", preflight.DEFAULT_RETRIES))))
+        attempt = track.failed(turn, report.files)
+        if attempt <= retries:
+            preflight.announce("failed", self.session_id, tool_name, report, attempt=attempt, retries=retries)
+            return preflight.failure_text(tool_name, report, attempt, retries)
+        rolled = None
+        if turn and preferences.get("preflight.rollback", True) is not False and preferences.get("checkpoints.enabled", True) is not False:
+            rolled = preflight.rollback(self.cwd, turn, self.session_id or "")
+        text = preflight.give_up_text(tool_name, report, retries, rolled)
+        track.give_up(turn, "[preflight] Editing has stopped for this turn: an edit failed its checks too many times. Report to the user instead of editing.")
+        preflight.announce("gave_up", self.session_id, tool_name, report, attempt=attempt, retries=retries, rolled_back=(rolled or {}).get("count", 0), undo_with=(rolled or {}).get("undo_with"))
+        return text
 
     def _checkpoint(self, event) -> None:
         tool_name = str(event.tool_use.get("name") or "")
@@ -581,6 +692,20 @@ class _ApprovalHandler(InterventionHandler):
             harness_events.emit("checkpoint", payload)
             state_store.append_event("checkpoint", payload, session_id=self.session_id, source="checkpoints")
 
+    def _can_egress(self, tool_name: str) -> bool:
+        """Could this call reach the network around the vault? The named egress tools, and — found in the Phase 11
+        audit — two kinds the name list missed: a generated skill (it runs in this process and can open its own
+        connection) and an external plugin's tool (its server is a process of its own, started with whatever proxy
+        environment existed then). With the vault down and `egressPolicy: deny`, all of them are refused."""
+        if tool_name in vault_proxy.EGRESS_TOOLS or tool_name in MCP_TOOL_NAMES or tool_name == plugin_host.RESOURCE_TOOL:
+            return True
+        try:
+            if tool_name in current_generated_tool_names():
+                return True
+        except Exception:
+            return tool_name in GENERATED_TOOL_NAMES
+        return self.plugins is not None and self.plugins.requires_approval(tool_name) is not None
+
     def _decide(self, event):
         """Mode first, with the user's permission rules (settings_store.py) laid
         over it: a ``deny`` rule blocks in every mode — ``auto`` included — and an
@@ -606,11 +731,12 @@ class _ApprovalHandler(InterventionHandler):
         verdict = settings_store.evaluate(preferences, tool_name, tool_input, self.cwd)
         if verdict is not None and verdict.action == "deny":
             return Deny(reason=f"{tool_name} was not run: blocked by a {verdict.explain()}. Do something else or ask the user.")
-        if self.vault is not None and self.vault.blocks_egress and tool_name in vault_proxy.EGRESS_TOOLS:
+        egress = self._can_egress(tool_name)
+        if self.vault is not None and self.vault.blocks_egress and egress:
             # The vault may have come up since the session started; the refusal
             # below tells the user to start it, so honour that without a restart.
             self.vault = vault_proxy.reprobe(self.vault)
-        if self.vault is not None and self.vault.blocks_egress and tool_name in vault_proxy.EGRESS_TOOLS:
+        if self.vault is not None and self.vault.blocks_egress and egress:
             # Fail closed *before* the mode logic: with the vault enabled and
             # unreachable, nothing that could carry a credential off the machine
             # may run, and `auto` mode must not be able to wave it through.
@@ -654,6 +780,9 @@ class _ApprovalHandler(InterventionHandler):
             harness_events.emit("heal", {"event": "heal", "phase": "auto_approved", "tool": tool_name})
             return Proceed()
         plugin_gate = self.plugins.requires_approval(tool_name) if self.plugins is not None else None
+        if tool_name == plugin_host.RESOURCE_TOOL and self.plugins is not None and isinstance(tool_input, dict):
+            # Listing is metadata (read_only, never asks); a read asks as that server's own tools do.
+            plugin_gate = None if read_only else self.plugins.requires_approval_for_server(str(tool_input.get("server") or ""))
         if not armed and verdict is None:
             if plugin_gate is False:
                 return Proceed()
@@ -848,12 +977,42 @@ def _project_system_prompt(cwd: str) -> str:
     return (
         f"You are a coding agent working in the project at {cwd}. Your shell, file, and code tools "
         "operate relative to this directory — explore it first if you're not sure what's there. "
+        "To find code, search — don't read: code_search (ripgrep) finds where a name or string is defined or used, "
+        "lsp_definition / lsp_references / lsp_hover give the exact semantic answer once you have a position, and "
+        "code_outline lists a file's classes and functions or returns one of them. Read a whole file only when it is "
+        "short; a long one comes back as an outline. "
         "For multi-line or multi-file changes prefer apply_patch (a unified diff). After a command or "
         "test fails, read the [self-heal] notes appended to its result: they carry a root cause and, "
         "usually, a patch already verified in a sandbox copy. "
         "For a large refactor or implementation across many files, hand the whole task to claude_code_engineer "
         "(it runs the Claude Code CLI headless in this project and reports back); judge its result before you "
         "tell the user it is done. For planning, ask the architect; to condense bulk text, use context_digest. "
+        + ollama_resource_tool.MEMORY_GUIDANCE
+    )
+
+
+def _is_chat_scratch(cwd: str) -> bool:
+    """The folder a Discord chat with no project runs in (daemon/chat.py `workspace_dir`). Compared by path rather
+    than imported: the daemon package is not this process's to load."""
+    try:
+        return os.path.realpath(cwd) == os.path.realpath(settings_store.user_dir() / "discord-workspace")
+    except OSError:
+        return False
+
+
+def _chat_system_prompt(cwd: str) -> str:
+    """For a chat with no project. The coding prompt above told the model its tools "operate relative to" an empty
+    scratch folder, and it concluded — and told the operator, three times — that it could not see ~/Downloads, then
+    guessed a filename instead of listing the folder. The tools were never confined; the prompt was."""
+    home = str(Path.home())
+    return (
+        f"You are the operator's personal agent on their Mac, reached from a chat. {cwd} is an empty scratch folder, "
+        f"not a project: their files are where they keep them — home is {home} (Downloads, Documents, Desktop, …). "
+        "Your tools reach any path on this machine; use absolute paths. Never guess a filename: list first. "
+        f"To find a file by name, call file_read with mode \"find\" and a glob of one keyword, e.g. path "
+        f"\"{home}/Downloads/*figma*\" (case does not matter); then file_read the path it found (a PDF comes back as "
+        "text). shell (ls, mdfind) works too but asks the "
+        "operator first. Risky calls ask first; reading does not. "
         + ollama_resource_tool.MEMORY_GUIDANCE
     )
 
@@ -919,6 +1078,48 @@ def _apply_model(agent, value) -> bool:
     return True
 
 
+def _model_for_vision(agent, vision: dict) -> tuple[object | None, str | None]:
+    """Point the session's model at the vision model for one screenshot turn. Returns a function that
+    puts the session's own model back, or ``None`` and the reason the image cannot be sent.
+
+    Not `_apply_model`: that is a switch the person makes, and it moves the defaults later sessions
+    inherit. This is one turn's detour, and it checks what a model switch does not — where the pixels
+    would go, and whether the turn's history can forget them afterwards:
+
+    * **Ollama only.** Its local daemon serves local tags and `:cloud` tags behind one endpoint, so
+      "is this on my machine" has an answer (the tag, and `/api/tags`). oMLX would load a vision model
+      outside the memory budget (`PrismModel.require_loaded`), and any other provider is off-machine
+      as far as this harness can vouch — both are refused rather than guessed at.
+    * **Local unless the person said otherwise** (`screenshot_cloud_ok`, from `capture.screenshotCloud`).
+    * **Never pulled.** A local tag that is not installed is refused, the registry's own rule.
+    * **Forgettable.** The image is stripped from the history when the turn ends and the snapshot
+      re-saved; a legacy per-message store cannot rewrite what it already wrote, so it is refused.
+    """
+    import ollama_cloud
+
+    model = agent.model
+    target = str(vision.get("model") or "").strip()
+    if not isinstance(model, ollama_cloud.OllamaCloudModel):
+        return None, f"the screenshot was not sent: vision turns run on the Ollama provider, and this session uses {type(model).__name__}"
+    if not isinstance(getattr(agent, "_session_manager", None), session_store.SnapshotSessionManager | type(None)):
+        return None, "the screenshot was not sent: this session's store cannot remove an image after the turn"
+    cloud = os_context.is_cloud_model(target)
+    if cloud and not vision.get("cloud_ok"):
+        return None, f"the screenshot was not sent: {target} is a cloud model and screenshots stay on this machine (capture.screenshotCloud)"
+    if not cloud and target not in ollama_cloud.installed_local_tags(model.base_url):
+        return None, f"the screenshot was not sent: {target} is not installed in the local Ollama daemon (this harness never pulls models)"
+    before_id = model.get_config().get("model_id")
+    before_spec = getattr(model, "spec", None)
+    model.update_config(model_id=target)
+
+    def restore() -> None:
+        model.update_config(model_id=before_id)
+        if before_spec is not None:
+            model.spec = before_spec
+
+    return restore, None
+
+
 def _apply_temperature(agent, value) -> bool:
     preset = next((p for p in _TEMPERATURE_PRESETS if p[0] == value), None)
     if preset is None:
@@ -974,6 +1175,14 @@ RESUME_TURN_MARKER = "[resume interrupted turn]"
 #: turn that crashes the process every time it is resumed is tried twice and then left for a person.
 AUTO_RESUME_MARKER = "[auto-resume interrupted turn]"
 MAX_AUTO_RESUMES = 2
+#: The longest single JSON-RPC line this child reads from its ACP client (see `_main`).
+STDIO_LINE_LIMIT = 32 * 1024 * 1024
+#: After a cancel, how long the running turn is given to stop on its own (Strands' next checkpoint, a tool that polls the
+#: cancel signal) before it is abandoned.
+CANCEL_GRACE_SECONDS = 3.0
+#: Model calls one turn may make before it pauses (`context.maxSteps`; 0 = no cap). Enough for a large task, small
+#: enough that a loop which will not converge does not run on spending the person's tokens.
+DEFAULT_MAX_STEPS = 50
 AUTO_RESUME_MAX_AGE = 30 * 60
 
 
@@ -1202,7 +1411,7 @@ def _settle_cancelled_turn(agent) -> None:
     manager = getattr(agent, "_session_manager", None)
     if manager is not None:
         try:
-            manager.append_message(message, agent)
+            session_store.record(manager, message, agent)
         except Exception:
             logging.getLogger(__name__).debug("could not persist the cancelled tool results", exc_info=True)
 
@@ -1218,6 +1427,8 @@ class SierraLabAcpAgent:
         self._conn: acp.Client | None = None
         self._sessions: dict[str, _Session] = {}
         self._cancelled: set[str] = set()
+        #: session -> the agent whose invocation is running right now (see `cancel`).
+        self._streaming: dict[str, Agent] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
         self._unsubscribe = None
         self._last_session: str | None = None
@@ -1316,6 +1527,9 @@ class SierraLabAcpAgent:
                 },
             )
 
+        # The project the search and outline tools read (process-wide, like the chdir above).
+        code_search.configure(cwd)
+        code_nav.configure(cwd)
         router = _router()
         router.policy = _router_policy(preferences)
         lsp_enabled = preferences.get("lsp.enabled", True) is not False
@@ -1323,8 +1537,9 @@ class SierraLabAcpAgent:
         manager.enabled = lsp_enabled
 
         reserved = {
-            "shell", "editor", "file_read", "file_write", "python_repl", "http_request", "apply_patch", "architect", "debugger",
-            claude_code_tool.TOOL_NAME, "omlx_resource_manager", "ollama_resource_manager", "context_digest",
+            "shell", "editor", "file_read", "file_write", "python_repl", "http_request", "web_fetch", "apply_patch", "architect", "debugger",
+            claude_code_tool.TOOL_NAME, "omlx_resource_manager", "ollama_resource_manager", "context_digest", "enable_tools", "search_skills",
+            context_offload.RETRIEVE_TOOL, "code_search", "code_outline", "environment_profile", plugin_host.RESOURCE_TOOL,
         }
         plugins = _plugin_host(cwd, reserved, trace_store.enabled(preferences))
         heal = SelfHealHooks(config=lambda: _heal_config(settings_store.current(cwd)), session_id=session_id, root=cwd)
@@ -1339,11 +1554,17 @@ class SierraLabAcpAgent:
         )
         specialist_tools, specialist_agents = specialists.specialist_tools(
             interventions=[handler],
-            hooks_factory=lambda: [lsp_bridge.LspEditHooks(), router_hooks, outcome_hooks.OutcomeHooks(session_id), stall_guard.StallHooks(session_id)],
+            # A specialist's kit is fixed, so it gets the two history levers (cap one result, age old output)
+            # and not the cold-tool scoping.
+            hooks_factory=lambda: [
+                code_nav.LargeFileHooks(code_nav.threshold_from(lambda: settings_store.current(cwd)), root=cwd),
+                lsp_bridge.LspEditHooks(), router_hooks, outcome_hooks.OutcomeHooks(session_id), stall_guard.StallHooks(session_id),
+                context_diet.ContextDiet(lambda: settings_store.current(cwd), scope_tools=False),
+            ],
         )
         instructions = settings_store.load_instructions(cwd)
         context = workspace_context.summary(cwd, specialists=list(specialist_agents))
-        system_prompt = _project_system_prompt(cwd) + f"\n\n{context}" + (f"\n\n{instructions}" if instructions else "") + prompts.live_text(cwd)
+        system_prompt = (_chat_system_prompt(cwd) if _is_chat_scratch(cwd) else _project_system_prompt(cwd)) + f"\n\n{context}" + (f"\n\n{instructions}" if instructions else "") + prompts.live_text(cwd)
         # Order matters for AfterInvocationEvent (callbacks run in reverse):
         # self-heal is registered last so it runs first and can set `resume`
         # before the router decides whether the turn is over.
@@ -1361,13 +1582,51 @@ class SierraLabAcpAgent:
                 omlx_resource_tool.omlx_resource_manager,
                 ollama_resource_tool.ollama_resource_manager,
                 context_digest_tool.context_digest,
+                context_diet.enable_tools,
+                env_profile.environment_profile,
+                plugin_host.resources_tool(plugins),
             ],
-            extra_hooks=[lsp_bridge.LspEditHooks(), router_hooks, heal, outcome_hooks.OutcomeHooks(session_id, "orchestrator"), stall_guard.StallHooks(session_id, "orchestrator")],
+            # A result over the limit is set aside whole — written to ~/.sierralab/offloaded/<session>/, a head+tail preview and
+            # a reference in context, `retrieve_offloaded_content` for the slice the agent wants (Strands' ContextOffloader).
+            # What a specialist or the Claude Code CLI returns is the answer itself, so those are never set aside.
+            offloader=context_offload.build(session_id, preferences=lambda: settings_store.current(cwd), never=set(specialist_agents)),
+            summarizer=str(preferences.get("context.summaryModel", "fast")),
+            project_root=cwd,
+            # What each message carries along (ephemeral, never stored): the MCP servers this project has *now* — a
+            # server discovered in the workspace and started in the background is part of the agent's picture from the
+            # next message on — and the rules this person's rejections taught (rejection_memory.py).
+            extra_plugins=[plugin_host.capabilities_injector(plugins), rejection_memory.constraints_injector(cwd, lambda: settings_store.current(cwd)), os_context.injector(session_id)],
+            web_fetch_mode=str(preferences.get("context.webFetch", "agentic")),
+            extra_hooks=[
+                # Ollama Cloud's reasoning_effort per model call, from the project's size and Laya's reading of the turn.
+                adaptive_effort.AdaptiveEffort(
+                    cwd,
+                    complexity=lambda agent: (lambda decision: decision.tier() if decision is not None else None)(router_hooks.current(agent)),
+                    enabled=lambda: settings_store.current(cwd).get("reasoning.adaptive", True) is not False,
+                    notify=lambda payload: harness_events.emit("effort", {**payload, "sessionId": session_id}),
+                ),
+                lsp_bridge.LspEditHooks(), router_hooks, heal, outcome_hooks.OutcomeHooks(session_id, "orchestrator"), stall_guard.StallHooks(session_id, "orchestrator"),
+                # Last, so it reads the route the router just set (BeforeInvocation runs in order) and caps a
+                # tool result before the hooks registered earlier see it (AfterToolCall runs in reverse).
+                context_diet.ContextDiet(lambda: settings_store.current(cwd), route=lambda agent: _route_of(router_hooks, agent)),
+            ],
             exclude_tools={"agent_memory"},
             use_triage=False,
             untrusted_tools=plugins.untrusted_names,
             skill_dirs=learned.live_dirs(cwd),
             checkpointing=True,
+            # Skills: the few that fit the request, found by embedding search; Laya decides whether one clearly
+            # does (the router's own forward pass and calibrator — `skill_search.SkillDecider`).
+            skill_options={
+                "decider": skill_search.SkillDecider(
+                    router.predict,
+                    router.calibrator,
+                    min_confidence=router.policy.min_confidence,
+                    ready=_laya_loaded,
+                ),
+                "preferences": lambda: settings_store.current(cwd),
+                "notify": lambda payload: harness_events.emit("skills", payload),
+            },
         )
         handler.session_agent = agent
         handler.session_id = session_id
@@ -1456,7 +1715,11 @@ class SierraLabAcpAgent:
         )
 
     async def load_session(self, cwd: str, session_id: str, **kwargs) -> acp.LoadSessionResponse:
-        state = self._build_session(session_id, cwd)
+        # A session this process already holds is *attached to*, not rebuilt: the daemon's
+        # conversation hub runs one child per conversation and lets a second front door (a
+        # terminal) load it while it is live — possibly mid-turn. Rebuilding would replace the
+        # running agent with last turn's snapshot under it. Its history is replayed from memory.
+        state = self._sessions.get(session_id) or self._build_session(session_id, cwd)
 
         if self._conn is not None:
             for update in _replay_history(state.agent.messages):
@@ -1520,7 +1783,7 @@ class SierraLabAcpAgent:
                     ),
                 )
 
-        # Mode isn't persisted across restarts (FileSessionManager only
+        # Mode isn't persisted across restarts (the session manager only
         # persists agent messages) — a reloaded session comes back in the
         # configured default (permissions.defaultMode, "build" unless the user
         # chose otherwise), never a previously-chosen plan/auto.
@@ -1534,7 +1797,7 @@ class SierraLabAcpAgent:
         rows = [
             acp.schema.SessionInfo(session_id=sid, cwd=meta.get("cwd", ""), title=meta.get("title"), updated_at=meta.get("updatedAt"))
             for sid, meta in index.items()
-            if (SESSIONS_DIR / f"session_{sid}").exists() and (cwd is None or os.path.realpath(meta.get("cwd", "")) == os.path.realpath(cwd))
+            if session_store.exists(sid, SESSIONS_DIR) and (cwd is None or os.path.realpath(meta.get("cwd", "")) == os.path.realpath(cwd))
         ]
         rows.sort(key=lambda r: r.updated_at or "", reverse=True)
         return acp.schema.ListSessionsResponse(sessions=rows[:50])
@@ -1576,6 +1839,17 @@ class SierraLabAcpAgent:
 
     async def cancel(self, session_id: str, **kwargs) -> None:
         self._cancelled.add(session_id)
+        # Strands' own cancellation (docs: agent-loop → Cancellation): the loop stops at its next checkpoint — before the
+        # next model call, before the next tool — with a `cancelled` result, and a tool that polls
+        # `tool_context.cancel_signal` (the Claude Code run, which spends the person's usage) stops mid-flight.
+        # Only an agent that is running has anything to cancel: the signal is cleared when an invocation *completes*,
+        # so one set on an idle agent would silently cancel its next turn (lab.isolate guards the same way).
+        agent = self._streaming.get(session_id)
+        if agent is not None:
+            try:
+                agent.cancel()
+            except Exception:
+                logging.getLogger(__name__).debug("agent.cancel failed", exc_info=True)
 
     # ------------------------------------------------------ ext methods
 
@@ -1611,12 +1885,27 @@ class SierraLabAcpAgent:
                 "weights": router.calibrator.weights(),
                 "policy": router.policy.__dict__,
             }
+        if name == "os-context":
+            # The menu bar's capture, held for this session's next turn (os_context.py). Registered
+            # here rather than sent inside the prompt so the person's words stay the prompt and the
+            # screen arrives as wrapped untrusted data — and so it is gone at the turn's end.
+            if not session_id:
+                raise acp.RequestError.invalid_params("os-context needs a sessionId")
+            payload = {key: value for key, value in params.items() if key != "sessionId"}
+            os_context.register(session_id, payload)
+            return {
+                "ok": True,
+                "app": str(payload.get("app_name") or ""),
+                "denied": os_context.is_denied(str(payload.get("app_bundle_id") or "")),
+            }
         if name.startswith("lab/"):
             return await self._lab_control(name.removeprefix("lab/"), params, session_id)
         if name.startswith("skills/"):
             return await self._skills_control(name.removeprefix("skills/"), params, cwd)
         if name.startswith("checkpoints/"):
             return await self._checkpoint_control(name.removeprefix("checkpoints/"), params, session_id, cwd)
+        if name.startswith("conversation/"):
+            return await self._conversation_control(name.removeprefix("conversation/"), params, session_id, state)
         if name == "heal/status":
             heal = state.heal if state else None
             episodes = [
@@ -1675,6 +1964,29 @@ class SierraLabAcpAgent:
             audit = {"action": action, "ok": result.get("ok"), "target": result.get("target"), "turn": result.get("turn"), "files": result.get("count"), "undo_with": result.get("undo_with")}
             state_store.append_event("checkpoint_restore", audit, session_id=session_id, source="checkpoints")
             harness_events.emit("checkpoint", {"event": "checkpoint", "phase": "restored", "files": result.get("count"), "ok": result.get("ok")})
+        return result
+
+    async def _conversation_control(self, action: str, params: dict, session_id: str | None, state: "_Session | None") -> dict:
+        """``conversation/list`` · ``conversation/rewind`` — take the *conversation* back (the agent forgets the last turn or
+        turns). The files are not touched: that is ``checkpoints/undo``. Refused while a turn is running (a rewind under a
+        working agent is two writers on one history). The state it leaves is saved as a checkpoint, so it can be undone."""
+        if state is None or session_id is None:
+            return {"ok": False, "reason": "no such session"}
+        if action == "list":
+            return session_store.listing(state.agent, SESSIONS_DIR, int(params.get("limit") or 15))
+        if action != "rewind":
+            raise acp.RequestError.method_not_found(f"_sierralab/conversation/{action}")
+        if session_id in self._streaming or outcomes.active(session_id) is not None:
+            return {"ok": False, "reason": "a turn is running — stop it first, then go back"}
+        index = params.get("index")
+        result = await session_store.go_back(state.agent, SESSIONS_DIR, turns=int(params.get("turns") or 1), to=str(params.get("to") or "") or None, index=int(index) if index else None)
+        if result.get("ok"):
+            # What a half-finished turn left beside the history it belonged to is stale now.
+            _checkpoint_path(session_id).unlink(missing_ok=True)
+            _resume_marker_path(session_id).unlink(missing_ok=True)
+            audit = {"turn": result.get("turn"), "now": result.get("now"), "forgot": len(result.get("forgot") or []), "restored": result.get("to"), "undo_with": result.get("undo_with")}
+            state_store.append_event("conversation_rewind", audit, session_id=session_id, source="session_store")
+            self._send_ext("sierralab/conversation", {"sessionId": session_id, "event": "rewound", "now": result.get("now"), "forgot": result.get("forgot") or []})
         return result
 
     async def _lab_control(self, action: str, params: dict, session_id: str | None) -> dict:
@@ -1808,6 +2120,7 @@ class SierraLabAcpAgent:
 
             approved = False
             option_id = None
+            note = ""
             answered_by = "user" if self._conn is not None else "no-client"
             if self._conn is not None:
                 options = [acp.schema.PermissionOption(option_id="allow", name="Allow", kind="allow_once")]
@@ -1851,10 +2164,23 @@ class SierraLabAcpAgent:
                 # always meant; anything else keeps the door's own name so the ledger can
                 # account for who decided what.
                 answered_by = _answered_by(result) or answered_by
+                note = _answer_note(result)
                 if approved and always_rule and option_id == "allow_always":
                     self._remember_always(session_id, always_rule)
             if not approved and state is not None:
                 state.router_hooks.note_rejection(state.agent)
+                # A person said no: keep the change and their reason, and let the ReflectionAgent turn it into a rule
+                # later turns are held to (rejection_memory.py). A fail-closed "no client" rejection teaches nothing.
+                rejection_memory.capture(
+                    state.cwd,
+                    session_id=session_id,
+                    tool_name=tool_name,
+                    tool_input=tool_input,
+                    decided_by=answered_by,
+                    note=note,
+                    goal=_turn_context(state.agent)[0],
+                    preferences=settings_store.current(state.cwd),
+                )
             _note_answer(session_id, tool_name, approved, interrupt.id)
 
             rule = always_rule if (approved and option_id == "allow_always") else None
@@ -1933,6 +2259,28 @@ class SierraLabAcpAgent:
     # ---------------------------------------------------------- turns
 
     async def _stream(self, session_id: str, agent, agent_input, *, checkpoints: bool) -> tuple[str, object]:
+        """`_stream_turn`, with the running agent registered so a cancel can reach it (`cancel`)."""
+        agent.cancel_signal.clear()  # idle until now: whatever is set is stale, and would cancel this turn before it began
+        self._streaming[session_id] = agent
+        try:
+            return await self._stream_turn(session_id, agent, agent_input, checkpoints=checkpoints)
+        finally:
+            if self._streaming.get(session_id) is agent:
+                del self._streaming[session_id]
+
+    def _turn_budget(self, session_id: str) -> tuple[int, int]:
+        """`(steps, tokens)` one turn may spend — `context.maxSteps` / `context.maxTurnUsage`, 0 meaning no cap."""
+        state = self._sessions.get(session_id)
+        preferences = settings_store.current(state.cwd) if state is not None else {}
+        values = []
+        for key, default in (("context.maxSteps", DEFAULT_MAX_STEPS), ("context.maxTurnUsage", 0)):
+            try:
+                values.append(max(0, int(float(preferences.get(key, default)))))
+            except (TypeError, ValueError):
+                values.append(default)
+        return values[0], values[1]
+
+    async def _stream_turn(self, session_id: str, agent, agent_input, *, checkpoints: bool) -> tuple[str, object]:
         """Run one turn of ``agent`` to its end, translating Strands events into
         ACP updates. Loops through approval interrupts (each becomes a real ACP
         permission prompt) and, with ``checkpoints``, through Strands checkpoint
@@ -1953,15 +2301,44 @@ class SierraLabAcpAgent:
         # Bounds what `_settled_intervention` may replay: a decision from before
         # this turn began is not this turn's to reuse.
         turn_started = time.time()
+        # What this turn may spend (`context.maxSteps`, `context.maxTurnUsage`). Strands checks `limits` at the top of every loop
+        # cycle and answers with a `limit_*` stop reason and a history that is still valid — but a limit is *per invocation*,
+        # and a turn is several: each approval, and (with `checkpoints`) every cycle, resumes a fresh one whose counters start
+        # at zero. So an invocation that runs the whole loop (a specialist's) is handed what is left of the turn's budget as
+        # `limits`; a checkpointed turn is checked here, at the `after_tools` pause — the one point where every tool call has
+        # its result — against the cycle the checkpoint itself reports.
+        metrics = agent.event_loop_metrics
+        start_cycles = metrics.cycle_count
+        start_tokens = int(metrics.accumulated_usage.get("totalTokens", 0) or 0)
+
+        web = getattr(agent, "web_usage", None)
+        start_web = web.total if web is not None else 0
+
+        def used_tokens() -> int:
+            return int(metrics.accumulated_usage.get("totalTokens", 0) or 0) - start_tokens + ((web.total - start_web) if web is not None else 0)
+
+        max_steps, max_tokens = self._turn_budget(session_id)
+        cancelled_at: float | None = None
         while True:
             stop_reason = "end_turn"
             pending_interrupts: list = []
             checkpoint = None
+            limits: dict[str, int] = {}
+            if not checkpoints:
+                if max_steps:
+                    limits["turns"] = max(1, max_steps - (metrics.cycle_count - start_cycles))
+                if max_tokens:
+                    limits["total_tokens"] = max(1, max_tokens - used_tokens())
 
-            async for event in agent.stream_async(agent_input):
+            async for event in agent.stream_async(agent_input, limits=limits or None):
                 if session_id in self._cancelled:
-                    _settle_cancelled_turn(agent)
-                    return "cancelled", last_result
+                    # Strands was told to stop (`cancel`) and does at its next checkpoint, sending a `cancelled` result of
+                    # its own — which lets a tool that polls the signal wind down first. A moment is allowed for that; a
+                    # tool that never looks is not waited for.
+                    cancelled_at = cancelled_at or time.monotonic()
+                    if time.monotonic() - cancelled_at > CANCEL_GRACE_SECONDS:
+                        _settle_cancelled_turn(agent)
+                        return "cancelled", last_result
                 if "tool_interrupt_event" in event:
                     interrupts = event["tool_interrupt_event"].get("interrupts") or []
                     if interrupts:
@@ -1982,7 +2359,7 @@ class SierraLabAcpAgent:
                     elif reason == "checkpoint":
                         stop_reason, checkpoint = "checkpoint", last_result.checkpoint
                     else:
-                        stop_reason = reason if reason in ("end_turn", "max_tokens") else "end_turn"
+                        stop_reason = reason if reason in ("end_turn", "max_tokens", "cancelled", "max_turn_requests") or str(reason).startswith("limit_") else "end_turn"
                     continue
                 if self._conn is None:
                     continue
@@ -2043,7 +2420,7 @@ class SierraLabAcpAgent:
                     continue
 
                 # Strands >= 1.5x no longer yields a "tool_result" event from
-                # stream_async (confirmed against the installed 1.55.1: the
+                # stream_async (confirmed against the installed 1.55.1 and 1.57.2: the
                 # only events are tool_use_stream, "message", and "result") —
                 # the finished tool's result arrives inside the user-role
                 # "message" event that carries it into the next model call.
@@ -2082,6 +2459,18 @@ class SierraLabAcpAgent:
                         update=acp.update_agent_thought_text(event["reasoningText"]),
                     )
 
+            if stop_reason == "cancelled" or (session_id in self._cancelled and stop_reason != "interrupt"):
+                _settle_cancelled_turn(agent)
+                return "cancelled", last_result
+            if stop_reason == "checkpoint" and checkpoint is not None and checkpoint.position == "after_tools":
+                if max_steps and checkpoint.cycle_index + 1 >= max_steps:
+                    stop_reason = "limit_turns"
+                elif max_tokens and used_tokens() >= max_tokens:
+                    stop_reason = "limit_total_tokens"
+            if stop_reason.startswith("limit_"):
+                await self._say_limit(session_id, stop_reason, max_steps, max_tokens)
+                self._ingest_turn(session_id, prompt, traced)
+                return "max_turn_requests", last_result
             if stop_reason == "checkpoint" and checkpoint is not None:
                 payload = {"checkpoint": checkpoint.to_dict(), "ts": time.time()}
                 if checkpoints:
@@ -2095,6 +2484,19 @@ class SierraLabAcpAgent:
                 self._ingest_turn(session_id, prompt, traced)
                 return stop_reason, last_result
             agent_input = await self._resolve_interrupts(session_id, pending_interrupts, turn_started)
+
+    async def _say_limit(self, session_id: str, reason: str, max_steps: int, max_tokens: int) -> None:
+        """Tell the person *why* the turn stopped, and that nothing was lost — a silent stop reads as a hang."""
+        if self._conn is None:
+            return
+        what = f"{max_steps} steps" if reason == "limit_turns" else f"{max_tokens:,} tokens"
+        key = "context.maxSteps" if reason == "limit_turns" else "context.maxTurnUsage"
+        await self._conn.session_update(
+            session_id=session_id,
+            update=acp.update_agent_message_text(
+                f"\n\n— Paused after {what} on this turn (`{key}`). Nothing is lost: say \"continue\" and I carry on from here, or raise the limit."
+            ),
+        )
 
     def _ingest_turn(self, session_id: str, prompt: str | None, traced: dict) -> None:
         """Feed the finished turn to the local stores, if either is switched on.
@@ -2255,7 +2657,7 @@ class SierraLabAcpAgent:
                 manager = getattr(orchestrator, "_session_manager", None)
                 if manager is not None:
                     try:
-                        manager.append_message(message, orchestrator)
+                        session_store.record(manager, message, orchestrator)
                     except Exception:
                         logging.getLogger(__name__).debug("could not persist dispatched turn", exc_info=True)
         return stop_reason
@@ -2349,7 +2751,7 @@ class SierraLabAcpAgent:
                 manager = getattr(orchestrator, "_session_manager", None)
                 if manager is not None:
                     try:
-                        manager.append_message(message, orchestrator)
+                        session_store.record(manager, message, orchestrator)
                     except Exception:
                         logging.getLogger(__name__).debug("could not persist team turn", exc_info=True)
 
@@ -2365,7 +2767,10 @@ class SierraLabAcpAgent:
         """Cumulative (input, output) tokens across the orchestrator and every specialist."""
         agents = [state.agent, *[getattr(s, "agent", s) for s in (state.specialists or {}).values()]]
         totals = [outcome_hooks.usage_of(agent) for agent in agents]
-        return sum(t[0] for t in totals), sum(t[1] for t in totals)
+        # …and the `web_fetch` analyst, which runs as an agent of its own and so is in nobody's metrics (core_tools.UsageTally).
+        web = getattr(state.agent, "web_usage", None)
+        extra = (web.input, web.output) if web is not None else (0, 0)
+        return sum(t[0] for t in totals) + extra[0], sum(t[1] for t in totals) + extra[1]
 
     def _learn_from(self, record: "outcomes.TurnRecord", state: "_Session") -> None:
         """After a turn: judge the learned skills and prompt overlays it had in front of it, and — when it cost
@@ -2421,6 +2826,8 @@ class SierraLabAcpAgent:
             raise
         finally:
             self._announce_turn(session_id, state, started, tokens_before, stop)
+            # One turn only: a screen the person has left must not follow them into the next one.
+            os_context.clear(session_id)
             if recorder is not None:
                 try:
                     if recorder.checkpointed:
@@ -2486,6 +2893,9 @@ class SierraLabAcpAgent:
                 lab.set_mission(text)
 
         checkpoint_file = _checkpoint_path(session_id)
+        # Set only by a screenshot turn: how to put the session's model back, and what was seen.
+        restore = None
+        vision: dict | None = None
         if _is_resume(text):
             if not checkpoint_file.exists():
                 if self._conn is not None:
@@ -2503,7 +2913,19 @@ class SierraLabAcpAgent:
             checkpoint_file.unlink(missing_ok=True)  # a new turn supersedes an abandoned one
             _resume_marker_path(session_id).unlink(missing_ok=True)
             agent_input = text
-            decision = await self._decide(state, text)
+            # The conversation as it is before this turn, so "go back" can return to it (session_store.py).
+            await session_store.begin_turn(agent, text, SESSIONS_DIR)
+            # A screenshot from the menu bar: this turn runs on the vision model with the image beside
+            # the person's words, and skips the router — a specialist or the team would never see it.
+            vision = os_context.vision_turn(os_context.pending(session_id))
+            if vision is not None:
+                restore, why = _model_for_vision(agent, vision)
+                if restore is None:
+                    os_context.not_sent(session_id, why or "the screenshot was not sent")
+                    vision = None
+                else:
+                    agent_input = [{"text": text}, os_context.image_block(vision)]
+            decision = None if vision is not None else await self._decide(state, text)
             if decision is not None:
                 extra = self._apply_bandit(state, decision, text)
                 recorder = outcomes.active(session_id)
@@ -2522,21 +2944,36 @@ class SierraLabAcpAgent:
                 self._send_ext("sierralab/laya", {"sessionId": session_id, "mode": "route", "router": "v2", **decision.to_event()})
                 if decision.action == "dispatch" and decision.target and decision.target.id in state.specialists:
                     stop_reason = await self._dispatch(session_id, state, decision, text)
-                    return acp.PromptResponse(stopReason=stop_reason if stop_reason in ("end_turn", "max_tokens", "cancelled") else "end_turn")
+                    return acp.PromptResponse(stopReason=stop_reason if stop_reason in ("end_turn", "max_tokens", "cancelled", "max_turn_requests") else "end_turn")
                 if decision.action == "dispatch" and decision.target and decision.target.id == "team":
                     # None means the plan/pipeline failed open: the decision is
                     # already reclassified to a hint, and prime below applies it
                     # for the ordinary turn (fall-through, no return).
                     stop_reason = await self._dispatch_team(session_id, state, decision, text)
                     if stop_reason is not None:
-                        return acp.PromptResponse(stopReason=stop_reason if stop_reason in ("end_turn", "max_tokens", "cancelled") else "end_turn")
+                        return acp.PromptResponse(stopReason=stop_reason if stop_reason in ("end_turn", "max_tokens", "cancelled", "max_turn_requests") else "end_turn")
                 state.router_hooks.prime(agent, decision)
 
-        stop_reason, _result = await self._stream(session_id, agent, agent_input, checkpoints=True)
+        try:
+            # No mid-turn checkpoints for a screenshot turn: a checkpoint is the history written to disk,
+            # and an interrupted one would keep the image there for a resume nobody may ask for.
+            stop_reason, _result = await self._stream(session_id, agent, agent_input, checkpoints=restore is None)
+        finally:
+            if restore is not None:
+                # The detour ends with the turn, however it ended: the session's own model back, and
+                # the image out of the history before the conversation is saved again.
+                restore()
+                if os_context.strip_images(agent.messages, (vision or {}).get("app", "the frontmost window")):
+                    manager = getattr(agent, "_session_manager", None)
+                    if manager is not None:
+                        try:
+                            manager.sync_agent(agent)
+                        except Exception:
+                            logging.getLogger(__name__).warning("os-context: the image was removed from memory but the session could not be re-saved", exc_info=True)
         if stop_reason != "cancelled":
             checkpoint_file.unlink(missing_ok=True)
             _resume_marker_path(session_id).unlink(missing_ok=True)
-        return acp.PromptResponse(stopReason=stop_reason if stop_reason in ("end_turn", "max_tokens", "cancelled") else "end_turn")
+        return acp.PromptResponse(stopReason=stop_reason if stop_reason in ("end_turn", "max_tokens", "cancelled", "max_turn_requests") else "end_turn")
 
 
 class _ProtocolStdout:
@@ -2602,7 +3039,11 @@ async def _main() -> None:
     # thread/loop that doesn't survive to serve a real tool call afterward.
     _protect_protocol_stdout()
     await start_mcp_clients()
-    reader, writer = await acp.stdio.stdio_streams()
+    # One JSON-RPC message is one line, and asyncio's default line limit is 64 KiB: a prompt with a
+    # large embedded file, or the menu bar's screenshot (`_sierralab/os-context`, up to 4 MiB of
+    # JPEG as base64), would otherwise end the connection. The supervisor's side reads with a far
+    # larger limit (`Supervisor.FRAME_LIMIT`); this keeps the two in the same order of magnitude.
+    reader, writer = await acp.stdio.stdio_streams(limit=STDIO_LINE_LIMIT)
     # acp.run_agent's params are misleadingly named: the first stream must be
     # a StreamWriter (what the connection writes outgoing messages to), the
     # second a StreamReader (what it reads incoming messages from) — the

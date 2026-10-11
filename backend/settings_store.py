@@ -99,6 +99,26 @@ SCHEMA: dict[str, tuple] = {
     "learning.banditLambda": ("float", 0.0, 1.0),
     "learning.banditMu": ("float", 0.0, 1.0),
     "lsp.enabled": ("bool",),
+    # Large files (code_nav.py): a whole-file read of a file over this many lines comes back as an outline of its
+    # classes and functions plus how to read a range or one symbol, instead of the file. Trust-gated like the other
+    # context levers: a repository must not be able to switch the diet off for itself.
+    "context.outlineLines": ("float", 100.0, 20000.0),
+    # Preflight (preflight.py): an edit is checked *before* it is put to a person or applied — syntax, the project's
+    # linter, the language server's errors, optionally a test command in a throwaway copy. A check the edit makes
+    # newly fail sends the errors back to the agent instead of asking (`maxRetries` per file per turn); when the
+    # agent runs out, the turn's own edits are rolled back to its first checkpoint (`rollback`). Trust-gated: a
+    # repository must not be able to switch verification off, and `tests` runs code.
+    "preflight.enabled": ("bool",),
+    "preflight.maxRetries": ("float", 0.0, 10.0),
+    "preflight.tests": ("str",),
+    "preflight.rollback": ("bool",),
+    # Reasoning effort that follows the work (adaptive_effort.py): the orchestrator's reasoning_effort on Ollama
+    # Cloud is chosen per model call from the workspace's size and Laya's reading of the turn's complexity. Off
+    # keeps the role's fixed level.
+    "reasoning.adaptive": ("bool",),
+    # Rejection memory (rejection_memory.py): a change a person rejects is reflected on, once, by a tool-less model
+    # call, and the rule it states ("do not …") is put in front of later turns in this project as a constraint.
+    "learning.rejections": ("bool",),
     # Destructiveness scoring (laya_risk.py). The thresholds are the 0.2 / 0.8
     # the directive names. `riskAutoApprove` is reserved: nothing consults it
     # (laya_risk.auto_approvable has no caller, deliberately — see its docstring),
@@ -131,6 +151,19 @@ SCHEMA: dict[str, tuple] = {
     "vault.addr": ("str",),
     "vault.vault": ("str",),
     "vault.egressPolicy": ("enum", ("deny", "proxy")),
+    # The menu-bar deck's screen context (lab/crates/harness-menubar). Read only by
+    # the menubar, and only from the *user* file — a project file is ignored there even
+    # when trusted — so a cloned repo can never grant itself a window. Registered here so
+    # the agent and the TUI recognise the keys rather than warn about them. Lists of
+    # bundle ids, never names or patterns; the never-read list is not a setting at all.
+    "capture.enabled": ("bool",),
+    "capture.allowlist": ("bundle_ids",),
+    "capture.denylist": ("bundle_ids",),
+    "capture.screenshot": ("bool",),
+    "capture.screenshotCloud": ("bool",),
+    # The model a screenshot turn runs on (a vision model the session's provider serves). Unset:
+    # screenshots are previewed but never sent, because no model is assumed to see.
+    "capture.visionModel": ("str",),
     # Proactive observer (daemon/observer.py). Off by default — it is the only
     # thing in this schema that can act with no user turn behind it.
     "observer.enabled": ("bool",),
@@ -142,6 +175,33 @@ SCHEMA: dict[str, tuple] = {
     # on the orchestrator's provider.
     "claudeCode.enabled": ("bool",),
     "claudeCode.maxBudgetUsd": ("float", 0.1, 100.0),
+    # What a Claude Code CLI run uses, beside its dollar cap: the model alias ("" = whatever the CLI defaults
+    # to) and the effort level ("default" = the CLI's own). Both default to a cheaper setting than the CLI's —
+    # see claude_code_tool.DEFAULT_MODEL / DEFAULT_EFFORT — because these runs spend the person's Claude Code usage.
+    "claudeCode.model": ("str",),
+    "claudeCode.effort": ("enum", ("default", "low", "medium", "high", "xhigh", "max")),
+    # Token economy (context_diet.py): what every model call re-sends. `coldTools` hides rarely-used tools
+    # until a turn asks for them (the agent can always load one with `enable_tools`); `toolOutputChars` caps one
+    # tool result; `agedOutputChars` shortens tool output older than the newest few messages (0 turns it off).
+    "context.coldTools": ("bool",),
+    "context.toolOutputChars": ("float", 2000.0, 200000.0),
+    "context.agedOutputChars": ("float", 0.0, 20000.0),
+    # A result over `toolOutputChars` is set aside whole and read back by slice (context_offload.py, Strands'
+    # ContextOffloader) instead of being cut; `offload: false` cuts it, head and tail. `maxSteps` / `maxTurnUsage` (tokens) are
+    # what one turn may spend before it pauses (Strands' per-invocation `limits`); 0 turns a cap off.
+    "context.offload": ("bool",),
+    # What `web_fetch` returns: `agentic` (an analyst model answers your prompt about the page — the page never enters the
+    # conversation) or `markdown` (the page itself, as markdown).
+    "context.webFetch": ("enum", ("agentic", "markdown")),
+    "context.maxSteps": ("float", 0.0, 500.0),
+    # Who writes the summary when a long chat is compacted: the fast model tier (MODEL_TIER_FAST) when one is set, or the
+    # session's own model (`main`). With no fast tier configured both are the same.
+    "context.summaryModel": ("enum", ("fast", "main")),
+    "context.maxTurnUsage": ("float", 0.0, 50000000.0),
+    # Skills (skill_search.py): list only the few that fit the request — embedding search, Laya deciding — instead of
+    # all 49 on every call. `skillSearch: false` lists them all; `skillsListed` is how many are listed per turn.
+    "context.skillSearch": ("bool",),
+    "context.skillsListed": ("float", 1.0, 12.0),
     "omlx.prism": ("bool",),
     "tui.thinking": ("enum", COLLAPSE),
     "tui.toolOutput": ("enum", COLLAPSE),
@@ -161,8 +221,18 @@ USER_ONLY_KEYS = ("trustedProjects",)
 #: from the user file, or from a project the user has `/trust`ed, they apply.
 #: Mirrored in `tui/crates/acp-tui/src/settings.rs` (`TRUST_GATED_KEYS`).
 TRUST_GATED_KEYS = frozenset(
-    {"vault.enabled", "vault.addr", "vault.vault", "vault.egressPolicy", "kg.sink", "claudeCode.maxBudgetUsd", "checkpoints.enabled", "checkpoints.maxFileMb", "learning.promotion", "learning.optimizePrompts", "learning.bandit"}
+    {"vault.enabled", "vault.addr", "vault.vault", "vault.egressPolicy", "kg.sink", "claudeCode.maxBudgetUsd", "claudeCode.model", "claudeCode.effort", "context.coldTools", "context.toolOutputChars", "context.agedOutputChars", "context.offload", "context.webFetch", "context.maxSteps", "context.maxTurnUsage", "context.summaryModel", "context.skillSearch", "context.skillsListed", "checkpoints.enabled", "checkpoints.maxFileMb", "learning.promotion", "learning.optimizePrompts", "learning.bandit",
+     # Laya's own lines: `callGuard: off` or a raised `riskDestroy` from a cloned repo would quietly remove the
+     # per-call asks that make `auto` mode bounded, and `laya.mode: off` the turn-level arming.
+     "laya.mode", "laya.callGuard", "laya.riskSafe", "laya.riskDestroy",
+     "context.outlineLines", "preflight.enabled", "preflight.maxRetries", "preflight.tests", "preflight.rollback", "learning.rejections",
+     # What the menu bar may read off the screen. The menubar is stricter still (user file only).
+     "capture.enabled", "capture.allowlist", "capture.denylist", "capture.screenshot", "capture.screenshotCloud", "capture.visionModel"}
 )
+
+#: A bundle id as `capture.allowlist` accepts it: reverse-DNS labels, nothing that could be a path, a
+#: pattern or a shell fragment. Mirrors `harness_capture::policy::acceptable` and the TUI's check.
+_BUNDLE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*(\.[A-Za-z0-9][A-Za-z0-9_-]*)+$")
 
 _SECRET_KEY = re.compile(r"(api[_-]?key|token|secret|password|passwd|credential)", re.IGNORECASE)
 _SECRET_VALUE = re.compile(r"(sk-[A-Za-z0-9]{16,}|[A-Za-z0-9]{32,}\.[A-Za-z0-9_-]{8,}|ghp_[A-Za-z0-9]{20,}|xox[bp]-[A-Za-z0-9-]{10,})")
@@ -276,6 +346,8 @@ def _check(key: str, value, where: str) -> tuple[bool, str | None]:
     if kind == "float":
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not spec[1] <= value <= spec[2]:
             return False, f"{where}: '{key}' must be a number between {spec[1]} and {spec[2]}"
+    if kind == "bundle_ids" and not (isinstance(value, list) and all(isinstance(item, str) and _BUNDLE_ID.match(item) for item in value)):
+        return False, f"{where}: '{key}' must be a list of bundle ids, e.g. [\"com.apple.Safari\"]"
     return True, None
 
 
@@ -539,6 +611,7 @@ _SPECIFIER = {
     "file_write": "path",
     "editor": "path",
     "http_request": "url",
+    "web_fetch": "url",
 }
 _PATH_TOOLS = ("file_read", "file_write", "editor")
 

@@ -31,7 +31,7 @@ import tempfile
 from pathlib import Path
 
 from strands import Agent, tool
-from strands_tools import file_read, think
+from strands_tools import file_read
 
 import skill_validation_hooks as svh
 from prompt_security import SecretRedactionHooks
@@ -58,8 +58,8 @@ _GUARDRAIL_MARKERS = ["_APPROVAL_REQUIRED_TOOLS", "ToolBehavior(interrupt_on_cal
 
 _ANALYST_PROMPT = (
     "You are an improvement analyst for this codebase. You will be given an "
-    "observation -- a recurring pattern, or a specific human ask. Call "
-    "think, then propose ONE concrete, narrow change: either a new tool for "
+    "observation -- a recurring pattern, or a specific human ask. Reason "
+    "it through, then propose ONE concrete, narrow change: either a new tool for "
     "skills_generated/, or a specific edit to one existing tracked file. "
     "Respond with: which file, why, and exactly what should change. Never "
     "propose editing skill_validation_hooks.py or proposer_tool.py -- those "
@@ -68,7 +68,7 @@ _ANALYST_PROMPT = (
 
 _WRITER_PROMPT = (
     "You are a drafting specialist. You will be given a proposed change. "
-    "Call think to sanity-check it, then draft the FULL replacement content "
+    "Sanity-check it, then draft the FULL replacement content "
     "for the target file -- not a diff or patch, the complete file, ready "
     "to write as-is. You may call file_read to see a tracked file's current "
     "content before drafting your replacement of it, but never write "
@@ -85,7 +85,7 @@ _WRITER_PROMPT = (
 _CRITIC_PROMPT = (
     "You are a skeptical critic reviewing a proposed code change, alongside "
     "confirmation that it already passed a static guard and the regression "
-    "test suite. Call think, then respond with exactly one word first -- "
+    "test suite. Reason it through, then respond with exactly one word first -- "
     "PASS or FAIL -- followed by one or two sentences of reasoning. FAIL if "
     "the change is broader than what was asked, touches something "
     "unrelated to the stated goal, or you're not confident it's correct --"
@@ -94,7 +94,7 @@ _CRITIC_PROMPT = (
 
 
 def _run_analyst(build_model, observation: str) -> str:
-    agent = Agent(model=build_model(), system_prompt=_ANALYST_PROMPT, tools=[think], callback_handler=None)
+    agent = Agent(model=build_model(), system_prompt=_ANALYST_PROMPT, tools=[], callback_handler=None)
     return str(agent(observation))
 
 
@@ -103,7 +103,7 @@ def _run_writer(build_model, proposal: str) -> str:
     agent = Agent(
         model=build_model(),
         system_prompt=_WRITER_PROMPT,
-        tools=[think, file_read],
+        tools=[file_read],
         hooks=[SecretRedactionHooks()],
         callback_handler=None,
     )
@@ -111,7 +111,7 @@ def _run_writer(build_model, proposal: str) -> str:
 
 
 def _run_critic(build_model, proposal: str, draft: str) -> str:
-    agent = Agent(model=build_model(), system_prompt=_CRITIC_PROMPT, tools=[think], callback_handler=None)
+    agent = Agent(model=build_model(), system_prompt=_CRITIC_PROMPT, tools=[], callback_handler=None)
     return str(agent(f"Proposal:\n{proposal}\n\nDraft (already passed the static guard and regression tests):\n{draft}"))
 
 

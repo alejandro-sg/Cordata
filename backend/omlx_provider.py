@@ -38,6 +38,7 @@ Gate: ``omlx.prism`` (default on) — and oMLX must answer ``/health``; otherwis
 from __future__ import annotations
 
 import asyncio
+import atexit
 import logging
 import os
 import threading
@@ -365,12 +366,18 @@ class Lease:
 
 class LeaseTable:
     """Refcounted loads. Two graph nodes sharing one Prism model load it once; the last
-    one out unloads it — but only if the lease is what loaded it."""
+    one out unloads it — but only if the lease is what loaded it.
+
+    An unload that fails does not forget the model: it stays *stranded* (ours, resident,
+    nobody holding it) and is retried on the table's next acquire or release, and once more
+    when the process exits (``release_all``) — otherwise one timed-out unload would leave
+    7 GB of unified memory held until somebody noticed."""
 
     def __init__(self, budget: memory_budget.MemoryBudget | None = None) -> None:
         self._budget = budget
         self._lock = threading.Lock()
         self._leases: dict[str, Lease] = {}
+        self._stranded: set[str] = set()  # aliases we loaded, nobody holds, and an unload failed for
 
     @property
     def budget(self) -> memory_budget.MemoryBudget:
@@ -381,8 +388,15 @@ class LeaseTable:
         comes back with ``error`` set, and the Prism model then refuses its requests."""
         spec = resolve(alias)
         with self._lock:
+            self._retry_stranded(keep=spec.alias)
             lease = self._leases.setdefault(spec.alias, Lease(spec.alias, spec.wire_id))
             lease.holders += 1
+            if spec.alias in self._stranded:
+                # Still resident from the failed unload, and ours: holding it again is the cheapest way out.
+                self._stranded.discard(spec.alias)
+                lease.loaded_by_us = True
+                lease.error = None
+                return lease
             if lease.holders > 1:
                 return lease
             try:
@@ -408,18 +422,62 @@ class LeaseTable:
         with self._lock:
             lease = self._leases.get(spec.alias)
             if lease is None or lease.holders == 0:
+                self._retry_stranded()
                 return
             lease.holders -= 1
             if lease.holders > 0:
                 return
             owned, lease.loaded_by_us = lease.loaded_by_us, False
-            if not owned:
+            if owned and not self._unload(spec.alias, spec.wire_id):
+                self._retry_stranded(keep=spec.alias)  # not straight back at the server that just failed
                 return
-            try:
-                self.budget.omlx.unload(spec.wire_id)
-                harness_events.emit("memory", {"event": "lease_unload", "runtime": "omlx", "model": spec.alias})
-            except omlx_manager.OmlxError as error:
-                logger.warning("prism: could not unload %s: %s", spec.alias, error)
+            self._retry_stranded()
+
+    def _unload(self, alias: str, wire_id: str) -> bool:
+        """Under the lock. True when the model is out of memory (or the server says so)."""
+        omlx = self.budget.omlx
+        try:
+            omlx.unload(wire_id)
+        except omlx_manager.OmlxError as error:
+            self._stranded.add(alias)
+            logger.warning("prism: could not unload %s (will retry): %s", alias, error)
+            harness_events.emit("memory", {"event": "lease_unload_failed", "runtime": "omlx", "model": alias, "reason": str(error)[:300]})
+            return False
+        self._stranded.discard(alias)
+        held = getattr(omlx, "unreclaimed", {}).get(wire_id)
+        payload = {"event": "lease_unload", "runtime": "omlx", "model": alias}
+        if held:
+            payload.update(event="lease_unreclaimed", held_gb=round(held / omlx_manager.GB, 2))
+        harness_events.emit("memory", payload)
+        return True
+
+    def _retry_stranded(self, keep: str | None = None) -> None:
+        """Under the lock: one more unload for each stranded model nobody holds."""
+        for alias in sorted(self._stranded):
+            lease = self._leases.get(alias)
+            if alias == keep or lease is None or lease.holders:
+                continue
+            self._unload(alias, lease.wire_id)
+
+    def release_all(self) -> list[str]:
+        """Process exit: every model this table loaded goes, held or not — nothing that ends here
+        should keep the weights it loaded resident after it. Never raises."""
+        dropped: list[str] = []
+        with self._lock:
+            for alias, lease in self._leases.items():
+                if not (lease.loaded_by_us or alias in self._stranded):
+                    continue
+                lease.holders, lease.loaded_by_us = 0, False
+                try:
+                    if self._unload(alias, lease.wire_id):
+                        dropped.append(alias)
+                except Exception:  # an exit path must not raise
+                    logger.debug("prism: unload at exit failed", exc_info=True)
+        return dropped
+
+    def stranded(self) -> list[str]:
+        with self._lock:
+            return sorted(self._stranded)
 
     def held(self) -> dict[str, int]:
         with self._lock:
@@ -435,6 +493,7 @@ def default_table() -> LeaseTable:
     with _TABLE_LOCK:
         if _TABLE is None:
             _TABLE = LeaseTable()
+            atexit.register(_TABLE.release_all)
         return _TABLE
 
 
@@ -478,6 +537,14 @@ class PrismLeaseHooks(HookProvider):
     async def _before(self, event: BeforeInvocationEvent) -> None:
         if getattr(event, "cancel", False):
             return
+        # An agent runs one invocation at a time, so a lease still on the stack here belongs to an invocation that never
+        # reached `_after` — the SDK skips AfterInvocationEvent when a *later* BeforeInvocation hook raises. Give it back
+        # first, or that model stays resident (and counted as held) for the life of the process.
+        with self._lock:
+            orphaned, self._held = self._held, []
+        for alias in orphaned:
+            if alias:
+                await asyncio.to_thread(self.table.release, alias)
         held = await asyncio.to_thread(self._lease_first)
         with self._lock:
             self._held.append(held or "")
