@@ -25,7 +25,7 @@ import omlx_manager
 import omlx_provider as op
 import sub_agent_common
 from fake_omlx import FakeOmlx
-from harness_testing import ScriptedModel, check, text, tool as call
+from harness_testing import ScriptedModel, check, text
 
 ARCH = "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"
 DIGEST = "prism-ml/Ternary-Bonsai-27B-mlx-2bit"
@@ -266,16 +266,6 @@ def test_sub_agent_wiring() -> None:
             op._probe = None
 
 
-def test_team_profile() -> None:
-    import team_pipeline
-
-    plan = team_pipeline.parse_team_plan(
-        json.dumps({"task": "t", "agents": [{"name": "plan", "role": "r", "task": "design it", "profile": "architect"}, {"name": "summarize", "role": "r", "task": "condense", "profile": "digest", "depends_on": ["plan"]}, {"name": "other", "role": "r", "task": "x", "profile": "bogus"}]})
-    )
-    specs = team_pipeline.node_specs(plan)
-    check([s.get("profile") for s in specs] == ["architect", "digest", None], "the planner may give a node an architect or digest profile; anything else is dropped")
-
-
 def main() -> None:
     test_registry()
     test_wire_compat()
@@ -287,7 +277,6 @@ def main() -> None:
     test_failover_between_prism_models()
     test_request_to_an_unloaded_model_is_refused()
     test_sub_agent_wiring()
-    test_team_profile()
     print("\noMLX / Prism: all checks passed")
 
 

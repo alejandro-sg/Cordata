@@ -35,8 +35,6 @@ import sub_agent_common  # noqa: F401
 from core_tools import CoreToolHooks, HarnessSandbox, editor, http_request, shell, web_fetch
 
 from agent_memory_tool import agent_memory
-from local_graph_tool import local_graph
-from local_swarm_tool import local_swarm
 from a2a_client_tool import a2a_client
 from mcp_manager import load_configured_mcp_clients
 from laya_triage import triage_hooks
@@ -160,7 +158,7 @@ def build_model(model_id: str | None = None):
 
 # Imported here, before os.chdir() below moves the process (and the ''
 # sys.path entry every bare-module import below relies on) into workspace/ —
-# same reason agent_memory_tool/local_swarm_tool are imported above, before
+# same reason agent_memory_tool is imported above, before
 # chdir. Also after build_model is defined: skill_forge_tool.py calls back
 # into this module for it lazily, inside its own skill_forge function.
 from skill_forge_tool import skill_forge  # noqa: E402
@@ -326,8 +324,6 @@ _STATIC_TOOLS = [
     http_request,
     web_fetch,
     agent_memory,
-    local_swarm,
-    local_graph,
     a2a_client,
     skill_forge,
     proposer,
@@ -441,7 +437,7 @@ def build_conversation_manager(summarizer: str = "fast") -> SummarizingConversat
     )
 
 
-# Kept short deliberately: tool-specific guidance (agent_memory, local_swarm,
+# Kept short deliberately: tool-specific guidance (agent_memory,
 # writing new skills) lives in backend/skills/ instead, where AgentSkills only
 # injects it on demand rather than bloating every request's system prompt —
 # a longer prompt measurably hurt this small model's tool-calling reliability.

@@ -85,13 +85,11 @@ _HEADER = (
 # noise around our own output.
 _MEMORY_READ_ACTIONS = {"retrieve", "list"}
 
-# A sub-agent's final reply is model-written text built from whatever *it*
-# read — and its own UntrustedToolResultHooks only wrapped those reads inside
-# its own context. Returned up to the orchestrator as a plain tool result, a
-# page's injected instruction that a sub-agent repeated in its summary would
-# arrive looking trusted (laundered through the team). Wrapping the team's
-# result marks it as derived-from-untrusted for the orchestrator too.
-_SUBAGENT_TOOLS = frozenset({"local_swarm", "local_graph"})
+# A delegated worker's final report is model-written text built from whatever
+# *it* read. Returned up as a plain tool result, an injected instruction a
+# worker repeated in its report would arrive looking trusted (laundered through
+# the delegation). Wrapping the result marks it as derived-from-untrusted.
+_SUBAGENT_TOOLS = frozenset({"orchestrate"})
 
 # Optional local classifier (github.com/NandhaKishorM/laya, settings.
 # LAYA_GUARD_ENABLED) that scores untrusted tool output for injection risk
@@ -285,7 +283,7 @@ class UntrustedToolResultHooks(HookProvider):
         elif name in self._extra_untrusted_tools:
             label = f"MCP tool: {name}"
         elif name in _SUBAGENT_TOOLS:
-            label = f"sub-agent team output ({name})"
+            label = f"delegated worker output ({name})"
         elif name == RETRIEVE_TOOL:
             # What `context_offload` set aside is read back unwrapped: the stored copy was written before this guard ran
             # on it (and a pattern/line slice may not include the lines the guard sat around), so the read-back is the

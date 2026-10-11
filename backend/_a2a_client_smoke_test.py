@@ -6,7 +6,7 @@ tool (a2a_client_tool.py, on top of strands.agent.a2a_agent.A2AAgent).
 * a non-http(s) endpoint is refused without any network activity;
 * an unreachable endpoint comes back as a tool error result, not a raise;
 * sub-agents can never get it (unreviewed third-party egress needs a gate),
-  even when a local_graph/local_swarm spec explicitly asks for it by name.
+  even when a sub-agent spec explicitly asks for it by name.
 No live remote agent is needed: refused/failed calls prove the failure paths,
 and everything else is construction-time work.
 

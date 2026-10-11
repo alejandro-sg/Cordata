@@ -7,7 +7,6 @@ import AgentTools from "./AgentTools";
 import ChatPane from "./ChatPane";
 import { randomId } from "./randomId";
 import SandboxedUiFullscreen from "./SandboxedUiFullscreen";
-import SwarmProgress from "./SwarmProgress";
 import ThreadSidebar from "./ThreadSidebar";
 import { useLocalStorageToggle } from "./useLocalStorageToggle";
 import { useSandboxFunctionBridge } from "./useSandboxFunctionBridge";
@@ -24,7 +23,6 @@ export default function Page() {
   const [isExplicit, setIsExplicit] = useState(false);
   const [dark, toggleDark] = useLocalStorageToggle("sierralab-agents:dark", false);
   const [enableInspector, toggleInspector] = useLocalStorageToggle("sierralab-agents:inspector", true);
-  const [subAgentsOn, toggleSubAgents] = useLocalStorageToggle("sierralab-agents:subagents", true);
   const { sandboxFunctions, approvalUi } = useSandboxFunctionBridge();
 
   return (
@@ -45,7 +43,7 @@ export default function Page() {
           // showed the library's generic "How can I help you today?"
           // default instead. welcomeMessageText is the real field for it.
           welcomeMessageText:
-            "Local Strands agent — shell, files, code execution, long-term memory, and sub-agent teams, all running on your machine. Ask me anything.",
+            "Local Strands agent — shell, files, code execution and long-term memory, all running on your machine. Ask me anything.",
         }}
       >
         <AgentTools onToggleDark={toggleDark} />
@@ -65,13 +63,10 @@ export default function Page() {
             onToggleDark={toggleDark}
             inspectorOn={enableInspector}
             onToggleInspector={toggleInspector}
-            subAgentsOn={subAgentsOn}
-            onToggleSubAgents={toggleSubAgents}
           />
           <div className="chat-pane">
             <ChatPane threadId={threadId} hasExplicitThreadId={isExplicit} />
           </div>
-          {subAgentsOn && <SwarmProgress onHide={toggleSubAgents} />}
         </div>
       </CopilotChatConfigurationProvider>
     </CopilotKitProvider>

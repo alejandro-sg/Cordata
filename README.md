@@ -53,20 +53,18 @@ config; see `backend/.env.example`). Full reasoning, including what's *not* cove
   filesystem and command access on this machine.
 - `http_request`, `current_time`, `calculator`, `think` — general-purpose utility tools.
 - `agent_memory` (`backend/agent_memory_tool.py`) — durable semantic memory, see below.
-- `local_swarm` (`backend/local_swarm_tool.py`) — spins up specialized **Strands
-  sub-agents** on demand (a real supervisor → specialist-tool-agents pattern; each
-  sub-agent is a full Strands `Agent` with its own system prompt, tools, and model). Builds
-  each sub-agent on the *same model provider as the orchestrator* (local oMLX by default;
-  a cloud provider if `MODEL_PROVIDER` says so), server-side, in code — see "Why
-  `local_swarm` and not `swarm`" below for why that's not just a style choice. `local_graph`
-  is its parallel counterpart for independent sub-tasks.
+- `orchestrate` (`backend/orchestrate_tool.py`, ACP front doors) — hands a multi-step coding
+  task to the orchestrator (`backend/orchestrator/`, [`docs/orchestrator.md`](docs/orchestrator.md)):
+  plan with file scopes and checkable criteria, execute on the cheapest capable coding CLI
+  (Claude Code, Antigravity, Ollama), review with another model family, audit against the
+  plan. Approval-gated like `claude_code_engineer`. It replaced the in-process sub-agent
+  teams (`local_swarm`, `local_graph`, the Laya team pipeline).
 - `skills` — Strands' native [Agent Skills](https://agentskills.io) plugin
   (`strands.vended_plugins.skills.AgentSkills`), loaded from `backend/skills/`. Each skill
   is a directory with a `SKILL.md` (YAML frontmatter + markdown instructions) — same shape
   as Claude Code's own skills, and only its name+description cost anything in the base
-  system prompt; full instructions load on activation. Three are included:
-  `project-memory` (check `agent_memory` before claiming ignorance), `sub-agent-team`
-  (how to use `local_swarm`), and `skill-authoring` (below).
+  system prompt; full instructions load on activation. Included: `project-memory` (check
+  `agent_memory` before claiming ignorance) and `skill-authoring` (below).
 
 These tools run with **no confirmation gate at the process level** — `BYPASS_TOOL_CONSENT`
 is set because a headless server has no TTY to prompt on — but `shell`, `python_repl`, and
@@ -82,28 +80,19 @@ simply a function of prompt length or tool count either: trimming the system pro
 down and moving guidance into on-demand skills did *not* make a fresh-thread `run pwd in
 shell` call reliably again. Every capability here is verified working when actually
 invoked — direct Python tests for `agent_memory`, live shell execution earlier in this
-session, `local_swarm`/`skills` confirmed registered, frontend tools and HITL confirmed
+session, `skills` confirmed registered, frontend tools and HITL confirmed
 registered and visible in CopilotKit's own Inspector (see below) — the gap is specifically
 this model's own judgment about *when* to call a tool versus describe one. A stronger local
 model (or Bedrock/Anthropic, swappable in `agent_common.py`) would close this gap; no
 amount of prompt/skill engineering here can substitute for model capability.
 
-## Sub-agents: why `local_swarm` and not `swarm`
-
-The raw `strands_tools.swarm` tool needs every sub-agent spec to carry a
-`model_provider`/`model_settings` block pointing at oMLX — a nested JSON structure the
-small local model reliably failed to reproduce (it would narrate the JSON as a code block
-instead of calling the tool). `local_swarm` takes a simpler schema (`name`, `system_prompt`,
-optional `tools`, optional `tier`) and injects the model config in Python, where it can't be
-gotten wrong — `swarm` is itself a real `@tool`-decorated function, directly callable as
-plain Python, so `local_swarm` just calls it with the completed specs. The
-`sub-agent-team` skill documents the simplified schema for the model.
+## Sub-agents
 
 Sub-agents follow the active **model provider** (`backend/sub_agent_common.py`): with
 `MODEL_PROVIDER=openai_compatible` (e.g. Ollama Cloud) they run on the cloud too, with the
-same API key — none of their own — and each can run at a model **tier** (`fast` /
-`standard` / `strong`, `MODEL_TIER_*`), chosen by the spec or by Laya's complexity
-estimate. See [`docs/laya-triage.md`](docs/laya-triage.md).
+same API key — none of their own — and each runs at a model **tier** (`fast` /
+`standard` / `strong`, `MODEL_TIER_*`). The specialists (architect, debugger), the digest and
+the observer are the sub-agents left in-process; multi-step work goes to `orchestrate`.
 
 ## Model providers, API keys, and Laya
 
@@ -271,7 +260,7 @@ referencing Claude-Code-only mechanisms with no equivalent here (spawning the `c
 CLI, `.claude/settings.json` hooks, a hardcoded path from a different machine). See
 `backend/skills/PORTED_FROM_CLAUDE_CODE.md` for the full exclusion list and the
 Claude-Code-tool-name → this-agent's-tool-name translation table every ported skill
-assumes (`Read`→`file_read`, `Bash`→`shell`, `Task`→`local_swarm`/`local_graph`, etc.).
+assumes (`Read`→`file_read`, `Bash`→`shell`, `Task`→`orchestrate`, etc.).
 
 ## Skills the agent can write for itself
 

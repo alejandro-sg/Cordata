@@ -23,10 +23,10 @@ Then policy, in this order:
    = direct`` (default): the ACP server runs that specialist directly — the
    orchestrator's model call that would only have decided to delegate is
    skipped. ``hint`` mode keeps the old advisory line instead. A confident
-   ``team`` route with ``laya.teamDispatch = direct`` (its own switch, also
-   ``direct`` by default) instead runs the team pipeline — a planner call
-   decomposes the task into a Strands GraphBuilder pipeline (see
-   team_pipeline.py); ``hint`` keeps the advisory line.
+   ``team`` route is always a hint naming the ``orchestrate`` tool: running it
+   spends coding-CLI quota and edits files, so the call goes through the
+   approval gate like any other (``laya.teamDispatch`` is accepted and ignored;
+   the in-process team pipeline it used to switch is gone).
 3. **Confident plugin**: tool scoping — the turn's model calls see the core
    tools plus that plugin's tools only (other plugins' schemas are not sent),
    and a short hint names the plugin.
@@ -105,7 +105,7 @@ _HINTS = {
     "code": "this looks like work on files or code: explore with file_read / lsp_* before editing",
     "web": "this looks like a web lookup, so http_request is the likely fit",
     "memory": "this looks like recalling or storing something the user said, so agent_memory is the likely fit",
-    "team": "this looks like a multi-part task: local_graph for independent parts, local_swarm for sequential ones",
+    "team": "this looks like a multi-step task: the orchestrate tool can plan it, run it on the coding CLIs and audit the result",
     "architect": "this looks like design work: the architect specialist can plan it first",
     "debugger": "this looks like a failure to fix: the debugger specialist can diagnose and patch it",
     "claude_code": (
@@ -221,11 +221,9 @@ class Policy:
     gate: float = 0.85
     min_confidence: float = 0.5
     dispatch: str = "direct"  # direct | hint
-    # The confident ``team`` route is its own switch: unlike a specialist
-    # dispatch (a single delegated model run), direct team dispatch *skips the
-    # orchestrator entirely* — decompose + GraphBuilder pipeline, then the
-    # result is written back into the conversation (team_pipeline.py).
-    team_dispatch: str = "direct"  # direct | hint
+    # Accepted for old settings files and ignored: a ``team`` route is always a
+    # hint naming the orchestrate tool (see the module docstring).
+    team_dispatch: str = "hint"
     on_abstain: str = "escalate"  # escalate | llm
     frontier_model: str | None = None
 
@@ -309,8 +307,6 @@ class LayaRouter:
         kind = decision.target.kind
         if kind == "specialist" and policy.dispatch == "direct":
             decision.action, decision.reason = "dispatch", f"dispatched to the {label} specialist"
-        elif decision.target.id == "team" and policy.team_dispatch == "direct":
-            decision.action, decision.reason = "dispatch", "dispatched to the team pipeline"
         elif kind == "tool":
             # The Claude Code CLI wrapper is the heavy path: acted on only when Laya is not
             # confident the task is trivial. A small change stays with the orchestrator's own

@@ -25,7 +25,8 @@ Orchestrator (Strands Agent, agent_common.py) — model loop with tools
    │                (every edit preflighted first: syntax · ruff · LSP · optional tests)
    ├── read-only:  code_search, code_outline, file_read, lsp_*, http_request, agent_memory,
    │               environment_profile, mcp_resources (list)
-   ├── multi-agent: local_swarm, local_graph (sub-agents, denylisted toolset)
+   ├── delegated:  orchestrate (plan → execute → harden → audit on the coding CLIs, human-gated),
+   │               claude_code_engineer (one task to the Claude Code CLI, human-gated)
    ├── remote:      a2a_client (A2A protocol)
    ├── plugins:     per-project MCP plugin tools (.mcp.json, .cursor/, .vscode/, mcp.json)
    ├── injected:    the clock, the MCP servers running now, this person's rejection rules
@@ -520,27 +521,18 @@ Four additions turn the loop from "fixes this failure" into "gets better at fail
 
 Covered by `_fix_memory_smoke_test.py`, `_stall_guard_smoke_test.py`, `_self_heal_smoke_test.py` and `_auto_resume_smoke_test.py`.
 
-## Team pipeline (team_pipeline.py)
+## Multi-step work: the orchestrator (orchestrate_tool.py)
 
-Before the team pipeline, a multi-part turn went through the orchestrator's own model call,
-which had to decide to build a team and how to decompose it. Now a confident `team` route with
-`laya.teamDispatch: direct` (default) runs the pipeline directly:
+A multi-part task goes to `orchestrate`, which runs the orchestrator (`backend/orchestrator/`,
+[`orchestrator.md`](orchestrator.md)): a planner writes a plan whose steps name the files they may touch and
+whose acceptance criteria are checkable without judgement; the cheapest capable coding CLI executes each step
+inside a checkpoint and a Seatbelt write scope; a model from another family hardens the change; the audit runs
+the plan's checks before a reviewer is asked. A confident Laya `team` route is a hint naming the tool — never an
+automatic run: it spends coding-CLI quota and edits files, so the call goes through the approval gate.
 
-1. **Plan** — one small model call (no tools) converts the task into a validated JSON team spec
-   (name, role, task, optional tools/tier/dependencies). Anything malformed fails *open*: the
-   turn falls back to the advisory hint and the orchestrator decides normally — never hidden,
-   never swallowed.
-2. **Run** — the same machinery the `local_graph` tool uses (`stream_graph` in
-   `local_graph_tool.py` — literally imported, not copied): Strands `GraphBuilder`, nodes built
-   by `sub_agent_common.build_agent_nodes`, progress streamed into one tool card.
-
-Safety is unchanged by skipping the orchestrator: every node's tools go through
-`sub_agent_common.resolve_tools` (no shell, no python_repl, no file_write, no editor, no
-generated skills, no orchestrator-only or frontend-proxy tools) — the same denylist local_graph
-and local_swarm runs have. The pipeline automates only the *decision* to delegate; it does not
-widen what a delegated agent can do. `local_swarm` / `local_graph` stay available as orchestrator
-tools for the case the model wants a team Laya didn't route — sub-agents run on the session's
-provider, same tiers, `SwarmProgress`-style progress plus per-node reasoning tails.
+It replaced the in-process sub-agent teams (`local_swarm`, `local_graph`, and the Laya team pipeline that ran a
+Strands `GraphBuilder` of copies of the session's model). Those were never used in a measured week of real turns,
+had no file access by design and no audit; the work they were for is now done in the coding CLIs built for it.
 
 ## Remote agents over A2A (a2a_client_tool.py)
 
@@ -551,8 +543,8 @@ provider, same tiers, `SwarmProgress`-style progress plus per-node reasoning tai
 returned as tool results. Deliberate limits:
 
 - **Orchestrator-only** (`sub_agent_common.ORCHESTRATOR_ONLY_TOOLS`): the call is unreviewed
-  network egress, and a sub-agent has no approval gate. A `local_graph`/`local_swarm` spec
-  asking for `a2a_client` by name is refused like any other denied tool.
+  network egress, and a sub-agent has no approval gate. A sub-agent spec asking for
+  `a2a_client` by name is refused like any other denied tool.
 - **No credential surface.** Authenticated remote agents would take a `ClientConfig` in *code*;
   the tool has no parameter that could carry a key a prompt injection might exfiltrate.
 - The remote reply is third-party output — labelled untrusted in the tool result, subject to the
@@ -637,14 +629,13 @@ Settings keys for all of this (`laya.*`, `selfHeal.*`, `lsp.enabled`, model/temp
 [`settings.md`](settings.md), applied at session start by `_apply_startup_preferences` — except
 `observer.*`, which the daemon re-reads every cycle so a change lands without a restart, and
 `learning.*`, which the turn path re-reads every turn. Each
-piece has a hermetic smoke test — see `_self_heal_smoke_test.py`, `_team_pipeline_smoke_test.py`,
+piece has a hermetic smoke test — see `_self_heal_smoke_test.py`, `_orchestrate_tool_smoke_test.py`,
 `_a2a_client_smoke_test.py`, `_laya_router_smoke_test.py`, `_harness_loop_smoke_test.py`,
 `_plugins_lsp_smoke_test.py` and friends; the daemon's transport and its new `/observe` route in
 `_daemon_smoke_test.py`, the observer's read-only toolset and preemption in
 `_observer_smoke_test.py`, the vault gate in `_vault_proxy_smoke_test.py`, the graph adapter in
 `_kg_smoke_test.py`, the learning loop's clamp in `_bandit_smoke_test.py`, its reflection/promotion half in
 `_learning_smoke_test.py`, prompt overlays and optimization in `_optimize_smoke_test.py`, the trajectory export
-and the checkpoint registry in `_trajectories_smoke_test.py`, and the denylist and
-graph-structure assumptions in `_subagent_denylist_smoke_test.py` and
-`_local_graph_structure_smoke_test.py`. Web-UI and TUI behavior is the same backend — the
+and the checkpoint registry in `_trajectories_smoke_test.py`, and the sub-agent denylist in
+`_subagent_denylist_smoke_test.py`. Web-UI and TUI behavior is the same backend — the
 AG-UI front door (`main.py`) gets the same tools; only the specialist/laya dispatch is ACP-side.

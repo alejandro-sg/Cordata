@@ -16,7 +16,7 @@ anything generative. Modes (``LAYA_TRIAGE_MODE``, default ``route``):
     only* — restored afterwards, never written to conversation history or the
     persisted session. The hint is assembled from fixed strings keyed by
     Laya's enum answer, never from the user's text.
-  - a confident ``team`` route points the hint at local_graph / local_swarm.
+  - a confident ``team`` route points the hint at the ``orchestrate`` tool.
     P(needs a team) can too, via ``LAYA_TRIAGE_TEAM_THRESHOLD`` — off by
     default: zero-shot, that primitive rated "Reply with exactly the word:
     pong" at 0.90 in a live run.
@@ -102,6 +102,8 @@ TRIAGE_QUESTIONS: dict[str, dict[str, Any]] = {
 # What the orchestrator actually did, derived from the tools it called.
 # Precedence: the most "expensive" thing it reached for wins.
 _TOOL_ROUTE = {
+    "orchestrate": "team",
+    # Historical names, so older trajectories still label the same way.
     "local_swarm": "team",
     "local_graph": "team",
     "http_request": "web_research",
@@ -189,7 +191,7 @@ _ROUTE_HINT = {
     "memory": "this looks like recalling or storing something the user said, so agent_memory is the likely fit",
     "team": "this looks like a multi-part task",
 }
-_TEAM_HINT = "a team may help: local_graph for independent parts, local_swarm for sequential ones"
+_TEAM_HINT = "a multi-step task: the orchestrate tool plans it, runs it on the coding CLIs and audits the result"
 
 # Complexity is Laya's weakest primitive (README: ordinal `score`, SST-5 0.37),
 # so a tier is only suggested when Laya is reasonably sure; otherwise None and
@@ -440,10 +442,8 @@ class LayaTriageHooks(HookProvider):
         tool_input = event.tool_use.get("input")
         with turn.lock:
             turn.tools.append(name)
-            if name in ("local_swarm", "local_graph") and isinstance(tool_input, dict):
-                for spec in tool_input.get("agents") or []:
-                    if isinstance(spec, dict) and spec.get("name"):
-                        turn.team_agents.append(str(spec["name"]))
+            if name == "orchestrate" and isinstance(tool_input, dict):
+                turn.team_agents.append("orchestrator")
 
     def _on_end(self, event: AfterInvocationEvent) -> None:
         key = id(event.agent)

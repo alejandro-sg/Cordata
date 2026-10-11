@@ -223,7 +223,7 @@ def test_the_veto_and_the_housekeeping() -> None:
         """Returns a lot."""
         return "line\n" * 6_000
 
-    @tool(name="local_swarm")
+    @tool(name="orchestrate")
     def swarm_answer() -> str:
         """The answer itself."""
         return "answer\n" * 6_000
@@ -231,7 +231,7 @@ def test_the_veto_and_the_housekeeping() -> None:
     base = ROOT / "unit-offload"
     storage = context_offload.PrivateFileStorage(base)
     offloader = context_offload.HarnessOffloader(storage, limit_chars=lambda: 6_000)
-    model = ScriptedModel([call("big_output"), call("local_swarm"), lambda m, s, t: seen.setdefault("last", last_text(m)) and text("done")])
+    model = ScriptedModel([call("big_output"), call("orchestrate"), lambda m, s, t: seen.setdefault("last", last_text(m)) and text("done")])
     agent = Agent(
         model=model,
         tools=[big_output, swarm_answer],

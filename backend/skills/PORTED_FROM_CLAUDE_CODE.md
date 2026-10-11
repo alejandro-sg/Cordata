@@ -33,7 +33,7 @@ tools are named differently — same idea, different registry:
 | `Write` / `Edit` | `file_write` | one tool covers both create and modify |
 | `Bash` | `shell` | a real host shell either way — `gh`, `git`, etc. all still work |
 | `Grep` / `Glob` | `shell` | no dedicated search tool here; use `grep`/`find` via `shell` |
-| `Task` (parallel sub-agents) | `local_swarm` / `local_graph` | see the `sub-agent-team` skill for the schema — different from Claude Code's Task tool syntax |
+| `Task` (parallel sub-agents) | `orchestrate` | hands a multi-step task to the orchestrator (plan → execute → audit); not the same contract as Claude Code's Task tool |
 | `WebSearch` / `WebFetch` | `http_request` | raw HTTP only — no search index, no HTML→markdown conversion |
 | `AskUserQuestion` | — | no equivalent; ask in plain chat text instead |
 | `TaskCreate` / `TaskUpdate` (todo tracking) | — | no equivalent; track progress in chat or a scratch file instead |

@@ -17,7 +17,7 @@ A map, not a manual: what runs where, how a turn flows, and which document holds
                                  ▼
  ┌──────────────────────── acp_server.py (one session's agent process) ─────────────────────────┐
  │ Laya router (route · risk · complexity, local model) ──► orchestrator Strands Agent          │
- │   tools · specialists (as_tool) · team pipeline (GraphBuilder) · MCP plugins · LSP bridge     │
+ │   tools · specialists (as_tool) · orchestrate (→ orchestrator/) · MCP plugins · LSP bridge    │
  │   _ApprovalHandler: preflight → deny rules → vault → mode → Laya Guard → ask / proceed        │
  │   checkpoints (shadow git) · self-heal · outcomes / learning · rejection memory · KG sink     │
  └──────────────────────────────────────────────────────────────────────────────────────────────┘
@@ -34,8 +34,8 @@ A map, not a manual: what runs where, how a turn flows, and which document holds
 
 ## A turn
 
-1. **Route** — Laya answers route / risk / complexity in one local pass (`laya_router.py`); a confident specialist or
-   team route skips the orchestrator's own model call. Abstention fails closed.
+1. **Route** — Laya answers route / risk / complexity in one local pass (`laya_router.py`); a confident specialist route
+   skips the orchestrator's own model call, a team route hints at `orchestrate`. Abstention fails closed.
 2. **Context** — the system prompt (project, workspace profile, instruction files, prompt overlays) plus per-message
    injections: the clock, the MCP servers running now, the rules this person's rejections taught. Cold tools are
    hidden until needed; skills are found by search (`context_diet.py`, `skill_search.py`).
@@ -51,6 +51,30 @@ A map, not a manual: what runs where, how a turn flows, and which document holds
    eval gate); a rejected change becomes a constraint (`rejection_memory.py`); the bandit and Laya's calibrators learn
    from outcomes, and nothing learned may lower a gate.
 
+## The orchestrator (coding CLIs as workers)
+
+```text
+ orchestrate tool / python -m orchestrator
+        │
+ OrchestratorMachine (state.db: orch_runs) ── dispatch (gates → cheapest competent tier) ◄── quota ledger
+   PLAN ─► EXECUTE (steps in checkpoints, Seatbelt write scope) ─► HARDEN (other model family) ─► AUDIT (tier 1 → tier 2)
+        │                 │ quota line / provider limit → handoff packet → same step, another pool
+        ▼
+ ClaudeCodeWorker (claude -p) · AgyWorker (agy) · OllamaWorker (Strands, local or :cloud) — backend/workers/
+```
+
+[`docs/orchestrator.md`](docs/orchestrator.md) has the detail; [`docs/orchestrator-plan.md`](docs/orchestrator-plan.md)
+the plan it was built from.
+
+## Status: core and frozen
+
+| Tier | What | In default CI |
+| --- | --- | --- |
+| Core | daemon, `acp_server`, the orchestrator and workers, Laya, outcomes/bandit/promote/evals, checkpoints, self-heal, preflight, vault, sandbox, `acp-tui` | yes |
+| Frozen | the Next.js web UI (`frontend/`, its own workflow on `frontend/**` changes), the GPUI Lab and menu bar (`lab/`, `make lab-test`), oMLX (`omlx_*`, local Prism models on the mini) | no |
+
+Frozen means kept working and built, not developed; nothing core depends on a frozen piece.
+
 ## Where the detail is
 
 | Topic | Document |
@@ -58,6 +82,7 @@ A map, not a manual: what runs where, how a turn flows, and which document holds
 | The agentic harness: routing, Guard, specialists, preflight, self-heal, learning, token economy, code navigation, plugins, MCP | [`docs/agentic-harness.md`](docs/agentic-harness.md) |
 | Self-healing internals | [`docs/self-healing-architecture.md`](docs/self-healing-architecture.md) |
 | Laya triage | [`docs/laya-triage.md`](docs/laya-triage.md) |
+| The orchestrator: workers, quota ledger, handoffs, the state machine, dispatch | [`docs/orchestrator.md`](docs/orchestrator.md) |
 | The meta-harness (Claude Code CLI, memory managers, Prism models) | [`docs/meta-harness.md`](docs/meta-harness.md) |
 | The Experimental Lab and its gRPC bridge | [`docs/experimental-lab.md`](docs/experimental-lab.md) |
 | Evals | [`docs/evals.md`](docs/evals.md) |

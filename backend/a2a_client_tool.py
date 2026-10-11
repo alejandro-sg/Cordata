@@ -16,7 +16,7 @@ environment (client_config in code), never in a model-supplied tool argument,
 so a prompt-injected ``a2a_client`` call cannot exfiltrate a key it never
 held.
 
-Not on local_graph/local_swarm spec tools either — a resolved sub-agent tool
+Not on a sub-agent's tools either — a resolved sub-agent tool
 set comes from the orchestrator's registry, so the ORCHESTRATOR_ONLY_TOOLS
 entry already refuses it there.
 """

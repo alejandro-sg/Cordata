@@ -47,7 +47,6 @@ _REGRESSION_SMOKE_TESTS = [
     "_secret_guard_smoke_test.py",
     "_sub_agent_model_smoke_test.py",
     "_agent_memory_smoke_test.py",
-    "_local_graph_structure_smoke_test.py",
 ]
 
 # Text a drafted replacement for main.py/agent_common.py must still contain

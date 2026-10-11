@@ -27,9 +27,13 @@ try to stop:
 - A model-generated tool (`skill_forge_tool.py`'s output under
   `backend/skills_generated/`) running before a human has actually looked
   at it, twice over.
-- A sub-agent (`local_swarm`/`local_graph`) reaching a capability with no
-  human-in-the-loop gate of its own, since sub-agents have no approval UI
-  to pause into at all.
+- A sub-agent (a specialist, the digest, the observer) reaching a capability
+  with no human-in-the-loop gate of its own, since sub-agents have no
+  approval UI to pause into at all.
+- A coding CLI the orchestrator drives (`backend/workers/`, `orchestrate`)
+  writing outside the plan step's files, egressing around the vault, or a
+  model-written acceptance command doing harm when the audit runs it — see
+  "The orchestrator" below.
 - An external process this harness runs on the model's behalf — the Claude
   Code CLI (`claude_code_tool.py`) — egressing to the network without passing
   the Agent Vault, or reading a credential file while it does.
@@ -100,12 +104,12 @@ behavior*, and this closes that gap. Trust is in-memory only and resets on
 restart, on purpose — `skills_generated/` is an audit trail, not an
 unconditional allowlist.
 
-**Sub-agents get none of the above** — `local_swarm`/`local_graph` build
-plain `strands.Agent` instances directly in Python
+**Sub-agents get none of the above** — the specialists, the digest and the
+observer are plain `strands.Agent` instances built directly in Python
 (`sub_agent_common.py`), with no AG-UI/ACP transport wrapping them and
 nowhere to pause for a human. `sub_agent_common.DENIED_TOOLS` (`shell`,
 `python_repl`, `file_write`, `editor`) and `ORCHESTRATOR_ONLY_TOOLS`
-(`local_swarm`, `local_graph`, `skill_forge`, `proposer`, the
+(`orchestrate`, `skill_forge`, `proposer`, the
 model/sandbox-mode control tools) are refused to every
 sub-agent regardless of what a spec asks for, or omits — the default
 (`"tools"` unset) hands a sub-agent every tool *not* on either list rather
@@ -592,6 +596,46 @@ operator is beyond the configured snowflake — a compromised operator account i
 a compromised agent-starter, the same as a compromised GUI session. A standalone `make tui` session with no
 daemon has no Discord, because only the daemon holds the supervisor this relays through.
 
+## The orchestrator (coding CLIs as workers)
+
+`orchestrate` (and `python -m orchestrator`) runs external coding agents — the Claude Code CLI, Antigravity's
+`agy`, an Ollama model — on the person's project (`backend/workers/`, `backend/orchestrator/`,
+`docs/orchestrator.md`). What bounds them:
+
+- **Starting a run is a gated call.** `orchestrate` asks in build mode, is denied in plan mode, is armed by a
+  destructive Laya Guard reading of its goal, and is on `ORCHESTRATOR_ONLY_TOOLS` (no sub-agent can start one).
+  A Laya `team` route is only ever a hint naming it — never an automatic run.
+- **Egress through the vault, or not at all.** Both CLI adapters refuse to start when the vault is off or down
+  (`workers/cli_worker.py`), get `HTTPS_PROXY` pointing at it, and an allowlisted environment (`scrubbed_sandbox`):
+  no provider key, no vault placeholder, no `OLLAMA_*`/`AWS_*`.
+- **Writes confined by the kernel.** Each step runs under a Seatbelt profile that denies every write inside the
+  project except the step's declared `file_scope` (`workers/scope.py`); plan and audit roles get no writes at all.
+  `.env` and credential files stay unreadable and unwritable (their denials come after the scope rules, and
+  Seatbelt takes the last match). Writes *outside* the project (the CLIs' own state under `~`, `$TMPDIR`) are not
+  confined — the same posture as `claude_code_engineer`.
+- **Checked again after.** The executor rejects a step whose snapshot diff shows a write outside its scope, and
+  the audit's Tier 1 re-checks every file changed since the plan started against the plan's scopes — a worker that
+  under-reports cannot slip a change through (`_orchestrator_machine_smoke_test.py`, the unreported-escape case).
+- **Model-written commands run boxed.** Acceptance criteria and verifiers are model-written shell. Each is scored by
+  Laya Guard first (≥ 0.8 is refused, the criterion fails), then runs under Seatbelt with outbound network denied
+  except localhost, writes denied in the project except tool caches, the allowlisted environment and a timeout
+  (`orchestrator/audit.py`).
+- **Handoffs are data.** A handoff packet is typed, bounded and secret-scrubbed when built, and reaches the next
+  worker fenced as `<<<UNTRUSTED_HANDOFF_DATA>>>`; a packet cannot close its own fence.
+- **Bounded spend.** Every run has a per-plan envelope (dollars and tokens); each step's budget is the smaller of
+  what the envelope and the pool's hard line leave, enforced mid-stream by the adapter. Retries are bounded (two fix
+  passes, one replan); a failed run is restored to its plan-start checkpoint.
+- **Learning cannot lower a gate.** The dispatch policy filters candidates by hard gates first (role, availability,
+  a pool past its hard line, the harden family rule) and only *orders* what passed; it imports no safety module.
+  A learned policy goes `live` only through `promote.evaluate_dispatch`. Every `orchestrator.*` setting is
+  trust-gated: a cloned repository cannot change who works, how much is spent, or switch off harden/Tier 2.
+
+Not covered: what a CLI does with its own network access once it is through the vault (its traffic is the
+provider's); a provider's terms for headless use of a subscription CLI (the quota ledger keeps usage inside the
+windows the person sets, it does not interpret terms); and the AgyWorker's behaviour behind a real vault proxy —
+the egress wiring is the same as Claude Code's and is tested against a stand-in, but was not exercised against a
+live vault on the machine it was built on.
+
 ## Prompt-injection hardening
 
 `prompt_security.py`'s `UntrustedToolResultHooks` rewrites `http_request`'s
@@ -611,8 +655,7 @@ wrapping.
 Registered on every agent construction site that can actually reach
 `http_request` or `agent_memory` — confirmed by grep, not assumed: `main.py`'s
 `StrandsAgent`, `agent_common.build_agent_for_session` (ACP),
-`sub_agent_common.build_agent_nodes` (every `local_swarm`/`local_graph`
-node), and `skill_forge_tool.py`'s debugger sub-agent (the one place among
+and `skill_forge_tool.py`'s debugger sub-agent (the one place among
 `skill_forge`/`proposer`'s internal sub-agents that gets `http_request` at
 all — the rest only ever get `think`/`file_read`/`python_repl`, none of
 which read external content). A shared `HookProvider`, not copied logic per
@@ -627,14 +670,15 @@ instructions embedded in it. The realistic goal is raising the bar against
 casual/naive injection attempts, not eliminating the underlying risk that
 any tool ingesting arbitrary external text carries.
 
-### Sub-agent output is wrapped too
+### Delegated output is wrapped too
 
-`local_swarm`/`local_graph` results are wrapped in the same guard block
-(`prompt_security._SUBAGENT_TOOLS`) before the orchestrator reads them. A
-sub-agent's own tool results were already wrapped inside *its* context, but
-its final reply is model-written text built from what it read — returned
-unwrapped, an injected instruction a sub-agent repeated in its summary would
-reach the orchestrator looking trusted.
+`orchestrate` results are wrapped in the same guard block
+(`prompt_security._SUBAGENT_TOOLS`) before the session's agent reads them. A
+worker's report is model-written text built from what it read — returned
+unwrapped, an injected instruction a worker repeated in its report would
+reach the agent looking trusted. Between workers, the handoff packet is
+secret-scrubbed and fenced as `<<<UNTRUSTED_HANDOFF_DATA>>>` (a packet cannot
+close its own fence).
 
 ### Learned artifacts never reach a turn unfiltered
 
@@ -690,8 +734,8 @@ startup environment, and module globals are one `import` from `python_repl`.
   value (and any credential-looking environment variable's value — `*KEY*`,
   `*TOKEN*`, `*SECRET*`, `*PASSWORD*`) with `[REDACTED:secret]` in every tool
   result, success or error, before the model or any UI sees it, at every
-  agent construction site (`main.py`, the ACP front door, every
-  `local_swarm`/`local_graph` node, `skill_forge`'s debugger/validator,
+  agent construction site (`main.py`, the ACP front door, the specialists,
+  `skill_forge`'s debugger/validator,
   `proposer`'s writer). This is what makes `env`, `cat .env` and `ps eww`
   harmless even when the read succeeds — `ps eww` *does* still show the key on
   macOS, because popping `os.environ` can't change the startup environment
@@ -885,9 +929,9 @@ Both are now denied (`sub_agent_common`, `_laya_call_guard_smoke_test.py`).
 
 - **Sub-agents follow the active provider.** `sub_agent_common.build_sub_agent_model`
   goes through `agent_common.build_model`, so with a cloud `MODEL_PROVIDER` a
-  `local_swarm`/`local_graph` team's prompts and tool results also go to that cloud
-  (previously sub-agents were hardwired to local oMLX). The orchestrator was
-  already sending its own context there; a team adds more of the same. With the
+  specialist's prompts and tool results also go to that cloud (previously
+  sub-agents were hardwired to local oMLX). The orchestrator was already
+  sending its own context there; a specialist adds more of the same. With the
   default `local` provider nothing leaves the machine. Sub-agents use the
   orchestrator's key through the same client builder — they get no key of their
   own, and it never enters their tools, prompts or environment

@@ -1,7 +1,8 @@
 # Runs what's actually runnable off this machine: agent/tool construction,
 # the denylist/graph-structure/sandbox-token/model-control/proposer-guardrail
 # smoke tests (all pure Python, no external service but Qdrant, which the
-# `services:` block below provides), and the frontend type-check + build.
+# `services:` block below provides). The frozen web UI builds in its own
+# workflow (frontend.yml), only when frontend/ changes.
 #
 # Deliberately NOT run here: _acp_smoke_test.py (spawns a real ACP session
 # and expects the local oMLX model to actually respond and call tools —
@@ -56,7 +57,6 @@ jobs:
         working-directory: backend
         run: |
           python _subagent_denylist_smoke_test.py
-          python _local_graph_structure_smoke_test.py
           python _sandbox_token_smoke_test.py
           python _model_control_smoke_test.py
           python _agent_memory_smoke_test.py
@@ -117,26 +117,3 @@ jobs:
           python _os_context_smoke_test.py
           python _grpc_bridge_smoke_test.py
           python _vision_turn_smoke_test.py
-
-  frontend:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install dependencies
-        working-directory: frontend
-        run: npm ci
-
-      - name: Type-check
-        working-directory: frontend
-        run: npx tsc --noEmit -p tsconfig.json
-
-      - name: Build
-        working-directory: frontend
-        run: npm run build

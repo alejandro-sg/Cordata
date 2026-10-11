@@ -96,12 +96,12 @@ def run_config(preferences: Any) -> RunConfig:
     )
 
 
-def dispatcher(preferences: Any, *, ledger: QuotaLedger | None = None, project: str | None = None, mode: str | None = None, families: list[str] | None = None) -> LearnedDispatcher:
+def dispatcher(preferences: Any, *, ledger: QuotaLedger | None = None, project: str | None = None, mode: str | None = None, families: list[str] | None = None, workers: dict[str, Any] | None = None) -> LearnedDispatcher:
     import bandit
 
     fams = families if families is not None else enabled_families(preferences)
     return LearnedDispatcher(
-        specs=roster(fams),
+        specs=roster(fams, workers=workers),
         ledger=ledger,
         mode=mode or str(setting(preferences, "orchestrator.dispatch", "shadow")),
         lam=float(setting(preferences, "orchestrator.lambda", 0.3)),

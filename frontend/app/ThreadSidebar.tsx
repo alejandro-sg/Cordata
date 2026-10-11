@@ -26,8 +26,6 @@ export default function ThreadSidebar({
   onToggleDark,
   inspectorOn,
   onToggleInspector,
-  subAgentsOn,
-  onToggleSubAgents,
 }: {
   activeThreadId: string;
   onSelect: (id: string) => void;
@@ -36,8 +34,6 @@ export default function ThreadSidebar({
   onToggleDark: () => void;
   inspectorOn: boolean;
   onToggleInspector: () => void;
-  subAgentsOn: boolean;
-  onToggleSubAgents: () => void;
 }) {
   const [threads, setThreads] = useState<Thread[]>([]);
   // The laptop hub's conversations (terminal, Discord, menu bar, web) — empty unless hub mode is on.
@@ -109,10 +105,6 @@ export default function ThreadSidebar({
         <label className="thread-sidebar-toggle">
           <input type="checkbox" checked={inspectorOn} onChange={onToggleInspector} />
           CopilotKit dev tools
-        </label>
-        <label className="thread-sidebar-toggle">
-          <input type="checkbox" checked={subAgentsOn} onChange={onToggleSubAgents} />
-          Sub-agents panel
         </label>
       </div>
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}

@@ -93,7 +93,7 @@ RESERVED = ("ANTHROPIC_API_KEY", "CLOUD_OPENAI_API_KEY", "OLLAMA_API_KEY", "HF_T
 #: exactly why the vault proxy is pointed at the *process*, not at a tool.
 #: `a2a_client` calls a remote agent and `skill_forge`'s researcher sub-agent holds `http_request` — both were missing
 #: from this list until the Phase 11 audit, so a blocked vault did not stop them.
-EGRESS_TOOLS = frozenset({"shell", "python_repl", "http_request", "web_fetch", "claude_code_engineer", "a2a_client", "skill_forge"})
+EGRESS_TOOLS = frozenset({"shell", "python_repl", "http_request", "web_fetch", "claude_code_engineer", "orchestrate", "a2a_client", "skill_forge"})
 #: The egress tools a sub-agent can be handed (swarm, graph, team pipeline): dropped from its kit while egress is blocked.
 SUB_AGENT_EGRESS_TOOLS = frozenset({"http_request", "web_fetch"})
 

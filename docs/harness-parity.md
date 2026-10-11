@@ -47,7 +47,7 @@ Rows above are parity; these are ours alone — the agentic harness layer (see
 | Fast typed routing in front of the LLM (Laya) | ✅ | `docs/laya-triage.md`: route / risk / complexity in one ~18 ms pass |
 | Direct specialist dispatch | ✅ | confident `architect` / `debugger` routes skip the orchestrator's decide-to-delegate model call; `laya.dispatch` |
 | Autonomous self-healing loop | ✅ | failing shell command → debugger diagnosis → sandbox-verified patch → re-run; `docs/self-healing-architecture.md`, `selfHeal.*` |
-| Team pipeline (decompose-to-graph) | ✅ | confident `team` route: planner call + Strands GraphBuilder pipeline, same node denylist as `local_graph`; `laya.teamDispatch` |
+| Multi-step orchestration | ✅ | `orchestrate`: plan with scoped steps and checkable criteria → cheapest capable coding CLI → cross-family harden → deterministic audit; quota-aware handoffs (`docs/orchestrator.md`). A `team` route hints at it |
 | Remote agents over A2A | ✅ | `a2a_client` orchestrator tool wraps Strands' `A2AAgent`; orchestrator-only (egress needs a gate), no credential injection |
 | Language-server diagnostics | ✅ | `lsp_bridge` starts the project's language servers (gated by `lsp.enabled`), feeds symbols/diagnostics to specialists instead of grep-only |
 | Plugins with per-turn tool scoping | ✅ | `plugin_host`: confident plugin route scopes the turn's toolset to that plugin |

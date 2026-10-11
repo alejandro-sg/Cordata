@@ -38,7 +38,8 @@ def test_pure_helpers() -> None:
     check(lt.actual_route(["think"]) == "chat", "`think` alone is not route evidence")
     check(lt.actual_route(["shell"]) == "files_and_code", "shell -> files_and_code")
     check(lt.actual_route(["http_request", "shell"]) == "web_research", "web research outranks code")
-    check(lt.actual_route(["shell", "local_swarm"]) == "team", "a team call outranks everything")
+    check(lt.actual_route(["shell", "orchestrate"]) == "team", "an orchestrate call outranks everything")
+    check(lt.actual_route(["local_swarm"]) == "team", "older trajectories' team tools still label as team")
     check(lt.actual_route(["agent_memory"]) == "memory", "agent_memory -> memory")
     check(lt.actual_route(["calculator"]) == "other_tools", "an unlisted tool -> other_tools")
     check(lt.actual_route(["think", "calculator"]) == "other_tools", "think is ignored next to a real tool")
@@ -71,11 +72,11 @@ def test_decision_policy() -> None:
     old = settings.LAYA_TRIAGE_TEAM_THRESHOLD
     settings.LAYA_TRIAGE_TEAM_THRESHOLD = 0.8
     try:
-        check("local_graph" in decision("chat", 0.99, team=0.9).hint(), "with LAYA_TRIAGE_TEAM_THRESHOLD set, a high P(needs team) points at the team tools")
+        check("orchestrate" in decision("chat", 0.99, team=0.9).hint(), "with LAYA_TRIAGE_TEAM_THRESHOLD set, a high P(needs team) points at the orchestrate tool")
         check(decision("chat", 0.99, team=0.5).hint() is None, "…and a low one does not")
     finally:
         settings.LAYA_TRIAGE_TEAM_THRESHOLD = old
-    check("local_graph" in decision("team", 0.9).hint(), "a confident team route points at the team tools")
+    check("orchestrate" in decision("team", 0.9).hint(), "a confident team route points at the orchestrate tool")
     check("0.95" in decision("web_research", 0.95).hint() and "advisory" in decision("web_research", 0.95).hint(), "the hint states the confidence and that it is advisory")
     hint = decision("web_research", 0.95).hint()
     check("{" not in hint and "<" not in hint, "the hint is fixed text with no interpolated user content")
@@ -270,7 +271,7 @@ def test_route_mode_fallbacks() -> None:
     try:
         agent, model, rows, tmp = run_agent("route", predictor(needs_team=0.92), ["just chat but a big job"], [None])
         with tmp:
-            check("local_graph" in model.system_prompts[0], "with the threshold enabled, a high P(needs team) hints at the team tools")
+            check("orchestrate" in model.system_prompts[0], "with the threshold enabled, a high P(needs team) hints at the orchestrate tool")
     finally:
         settings.LAYA_TRIAGE_TEAM_THRESHOLD = None
 

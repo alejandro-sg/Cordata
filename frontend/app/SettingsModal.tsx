@@ -70,8 +70,7 @@ function savePersisted(patch: Partial<PersistedSettings>) {
  * config), MCP servers, and Skills, behind one sidebar button instead of an
  * always-open footer panel (formerly AgentSettings.tsx, rendered inline in
  * ThreadSidebar's footer — its logic lives in this file's Model tab now).
- * Same .swarm-fullscreen-style overlay convention SwarmProgress.tsx
- * already establishes.
+ * A full-viewport overlay (.settings-modal).
  *
  * Model tab keeps AgentSettings.tsx's original two mechanisms:
  * - Model / temperature / memory window: real backend mutations via chat

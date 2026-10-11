@@ -90,7 +90,7 @@ import settings as app_settings
 import settings_store
 import specialists
 import state_store
-import team_pipeline
+import orchestrate_tool
 import trace_store
 import vault_proxy
 import workspace_context
@@ -117,7 +117,7 @@ from model_control_tool import _context_window_limit, _fetch_available_models  #
 # lists, so keep them in sync by hand when either changes. apply_patch is
 # ACP-only (the harness's patch tool). Plugins added at runtime are gated by
 # PluginHost.requires_approval, not by this static set.
-APPROVAL_REQUIRED_TOOLS = {"shell", "python_repl", "file_write", "editor", "apply_patch", claude_code_tool.TOOL_NAME, plugin_host.RESOURCE_TOOL, *GENERATED_TOOL_NAMES, *MCP_TOOL_NAMES}
+APPROVAL_REQUIRED_TOOLS = {"shell", "python_repl", "file_write", "editor", "apply_patch", claude_code_tool.TOOL_NAME, orchestrate_tool.TOOL_NAME, plugin_host.RESOURCE_TOOL, *GENERATED_TOOL_NAMES, *MCP_TOOL_NAMES}
 
 # Plan mode runs only these (reading code is part of planning, as in Claude
 # Code's and OpenCode's plan modes); everything else is denied.
@@ -155,7 +155,7 @@ def _forced_ask(tool_name: str, tool_input) -> str | None:
 
 
 # A turn Laya rates destructive with confidence arms the gate for these, even in auto mode.
-_ARMABLE_TOOLS = {"shell", "python_repl", "file_write", "editor", "apply_patch", claude_code_tool.TOOL_NAME, "ollama_resource_manager"}
+_ARMABLE_TOOLS = {"shell", "python_repl", "file_write", "editor", "apply_patch", claude_code_tool.TOOL_NAME, orchestrate_tool.TOOL_NAME, "ollama_resource_manager"}
 
 _TOOL_KIND: dict[str, str] = {
     "shell": "execute",
@@ -167,13 +167,11 @@ _TOOL_KIND: dict[str, str] = {
     "http_request": "fetch",
     "web_fetch": "fetch",
     "agent_memory": "other",
-    "local_swarm": "other",
-    "local_graph": "other",
-    "team": "other",
     "a2a_client": "fetch",
     "architect": "think",
     "debugger": "other",
     claude_code_tool.TOOL_NAME: "execute",
+    orchestrate_tool.TOOL_NAME: "execute",
     "context_digest": "think",
     "ollama_resource_manager": "other",
     "omlx_resource_manager": "other",
@@ -398,53 +396,8 @@ def _settled_intervention(
     return row
 
 
-# How much of a running sub-agent's latest reasoning one progress update carries.
+# How much of a running specialist's latest reasoning one progress update carries.
 _REASONING_TAIL_CHARS = 120
-
-
-def _render_swarm_progress(entries: list, reasoning: dict | None = None) -> str:
-    """Render local_swarm/local_graph's cumulative progress log (the same
-    node_start/node_stop/handoff shape sub_agent_common.progress_entry
-    builds for both tools) into plain text for one ACP tool-call update.
-
-    Strands only wraps an async-generator tool's own intermediate yields
-    (everything before its final return value) as a top-level {"type":
-    "tool_stream", "tool_stream_event": {"tool_use", "data"}} event —
-    confirmed against the installed strands/types/_events.py's
-    ToolStreamEvent. Before the branch below existed, this file's prompt()
-    loop had no case for "tool_stream" at all, so every {"state":
-    {"swarm_progress": [...]}} local_swarm/local_graph yields mid-run (see
-    their own stream_async loops) was silently dropped here — Zed saw the
-    tool start and its final result, nothing in between, unlike the
-    CopilotKit frontend's SwarmProgress.tsx, which reads the same state
-    through AG-UI's separate StateSnapshotEvent translation
-    (ag_ui_strands's ToolStreamEventHandler).
-    """
-    lines = []
-    for entry in entries:
-        kind = entry.get("type")
-        if kind == "node_start":
-            lines.append(f"started: {entry.get('node')}")
-        elif kind == "node_stop":
-            lines.append(f"finished: {entry.get('node')} - {entry.get('summary', '')}")
-        elif kind == "handoff":
-            frm = ", ".join(entry.get("from") or [])
-            to = ", ".join(entry.get("to") or [])
-            lines.append(f"handoff: {frm} -> {to} - {entry.get('message', '')}")
-
-    # Live "what is each running sub-agent thinking right now": the tail of the
-    # reasoning each node has streamed so far (sub_agent_common.reasoning_delta
-    # feeds it). Only nodes that have started and not finished get a line, so a
-    # finished node's long reasoning never lingers. Without this the ACP client
-    # saw the orchestrator's own thoughts but nothing of the sub-agents'.
-    finished = {e.get("node") for e in entries if e.get("type") == "node_stop"}
-    for entry in entries:
-        node = entry.get("node") if entry.get("type") == "node_start" else None
-        text = (reasoning or {}).get(node) if node and node not in finished else None
-        if text:
-            tail = " ".join(text.split())[-_REASONING_TAIL_CHARS:]
-            lines.append(f"thinking: {node} - {tail}")
-    return "\n".join(lines)
 
 
 # Session Modes (https://agentclientprotocol.com/protocol/session-modes) —
@@ -985,8 +938,9 @@ def _project_system_prompt(cwd: str) -> str:
         "test fails, read the [self-heal] notes appended to its result: they carry a root cause and, "
         "usually, a patch already verified in a sandbox copy. "
         "For a large refactor or implementation across many files, hand the whole task to claude_code_engineer "
-        "(it runs the Claude Code CLI headless in this project and reports back); judge its result before you "
-        "tell the user it is done. For planning, ask the architect; to condense bulk text, use context_digest. "
+        "(it runs the Claude Code CLI headless in this project and reports back); for multi-step work where a plan, "
+        "an independent review and a check against the plan matter, use orchestrate. Judge either's result before "
+        "you tell the user it is done. For planning, ask the architect; to condense bulk text, use context_digest. "
         + ollama_resource_tool.MEMORY_GUIDANCE
     )
 
@@ -1538,7 +1492,7 @@ class SierraLabAcpAgent:
 
         reserved = {
             "shell", "editor", "file_read", "file_write", "python_repl", "http_request", "web_fetch", "apply_patch", "architect", "debugger",
-            claude_code_tool.TOOL_NAME, "omlx_resource_manager", "ollama_resource_manager", "context_digest", "enable_tools", "search_skills",
+            claude_code_tool.TOOL_NAME, orchestrate_tool.TOOL_NAME, "omlx_resource_manager", "ollama_resource_manager", "context_digest", "enable_tools", "search_skills",
             context_offload.RETRIEVE_TOOL, "code_search", "code_outline", "environment_profile", plugin_host.RESOURCE_TOOL,
         }
         plugins = _plugin_host(cwd, reserved, trace_store.enabled(preferences))
@@ -1579,6 +1533,7 @@ class SierraLabAcpAgent:
                 patch_tool.apply_patch,
                 *specialist_tools,
                 claude_code_tool.claude_code_engineer,
+                orchestrate_tool.orchestrate,
                 omlx_resource_tool.omlx_resource_manager,
                 ollama_resource_tool.ollama_resource_manager,
                 context_digest_tool.context_digest,
@@ -1639,6 +1594,7 @@ class SierraLabAcpAgent:
             session_id=lambda: session_id,
             lab=lambda: lab_module.get(),
         )
+        orchestrate_tool.configure(cwd=lambda: cwd, vault=lambda: handler.vault, preferences=lambda: settings_store.current(cwd), session_id=lambda: session_id)
         self._wire_lab(session_id, cwd, agent, handler, specialist_agents)
         if preferences.get("model"):
             _apply_model(agent, preferences.get("model"))
@@ -2390,19 +2346,14 @@ class SierraLabAcpAgent:
                     tool_use_id = tool_use.get("toolUseId")
                     data = stream_event.get("data") or {}
                     rendered = None
-                    state = data.get("state") if isinstance(data, dict) else None
-                    entries = (state or {}).get("swarm_progress")
                     if tool_use_id and isinstance(data, dict) and isinstance(data.get("progress"), str):
-                        rendered = data["progress"]  # a tool that narrates its own progress (claude_code_engineer)
-                    elif tool_use_id and entries:
-                        rendered = _render_swarm_progress(entries, (state or {}).get("reasoning"))
+                        rendered = data["progress"]  # a tool that narrates its own progress (claude_code_engineer, orchestrate)
                     elif tool_use_id and isinstance(data, dict) and tool_use.get("name") in self._specialist_names(session_id):
                         progress = specialist_progress.setdefault(tool_use_id, _SpecialistProgress())
                         if progress.feed(data):
                             rendered = progress.render(tool_use.get("name"))
-                    # The swarm/graph tools re-yield their whole state every
-                    # ~24 reasoning characters; a client only needs to hear
-                    # when the rendered text actually changed.
+                    # Progress is re-yielded whole on every update; a client only
+                    # needs to hear when the rendered text actually changed.
                     if rendered and last_progress.get(tool_use_id) != rendered:
                         last_progress[tool_use_id] = rendered
                         await self._conn.session_update(
@@ -2662,106 +2613,6 @@ class SierraLabAcpAgent:
                         logging.getLogger(__name__).debug("could not persist dispatched turn", exc_info=True)
         return stop_reason
 
-    async def _dispatch_team(self, session_id: str, state: _Session, decision: RouteDecision, text: str) -> str | None:
-        """Laya's confident ``team`` route, executed as a harness-level
-        pipeline (team_pipeline.py): one planner call decomposes the task,
-        then the exact same Strands graph machinery the local_graph tool uses
-        runs it — streamed into one ACP tool call, its result written back
-        into the orchestrator's history. Same safety as local_graph's own
-        runs: build_agent_nodes' denylist still holds for every node.
-
-        Returns None when the plan is unusable or the pipeline failed; the
-        decision is then reclassified to an advisory hint and the caller must
-        continue the ordinary turn — a pipeline failure never ends or hides a
-        turn. On success returns "end_turn"."""
-        context = _recent_context(state.agent.messages)
-        plan = await team_pipeline.plan_team_async(text, state.agent, context)
-        if plan is None:
-            decision.action, decision.reason = "hint", "team pipeline planning failed; the orchestrator decides"
-            return None
-
-        lab_module.get().team_plan(plan)
-        tool_use_id = f"team-{uuid.uuid4().hex[:8]}"
-        if self._conn is not None:
-            await self._conn.session_update(
-                session_id=session_id,
-                update=acp.start_tool_call(
-                    tool_use_id,
-                    "team",
-                    kind=_tool_kind("team"),
-                    status="in_progress",
-                    raw_input={"task": text, "routed_by": "laya", "nodes": [entry.get("name") for entry in plan["agents"]]},
-                ),
-            )
-
-        # Stream_graph re-yields the whole cumulative state on every event;
-        # like the tool_stream branch in _stream, the client only hears when
-        # the rendered text actually changed.
-        last_rendered = None
-        result = None
-        try:
-            async for value in team_pipeline.stream_team(plan["task"] or text, plan, state.agent):
-                if "state" in value:
-                    state_data = value["state"]
-                    lab_module.get().team_progress(state_data.get("swarm_progress") or [])
-                    rendered = _render_swarm_progress(state_data.get("swarm_progress") or [], state_data.get("reasoning"))
-                    if rendered and rendered != last_rendered and self._conn is not None:
-                        last_rendered = rendered
-                        await self._conn.session_update(
-                            session_id=session_id,
-                            update=acp.update_tool_call(
-                                tool_use_id,
-                                status="in_progress",
-                                content=[acp.tool_content(acp.text_block(rendered))],
-                            ),
-                        )
-                else:
-                    result = value  # the result dict stream_graph yields last
-        except Exception as error:
-            logging.getLogger(__name__).warning("team pipeline failed: %s: %s", type(error).__name__, error)
-            if self._conn is not None:
-                await self._conn.session_update(
-                    session_id=session_id,
-                    update=acp.update_tool_call(tool_use_id, status="failed", content=None),
-                )
-            decision.action, decision.reason = "hint", "team pipeline execution failed; the orchestrator decides"
-            return None
-
-        lab_module.get().team_done(plan)
-        result = result or {"status": "FAILED", "execution_time_ms": 0, "results": {}}
-        succeeded = str(result.get("status", "")).upper() == "COMPLETED"
-        summary = "\n".join(f"{name}: {summary}".strip()[:400] for name, summary in (result.get("results") or {}).items())
-        if self._conn is not None:
-            await self._conn.session_update(
-                session_id=session_id,
-                update=acp.update_tool_call(
-                    tool_use_id,
-                    status="completed" if succeeded else "failed",
-                    content=[acp.tool_content(acp.text_block(summary))] if summary else None,
-                ),
-            )
-
-        if succeeded or result.get("results"):
-            orchestrator = state.agent
-            for message in (
-                {"role": "user", "content": [{"text": text}]},
-                {"role": "assistant", "content": [{"text": f"[team pipeline, routed by Laya — status {result.get('status')}]\n{summary}"}]},
-            ):
-                orchestrator.messages.append(message)
-                manager = getattr(orchestrator, "_session_manager", None)
-                if manager is not None:
-                    try:
-                        session_store.record(manager, message, orchestrator)
-                    except Exception:
-                        logging.getLogger(__name__).debug("could not persist team turn", exc_info=True)
-
-        # The orchestrator never streamed, so no BeforeInvocation hook fired;
-        # score the turn manually, exactly as the specialist dispatch's hooks
-        # would (begin_external_turn + finish_turn).
-        turn = state.router_hooks.begin_external_turn(state.agent, decision, text)
-        state.router_hooks.finish_turn(turn, "end_turn", dispatched_ok=succeeded)
-        return "end_turn"
-
     @staticmethod
     def _tokens_used(state: "_Session") -> tuple[int, int]:
         """Cumulative (input, output) tokens across the orchestrator and every specialist."""
@@ -2945,13 +2796,6 @@ class SierraLabAcpAgent:
                 if decision.action == "dispatch" and decision.target and decision.target.id in state.specialists:
                     stop_reason = await self._dispatch(session_id, state, decision, text)
                     return acp.PromptResponse(stopReason=stop_reason if stop_reason in ("end_turn", "max_tokens", "cancelled", "max_turn_requests") else "end_turn")
-                if decision.action == "dispatch" and decision.target and decision.target.id == "team":
-                    # None means the plan/pipeline failed open: the decision is
-                    # already reclassified to a hint, and prime below applies it
-                    # for the ordinary turn (fall-through, no return).
-                    stop_reason = await self._dispatch_team(session_id, state, decision, text)
-                    if stop_reason is not None:
-                        return acp.PromptResponse(stopReason=stop_reason if stop_reason in ("end_turn", "max_tokens", "cancelled", "max_turn_requests") else "end_turn")
                 state.router_hooks.prime(agent, decision)
 
         try:

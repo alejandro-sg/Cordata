@@ -148,6 +148,7 @@ orchestrator-test:
 	@backend/.venv/bin/python backend/_orchestrator_machine_smoke_test.py
 	@backend/.venv/bin/python backend/_dispatch_smoke_test.py
 	@backend/.venv/bin/python backend/_orchestration_eval_smoke_test.py
+	@backend/.venv/bin/python backend/_orchestrate_tool_smoke_test.py
 
 # The orchestration eval suite: the whole machine on every coding task of the eval catalog, simulated providers.
 #   make evals-orchestration ARGS="--policy learned --world ceiling"

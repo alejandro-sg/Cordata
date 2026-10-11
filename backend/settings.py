@@ -155,7 +155,7 @@ LAYA_MODEL_SUBFOLDER = os.getenv("LAYA_MODEL_SUBFOLDER", LAYA_MODEL_SUBFOLDER)
 # above a confidence gate and never blocks or forces a tool.
 LAYA_TRIAGE_MODE = os.getenv("LAYA_TRIAGE_MODE", "route").lower()
 LAYA_TRIAGE_THRESHOLD = float(os.getenv("LAYA_TRIAGE_THRESHOLD", "0.85"))
-# P(needs a team) at or above which the hint suggests local_graph/local_swarm,
+# P(needs a team) at or above which the hint suggests the orchestrate tool,
 # independently of the route. OFF by default (empty): zero-shot, Laya's `noul`
 # primitive scored 0.90 on "Reply with exactly the word: pong" in a live run
 # (docs/laya-triage.md), so acting on it before fine-tuning would nudge trivial

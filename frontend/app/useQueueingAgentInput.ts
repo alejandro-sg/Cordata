@@ -20,8 +20,8 @@ import { randomId } from "./randomId";
  * called and false only once that promise actually resolves — not derived
  * from agent.isRunning. Confirmed empirically that agent.isRunning does not
  * reliably stay true for the *entire* duration of a run that includes a
- * tool call (e.g. local_swarm): a message queued during a live, visibly
- * still-running swarm was sent immediately instead of queued when gated on
+ * long tool call: a message queued during a live, visibly still-running
+ * tool call was sent immediately instead of queued when gated on
  * agent.isRunning. Chaining directly off the runAgent() promise sidesteps
  * that entirely: whatever gets submitted while busyRef is true is queued,
  * and the finally block below sends it the moment the *actual* awaited

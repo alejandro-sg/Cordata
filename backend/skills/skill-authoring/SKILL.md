@@ -32,9 +32,9 @@ skills are discovered once when a session starts.
 otherwise redo the same reasoning next time: a multi-step procedure for this project's
 tools, a gotcha you had to work around, a pattern that generalizes. Don't write a skill for
 a one-off task, and don't write one speculatively for something you haven't actually done
-yet — that's how `sub-agent-team`'s `local_swarm` guidance came to exist: after the plain
-`swarm` tool's config requirement kept getting narrated instead of called, the fix (a
-simpler wrapper tool) got written up as a skill so the lesson isn't rediscovered every time.
+yet. A good skill records a lesson paid for once — e.g. a tool whose config kept getting
+narrated instead of called, and the simpler call that worked — so it isn't rediscovered
+every time.
 
 **Before writing, check two things explicitly** (both cheap — the first uses context you
 already have, the second is just honest self-assessment):

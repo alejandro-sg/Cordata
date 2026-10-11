@@ -25,7 +25,7 @@ feature depends on (this was exactly that bug, here, until it was found and
 fixed — the writer sub-agent used to be given file_write/editor directly,
 and its docstring incorrectly claimed that write was already gated). The fix
 is the same one sub_agent_common.py's DENIED_TOOLS comment already argues
-for local_swarm/local_graph sub-agents: never hand a sub-agent a tool it
+for sub-agents: never hand a sub-agent a tool it
 can't be interrupted on. The writer below drafts the file as text instead;
 skill_forge returns that draft to the *top-level* agent, whose own next
 file_write call is the one genuinely gated by StrandsInterruptHook (see

@@ -1,43 +1,18 @@
-"""Shared building blocks for this deployment's multi-agent tools
-(local_swarm_tool.py, local_graph_tool.py) — both wrap a native
-strands.multiagent primitive directly rather than strands_tools.swarm (see
-local_swarm_tool.py's module docstring for why), so both need the same
-local-model construction, the same sub-agent tool safety rule, and the same
-stream-event-to-progress-log translation. Kept here once instead of
-duplicated across the two tool files.
+"""Shared building blocks for the harness's delegated model calls: the sub-agent model (same provider as the
+orchestrator, at a tier), the summarising conversation manager, and the sub-agent tool safety rule
+(``resolve_tools``: ``DENIED_TOOLS`` and ``ORCHESTRATOR_ONLY_TOOLS``) that specialists, the digest and the observer
+are built under. The in-process multi-agent teams that used to live beside this (local_graph, local_swarm, the Laya
+team pipeline) were replaced by the orchestrator (``orchestrate_tool.py``, ``orchestrator/``).
 """
 
 import logging
-from typing import Any
 
 from ag_ui_strands.client_proxy_tool import registered_proxy_names
 from strands import Agent
 from strands.agent.conversation_manager import SummarizingConversationManager
 
-import laya_triage
-from prompt_security import UNTRUSTED_CONTEXT_POLICY, SecretRedactionHooks, UntrustedToolResultHooks
 import settings
 import vault_proxy
-
-DEFAULT_SYSTEM_PROMPT = "You are a helpful AI assistant specializing in collaborative problem solving."
-
-# max_tokens deliberately raised well above oMLX's own server-side default —
-# without this, a genuinely long reply (e.g. writing real dashboard code)
-# hits MaxTokensReachedException mid-generation and gets silently truncated,
-# leaving only a partial message in history. Doesn't affect latency until
-# the model actually needs that many tokens.
-DEFAULT_MAX_TOKENS = 16384
-
-# Generous replacements for strands.multiagent.{Swarm,Graph}'s own timeout
-# defaults (300s/900s), which are tuned for fast cloud models. Observed
-# live: a Swarm node hit "execution timed out after 300.0s" on this
-# deployment's local 27B model doing multi-step reasoning, which tore down
-# the HTTP stream mid-response and surfaced as a bare "network error" on
-# the frontend with no indication the real cause was a timeout deep inside
-# the swarm/graph. Same reasoning as the undici body-timeout fix in
-# frontend/app/api/copilotkit/[[...route]]/route.ts.
-DEFAULT_NODE_TIMEOUT = 1800.0
-DEFAULT_EXECUTION_TIMEOUT = 3600.0
 
 # Tools no sub-agent may ever be given. main.py's HITL gating
 # (ToolBehavior(interrupt_on_call=True), SkillValidationHooks) is wired onto
@@ -60,9 +35,9 @@ DENIED_TOOLS = {"shell", "python_repl", "file_write", "editor", "apply_patch"}
 
 # Tools reserved for the top-level orchestrator, excluded even from the
 # "give every safe tool" default below (see resolve_tools) and even if a
-# spec explicitly asks for one by name. local_swarm/local_graph: a sub-agent
-# recursively spinning up its own team is unbounded fan-out with no limit on
-# depth. skill_forge/proposer: drafting new tools or harness changes is a
+# spec explicitly asks for one by name. orchestrate: a sub-agent starting a
+# whole plan/execute/audit run is unbounded fan-out and quota spend with no
+# gate. skill_forge/proposer: drafting new tools or harness changes is a
 # self-improvement decision for the orchestrator, not a narrow specialist —
 # and both already refuse to write anything themselves (see their own
 # module docstrings), so a sub-agent given either could still only ever
@@ -75,8 +50,7 @@ DENIED_TOOLS = {"shell", "python_repl", "file_write", "editor", "apply_patch"}
 # switching the active model mid-swarm would be a surprising, hard-to-trace
 # side effect.
 ORCHESTRATOR_ONLY_TOOLS = {
-    "local_swarm",
-    "local_graph",
+    "orchestrate",
     # Unreviewed egress to a third-party host (a2a_client_tool.py) — a
     # sub-agent has no gate, and no credentials it could be handed either.
     "a2a_client",
@@ -239,114 +213,3 @@ def resolve_tools(tool_names: list[str] | None, caller: Agent, tool_label: str) 
     if missing:
         logger.warning("%s: skipping unknown tool names %s", tool_label, sorted(missing))
     return resolved
-
-
-def build_agent_nodes(agent_specs: list[dict[str, Any]], caller: Agent, tool_label: str) -> dict[str, Agent]:
-    """One Agent per spec, keyed by its (de-duplicated) name."""
-    nodes: dict[str, Agent] = {}
-    for i, spec in enumerate(agent_specs):
-        if not isinstance(spec, dict):
-            raise ValueError(f"Agent specification {i} must be a dictionary")
-
-        name = spec.get("name") or f"agent_{i + 1}"
-        while name in nodes:
-            name = f"{name}_2"
-
-        # Appended regardless of whether spec supplies its own system_prompt
-        # (the common case per this file's own sub-agent-team docs) or falls
-        # back to DEFAULT_SYSTEM_PROMPT — a custom task prompt would
-        # otherwise silently skip this reinforcement entirely. The real
-        # defense is UntrustedToolResultHooks below, which works regardless
-        # of system prompt content; this is the same secondary reinforcement
-        # agent_common.py's own SYSTEM_PROMPT carries for the top-level agent.
-        base_prompt = spec.get("system_prompt") or DEFAULT_SYSTEM_PROMPT
-        # A spec's own "tier" wins; otherwise Laya's complexity estimate for
-        # this turn (laya_triage), else None = the provider's own model.
-        requested = spec.get("tier")
-        tier = requested if requested in TIERS else laya_triage.suggested_tier(caller)
-        laya_triage.record_team_tier(caller, name, tier)
-        # A node's *profile* ("architect" | "digest") puts it on the local Prism model, with the
-        # load/unload lease that goes with it — the A2A graph's default engine for those jobs.
-        # Any other node runs on the orchestrator's provider, exactly as before.
-        import omlx_provider
-
-        profile = spec.get("profile") or (name if name in omlx_provider.ROLES else None)
-        model = build_sub_agent_model(tier, role=profile if profile in omlx_provider.ROLES else None)
-        nodes[name] = Agent(
-            name=name,
-            system_prompt=f"{base_prompt} {UNTRUSTED_CONTEXT_POLICY}",
-            model=model,
-            tools=resolve_tools(spec.get("tools"), caller, tool_label),
-            conversation_manager=build_conversation_manager(),
-            hooks=[UntrustedToolResultHooks(), SecretRedactionHooks(), *omlx_provider.hooks_for(model)],
-            callback_handler=None,
-        )
-    return nodes
-
-
-def summarize_node_result(node_result: Any) -> str:
-    # AgentResult has no .content of its own — the text lives in
-    # .message["content"], the same plain dict-block shape every Strands
-    # message uses elsewhere in this codebase (role/content/metadata).
-    result = getattr(node_result, "result", None)
-    message = getattr(result, "message", None) or {}
-    content = message.get("content") or []
-    return "".join(block.get("text", "") for block in content if isinstance(block, dict) and block.get("text"))
-
-
-def progress_entry(event: dict[str, Any]) -> dict[str, Any] | None:
-    """One stream_async() event (from either Swarm or Graph — both emit the
-    same multiagent_* event shapes) as a small JSON-serializable log entry
-    for the frontend's live sub-agent view.
-
-    Drops multiagent_node_stream (per-token internals of each sub-agent's
-    own reply — most of it is far too chatty for a progress log, and its
-    payload can carry live Agent object references that aren't JSON-
-    serializable anyway) *except* for the reasoning-text slice of it, which
-    reasoning_delta() below pulls out separately for the frontend's per-node
-    "thinking" tab — and multiagent_result (the tool's own return value
-    already carries that summary).
-    """
-    event_type = event.get("type")
-    if event_type == "multiagent_node_start":
-        return {"type": "node_start", "node": event.get("node_id")}
-    if event_type == "multiagent_node_stop":
-        return {"type": "node_stop", "node": event.get("node_id"), "summary": str(event.get("node_result", ""))[:500]}
-    if event_type == "multiagent_handoff":
-        return {
-            "type": "handoff",
-            "from": list(event.get("from_node_ids") or []),
-            "to": list(event.get("to_node_ids") or []),
-            "message": str(event.get("message", ""))[:500],
-        }
-    return None
-
-
-# How many new reasoning characters to accumulate, per node, before the next
-# {"state": ...} yield — reasoning arrives as many small per-token deltas
-# (strands.types._events.ReasoningTextStreamEvent), and every yield resends
-# the *entire* accumulated state as a fresh snapshot (ag_ui_strands has no
-# diffing — confirmed reading its agent.py), so yielding on every single
-# token would mean re-sending the whole growing reasoning transcript, for
-# every node, many times a second. This throttles the update cadence without
-# dropping any text — deltas keep accumulating in the caller's `reasoning`
-# dict between yields, nothing is lost, only how often the snapshot goes out.
-REASONING_YIELD_CHARS = 24
-
-
-def reasoning_delta(event: dict[str, Any]) -> tuple[str, str] | None:
-    """(node_id, text) if this multiagent_node_stream event is a reasoning-
-    text delta from that node's own model, else None — for anything else
-    (the node's regular reply text, tool-call deltas, ...) as well as any
-    non-multiagent_node_stream event.
-    """
-    if event.get("type") != "multiagent_node_stream":
-        return None
-    inner = event.get("event") or {}
-    if not inner.get("reasoning"):
-        return None
-    delta = inner.get("reasoningText")
-    node_id = event.get("node_id")
-    if not delta or not node_id:
-        return None
-    return node_id, delta

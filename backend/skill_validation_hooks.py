@@ -297,7 +297,7 @@ class SkillValidationHooks(HookProvider):
         """Sandboxed dry-run against synthetic args, inside python_repl.
 
         Calls the already-HITL-gated python_repl tool function directly (the
-        same pattern local_swarm_tool.py uses to call the raw `swarm`
+        same pattern the old local_swarm tool used to call the raw `swarm`
         function) — this is a programmatic sandbox invocation from inside
         our own hook code, not a tool call the agent itself makes, so it
         does not re-trigger the interrupt_on_call approval a real agent-

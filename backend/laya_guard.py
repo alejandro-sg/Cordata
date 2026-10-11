@@ -55,7 +55,7 @@ DEFAULT_GUARD = "full"
 
 #: The tools whose calls change something. Mirrors ``acp_server._ARMABLE_TOOLS`` (asserted equal in
 #: ``_laya_guard_smoke_test``); a tool that only reads has nothing to guard.
-GUARDED_TOOLS = frozenset({"shell", "python_repl", "file_write", "editor", "apply_patch", "claude_code_engineer", "ollama_resource_manager"})
+GUARDED_TOOLS = frozenset({"shell", "python_repl", "file_write", "editor", "apply_patch", "claude_code_engineer", "orchestrate", "ollama_resource_manager"})
 
 #: A destructive reading from Laya counts only at the confidence the router needs to arm a turn.
 LAYA_MIN_CONFIDENCE = 0.8
@@ -628,6 +628,9 @@ def rule_score(tool_name: str, tool_input: Any, cwd: str) -> tuple[float, str] |
             return patch_score(str(data.get("patch") or ""), cwd)
         if tool_name == "claude_code_engineer":
             return task_score(str(data.get("task") or ""))
+        if tool_name == "orchestrate":
+            score, reason = task_score(str(data.get("goal") or ""))
+            return score, reason.replace("Claude Code", "the coding CLIs")
         if tool_name == "ollama_resource_manager":
             return (0.6, "pulls or deletes model weights") if str(data.get("action") or "").lower() in ("pull", "rm") else None
     except Exception:  # an unreadable input is unknown, never safe
@@ -649,6 +652,8 @@ def render_call(tool_name: str, tool_input: Any, cwd: str) -> str:
         body = "patch touching " + ", ".join(patch_paths(str(data.get("patch") or ""))[:8])
     elif tool_name == "claude_code_engineer":
         body = str(data.get("task") or "")
+    elif tool_name == "orchestrate":
+        body = str(data.get("goal") or "")
     else:
         body = " ".join(f"{k}={str(v)[:120]}" for k, v in data.items() if k in ("command", "path", "file_path", "filename", "action", "model"))
     text = f"A coding agent in {os.path.basename(cwd) or cwd} is about to use the {tool_name} tool:\n{body}"

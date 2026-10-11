@@ -166,7 +166,7 @@ All three follow Strands' **functional wrapping** pattern: a `@tool`-decorated P
 | `skill_writer_agent` | `@tool` inside `skill_forge_tool.py` | `think` only | The diagnosis string from `debugger_agent` | Drafted `FILE: <path>` + full content, as text — nothing written | No file_write/editor: a sub-agent built here has no AG-UI transport, so it has no mechanism to be interrupted (see correction in §2 step 3). The orchestrator's own file_write call on the returned draft is the real, gated write. |
 | `validator_agent` | `@tool` inside `skill_forge_tool.py`, invoked by `skill_forge` after `skill_writer_agent` returns | `python_repl`, `file_read` | Path to the generated file | Pass/fail + reasoning, independent of the `BeforeToolCallEvent` hook's own checks | A second opinion by design: the hook (§2 step 4) is the *enforced* gate; `validator_agent` is a *pre-flight* opinion the orchestrator can request before ever attempting the real call, cheaper than tripping the hook's rejection path. |
 
-`local_swarm_tool.py`'s existing `local_swarm` tool is unrelated to this hierarchy — it stays available to the orchestrator for open-ended parallel research tasks, not for the fixed debug→write→validate sequence above.
+(The `local_swarm` tool this section once pointed to for open-ended parallel work has since been replaced by `orchestrate` — `docs/orchestrator.md`.)
 
 ---
 

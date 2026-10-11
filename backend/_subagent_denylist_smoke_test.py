@@ -1,5 +1,5 @@
 """Regression check for sub_agent_common.resolve_tools' safety invariant: a
-sub-agent (built by local_swarm/local_graph) must never receive a tool that
+sub-agent (a specialist, the digest, the observer) must never receive a tool that
 needs human-in-the-loop approval, because sub-agents have no interrupt path
 of their own — see sub_agent_common.py's DENIED_TOOLS/ORCHESTRATOR_ONLY_TOOLS
 comments for why. That invariant was previously only as strong as those two
@@ -22,7 +22,7 @@ def _tool_names(tools: list) -> set[str]:
 
 def main() -> None:
     # A real (but never-run — the model is constructed, never called)
-    # template Agent, exactly like the one local_swarm/local_graph pass as
+    # template Agent, exactly like the one a sub-agent builder passes as
     # tool_context.agent in production. Building one instead of hand-rolling
     # a stub registry is what actually catches a naming mismatch: TOOLS mixes
     # @tool-decorated functions (their own .tool_name) with raw strands_tools

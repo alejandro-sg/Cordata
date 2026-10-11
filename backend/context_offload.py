@@ -70,8 +70,7 @@ KEEP_DAYS = 7
 NEVER_OFFLOAD = frozenset(
     {
         "claude_code_engineer",
-        "local_swarm",
-        "local_graph",
+        "orchestrate",
         "a2a_client",
         "context_digest",
         "skill_forge",

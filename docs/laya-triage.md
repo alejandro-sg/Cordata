@@ -9,8 +9,8 @@ strong.
 | layer | who | does |
 |---|---|---|
 | orchestrator control plane | **Laya** (`backend/laya_triage.py`) | per user turn: what kind of work is this, how hard is it |
-| orchestrator | **LLM** (the active provider) | generates replies, decides and calls tools, spawns teams |
-| sub-agents / specialists | **LLM**, one model **tier** each | do the delegated work (`local_swarm` / `local_graph`) |
+| orchestrator | **LLM** (the active provider) | generates replies, decides and calls tools, delegates (`orchestrate`, specialists) |
+| sub-agents / specialists | **LLM**, one model **tier** each | do the delegated work (architect, debugger, digest) |
 | content guard | **Laya** (`prompt_security.py`) | advisory injection score on untrusted tool output |
 
 Both Laya features share **one** loaded checkpoint (`LAYA_MODEL`), warmed in a
@@ -71,7 +71,7 @@ measured and makes mistakes too.
 
 ## Sub-agents use the same provider, tiers, and key
 
-`local_swarm` / `local_graph` sub-agents are built by
+Sub-agents (the specialists, the digest) are built by
 `sub_agent_common.build_sub_agent_model`, which goes through the same
 `agent_common.build_model` as the orchestrator. So with `MODEL_PROVIDER=openai_compatible`
 (e.g. Ollama Cloud) sub-agents run on the cloud too, with the **same API key — no second
@@ -86,9 +86,9 @@ means "the provider's own model", so nothing changes until you configure them:
 export MODEL_TIER_FAST=gpt-oss:20b MODEL_TIER_STANDARD=gpt-oss:120b MODEL_TIER_STRONG=glm-5.3
 ```
 
-Mind your provider's concurrency limit: `local_graph` runs its nodes in parallel, and
-the orchestrator plus N sub-agents are N+1 simultaneous requests on one account. A
-second key on the same account would not raise that limit.
+Mind your provider's concurrency limit: the orchestrator plus a running specialist are two
+simultaneous requests on one account. A second key on the same account would not raise
+that limit.
 
 ## Why advisory — and what the live runs showed
 
@@ -97,7 +97,7 @@ typed decisions (0.36 against a 0.46 majority-class baseline) and only become us
 after fine-tuning on your own decisions. A live run here confirmed it:
 
 - It got most obvious prompts right (a `file_read` request → `files_and_code`, 0.98).
-- It routed a request that used `local_graph` to `memory` at 0.67 — below the gate, so
+- It routed a request that used a team tool to `memory` at 0.67 — below the gate, so
   the LLM decided alone, which is the gate doing its job.
 - Its `needs_team` (`noul`) scored **0.90 on "Reply with exactly the word: pong"**. So
   `needs_team` alone does **not** produce a team hint by default; only a *confident team

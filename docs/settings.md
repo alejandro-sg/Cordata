@@ -39,7 +39,7 @@ other value is replaced by the higher scope.
 | `laya.mode` | `off` · `shadow` · `route` | next session | Laya triage (see `docs/laya-triage.md`) |
 | `laya.threshold` | 0–1 | next session | confidence needed before Laya adds a routing hint |
 | `laya.dispatch` | `direct` · `hint` | next session | confident specialist routes: run the specialist directly, or only hint |
-| `laya.teamDispatch` | `direct` · `hint` | next session | confident team routes: run the decompose+graph pipeline directly (see `docs/agentic-harness.md`), or only hint |
+| `laya.teamDispatch` | `direct` · `hint` | — | accepted and ignored: a confident team route is always a hint naming `orchestrate` (the in-process team pipeline is gone) |
 | `laya.minConfidence` | 0–1 | next session | below this `answer_confidence` Laya abstains (fail closed) |
 | `laya.onAbstain` | `escalate` · `llm` | next session | when Laya abstains: escalate to `tiers.strong`, or let the LLM decide |
 | `selfHeal.enabled` | `true` · `false` | next session | diagnose and fix failing commands autonomously (see `docs/self-healing-architecture.md`) |
@@ -77,6 +77,15 @@ other value is replaced by the higher scope.
 | `learning.banditMinPulls` | 1–100 | next turn | a choice is not moved until every arm has this many outcomes behind it (default 5) |
 | `learning.banditLambda` | 0.0–1.0 | next turn | λ in `verifier success − λ·cost − μ·correction` — how much tokens, time and Claude Code dollars count against a turn |
 | `learning.banditMu` | 0.0–1.0 | next turn | μ in the same reward — how much refusals, reverts and a cancelled turn count against it |
+| `orchestrator.workers` | comma list | next run | which coding workers `orchestrate` may use: `claude_code`, `antigravity`, `ollama` (default all three, each only if installed/reachable) (trust-gated) |
+| `orchestrator.dispatch` | `off` · `shadow` · `live` | next run | who takes each role: `off` strongest first; `shadow` learns and logs what it would choose, acts as `off` (default); `live` the cheapest competent worker — only after `python -m promote dispatch` passes (trust-gated) |
+| `orchestrator.maxUsd` | 0–100 | next run | per-plan budget envelope in (notional) dollars, default 2 (trust-gated) |
+| `orchestrator.maxTokens` | 0–100,000,000 | next run | per-plan token envelope; 0 = none (trust-gated) |
+| `orchestrator.pools` | JSON list | next run | quota pools: `pool_id`, `family`, `model_regex`, `unit` (`usd`/`tokens`/`requests`), `window_limit`, `window_seconds`, `weekly_limit`, soft/hard lines — see `docs/orchestrator.md` (trust-gated) |
+| `orchestrator.harden` | bool | next run | review each change with a different model family before the audit (default on; trust-gated) |
+| `orchestrator.tier2` | bool | next run | after the deterministic checks pass, ask a reviewer for accept/drift/replan (default on; trust-gated) |
+| `orchestrator.lambda` | 0.0–2.0 | next run | dispatch cost weight (default 0.3; trust-gated) |
+| `orchestrator.mu` | 0.0–2.0 | next run | dispatch quota-scarcity weight (default 0.5; trust-gated) |
 | `kg.enabled` | `true` · `false` | next session | record graph entities and edges from each turn (see below) |
 | `kg.sink` | `lance` · `cognee` | next session | which graph backend keeps the rows (default `lance`) |
 | `tiers.fast` / `standard` / `strong` | model id | next session | sub-agent model tiers |

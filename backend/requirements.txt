@@ -1,13 +1,12 @@
 # Pinned exactly, not left open — several of these (ag_ui_strands especially,
 # still pre-1.0 at 0.4.1) have internals this codebase reads source for and
 # relies on directly (StrandsInterruptHook's exact attach point, the
-# StateSnapshotEvent shape, tool_behaviors semantics — see skill_forge_tool.py
-# and local_graph_tool.py's own comments for two concrete examples this
-# session found by reading that source, not docs). An unpinned `pip install`
+# StateSnapshotEvent shape, tool_behaviors semantics — see skill_forge_tool.py's
+# own comments for a concrete example found by reading that source, not docs). An unpinned `pip install`
 # next month could pull a breaking minor/patch release of any of these with
 # no warning; a pinned one fails loudly at install time instead, and upgrading
 # becomes a deliberate `pip install --upgrade <pkg>` + a full regression pass
-# (`_subagent_denylist_smoke_test.py`, `_local_graph_structure_smoke_test.py`,
+# (`_subagent_denylist_smoke_test.py`,
 # `_sandbox_token_smoke_test.py`, `_model_control_smoke_test.py`, plus
 # `_agent_memory_smoke_test.py`/`_proposer_guardrail_smoke_test.py` if Qdrant
 # is reachable) before it lands here, not something that happens silently on

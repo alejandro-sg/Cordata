@@ -307,41 +307,6 @@ class Lab:
                 row["count"] += 1
         self.emit(force=True)
 
-    def team_plan(self, plan: dict[str, Any], parent: str = "orchestrator") -> None:
-        """A team pipeline's nodes become pods; each ``depends_on`` is a vector."""
-        for entry in plan.get("agents", []):
-            name = str(entry.get("name") or "")
-            if not name:
-                continue
-            self.pod(name, role=str(entry.get("role") or name), parent=parent)
-            self.link(parent, name, "team", active=True, label="plan")
-            for dependency in entry.get("depends_on") or []:
-                self.link(str(dependency), name, "pipeline", active=True, label="needs")
-
-    def team_progress(self, entries: list[dict[str, Any]]) -> None:
-        """Statuses from local_graph/stream_graph's cumulative progress log."""
-        running: set[str] = set()
-        finished: set[str] = set()
-        for entry in entries:
-            kind, node = entry.get("type"), entry.get("node")
-            if kind == "node_start" and node:
-                running.add(node)
-            elif kind == "node_stop" and node:
-                finished.add(node)
-        for node in running | finished:
-            pod = self.pods.get(node)
-            if pod is not None:
-                self.set_status(pod, "idle" if node in finished else "synthesizing")
-
-    def team_done(self, plan: dict[str, Any]) -> None:
-        for entry in plan.get("agents", []):
-            name = str(entry.get("name") or "")
-            pod = self.pods.get(name)
-            if pod is not None:
-                self.set_status(pod, "idle")
-            for source, target in [k for k in self.links if k[1] == name]:
-                self.link(source, target, self.links[(source, target)]["kind"], active=False)
-
     def stream_text(self, pod_name: str, text: str) -> None:
         pod = self.pods.get(pod_name)
         if pod is None or not text:

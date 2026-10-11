@@ -1,7 +1,7 @@
-"""Regression check: sub-agents (local_swarm / local_graph nodes) run on the
+"""Regression check: sub-agents (the specialists, the digest) run on the
 ACTIVE provider — so a cloud provider's key is used by sub-agents too, with no
-key of their own — at a tier chosen by the spec or by Laya, and the key never
-reaches anything a sub-agent can see.
+key of their own — at their tier, and the key never reaches anything a
+sub-agent can see.
 
 No LLM, no network: builds the models/agents and inspects them.
 
@@ -11,11 +11,10 @@ No LLM, no network: builds the models/agents and inspects them.
 import provider_settings  # noqa: F401  (imported before agent_common, which chdirs — see main.py)
 
 import agent_common
-import laya_triage as lt
 import secret_guard as sg
 import settings
 import sub_agent_common as sac
-from strands import Agent, tool
+from strands import tool
 from strands.models.model import Model
 
 KEY = "subagent-key-0123456789-abcdef-FAKE"
@@ -81,35 +80,14 @@ def main() -> None:
     check(model_id(local) == "local-active" and local.client_args["api_key"] == "not-needed", "the local provider still works (and uses the live ACTIVE_MODEL_ID)")
     agent_common.ACTIVE_PROVIDER = "openai_compatible"
 
-    # --- real nodes through build_agent_nodes
-    caller = Agent(model=NoModel(), tools=[calculator], callback_handler=None)
-    nodes = sac.build_agent_nodes(
-        [
-            {"name": "plain", "system_prompt": "do a thing"},
-            {"name": "quick", "system_prompt": "do a small thing", "tier": "fast"},
-            {"name": "typo", "system_prompt": "x", "tier": "turbo"},
-        ],
-        caller,
-        "smoke",
-    )
-    check(model_id(nodes["plain"].model) == "m-active", "a node with no tier and no Laya decision gets the provider's model")
-    check(model_id(nodes["quick"].model) == "m-fast", "a spec's own tier picks the node's model")
-    check(model_id(nodes["typo"].model) == "m-active", "an invalid spec tier is ignored, not an error")
+    # --- a real sub-agent: the architect specialist, on the active provider at its tier
+    import specialists
+    from prompt_security import SecretRedactionHooks
 
-    # Laya's complexity estimate is the default tier when the spec names none, and a spec still wins.
-    turn = lt._Turn(caller, "a hard task")
-    turn.decision = lt.Decision({"route": "team", "route_confidence": 0.9, "needs_team": 0.9, "complexity": 1.8, "complexity_confidence": 0.9})
-    lt._ACTIVE[id(caller)] = turn
-    try:
-        laya_nodes = sac.build_agent_nodes([{"name": "a"}, {"name": "b", "tier": "fast"}], caller, "smoke")
-        check(model_id(laya_nodes["a"].model) == "m-strong", "Laya's confident 'hard' estimate defaults a node to the strong tier")
-        check(model_id(laya_nodes["b"].model) == "m-fast", "…but an explicit spec tier overrides Laya")
-        check(turn.tiers == {"a": "strong", "b": "fast"}, "the tiers actually used are recorded on the turn (for the triage log)")
-    finally:
-        lt._ACTIVE.pop(id(caller), None)
+    node = specialists.build_specialist(specialists.ARCHITECT, hooks=[SecretRedactionHooks()])
+    check(model_id(node.model) in ("m-active", "m-fast", "m-standard", "m-strong"), f"a specialist runs on the active provider's models ({model_id(node.model)})")
 
     # --- the key never reaches anything a sub-agent can see
-    node = nodes["plain"]
     surfaces = {
         "system prompt": node.system_prompt or "",
         "tool names": ",".join(node.tool_registry.registry),

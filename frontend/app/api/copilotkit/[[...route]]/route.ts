@@ -9,7 +9,7 @@ import { Agent as UndiciAgent, fetch as undiciFetch } from "undici";
 // Node's global fetch (undici under the hood) applies a default body timeout
 // to streaming responses — fine for a normal API call, fatal for a run on a
 // local model, which can legitimately run many minutes (a multi-step tool
-// chain, a swarm, or just a slow 27B model on this hardware). Without this,
+// chain, or just a slow 27B model on this hardware). Without this,
 // a long-but-healthy run gets killed client-side with "terminated" /
 // UND_ERR_BODY_TIMEOUT even though the backend is still working fine —
 // confirmed via backend logs: the agent loop only saw a CancelledError
