@@ -41,11 +41,11 @@ import sub_agent_common
 logger = logging.getLogger("sierralab.observer")
 
 #: What the observer may hold. `file_read` to look at a file the evidence
-#: mentioned; `think` to plan. No `shell` — the parent already ran the exact
+#: mentioned. No `think` (the SDK deprecated it for native reasoning), no `shell` — the parent already ran the exact
 #: read-only commands (a fixed `git` argv list) and hands the output over as
 #: evidence, so the model never chooses a command. No `http_request`: an observer
 #: that can fetch is an observer that can be told what to fetch.
-OBSERVER_TOOLS = ("file_read", "think")
+OBSERVER_TOOLS = ("file_read",)
 
 # The invariant that makes the line above a guarantee: if someone adds `shell`
 # to OBSERVER_TOOLS, this fails at import in the child (and in the smoke test)
@@ -73,9 +73,9 @@ OBSERVER_PROMPT = (
 
 
 def _tool_objects(names) -> list:
-    from strands_tools import file_read, think
+    from strands_tools import file_read
 
-    available = {"file_read": file_read, "think": think}
+    available = {"file_read": file_read}
     return [available[name] for name in names]
 
 

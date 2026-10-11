@@ -1,17 +1,25 @@
-"""The daemon's outbound Discord front door: remote HITL, telemetry and steering.
+"""The daemon's outbound Discord front door: talk to agents, decide what needs deciding, see where
+things stand.
 
-What this is for. The gate pauses a call at Laya's destructive line by raising a Strands interrupt,
-which `acp_server._resolve_interrupts` turns into an ACP `session/request_permission`
-(`acp_server.py:1672`). The daemon taps that into a `PendingPermission` (`supervisor.py:255`) and
-waits. With a GUI or TUI attached, a person answers it. With nothing attached, *nobody* does, and the
-child stays parked on that await for as long as the daemon lives. This module closes that hole by
-being a third front door that lives where the person is not: it posts the paused call to Discord with
-an approve/reject pair, and relays the click back through `Supervisor.answer_permission` — the same
-relay the GUI's containment modal uses, so whichever door answers first wins and the other is told its
-prompt is moot (`Supervisor._settle` refuses the second answer; `_sierralab/resolved` dismisses a
-modal that is still open).
+What it is for. A daemon that outlives a terminal needs a way to reach the person. This is it, and
+it is built around three things a person actually does from a phone:
 
-Four properties this module is built to hold.
+1. **Talk to an agent.** Write in the channel and a thread opens with an agent that answers — a real
+   prompt turn, the reply streamed into the thread with a receipt (time, tool calls, tokens) under it.
+   Reply in the thread to continue; messages sent while it is working steer it at its next step
+   (`daemon/chat.py` is the conversation; this module is its face).
+2. **Decide what needs deciding — and only that.** The gate pauses a call by raising a Strands
+   interrupt, which `acp_server._resolve_interrupts` turns into an ACP `session/request_permission`
+   the supervisor holds as a `PendingPermission`. This module shows it, relays the click through
+   `Supervisor.answer_permission` (the same relay the GUI's containment modal uses, so whichever door
+   answers first wins), and nothing else. A card says *what, where and why* in plain words before it
+   says how risky (`discord_cards.approval_card`); a decided card collapses to one line; only a call at
+   or above the destructive line pings anybody; and "Allow routine steps in this chat" ends the
+   routine ones for good while destructive calls keep asking.
+3. **Ask where things stand.** "What are you working on?" and `!status` are answered from state the
+   daemon already holds — no model call, so no tokens, and the agent is not interrupted to say it.
+
+Properties this module is built to hold.
 
 - **Outbound only.** One WebSocket to Discord's gateway, no inbound port, no webhook. Nothing on this
   machine becomes reachable because this is running.
@@ -21,34 +29,38 @@ Four properties this module is built to hold.
   bot does not start at all: a front door with no allowlist is an unauthenticated one.
 - **The token is never a setting.** `DISCORD_BOT_TOKEN` is read through `secret_guard.take_secret`
   (environment first, then the macOS Keychain item `sierralab-discord-bot-token`), which also takes it
-  out of `os.environ` so no tool subprocess can read it, and registers it for output masking. Compare
-  `vault_proxy.KEYCHAIN_SERVICE`: the harness's own credentials live in the Keychain, never in a
-  settings file — and never in this schema, which is why `discord.*` has no settings keys.
+  out of `os.environ` so no tool subprocess can read it, and registers it for output masking.
+- **An agent's words cannot ping anyone.** Everything a model wrote is posted with mentions disabled
+  and secret-masked: `@everyone` in a reply is text, not a notification.
 - **Fail quiet.** A missing token, an unparsable id, a privileged-intent refusal or a Discord outage
-  all disable or degrade this module and are logged; none of them may take the daemon down, and none
-  of them fall back to anything less safe than not asking.
+  all disable or degrade this module and are logged; none of them may take the daemon down. A chat
+  whose approval cannot be delivered is *denied*, never left parked or waved through.
+
+Scope, stated plainly: this is a *front door*, not a second policy engine. It shows what the gate
+already decided to ask about, and it cannot approve anything the gate did not offer
+(`answer_permission` only ever names an option the child itself listed).
 
 Off unless configured: with no `DISCORD_BOT_TOKEN` in reach, `start()` returns immediately and the
 daemon behaves exactly as it did before this module existed. `discord` itself is imported inside
 `start()` for the same reason — a checkout that has not installed it is unaffected.
-
-Scope, stated plainly: this is a *front door*, not a second policy engine. It shows what the gate
-already decided to ask about, and it cannot approve anything the gate did not offer
-(`answer_permission` only ever names an option the child itself listed). Steering text takes the
-existing Lab guidance path (`lab.inject` / `lab.take_guidance`), which is length-capped, queued, and
-audited by length rather than content.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from pathlib import Path
+from typing import Any, Callable, Mapping
 
 import secret_guard
+
+from . import discord_cards as cards
+from .chat import OWNER, Busy, ChatError, Chats, Conversation, default_cwd, default_mode, resolve_dir
 
 logger = logging.getLogger(__name__)
 
@@ -72,34 +84,58 @@ KEYCHAIN_ITEM = "sierralab-discord-bot-token"
 #: that raised or lowered its own line is asked about at the line it actually set.
 DEFAULT_DESTROY = 0.8
 
-#: How much of a command or diff fits in one embed field (Discord caps a field at 1024 characters;
-#: a fenced block with a truncation marker stays inside that with room for the other fields).
-MAX_BODY_CHARS = 900
-#: What a steering directive may carry. The Lab caps at 2000 and `acp_server._lab_control` audits
-#: the length, so this refuses to send anything the far side would silently cut.
+#: What a steering note may carry. The Lab caps at 2000 and `acp_server._lab_control` audits the length.
 MAX_STEER_CHARS = 2000
-#: Discord's own limit on a thread name.
-MAX_NAME_CHARS = 90
-#: One post per thread per this many seconds. A task bar updates at 20 Hz while it runs; all of it
-#: in a thread would be unusable, and what matters remotely is that a step started and that it ended,
-#: so running updates are coalesced and terminal states always go through.
+#: One edit to a live reply per this many seconds: Discord rate-limits message edits, and a reply that
+#: flickers on every token is unreadable anyway.
+EDIT_INTERVAL = 1.2
+#: One post per thread per this many seconds for coalesced task lines (a task bar updates at 20 Hz).
 MIN_POST_INTERVAL = 1.5
+#: How often idle chat children are checked for reaping.
+REAP_EVERY = 60.0
 
-#: Which `harness_events.Task` sources mean "a multi-step workflow" — the thing worth its own thread —
-#: rather than a chat turn's chatter. `heal`, `plugins`, `lsp`, `memory` and `model` carry model
-#: load/unload and sandbox work; `team` and `specialists` are the multi-agent paths.
-WORKFLOW_SOURCES = frozenset(
-    {"team", "specialists", "swarm", "delegation", "heal", "claude-code", "plugins", "lsp", "memory", "model"}
-)
+def _scratch_roots() -> tuple[str, ...]:
+    import tempfile  # noqa: PLC0415
 
-APPROVE_LABEL = "🟢 Approve & Execute"
-REJECT_LABEL = "🔴 Reject & Isolate"
-UNAUTHORIZED = "Not your call: this daemon only accepts decisions from its configured operator."
-ALREADY = "Already decided (or the session ended) — nothing to do."
+    roots = {"/tmp", "/private/tmp", "/var/folders", "/private/var/folders", tempfile.gettempdir()}
+    return tuple(sorted({os.path.realpath(root) for root in roots} | roots))
 
-DANGER_COLOR = 0xE74C3C
-DONE_COLOR = 0x2ECC71
-INFO_COLOR = 0x3498DB
+
+#: A session in a temporary folder is almost always a test run (the harness's own smoke tests, a script driving the
+#: daemon by hand), and its prompts used to page the operator as if they were real work — "a prompt I don't
+#: understand about a folder I have never heard of". Such a card is still posted (a call parked with nobody told
+#: is worse than noise) but labelled as scratch and never pings.
+SCRATCH_ROOTS = _scratch_roots()
+
+
+def is_scratch(cwd: str | None) -> bool:
+    if not cwd:
+        return False
+    try:
+        resolved = os.path.realpath(cwd)
+    except (OSError, ValueError):
+        return False
+    return any(resolved == root or resolved.startswith(root.rstrip(os.sep) + os.sep) for root in SCRATCH_ROOTS)
+
+
+#: Which `harness_events.Task` sources mean "a multi-step workflow worth its own thread" in a session a
+#: *terminal or the GUI* is driving: real multi-agent or long-running work. Infrastructure chatter
+#: (`plugins`, `lsp`, `memory`, `model` — a model load, an LSP start) is not something to be pinged
+#: about from a phone, and used to open a thread per session on its own.
+WORKFLOW_SOURCES = frozenset({"team", "specialists", "swarm", "delegation", "heal", "claude-code"})
+
+#: Re-exported for callers and tests that name the labels.
+APPROVE_LABEL = cards.APPROVE_LABEL
+APPROVE_ONCE_LABEL = cards.APPROVE_ONCE_LABEL
+DENY_LABEL = cards.DENY_LABEL
+ALL_ROUTINE_LABEL = cards.ALL_ROUTINE_LABEL
+DENY_STOP_LABEL = cards.DENY_STOP_LABEL
+UNAUTHORIZED = cards.UNAUTHORIZED
+ALREADY = cards.ALREADY
+
+DANGER_COLOR = cards.DANGER_COLOR
+DONE_COLOR = cards.DONE_COLOR
+INFO_COLOR = cards.INFO_COLOR
 
 
 # --------------------------------------------------------------------------- config
@@ -173,85 +209,18 @@ def destructive_line(cwd: str | None) -> float:
         return DEFAULT_DESTROY
 
 
-# --------------------------------------------------------------------------- rendering (pure)
+def _chat_store() -> Path | None:
+    from .chat import chat_store  # noqa: PLC0415
+
+    return chat_store()
 
 
-def fence(text: str, lang: str) -> str:
-    """`text` in a fenced block, closed. A body that contains a fence of its own would break out of
-    this one and turn the rest of the message into markdown, so fences inside the text are flattened
-    to quotes first — a diff is read here, it is not executed and it does not need to round-trip."""
-    body = (text or "").replace("```", "'''")
-    return f"```{lang}\n{body}\n```"
-
-
-def body_of(meta: Mapping[str, Any]) -> tuple[str, str]:
-    """The thing the decision is actually about, and the fence to show it in: the diff for an edit,
-    the command for a shell call, the input as JSON for anything else. `intervention_view.build`
-    (acp_server's own `_meta.sierralab`) already picked and masked it, so this only clips and labels.
-    Truncation is marked rather than silent: a reviewer told "(truncated)" can decide, one shown a
-    half-diff without being told cannot."""
-    kind = str(meta.get("kind") or "other")
-    if kind == "diff" and meta.get("diff"):
-        return str(meta["diff"]), "diff"
-    if kind == "shell" and meta.get("command"):
-        return str(meta["command"]), "sh"
-    return str(meta.get("input_json") or meta.get("command") or ""), "json"
-
-
-def intervention_embed(meta: Mapping[str, Any], *, title_prefix: str, where: str, redactions: int = 0) -> dict[str, Any]:
-    """Everything the embed says, as plain data — built here so it can be read and asserted on
-    without Discord, and so the one place that turns it into an `Embed` stays a formality."""
-    score = meta.get("risk_score")
-    band = str(meta.get("risk_band") or "")
-    tool = str(meta.get("tool") or "tool")
-    shown, lang = body_of(meta)
-    truncated = len(shown) > MAX_BODY_CHARS
-    body = shown[:MAX_BODY_CHARS] + ("\n(truncated — the full call is in the containment view)" if truncated else "")
-    fields = [(f"{title_prefix} · {lang}", fence(body, lang), False)]
-    if meta.get("reason"):
-        fields.append(("Why it paused", str(meta["reason"])[:1024], False))
-    fields.append(("Where", where[:1024], True))
-    if score is not None:
-        fields.append(("Laya", f"{float(score):.2f} · {band or 'unbanded'}", True))
-    if redactions:
-        fields.append(("Masked", f"{redactions} credential-shaped span(s) hidden in this view", True))
-    return {
-        "title": f"⚠ Containment — {tool} scored {float(score):.2f}" if score is not None else f"⚠ Containment — {tool}",
-        "description": "A tool call Laya rated destructive is paused in the daemon, waiting on a person.",
-        "fields": fields,
-        "color": DANGER_COLOR,
-    }
-
-
-def thread_name(title: str) -> str:
-    """`🧵 Task: <title>`, clipped to Discord's limit on the *combined* string."""
-    clean = " ".join((title or "task").split())
-    room = MAX_NAME_CHARS - len("🧵 Task: ")
-    return f"🧵 Task: {clean[:room]}" if len(clean) > room else f"🧵 Task: {clean}"
-
-
-def steer_text(content: str) -> str:
-    """The directive in a message, or "" when it carries none.
-
-    `> steer: <text>` (the directive's own spelling, with or without the colon) is one form; a plain
-    sentence in a thread the bot opened is the other, because a reply in a task thread *is* the
-    natural way to steer it. Anything else — a bare `> steer:` with nothing after it — is nothing,
-    and an empty directive must not reach the model as an empty instruction.
-    """
-    text = (content or "").strip()
-    lowered = text.lower()
-    for prefix in ("> steer:", ">steer:", "> steer", ">steer"):
-        if lowered.startswith(prefix):
-            return text[len(prefix) :].strip()
-    return text
-
-
-# --------------------------------------------------------------------------- the bot
+# --------------------------------------------------------------------------- small state records
 
 
 @dataclass
 class _Thread:
-    """A session's task thread, plus the little state a coalescing poster needs."""
+    """A terminal/GUI session's task thread, plus the little state a coalescing poster needs."""
 
     channel: Any
     session_id: str = ""
@@ -259,30 +228,144 @@ class _Thread:
     dropped: int = 0
 
 
+@dataclass
+class _Card:
+    """One approval message, so it can be collapsed when another front door answers first."""
+
+    message: Any
+    meta: Mapping[str, Any]
+    claimed: bool = False  # a click on this card is handling it: the resolved listener must stay out of the way
+
+
+class TurnView:
+    """One chat turn as the person sees it: a single message that is a placeholder, then the reply as it
+    arrives (edited at most every `EDIT_INTERVAL`), then the reply in full with its receipt.
+
+    The `Sink` the conversation drives. Its callbacks are synchronous and only mark the view dirty;
+    the one flusher task does the I/O, so a burst of chunks is one edit, not forty.
+    """
+
+    LIVE_TAIL = 1500
+
+    def __init__(self, remote: "DiscordRemote", channel: Any) -> None:
+        self.remote = remote
+        self.channel = channel
+        self.message: Any = None
+        self.buffer = ""
+        self.label: str | None = None
+        self._dirty = False
+        self._flusher: asyncio.Task | None = None
+        self._closed = False
+
+    async def start(self) -> None:
+        self.message = await self.remote._send(self.channel, content="⏳ on it…")
+
+    # -- the Sink ----------------------------------------------------------------
+
+    def text(self, delta: str) -> None:
+        self.buffer += delta
+        self._kick()
+
+    def activity(self, label: str | None) -> None:
+        self.label = label
+        self._kick()
+
+    def _kick(self) -> None:
+        if self._closed or self.message is None:
+            return
+        self._dirty = True
+        if self._flusher is None or self._flusher.done():
+            self._flusher = asyncio.create_task(self._flush(), name="discord-turn-edit")
+
+    async def _flush(self) -> None:
+        while self._dirty and not self._closed:
+            self._dirty = False
+            await self.remote._edit(self.message, content=self._live())
+            await asyncio.sleep(EDIT_INTERVAL)
+
+    def _live(self) -> str:
+        shown = cards.discord_markdown(self.buffer)
+        body = shown if len(shown) <= self.LIVE_TAIL else "…" + shown[-self.LIVE_TAIL :]
+        head = f"🔧 {cards.clip(self.label, 120)}" if self.label and self.label != "thinking" else ("💭 thinking…" if not body else "")
+        if not body:
+            return head or "⏳ on it…"
+        return (f"{head}\n\n" if head else "") + body + " ▍"
+
+    # -- the ends ----------------------------------------------------------------
+
+    async def finish(self, text: str, footer: str) -> None:
+        await self._stop()
+        chunks = cards.split_message(cards.discord_markdown(text)) or ["(no reply)"]
+        chunks[-1] = f"{chunks[-1]}\n\n-# {footer}" if footer else chunks[-1]
+        if self.message is not None:
+            await self.remote._edit(self.message, content=chunks[0])
+        else:
+            await self.remote._send(self.channel, content=chunks[0])
+        for chunk in chunks[1:]:
+            await self.remote._send(self.channel, content=chunk)
+
+    async def fail(self, reason: str) -> None:
+        await self._stop()
+        line = f"⚠ {reason}"
+        if self.message is not None:
+            await self.remote._edit(self.message, content=line)
+        else:
+            await self.remote._send(self.channel, content=line)
+
+    async def _stop(self) -> None:
+        self._closed = True
+        flusher, self._flusher = self._flusher, None
+        if flusher is not None and not flusher.done():
+            flusher.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await flusher
+
+
+# --------------------------------------------------------------------------- the bot
+
+
 class DiscordRemote:
-    """The daemon's Discord client, its supervisor listeners, and the thread registry.
+    """The daemon's Discord client, its supervisor listeners, and the registries behind them.
 
     One instance per daemon, held by `daemon.server.State` so `/health` can report it. `start()` is
     the only place `discord` is imported, and it is a no-op when nothing is configured.
     """
 
-    def __init__(self, supervisor: Any, *, environ: Mapping[str, str] | None = None, token: str | None = None) -> None:
+    def __init__(self, supervisor: Any, *, environ: Mapping[str, str] | None = None, token: str | None = None, chats: Chats | None = None) -> None:
         self.supervisor = supervisor
         self._environ = environ
         self._token_override = token
         #: Until `start()` runs, the honest reason is that nothing has been read — a bot that was
         #: never started must not report a configuration it never had.
         self.config: RemoteConfig = RemoteConfig(reason="not started")
+        self._chats: Chats | None = chats
         self._task: asyncio.Task | None = None
+        self._reaper: asyncio.Task | None = None
         self._client: Any = None
         self._discord: Any = None
         self._connected = False
         self._unsubscribes: list[Any] = []
-        #: session id -> its task thread, and thread channel id -> session id, so a reply in a thread
-        #: knows which session it steers without the person typing an id.
+        #: Terminal/GUI sessions' task threads: session id -> thread, and thread id -> session id, so a
+        #: reply in one knows which session it steers without the person typing an id.
         self._threads: dict[str, _Thread] = {}
         self._by_channel: dict[int, str] = {}
-        self._announced = 0.0
+        #: Approval cards by (session id, request key), and chat turns by conversation key.
+        self._cards: dict[tuple[str, str], _Card] = {}
+        self._turns: dict[str, TurnView] = {}
+        self._tasks: dict[str, tuple[str, str, float]] = {}  # session id -> (title, state, when) of the newest task
+        self._announced: Any = None
+        self._explained: set[int] = set()  # threads that have been told once what steering does
+        #: Threads that follow a hub conversation, so a turn another door runs there is posted in them:
+        #: (conversation key, thread id) -> unwatch.
+        self._mirrors: dict[tuple[str, int], Callable[[], None]] = {}
+
+    @property
+    def chats(self) -> Chats:
+        """The conversations — built on first use, so a daemon with no bot configured never reads (or
+        creates) a chat store."""
+        if self._chats is None:
+            self._chats = Chats(self.supervisor, store=_chat_store())
+        return self._chats
 
     # ------------------------------------------------------------- lifecycle
 
@@ -305,7 +388,7 @@ class DiscordRemote:
             return None
         self._discord = discord
         intents = discord.Intents.default()
-        # Reading a directive is reading message text, which Discord makes a privileged intent: the
+        # Reading a message is reading message text, which Discord makes a privileged intent: the
         # toggle in the Developer Portal is a prerequisite, and `PrivilegedIntentsRequired` below is
         # what a bot without it gets.
         intents.message_content = True
@@ -322,6 +405,8 @@ class DiscordRemote:
             self._connected = True
             logger.info("discord: connected as %s", getattr(client.user, "name", "?"))
             await self._announce()
+            if self._reaper is None or self._reaper.done():
+                self._reaper = asyncio.create_task(self._reap_loop(), name="discord-reaper")
 
         @client.event
         async def on_message(message) -> None:  # noqa: ANN001
@@ -329,6 +414,8 @@ class DiscordRemote:
 
         # The supervisor's listeners fire on the event loop, so they schedule rather than await;
         # a listener that raised would be swallowed by `Supervisor._notify` and the prompt lost.
+        self.chats.start()
+        self._mirror_all()
         self._unsubscribes = [
             self.supervisor.listen("intervention", self._on_intervention),
             self.supervisor.listen("task", self._on_task),
@@ -340,22 +427,39 @@ class DiscordRemote:
             await self._client.start(self.config.token)
         except Exception as error:  # PrivilegedIntentsRequired, LoginFailure, a dropped gateway
             name = type(error).__name__
-            hint = (
-                " — enable Message Content Intent in the Discord Developer Portal"
-                if "PrivilegedIntents" in name
-                else ""
-            )
+            hint = " — enable Message Content Intent in the Discord Developer Portal" if "PrivilegedIntents" in name else ""
             logger.warning("discord: client stopped: %s: %s%s", name, error, hint)
         finally:
             self._connected = False
 
+    async def _reap_loop(self) -> None:
+        while True:
+            await asyncio.sleep(REAP_EVERY)
+            try:
+                await self.chats.reap_idle()
+            except Exception:
+                logger.debug("discord: reaping failed", exc_info=True)
+
     async def stop(self) -> None:
+        for unwatch in self._mirrors.values():
+            try:
+                unwatch()
+            except Exception:
+                logger.debug("discord: unwatching failed", exc_info=True)
+        self._mirrors = {}
         for unsubscribe in self._unsubscribes:
             try:
                 unsubscribe()
             except Exception:
                 logger.debug("discord: unsubscribing failed", exc_info=True)
         self._unsubscribes = []
+        if self._chats is not None:
+            await self._chats.stop()
+        if self._reaper is not None and not self._reaper.done():
+            self._reaper.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._reaper
+        self._reaper = None
         if self._client is not None:
             try:
                 await self._client.close()
@@ -383,104 +487,227 @@ class DiscordRemote:
             "allowedUser": self.config.allowed_user_id or None,
             "channel": self.config.channel_id or None,
             "threads": len(self._threads),
+            "chats": len(self._chats.all()) if self._chats is not None else 0,
+            "liveChats": len(self._chats.live()) if self._chats is not None else 0,
         }
 
     # ------------------------------------------------------------- channel plumbing
 
-    async def _telemetry(self) -> Any:
-        """The telemetry channel: from cache when this process has seen it, fetched when it has not
-        (a daemon started before the channel existed holds no object for it)."""
-        channel_id = self.config.channel_id
+    async def _channel(self, channel_id: int) -> Any:
+        """A channel or thread by id: from cache when this process has seen it, fetched when it has not
+        (a daemon started before the channel existed — or a thread opened by an earlier run — holds
+        no object for it)."""
         get = getattr(self._client, "get_channel", None)
         channel = get(channel_id) if callable(get) else None
         if channel is not None:
             return channel
         fetch = getattr(self._client, "fetch_channel", None)
-        return await fetch(channel_id) if callable(fetch) else None
+        try:
+            return await fetch(channel_id) if callable(fetch) else None
+        except Exception:
+            logger.debug("discord: could not fetch channel %s", channel_id, exc_info=True)
+            return None
+
+    async def _telemetry(self) -> Any:
+        return await self._channel(self.config.channel_id)
+
+    def _no_mentions(self, *, operator: bool = False) -> Any:
+        allowed = getattr(self._discord, "AllowedMentions", None)
+        if allowed is None:
+            return None
+        return allowed(users=True, roles=False, everyone=False) if operator else allowed.none()
+
+    async def _send(self, channel: Any, *, content: str | None = None, embed: Any = None, view: Any = None, ping: bool = False) -> Any:
+        """Send, never raise. Text is secret-masked and cannot mention anyone but the operator."""
+        kwargs: dict[str, Any] = {}
+        if content is not None:
+            kwargs["content"] = secret_guard.redact(content)[:2000]
+        if embed is not None:
+            kwargs["embed"] = embed
+        if view is not None:
+            kwargs["view"] = view
+        mentions = self._no_mentions(operator=ping)
+        if mentions is not None:
+            kwargs["allowed_mentions"] = mentions
+        try:
+            return await channel.send(**kwargs)
+        except Exception:
+            logger.debug("discord: send failed", exc_info=True)
+            return None
+
+    async def _edit(self, message: Any, **kwargs: Any) -> None:
+        if message is None:
+            return
+        if isinstance(kwargs.get("content"), str):
+            kwargs["content"] = secret_guard.redact(kwargs["content"])[:2000]
+        mentions = self._no_mentions()
+        if mentions is not None and "content" in kwargs:
+            kwargs["allowed_mentions"] = mentions
+        try:
+            await message.edit(**kwargs)
+        except Exception:
+            logger.debug("discord: edit failed", exc_info=True)
+
+    def _embed(self, spec: Mapping[str, Any]) -> Any:
+        embed = self._discord.Embed(
+            title=secret_guard.redact(str(spec.get("title") or ""))[:256],
+            description=secret_guard.redact(str(spec.get("description") or ""))[:4000],
+            color=spec.get("color", INFO_COLOR),
+        )
+        for name, value, inline in spec.get("fields") or []:
+            embed.add_field(name=secret_guard.redact(str(name))[:256] or "​", value=secret_guard.redact(str(value))[:1024] or "​", inline=bool(inline))
+        if spec.get("footer") and hasattr(embed, "set_footer"):
+            embed.set_footer(text=secret_guard.redact(str(spec["footer"]))[:2000])
+        return embed
+
+    async def _react(self, message: Any, emoji: str, fallback: str) -> None:
+        try:
+            await message.add_reaction(emoji)
+        except Exception:
+            logger.debug("discord: reaction failed", exc_info=True)
+            await self._send(message.channel, content=fallback)
+
+    def _typing(self, channel: Any) -> Any:
+        factory = getattr(channel, "typing", None)
+        return factory() if callable(factory) else contextlib.nullcontext()
 
     async def _announce(self) -> None:
-        """`Daemon Connected`, with what it is watching. Posted once per connect: it is how a person
-        learns the daemon is up without reading a log, which is the point of the channel."""
-        self._announced = time.time()
+        """`Daemon connected` — once per daemon run. A gateway reconnect fires `on_ready` again, and a
+        fresh message each time (the old behaviour) turned a flaky connection into channel spam; the
+        first message is edited instead."""
         try:
             channel = await self._telemetry()
             if channel is None:
                 logger.warning("discord: telemetry channel %s is not visible to this bot", self.config.channel_id)
                 return
-            sessions = self.supervisor.sessions()
+            sessions = [s for s in self.supervisor.sessions() if not s.get("owner")]
             embed = self._embed(
                 {
-                    "title": "Daemon Connected",
-                    "description": f"Operator <@{self.config.allowed_user_id}> — approvals, task threads and steering come here.",
+                    "title": "Daemon connected",
+                    "description": f"Operator <@{self.config.allowed_user_id}> — write here to talk to an agent; `!help` for the rest.",
                     "fields": [
-                        ("Sessions", "\n".join(f"`{s['sessionId']}` {s['cwd']}" for s in sessions) or "none yet", False),
-                        ("Approvals", "Laya at or above the project's destructive line", True),
-                        ("Steering", "`> steer: <directive>` here, or any reply in a task thread", True),
+                        ("Terminal/GUI sessions", "\n".join(f"`{cards.project_name(s['cwd'])}` {s['cwd']}" for s in sessions) or "none yet", False),
+                        ("Approvals", "Only calls that need a person reach this channel.", True),
+                        ("Where chats run", f"`{default_cwd(self.supervisor)}`", True),
                     ],
                     "color": INFO_COLOR,
+                    "footer": f"connected {time.strftime('%H:%M')}",
                 }
             )
-            await channel.send(embed=embed)
+            if self._announced is not None:
+                await self._edit(self._announced, embed=embed)
+            else:
+                self._announced = await self._send(channel, embed=embed)
         except Exception:
             logger.debug("discord: announce failed", exc_info=True)
-
-    def _embed(self, spec: Mapping[str, Any]) -> Any:
-        embed = self._discord.Embed(title=secret_guard.redact(str(spec.get("title") or "")), description=secret_guard.redact(str(spec.get("description") or "")), color=spec.get("color", INFO_COLOR))
-        for name, value, inline in spec.get("fields") or []:
-            embed.add_field(name=secret_guard.redact(str(name)), value=secret_guard.redact(str(value)), inline=bool(inline))
-        return embed
 
     # ------------------------------------------------------------- HITL
 
     def _on_intervention(self, payload: Mapping[str, Any]) -> None:
-        """A pending permission appeared. Post it only if it is at the project's destructive line —
-        the same rule the GUI's modal follows (`>= 0.8` gets the modal, everything else a tray row),
-        so the two front doors agree about what is urgent. A failure here is a log line: the prompt
-        is still open in the GUI, and the child is still waiting on it either way."""
-        if not self._connected or payload.get("event") != "requested":
+        """A pending permission appeared, or was settled. Posting rules, in one place:
+
+        - A session a *chat* owns has no GUI or terminal to answer it, so every ask reaches Discord
+          (in that chat's thread) — routine ones quietly, armed ones with a ping.
+        - A session a terminal or the GUI is driving is posted only at the project's destructive
+          line, the same rule the GUI's modal follows (`>= 0.8` gets the modal, the rest a tray
+          row), so the two front doors agree about what is urgent.
+        """
+        if not self._connected:
             return
-        pending = payload.get("pending")
+        event, pending = payload.get("event"), payload.get("pending")
         if pending is None:
             return
-        meta = getattr(pending, "meta", None) or {}
-        try:
-            score = float(meta.get("risk_score"))
-        except (TypeError, ValueError):
-            return  # unreadable score: not a thing to ask a person about from here
-        line = destructive_line(self._cwd(getattr(pending, "session_id", "")))
-        if score < line:
+        if event == "resolved":
+            asyncio.create_task(self._close_card(pending, str(payload.get("outcome") or ""), str(payload.get("decided_by") or "")), name="discord-card-close")
             return
-        asyncio.create_task(self._post_intervention(pending, meta, line), name="discord-approval")
+        if event != "requested":
+            return
+        meta = getattr(pending, "meta", None) or {}
+        conv = self.chats.for_session(str(getattr(pending, "session_id", "")))
+        if conv is None:
+            try:
+                score = float(meta.get("risk_score"))
+            except (TypeError, ValueError):
+                return  # unreadable score: not a thing to ask a person about from here
+            line = destructive_line(self._cwd(getattr(pending, "session_id", "")))
+            if score < line:
+                return
+        asyncio.create_task(self._post_intervention(pending, meta, conv), name="discord-approval")
 
     def _cwd(self, session_id: str) -> str | None:
         session = self.supervisor.session(session_id) if session_id else None
         return getattr(session, "cwd", None)
 
-    async def _post_intervention(self, pending: Any, meta: Mapping[str, Any], line: float) -> None:
+    @staticmethod
+    def _always_rule(pending: Any) -> str:
+        """The rule the child offered to remember ("shell(pytest *)"), or "" when it offered none —
+        which is always the case for a call the gate armed."""
+        for option in getattr(pending, "options", None) or []:
+            if option.get("kind") == "allow_always":
+                return re.sub(r"^Always allow\s+", "", str(option.get("name") or "")).strip() or "this call"
+        return ""
+
+    async def _post_intervention(self, pending: Any, meta: Mapping[str, Any], conv: Conversation | None) -> None:
+        session_id = str(getattr(pending, "session_id", ""))
+        key = str(getattr(pending, "key", ""))
         try:
-            channel = await self._telemetry()
-            if channel is None:
-                return
-            session_id = str(getattr(pending, "session_id", ""))
-            key = str(getattr(pending, "key", ""))
-            where = f"`{session_id}` · {self._cwd(session_id) or '?'} · pod {meta.get('pod') or 'orchestrator'}"
-            embed = self._embed(intervention_embed(meta, title_prefix="To run", where=where, redactions=int(meta.get("redactions") or 0)))
-            view = self._view_class()(session_id, key, pending)
-            await channel.send(embed=embed, view=view)
-            logger.info("discord: approval %s/%s posted (score %s >= %s)", session_id, key, meta.get("risk_score"), line)
+            channel = (await self._channel(int(conv.key)) if conv is not None else None) or await self._telemetry()
+            routine = not bool(meta.get("armed"))
+            cwd = meta.get("project") or self._cwd(session_id) or ""
+            where = f"{cwd or '?'} · {'chat' if conv is not None else 'session'} · pod {meta.get('pod') or 'orchestrator'}"
+            rule = self._always_rule(pending)
+            scratch = conv is None and is_scratch(str(cwd))
+            card = cards.approval_card(meta, project=cards.project_name(cwd), where=where, routine=routine, offers_always=rule, redactions=int(meta.get("redactions") or 0), scratch=scratch, can_stop=conv is not None and not routine)
+            view = self._build_view(session_id, key, pending, conv=conv, routine=routine, always=bool(rule))
+            sent = None
+            if channel is not None:
+                ping = not routine and not scratch
+                sent = await self._send(channel, content=f"<@{self.config.allowed_user_id}> needs a decision" if ping else None, embed=self._embed(card), view=view, ping=ping)
+            if sent is None:
+                raise RuntimeError("the approval could not be delivered")
+            self._cards[(session_id, key)] = _Card(message=sent, meta=meta)
+            logger.info("discord: approval %s/%s posted (%s, score %s)", session_id, key, "routine" if routine else "armed", meta.get("risk_score"))
         except Exception:
-            logger.debug("discord: posting an approval failed", exc_info=True)
+            logger.warning("discord: could not post approval %s/%s", session_id, key, exc_info=True)
+            if conv is not None:
+                # A chat has no other front door. Left alone, its child would sit on this prompt for as
+                # long as the daemon lives; waving it through is not on offer. Denying is safe.
+                with contextlib.suppress(LookupError, ValueError):
+                    await self.supervisor.answer_permission(session_id, key, False, decided_by=f"{OWNER}:undeliverable")
 
-    def _view_class(self) -> Any:
-        """The `discord.ui.View` subclass, built once, the first time it is needed. Built here rather
-        than at module level because that is what keeps `import discord` inside `start()`."""
-        cached = getattr(self, "_view", None)
-        if cached is None:
-            cached = _build_view(self._discord, self)
-            self._view = cached
-        return cached
+    def _build_view(self, session_id: str, key: str, pending: Any, *, conv: Conversation | None, routine: bool, always: bool) -> Any:
+        """Allow / (Always allow) / (Allow routine steps in this chat) / Deny, as one `discord.ui.View`.
 
-    async def _click(self, interaction: Any, view: Any, approve: bool) -> None:
+        Built from items rather than a decorated class so the set can vary with the card — the
+        "routine steps" button is offered only on a routine ask in a chat, never on an armed one.
+        `timeout=None` on purpose: a decision that arrives an hour later is still the right decision,
+        the child is still parked on it."""
+        discord = self._discord
+        view = discord.ui.View(timeout=None)
+        view.session_id, view.key, view.pending, view.conv = session_id, key, pending, conv
+
+        def add(label: str, style: Any, action: str) -> None:
+            button = discord.ui.Button(label=label, style=style)
+
+            async def callback(interaction: Any) -> None:
+                await self._click(interaction, view, action)
+
+            button.callback = callback
+            view.add_item(button)
+
+        add(APPROVE_LABEL if routine else APPROVE_ONCE_LABEL, discord.ButtonStyle.success, "allow")
+        if always:
+            add("Always allow", discord.ButtonStyle.secondary, "always")
+        if conv is not None and routine:
+            add(ALL_ROUTINE_LABEL, discord.ButtonStyle.primary, "auto")
+        add(DENY_LABEL, discord.ButtonStyle.danger, "deny")
+        if conv is not None and not routine:
+            # A destructive ask in a chat: besides "no, try another way", "no, and stop here" — the
+            # turn is cancelled too. (Only a chat: a terminal session is stopped from where it is driven.)
+            add(DENY_STOP_LABEL, discord.ButtonStyle.danger, "stop")
+        return view
+
+    async def _click(self, interaction: Any, view: Any, action: str) -> None:
         """One button press.
 
         The allowlist is checked *first* and returns before anything else happens: it is the only
@@ -489,36 +716,60 @@ class DiscordRemote:
         """
         user_id = int(getattr(getattr(interaction, "user", None), "id", 0) or 0)
         if user_id != self.config.allowed_user_id:
-            logger.warning("discord: refusing %s from user %s (not the configured operator)", "approve" if approve else "reject", user_id)
+            logger.warning("discord: refusing %s from user %s (not the configured operator)", action, user_id)
             await self._ephemeral(interaction, UNAUTHORIZED)
             return
+        card = self._cards.get((view.session_id, view.key))
+        if card is not None:
+            card.claimed = True
         try:
-            await self.supervisor.answer_permission(view.session_id, view.key, approve, decided_by="discord")
+            if action == "auto" and view.conv is not None:
+                # First, so the routine calls that follow do not ask: the mode is the thing that ends
+                # the questions. If it cannot be set the card stays live — the person can still Allow.
+                try:
+                    await self.chats.set_mode(view.conv.key, "auto")
+                except ChatError as error:
+                    if card is not None:
+                        card.claimed = False
+                    await self._ephemeral(interaction, str(error))
+                    return
+            if action == "stop" and view.conv is not None and await self.chats.cancel(view.conv.key):
+                pass  # `cancel` denied this pending call itself, then cancelled the turn
+            else:
+                await self.supervisor.answer_permission(view.session_id, view.key, action not in ("deny", "stop"), decided_by="discord", always=action == "always")
         except LookupError:
             # Answered by the other front door first, or the session ended. Not an error: the two
             # doors race by design, and `_settle` is what makes the loser harmless.
             await self._ephemeral(interaction, ALREADY)
             return
         except ValueError as error:
+            if card is not None:
+                card.claimed = False
             await self._ephemeral(interaction, f"The session did not offer that option: {error}")
             return
-        verdict = "approved" if approve else "rejected"
+        verdict = {"deny": "rejected", "allow": "approved", "always": "always", "auto": "auto", "stop": "stopped"}[action]
         logger.info("discord: %s %s/%s", verdict, view.session_id, view.key)
         meta = getattr(view.pending, "meta", None) or {}
         try:
             await interaction.response.edit_message(
-                embed=self._embed(
-                    {
-                        "title": f"{'✅' if approve else '⛔'} {verdict.title()} from Discord",
-                        "description": f"{verdict} by <@{self.config.allowed_user_id}>.",
-                        "fields": [("Tool", str(meta.get("tool") or "tool"), True)],
-                        "color": DONE_COLOR if approve else DANGER_COLOR,
-                    }
-                ),
+                content=None,
+                embed=self._embed(cards.resolved_card(meta, verdict=verdict, by=f"by <@{self.config.allowed_user_id}>")),
                 view=None,
             )
         except Exception:
             logger.debug("discord: could not edit the approval message", exc_info=True)
+        self._cards.pop((view.session_id, view.key), None)
+
+    async def _close_card(self, pending: Any, outcome: str, decided_by: str) -> None:
+        """Another front door answered (or the session ended): collapse the card instead of leaving a
+        live pair of buttons on a question nobody is waiting on."""
+        card = self._cards.get((str(getattr(pending, "session_id", "")), str(getattr(pending, "key", ""))))
+        if card is None or card.claimed:
+            return
+        self._cards.pop((str(getattr(pending, "session_id", "")), str(getattr(pending, "key", ""))), None)
+        door = {"gui": "the GUI", "tui": "the terminal", "session-ended": "the session ending", "discord": "a chat stop"}.get(decided_by, decided_by or "another front door")
+        verdict = outcome if outcome in ("approved", "rejected") else "moot"
+        await self._edit(card.message, content=None, embed=self._embed(cards.resolved_card(card.meta, verdict=verdict, by=f"answered from {door}")), view=None)
 
     @staticmethod
     async def _ephemeral(interaction: Any, text: str) -> None:
@@ -527,11 +778,23 @@ class DiscordRemote:
         except Exception:
             logger.debug("discord: ephemeral reply failed", exc_info=True)
 
-    # ------------------------------------------------------------- telemetry threads
+    # ------------------------------------------------------------- terminal/GUI sessions' task threads
 
     def _on_task(self, payload: Mapping[str, Any]) -> None:
-        """A task bar moved. Only workflow sources open a thread; a chat turn's tasks stay out of
-        Discord entirely, which is what keeps the channel readable."""
+        """A task bar moved. Remembered (it is what "what are you working on?" answers from); only a
+        workflow source in a session a person is driving opens a thread — a chat's steps show on its own
+        live message, and a chat turn's chatter stays out of Discord entirely."""
+        session_id = str(payload.get("session_id") or payload.get("sessionId") or "")
+        state = str(payload.get("state") or "running")
+        title = str(payload.get("title") or "")
+        if session_id and title:
+            self._tasks[session_id] = (title, state, time.time())
+        conv = self.chats.for_session(session_id)
+        if conv is not None:
+            view = self._turns.get(conv.key)
+            if view is not None and state == "running":
+                view.activity(title)
+            return
         if str(payload.get("source") or "") not in WORKFLOW_SOURCES:
             return
         asyncio.create_task(self._handle_task(payload), name="discord-task")
@@ -555,10 +818,11 @@ class DiscordRemote:
             channel = await self._telemetry()
             if channel is None:
                 return
-            thread = await channel.create_thread(name=thread_name(title))
+            kind = getattr(getattr(self._discord, "ChannelType", None), "public_thread", None)
+            thread = await (channel.create_thread(name=cards.thread_title(title, prefix="🧵 "), type=kind) if kind is not None else channel.create_thread(name=cards.thread_title(title, prefix="🧵 ")))
             self._threads[session_id] = _Thread(channel=thread, session_id=session_id)
             self._by_channel[int(getattr(thread, "id", 0) or 0)] = session_id
-            await thread.send(f"🧵 Tracking `{session_id}` — {self._cwd(session_id) or '?'}. Reply here to steer; `> steer: <directive>` also works.")
+            await self._send(thread, content=f"🧵 Following **{cards.project_name(self._cwd(session_id))}** (a terminal/GUI session). Reply here to steer it; `!status` for where it stands.")
         except Exception:
             logger.debug("discord: opening a thread failed", exc_info=True)
 
@@ -586,26 +850,26 @@ class DiscordRemote:
         if not terminal and now - thread.last_post < MIN_POST_INTERVAL:
             thread.dropped += 1
             return
-        line = secret_guard.redact(" ".join(text.split()))
+        line = " ".join(text.split())
         if thread.dropped:
             line = f"{line} (+{thread.dropped} update(s) folded in)"
             thread.dropped = 0
         thread.last_post = now
-        try:
-            await thread.channel.send(line[:1990])
-        except Exception:
-            logger.debug("discord: thread post failed", exc_info=True)
+        await self._send(thread.channel, content=line[:1990])
 
-    # ------------------------------------------------------------- steering
+    # ------------------------------------------------------------- messages
 
     async def _on_message(self, message: Any) -> None:
-        """Any message in the telemetry channel or a task thread from the operator is a directive.
+        """Route one message from the operator. Everyone else is dropped in silence (a reply would tell
+        an unauthorized stranger the bot is listening).
 
-        Everyone else is dropped in silence (a reply would tell an unauthorized stranger the bot is
-        listening). The text takes the Lab's own guidance path — `_sierralab/lab/inject` on the child,
-        which caps the length, queues it, and lands it in the model at the next call
-        (`lab.inject` → `lab.take_guidance`) — so steering from Discord is the same mechanism as
-        steering from the TUI's Lab view, not a second one with its own rules.
+        Where it goes depends on where it was written:
+
+        - in a **chat thread** — a turn with that agent (or a steering note if it is mid-turn);
+        - in a **terminal/GUI session's thread** — a steering note for that session;
+        - in the **channel** — a status question is answered, `> steer:` steers the one running
+          terminal session, and anything else opens a new chat thread.
+        - a `!command` works in any of them.
         """
         author = getattr(message, "author", None)
         if getattr(author, "bot", False):
@@ -613,54 +877,381 @@ class DiscordRemote:
         if int(getattr(author, "id", 0) or 0) != self.config.allowed_user_id:
             logger.warning("discord: dropping a message from user %s (not the configured operator)", getattr(author, "id", 0))
             return
-        channel_id = int(getattr(getattr(message, "channel", None), "id", 0) or 0)
-        session_id = self._by_channel.get(channel_id, "")
-        if not session_id and channel_id == self.config.channel_id:
-            live = [s["sessionId"] for s in self.supervisor.sessions()]
-            session_id = live[0] if len(live) == 1 else ""
-        text = steer_text(str(getattr(message, "content", "") or ""))
-        if not session_id or not text:
+        channel = getattr(message, "channel", None)
+        channel_id = int(getattr(channel, "id", 0) or 0)
+        chat = self.chats.get(str(channel_id))
+        watched = self._by_channel.get(channel_id, "")
+        lobby = channel_id == self.config.channel_id
+        if not (chat or watched or lobby):
+            return  # a channel or thread this bot has no business in
+        content = self._clean(str(getattr(message, "content", "") or ""))
+        if not content:
             return
-        await self._steer(message, session_id, text)
+        command = cards.parse_command(content)
+        try:
+            if command is not None:
+                await self._command(message, command[0], command[1], chat)
+            elif chat is not None:
+                await self._chat_message(message, chat, content)
+            elif watched:
+                await self._steer_watched(message, watched, content)
+            else:
+                await self._lobby_message(message, content)
+        except Exception:
+            logger.exception("discord: handling a message failed")
+            await self._send(channel, content="⚠ Something went wrong handling that. It is in the daemon log.")
 
-    async def _steer(self, message: Any, session_id: str, text: str) -> None:
+    def _clean(self, content: str) -> str:
+        """The text without the bot's own mention: "what are you working on? @my-agents" is the
+        question, not a question *about* the mention."""
+        bot_id = getattr(getattr(self._client, "user", None), "id", None)
+        if bot_id:
+            content = re.sub(rf"<@!?{int(bot_id)}>", "", content)
+        return content.strip()
+
+    # -- chat ----------------------------------------------------------------------
+
+    async def _chat_message(self, message: Any, conv: Conversation, content: str) -> None:
+        channel = message.channel
+        if cards.is_status_question(content):
+            await self._reply_status(channel)
+            return
+        if conv.busy:
+            try:
+                await self.chats.steer(conv.key, content)
+            except ChatError as error:
+                await self._send(channel, content=str(error))
+                return
+            await self._react(message, "📨", "📨 Noted — the agent reads it at its next step.")
+            return
+        await self._run_turn(channel, conv, content)
+
+    async def _run_turn(self, channel: Any, conv: Conversation, text: str) -> None:
+        view = TurnView(self, channel)
+        await view.start()
+        self._turns[conv.key] = view
+        try:
+            async with self._typing(channel):
+                result = await self.chats.send(conv.key, text, view)
+        except Busy:
+            await view.fail("A turn is already running here — your message was not sent. Reply again when it finishes, or `!stop` it.")
+            return
+        except ChatError as error:
+            await view.fail(str(error))
+            return
+        except Exception:
+            logger.exception("discord: a chat turn failed")
+            await view.fail("The turn failed unexpectedly. It is in the daemon log.")
+            return
+        finally:
+            if self._turns.get(conv.key) is view:
+                self._turns.pop(conv.key, None)
+        await view.finish(result.text, cards.turn_footer(result.turn, stop=result.stop, seconds=result.seconds))
+        for notice in result.notices:
+            await self._send(channel, content=f"-# ⚠ {notice}")
+
+    async def _make_chat(self, message: Any, content: str, *, cwd: str) -> tuple[Any, Conversation]:
+        """A thread for a new chat, under the message that started it — or, if threads are unavailable
+        to this bot (no permission), the channel itself as the one chat there is."""
+        name = cards.thread_title(content)
+        channel = message.channel
+        thread = None
+        try:
+            create = getattr(message, "create_thread", None)
+            thread = await create(name=name) if callable(create) else None
+        except Exception:
+            logger.debug("discord: could not open a thread under the message", exc_info=True)
+        if thread is None:
+            try:
+                kind = getattr(getattr(self._discord, "ChannelType", None), "public_thread", None)
+                thread = await channel.create_thread(name=name, type=kind) if kind is not None else await channel.create_thread(name=name)
+            except Exception:
+                logger.warning("discord: threads are unavailable here; this channel is now the one chat", exc_info=True)
+                thread = channel
+        conv = self.chats.open(str(thread.id), cwd=cwd, title=content[:80])
+        self._mirror(conv, int(getattr(thread, "id", 0) or 0))
+        await self._send(
+            thread,
+            content=f"-# 📁 `{cwd}` · mode **{conv.mode or default_mode(cwd)}** · conversation `{conv.handle}` (continue it in a terminal: `acp-tui --conversation {conv.handle}`) · reply here to continue · `!stop` cancels · `!mode auto` stops routine approval prompts · `!status` · `!help`",
+        )
+        return thread, conv
+
+    # -- the conversation hub: one conversation, every door ----------------------------
+
+    def _mirror_all(self) -> None:
+        """Follow every conversation that has a thread here: the ones Discord opened (their key is the
+        thread's id) and the ones a thread `!continue`d."""
+        for conv in self.chats.all():
+            threads = [conv.key] + self.chats.aliases_of(conv.key)
+            for thread_id in threads:
+                if thread_id.isdigit():
+                    self._mirror(conv, int(thread_id))
+
+    def _mirror(self, conv: Conversation, thread_id: int) -> None:
+        """Post into `thread_id` each turn *another* door runs in this conversation, once it ends — the
+        terminal's, the menu bar's, the web app's. A Discord turn renders itself as it streams."""
+        if not thread_id or (conv.key, thread_id) in self._mirrors:
+            return
+        pending: dict[str, Any] = {}
+
+        def on_event(event: dict[str, Any]) -> None:
+            kind = event.get("event")
+            if kind == "turn":
+                pending.clear()
+                if event.get("origin") != OWNER:
+                    pending.update(origin=str(event.get("origin") or ""), asked=str(event.get("text") or ""), parts=[])
+            elif kind == "text" and pending:
+                pending["parts"].append(str(event.get("delta") or ""))
+            elif kind == "done" and pending:
+                turn = dict(pending)
+                pending.clear()
+                try:
+                    asyncio.get_running_loop().create_task(self._post_mirrored(thread_id, turn, str(event.get("stop") or "")))
+                except RuntimeError:
+                    logger.debug("discord: no loop to post a mirrored turn on")
+
+        self._mirrors[(conv.key, thread_id)] = self.chats.watch(conv.key, on_event)
+
+    async def _post_mirrored(self, thread_id: int, turn: dict[str, Any], stop: str) -> None:
+        channel = await self._channel(thread_id)
+        if channel is None:
+            return
+        for part in cards.mirrored_turn(turn.get("origin", ""), turn.get("asked", ""), "".join(turn.get("parts") or []), stop):
+            await self._send(channel, content=part)
+
+    async def _thread_under(self, message: Any, name: str) -> Any:
+        """A thread under `message`, or under the channel, or — when threads are unavailable — None."""
+        try:
+            create = getattr(message, "create_thread", None)
+            thread = await create(name=name) if callable(create) else None
+            if thread is not None:
+                return thread
+        except Exception:
+            logger.debug("discord: could not open a thread under the message", exc_info=True)
+        try:
+            kind = getattr(getattr(self._discord, "ChannelType", None), "public_thread", None)
+            return await message.channel.create_thread(name=name, type=kind) if kind is not None else await message.channel.create_thread(name=name)
+        except Exception:
+            logger.warning("discord: threads are unavailable here", exc_info=True)
+            return None
+
+    async def _cmd_conversations(self, channel: Any) -> None:
+        await self._send(channel, content=cards.conversations_text(self.chats.rows(None, 10), time.time()))
+
+    async def _cmd_continue(self, message: Any, arg: str, chat: Conversation | None) -> None:
+        """`!continue <handle>`: pick up a conversation another door started (or one from an earlier
+        thread) in a thread here. Messages in the thread are turns in *that* conversation, and turns
+        other doors run in it are posted here as they finish."""
+        channel = message.channel
+        handle = arg.strip().split()[0] if arg.strip() else ""
+        if not handle:
+            await self._send(channel, content="`!continue <handle>` — `!conversations` lists them.")
+            return
+        conv = self.chats.resolve(handle)
+        if conv is None:
+            await self._send(channel, content=f"No conversation named `{handle}` — `!conversations` lists them.")
+            return
+        if chat is not None:
+            if chat.key == conv.key:
+                await self._send(channel, content=f"This thread already is `{conv.handle}`.")
+            else:
+                await self._send(channel, content=f"This thread is `{chat.handle}`. Use `!continue {conv.handle}` in the main channel to open a thread for that one.")
+            return
+        thread = await self._thread_under(message, cards.thread_title(f"↪ {conv.title or conv.handle}"))
+        if thread is None:
+            await self._send(channel, content="I can't open a thread here, so I can't continue it in Discord. It is still there in the terminal: `acp-tui --conversation " + conv.handle + "`.")
+            return
+        thread_id = int(getattr(thread, "id", 0) or 0)
+        self.chats.bind(str(thread_id), conv.key)
+        self._mirror(conv, thread_id)
+        started = cards.door_label(conv.origin)
+        await self._send(
+            thread,
+            content=f"-# ↪ continuing `{conv.handle}` (started from {started}, {conv.turns} turn{'s' if conv.turns != 1 else ''} so far) · 📁 `{conv.cwd}` · reply here to continue — turns from the other doors show up here too · `!stop` · `!help`",
+        )
+
+    async def _lobby_message(self, message: Any, content: str) -> None:
+        channel = message.channel
+        if cards.is_explicit_steer(content):
+            sessions = [s["sessionId"] for s in self.supervisor.sessions() if s.get("alive") and not s.get("owner")]
+            if len(sessions) == 1:
+                await self._steer_watched(message, sessions[0], content)
+            elif not sessions:
+                await self._send(channel, content="No terminal or GUI session is running to steer. Just write a message to start a chat.")
+            else:
+                await self._send(channel, content=f"{len(sessions)} sessions are running — reply inside the thread of the one you mean.")
+            return
+        if cards.is_status_question(content):
+            await self._reply_status(channel)
+            return
+        thread, conv = await self._make_chat(message, content, cwd=default_cwd(self.supervisor))
+        await self._run_turn(thread, conv, content)
+
+    # -- terminal/GUI sessions -------------------------------------------------------
+
+    async def _steer_watched(self, message: Any, session_id: str, content: str) -> None:
+        """A note for a session a terminal or the GUI is driving: the Lab's own guidance path
+        (`_sierralab/lab/inject`), which is length-capped, queued and audited by length rather than
+        content. It cannot start a turn — only the driver can — so it lands at the agent's next call."""
+        channel = message.channel
+        if cards.is_status_question(content):
+            await self._reply_status(channel)
+            return
+        text = cards.steer_text(content)
+        if not text:
+            return
         directive = text[:MAX_STEER_CHARS]
         try:
             reply = await self.supervisor.call(session_id, "_sierralab/lab/inject", {"pod": "orchestrator", "text": directive})
         except (LookupError, asyncio.TimeoutError) as error:
-            await message.channel.send(f"Could not steer `{session_id}`: {error or 'timed out'}")
+            await self._send(channel, content=f"Could not reach that session: {error or 'timed out'}")
             return
         error = (reply or {}).get("error")
         if error:
             data = (error.get("data") if isinstance(error, dict) else None) or {}
-            await message.channel.send(f"Could not steer `{session_id}`: {data.get('error') or error}")
+            await self._send(channel, content=f"That session did not take the note: {data.get('error') or error}")
             return
-        queued = int(((reply or {}).get("result") or {}).get("queued") or 0)
-        # Ack with the length, never the text: the lab ledger records that a person steered, not a
-        # second copy of whatever they typed (`daemon/grpc_bridge.py:354` does the same).
-        await message.channel.send(f"Steering `{session_id}` ({len(directive)} chars queued, {queued} pending) — it lands at the model's next call.")
+        # Acknowledged with a reaction, and told once what it means — never echoed back, and never a
+        # new message per note (the lab ledger records that a person steered, not a second copy).
+        channel_id = int(getattr(channel, "id", 0) or 0)
+        if channel_id not in self._explained:
+            self._explained.add(channel_id)
+            await self._send(channel, content="📨 Sent to the running session — it reads your note at its next step. (It can't answer in here; a terminal or the GUI is driving it. Start a chat in the channel to talk to a separate agent.)")
+        else:
+            await self._react(message, "📨", "📨 Sent.")
 
+    # -- commands -------------------------------------------------------------------
 
-def _build_view(discord: Any, remote: DiscordRemote) -> Any:
-    """The approve/reject pair, as a `discord.ui.View`. Module-level function, so the closure it makes
-    over `remote` is the only thing it captures."""
+    async def _command(self, message: Any, name: str, arg: str, chat: Conversation | None) -> None:
+        channel = message.channel
+        if name == "help":
+            await self._send(channel, embed=self._embed(cards.help_card(self.config.allowed_user_id)))
+        elif name == "status":
+            await self._reply_status(channel)
+        elif name == "usage":
+            per_chat = [{"title": c.title or cards.project_name(c.cwd), "tokensIn": c.tokens_in, "tokensOut": c.tokens_out} for c in self.chats.all() if c.turns]
+            await self._send(channel, embed=self._embed(cards.usage_card(self.chats.totals, per_chat)))
+        elif name == "stop":
+            await self._cmd_stop(message, chat)
+        elif name == "mode":
+            await self._cmd_mode(channel, arg, chat)
+        elif name == "new":
+            await self._cmd_new(message, arg)
+        elif name == "back":
+            await self._cmd_back(channel, arg, chat)
+        elif name == "conversations":
+            await self._cmd_conversations(channel)
+        elif name == "continue":
+            await self._cmd_continue(message, arg, chat)
+        else:
+            await self._send(channel, content=f"I don't know `!{arg}`. `!help` lists what I do.")
 
-    class ApprovalView(discord.ui.View):
-        """Two buttons on one paused call. `timeout=None` on purpose: a decision that arrives an hour
-        later is still the right decision — the child is still parked on it."""
+    async def _cmd_stop(self, message: Any, chat: Conversation | None) -> None:
+        channel = message.channel
+        target = chat
+        if target is None:
+            busy = [c for c in self.chats.all() if c.busy]
+            if len(busy) == 1:
+                target = busy[0]
+            elif not busy:
+                await self._send(channel, content="Nothing is running in a chat. (A terminal or GUI session is stopped from where it is driven.)")
+                return
+            else:
+                await self._send(channel, content=f"{len(busy)} chats are working — use `!stop` inside the thread of the one you mean.")
+                return
+        if await self.chats.cancel(target.key):
+            await self._react(message, "🛑", "🛑 Stopping — pending approvals are denied and the turn is cancelled.")
+        else:
+            await self._send(channel, content="That chat isn't running a turn.")
 
-        def __init__(self, session_id: str, key: str, pending: Any) -> None:
-            super().__init__(timeout=None)
-            self.session_id = session_id
-            self.key = key
-            self.pending = pending
+    async def _cmd_mode(self, channel: Any, arg: str, chat: Conversation | None) -> None:
+        meanings = {
+            "auto": "routine steps run on their own; calls Laya rates destructive still ask",
+            "build": "the agent asks before it runs commands or edits files",
+            "plan": "the agent only reads and plans; nothing is changed",
+        }
+        if chat is None:
+            await self._send(channel, content="`!mode` applies to one chat — use it inside that chat's thread.")
+            return
+        wanted = arg.strip().lower()
+        if not wanted:
+            current = chat.mode or "the project's default"
+            await self._send(channel, content=f"Mode here: **{current}**. Change it with `!mode auto|build|plan`.")
+            return
+        try:
+            await self.chats.set_mode(chat.key, wanted)
+        except ChatError as error:
+            await self._send(channel, content=str(error))
+            return
+        await self._send(channel, content=f"Mode: **{wanted}** — {meanings[wanted]}.")
 
-        @discord.ui.button(label=APPROVE_LABEL, style=discord.ButtonStyle.success)
-        async def approve(self, interaction: Any, button: Any) -> None:  # noqa: ARG002 — discord.py's signature
-            await remote._click(interaction, self, True)
+    async def _cmd_back(self, channel: Any, arg: str, chat: Conversation | None) -> None:
+        if chat is None:
+            await self._send(channel, content="`!back` applies to one chat — use it inside that chat's thread.")
+            return
+        parsed = cards.parse_back(arg)
+        if parsed is None:
+            await self._send(channel, content="`!back` (one turn) · `!back 2` · `!back list` · `!back to <number>`.")
+            return
+        try:
+            if parsed == "list":
+                text = cards.checkpoints_text(await self.chats.conversation(chat.key, "list"))
+            else:
+                text = cards.back_text(await self.chats.conversation(chat.key, "rewind", parsed))  # type: ignore[arg-type]
+        except ChatError as error:
+            await self._send(channel, content=str(error))
+            return
+        await self._send(channel, content=text)
 
-        @discord.ui.button(label=REJECT_LABEL, style=discord.ButtonStyle.danger)
-        async def reject(self, interaction: Any, button: Any) -> None:  # noqa: ARG002
-            await remote._click(interaction, self, False)
+    async def _cmd_new(self, message: Any, arg: str) -> None:
+        channel = message.channel
+        if int(getattr(channel, "id", 0) or 0) != self.config.channel_id:
+            await self._send(channel, content="`!new` starts a chat — use it in the main channel.")
+            return
+        try:
+            cwd = resolve_dir(arg) if arg else default_cwd(self.supervisor)
+        except ChatError as error:
+            await self._send(channel, content=str(error))
+            return
+        thread, _ = await self._make_chat(message, f"chat in {cards.project_name(cwd)}", cwd=cwd)
+        await self._send(thread, content="Ready — say what you'd like done here.")
 
-    return ApprovalView
+    # -- status -----------------------------------------------------------------------
+
+    def _status_rows(self) -> list[dict[str, Any]]:
+        """One row per live session, from state the daemon already holds: the session registry, the
+        Lab's pods, the newest task bar and the pending approvals. No model is asked anything."""
+        labs = self.supervisor.lab_states()
+        now = time.time()
+        rows: list[dict[str, Any]] = []
+        for entry in self.supervisor.sessions():
+            if not entry.get("alive"):
+                continue
+            sid = entry["sessionId"]
+            session = self.supervisor.session(sid)
+            conv = self.chats.for_session(sid)
+            lab = labs.get(sid) or {}
+            pods = lab.get("pods") or []
+            pod = next((p for p in pods if p.get("name") == "orchestrator"), pods[0] if pods else {})
+            pending = len(getattr(session, "pending", None) or {})
+            busy = bool(conv and conv.busy) or pod.get("status") in ("synthesizing", "executing")
+            task = self._tasks.get(sid)
+            detail = pod.get("pending_tool") or (task[0] if task and task[1] == "running" else "")
+            since = (now - float(pod["since"])) if pod.get("since") and busy else ((time.monotonic() - conv.started) if conv and conv.busy else 0)
+            rows.append(
+                {
+                    "project": cards.project_name(entry.get("cwd")),
+                    "state": "waiting" if pending else ("working" if busy else "idle"),
+                    "detail": detail,
+                    "since": since if busy else 0,
+                    "pending": pending,
+                    "kind": "chat" if conv is not None else "watched",
+                    "mission": lab.get("mission") or "",
+                }
+            )
+        return rows
+
+    async def _reply_status(self, channel: Any) -> None:
+        asleep = sum(1 for c in self.chats.all() if not c.daemon_id)
+        note = f"{asleep} earlier chat{'s' if asleep != 1 else ''} asleep — reply in {'their threads' if asleep != 1 else 'its thread'} to wake {'them' if asleep != 1 else 'it'}." if asleep else ""
+        await self._send(channel, embed=self._embed(cards.status_card(self._status_rows(), usage=self.chats.totals, note=note)))

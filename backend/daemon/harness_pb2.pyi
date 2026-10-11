@@ -579,3 +579,141 @@ class PingReply(_message.Message):
     ts_ms: int
     daemon: str
     def __init__(self, version: _Optional[str] = ..., ts_ms: _Optional[int] = ..., daemon: _Optional[str] = ...) -> None: ...
+
+class OsContext(_message.Message):
+    __slots__ = ("app_name", "app_bundle_id", "app_pid", "window_title", "selected_text", "screenshot", "screenshot_mime", "screenshot_width", "screenshot_height", "screenshot_cloud_ok", "client_redactions", "omitted", "captured_ms")
+    APP_NAME_FIELD_NUMBER: _ClassVar[int]
+    APP_BUNDLE_ID_FIELD_NUMBER: _ClassVar[int]
+    APP_PID_FIELD_NUMBER: _ClassVar[int]
+    WINDOW_TITLE_FIELD_NUMBER: _ClassVar[int]
+    SELECTED_TEXT_FIELD_NUMBER: _ClassVar[int]
+    SCREENSHOT_FIELD_NUMBER: _ClassVar[int]
+    SCREENSHOT_MIME_FIELD_NUMBER: _ClassVar[int]
+    SCREENSHOT_WIDTH_FIELD_NUMBER: _ClassVar[int]
+    SCREENSHOT_HEIGHT_FIELD_NUMBER: _ClassVar[int]
+    SCREENSHOT_CLOUD_OK_FIELD_NUMBER: _ClassVar[int]
+    CLIENT_REDACTIONS_FIELD_NUMBER: _ClassVar[int]
+    OMITTED_FIELD_NUMBER: _ClassVar[int]
+    CAPTURED_MS_FIELD_NUMBER: _ClassVar[int]
+    app_name: str
+    app_bundle_id: str
+    app_pid: int
+    window_title: str
+    selected_text: str
+    screenshot: bytes
+    screenshot_mime: str
+    screenshot_width: int
+    screenshot_height: int
+    screenshot_cloud_ok: bool
+    client_redactions: int
+    omitted: _containers.RepeatedScalarFieldContainer[str]
+    captured_ms: int
+    def __init__(self, app_name: _Optional[str] = ..., app_bundle_id: _Optional[str] = ..., app_pid: _Optional[int] = ..., window_title: _Optional[str] = ..., selected_text: _Optional[str] = ..., screenshot: _Optional[bytes] = ..., screenshot_mime: _Optional[str] = ..., screenshot_width: _Optional[int] = ..., screenshot_height: _Optional[int] = ..., screenshot_cloud_ok: _Optional[bool] = ..., client_redactions: _Optional[int] = ..., omitted: _Optional[_Iterable[str]] = ..., captured_ms: _Optional[int] = ...) -> None: ...
+
+class TurnRequest(_message.Message):
+    __slots__ = ("session_id", "text", "context", "client", "conversation", "cwd")
+    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
+    TEXT_FIELD_NUMBER: _ClassVar[int]
+    CONTEXT_FIELD_NUMBER: _ClassVar[int]
+    CLIENT_FIELD_NUMBER: _ClassVar[int]
+    CONVERSATION_FIELD_NUMBER: _ClassVar[int]
+    CWD_FIELD_NUMBER: _ClassVar[int]
+    session_id: str
+    text: str
+    context: OsContext
+    client: str
+    conversation: str
+    cwd: str
+    def __init__(self, session_id: _Optional[str] = ..., text: _Optional[str] = ..., context: _Optional[_Union[OsContext, _Mapping]] = ..., client: _Optional[str] = ..., conversation: _Optional[str] = ..., cwd: _Optional[str] = ...) -> None: ...
+
+class TurnReply(_message.Message):
+    __slots__ = ("ok", "error", "session_id", "turn_id", "notices", "route", "conversation")
+    OK_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
+    TURN_ID_FIELD_NUMBER: _ClassVar[int]
+    NOTICES_FIELD_NUMBER: _ClassVar[int]
+    ROUTE_FIELD_NUMBER: _ClassVar[int]
+    CONVERSATION_FIELD_NUMBER: _ClassVar[int]
+    ok: bool
+    error: str
+    session_id: str
+    turn_id: str
+    notices: _containers.RepeatedScalarFieldContainer[str]
+    route: str
+    conversation: str
+    def __init__(self, ok: _Optional[bool] = ..., error: _Optional[str] = ..., session_id: _Optional[str] = ..., turn_id: _Optional[str] = ..., notices: _Optional[_Iterable[str]] = ..., route: _Optional[str] = ..., conversation: _Optional[str] = ...) -> None: ...
+
+class ConversationsRequest(_message.Message):
+    __slots__ = ("cwd", "limit")
+    CWD_FIELD_NUMBER: _ClassVar[int]
+    LIMIT_FIELD_NUMBER: _ClassVar[int]
+    cwd: str
+    limit: int
+    def __init__(self, cwd: _Optional[str] = ..., limit: _Optional[int] = ...) -> None: ...
+
+class Conversation(_message.Message):
+    __slots__ = ("handle", "title", "cwd", "origin", "last_used", "turns", "live", "busy", "turn_origin")
+    HANDLE_FIELD_NUMBER: _ClassVar[int]
+    TITLE_FIELD_NUMBER: _ClassVar[int]
+    CWD_FIELD_NUMBER: _ClassVar[int]
+    ORIGIN_FIELD_NUMBER: _ClassVar[int]
+    LAST_USED_FIELD_NUMBER: _ClassVar[int]
+    TURNS_FIELD_NUMBER: _ClassVar[int]
+    LIVE_FIELD_NUMBER: _ClassVar[int]
+    BUSY_FIELD_NUMBER: _ClassVar[int]
+    TURN_ORIGIN_FIELD_NUMBER: _ClassVar[int]
+    handle: str
+    title: str
+    cwd: str
+    origin: str
+    last_used: float
+    turns: int
+    live: bool
+    busy: bool
+    turn_origin: str
+    def __init__(self, handle: _Optional[str] = ..., title: _Optional[str] = ..., cwd: _Optional[str] = ..., origin: _Optional[str] = ..., last_used: _Optional[float] = ..., turns: _Optional[int] = ..., live: _Optional[bool] = ..., busy: _Optional[bool] = ..., turn_origin: _Optional[str] = ...) -> None: ...
+
+class ConversationList(_message.Message):
+    __slots__ = ("conversations",)
+    CONVERSATIONS_FIELD_NUMBER: _ClassVar[int]
+    conversations: _containers.RepeatedCompositeFieldContainer[Conversation]
+    def __init__(self, conversations: _Optional[_Iterable[_Union[Conversation, _Mapping]]] = ...) -> None: ...
+
+class ConversationRef(_message.Message):
+    __slots__ = ("handle",)
+    HANDLE_FIELD_NUMBER: _ClassVar[int]
+    handle: str
+    def __init__(self, handle: _Optional[str] = ...) -> None: ...
+
+class ConversationOpen(_message.Message):
+    __slots__ = ("conversation", "cwd", "title", "origin")
+    CONVERSATION_FIELD_NUMBER: _ClassVar[int]
+    CWD_FIELD_NUMBER: _ClassVar[int]
+    TITLE_FIELD_NUMBER: _ClassVar[int]
+    ORIGIN_FIELD_NUMBER: _ClassVar[int]
+    conversation: str
+    cwd: str
+    title: str
+    origin: str
+    def __init__(self, conversation: _Optional[str] = ..., cwd: _Optional[str] = ..., title: _Optional[str] = ..., origin: _Optional[str] = ...) -> None: ...
+
+class ConversationEvent(_message.Message):
+    __slots__ = ("handle", "kind", "origin", "text", "delta", "label", "stop", "ts_ms")
+    HANDLE_FIELD_NUMBER: _ClassVar[int]
+    KIND_FIELD_NUMBER: _ClassVar[int]
+    ORIGIN_FIELD_NUMBER: _ClassVar[int]
+    TEXT_FIELD_NUMBER: _ClassVar[int]
+    DELTA_FIELD_NUMBER: _ClassVar[int]
+    LABEL_FIELD_NUMBER: _ClassVar[int]
+    STOP_FIELD_NUMBER: _ClassVar[int]
+    TS_MS_FIELD_NUMBER: _ClassVar[int]
+    handle: str
+    kind: str
+    origin: str
+    text: str
+    delta: str
+    label: str
+    stop: str
+    ts_ms: int
+    def __init__(self, handle: _Optional[str] = ..., kind: _Optional[str] = ..., origin: _Optional[str] = ..., text: _Optional[str] = ..., delta: _Optional[str] = ..., label: _Optional[str] = ..., stop: _Optional[str] = ..., ts_ms: _Optional[int] = ...) -> None: ...

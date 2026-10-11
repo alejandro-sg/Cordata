@@ -74,6 +74,26 @@ class HarnessStub:
                 request_serializer=harness__pb2.DiffRequest.SerializeToString,
                 response_deserializer=harness__pb2.DiffArtifact.FromString,
                 _registered_method=True)
+        self.SubmitTurn = channel.unary_unary(
+                '/sierralab.harness.v1.Harness/SubmitTurn',
+                request_serializer=harness__pb2.TurnRequest.SerializeToString,
+                response_deserializer=harness__pb2.TurnReply.FromString,
+                _registered_method=True)
+        self.ListConversations = channel.unary_unary(
+                '/sierralab.harness.v1.Harness/ListConversations',
+                request_serializer=harness__pb2.ConversationsRequest.SerializeToString,
+                response_deserializer=harness__pb2.ConversationList.FromString,
+                _registered_method=True)
+        self.OpenConversation = channel.unary_unary(
+                '/sierralab.harness.v1.Harness/OpenConversation',
+                request_serializer=harness__pb2.ConversationOpen.SerializeToString,
+                response_deserializer=harness__pb2.Conversation.FromString,
+                _registered_method=True)
+        self.WatchConversation = channel.unary_stream(
+                '/sierralab.harness.v1.Harness/WatchConversation',
+                request_serializer=harness__pb2.ConversationRef.SerializeToString,
+                response_deserializer=harness__pb2.ConversationEvent.FromString,
+                _registered_method=True)
         self.Ping = channel.unary_unary(
                 '/sierralab.harness.v1.Harness/Ping',
                 request_serializer=harness__pb2.PingRequest.SerializeToString,
@@ -132,6 +152,30 @@ class HarnessServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def SubmitTurn(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListConversations(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def OpenConversation(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def WatchConversation(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def Ping(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
@@ -180,6 +224,26 @@ def add_HarnessServicer_to_server(servicer, server):
                     servicer.GetDiff,
                     request_deserializer=harness__pb2.DiffRequest.FromString,
                     response_serializer=harness__pb2.DiffArtifact.SerializeToString,
+            ),
+            'SubmitTurn': grpc.unary_unary_rpc_method_handler(
+                    servicer.SubmitTurn,
+                    request_deserializer=harness__pb2.TurnRequest.FromString,
+                    response_serializer=harness__pb2.TurnReply.SerializeToString,
+            ),
+            'ListConversations': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListConversations,
+                    request_deserializer=harness__pb2.ConversationsRequest.FromString,
+                    response_serializer=harness__pb2.ConversationList.SerializeToString,
+            ),
+            'OpenConversation': grpc.unary_unary_rpc_method_handler(
+                    servicer.OpenConversation,
+                    request_deserializer=harness__pb2.ConversationOpen.FromString,
+                    response_serializer=harness__pb2.Conversation.SerializeToString,
+            ),
+            'WatchConversation': grpc.unary_stream_rpc_method_handler(
+                    servicer.WatchConversation,
+                    request_deserializer=harness__pb2.ConversationRef.FromString,
+                    response_serializer=harness__pb2.ConversationEvent.SerializeToString,
             ),
             'Ping': grpc.unary_unary_rpc_method_handler(
                     servicer.Ping,
@@ -403,6 +467,114 @@ class Harness:
             '/sierralab.harness.v1.Harness/GetDiff',
             harness__pb2.DiffRequest.SerializeToString,
             harness__pb2.DiffArtifact.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SubmitTurn(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/sierralab.harness.v1.Harness/SubmitTurn',
+            harness__pb2.TurnRequest.SerializeToString,
+            harness__pb2.TurnReply.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListConversations(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/sierralab.harness.v1.Harness/ListConversations',
+            harness__pb2.ConversationsRequest.SerializeToString,
+            harness__pb2.ConversationList.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def OpenConversation(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/sierralab.harness.v1.Harness/OpenConversation',
+            harness__pb2.ConversationOpen.SerializeToString,
+            harness__pb2.Conversation.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def WatchConversation(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/sierralab.harness.v1.Harness/WatchConversation',
+            harness__pb2.ConversationRef.SerializeToString,
+            harness__pb2.ConversationEvent.FromString,
             options,
             channel_credentials,
             insecure,

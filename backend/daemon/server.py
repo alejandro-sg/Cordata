@@ -125,7 +125,13 @@ class State:
         # The Discord front door (discord_bot.py). Constructed here so `/health` can
         # report it, started by daemon/main.py once there is a loop to run it on —
         # and inert unless the environment names a token, an operator and a channel.
-        self.remote = DiscordRemote(self.supervisor)
+        # The conversation hub (chat.py): every front door's conversations, owned by the daemon so a
+        # terminal, Discord, the menu bar and the web app can all continue the same one. Started by
+        # daemon/main.py with the loop; Discord is one of its users, not its owner.
+        from .chat import Chats, chat_store  # noqa: PLC0415
+
+        self.chats = Chats(self.supervisor, store=chat_store())
+        self.remote = DiscordRemote(self.supervisor, chats=self.chats)
 
     def busy(self) -> bool:
         return bool(self._subscribers)
@@ -158,6 +164,69 @@ async def _session_for_cwd(supervisor: Supervisor, cwd: str) -> str | None:
         return (await supervisor.spawn(cwd)).session_id
     except ValueError:
         return None
+
+
+async def _conversation_for(state: "State", ref: str, cwd: str | None, origin: str, title: str):
+    """The hub conversation `ref` names — a handle, `latest` (the newest in `cwd`, else a new one) or
+    `new` — with its agent running and its session open. Raises `ChatError` with a sentence to show."""
+    from .chat import ChatError, resolve_dir  # noqa: PLC0415
+
+    chats = state.chats
+    conv = None
+    if ref not in ("latest", "new"):
+        conv = chats.resolve(ref)
+        if conv is None:
+            raise ChatError(f"no conversation named {ref!r}")
+    else:
+        if not cwd:
+            raise ChatError("a new conversation needs a folder (cwd)")
+        folder = resolve_dir(cwd)
+        if ref == "latest":
+            conv = chats.latest(folder)
+        if conv is None:
+            conv = chats.create(cwd=folder, title=title, origin=origin)
+    return await chats.ensure(conv.key)
+
+
+def _admit_terminal_turn(state: "State", conv: Any, line: str) -> str | None:
+    """A frame a terminal attached to a conversation is sending. A `session/prompt` while another
+    door's turn runs is refused with a JSON-RPC error the terminal shows as a failed turn; one that is
+    admitted is recorded as the terminal's turn, so the other doors queue behind it. Anything else
+    passes. Returns the refusal frame, or None to forward."""
+    if '"session/prompt"' not in line:
+        return None
+    try:
+        message = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(message, dict) or message.get("method") != "session/prompt" or "id" not in message:
+        return None
+    if conv.busy:
+        from .chat import door_name  # noqa: PLC0415
+
+        who = door_name(conv.turn_origin)
+        return json.dumps({
+            "jsonrpc": "2.0",
+            "id": message["id"],
+            "error": {"code": -32000, "message": f"a turn from {who} is already running in this conversation — it will answer here; send yours when it finishes"},
+        })
+    blocks = ((message.get("params") or {}).get("prompt") or [])
+    text = " ".join(str(b.get("text") or "") for b in blocks if isinstance(b, dict) and b.get("type") == "text")
+    state.chats.begin_external(conv, str(message["id"]), text, origin="terminal")
+    return None
+
+
+def _maybe_end_terminal_turn(state: "State", conv: Any, line: str) -> None:
+    """The child's response to the terminal's `session/prompt` is passing back: that turn is over."""
+    if '"id"' not in line or '"method"' in line[:200]:
+        return  # a notification or a request: only a response can end the turn
+    try:
+        message = json.loads(line)
+    except ValueError:
+        return
+    if isinstance(message, dict) and "method" not in message and str(message.get("id")) == conv.external_turn:
+        stop = str(((message.get("result") or {}).get("stopReason")) or ("error" if "error" in message else "end_turn"))
+        state.chats.end_external(conv, stop)
 
 
 def create_app(port: int = DEFAULT_PORT) -> FastAPI:
@@ -295,6 +364,32 @@ def create_app(port: int = DEFAULT_PORT) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(error)) from error
         return session.to_json()
 
+    # ------------------------------------------------------------- conversations (the hub)
+
+    @app.get("/conversations")
+    async def list_conversations(cwd: str | None = None, x_daemon_token: str | None = Header(default=None)) -> dict[str, Any]:
+        """Every door's conversations, newest first — what a terminal's `/conversations`, the menu
+        bar's picker and the web app list. `cwd` narrows it to one project."""
+        authorised(x_daemon_token)
+        return {"conversations": state.chats.rows(cwd)}
+
+    @app.post("/conversations")
+    async def open_conversation(payload: dict, x_daemon_token: str | None = Header(default=None)) -> dict[str, Any]:
+        """Resolve or open a conversation and make sure its agent is up: `{"conversation": "<handle>"}`,
+        `{"conversation": "latest", "cwd": …}` (that project's newest, or a new one), or
+        `{"conversation": "new", "cwd": …}`. Answers with its row — including the ACP session id a
+        terminal `session/load`s to attach."""
+        authorised(x_daemon_token)
+        from .chat import ChatError  # noqa: PLC0415
+
+        ref = str(payload.get("conversation") or "latest")
+        origin = str(payload.get("origin") or "terminal")[:20]
+        try:
+            conv = await _conversation_for(state, ref, payload.get("cwd"), origin, str(payload.get("title") or ""))
+        except ChatError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return conv.row()
+
     @app.delete("/sessions/{session_id}")
     async def close_session(session_id: str, x_daemon_token: str | None = Header(default=None)) -> dict[str, Any]:
         """Stop a session and its process group.
@@ -315,6 +410,7 @@ def create_app(port: int = DEFAULT_PORT) -> FastAPI:
         websocket: WebSocket,
         session: str | None = None,
         cwd: str | None = None,
+        conversation: str | None = None,
     ) -> None:
         # The token arrives as a query parameter because a browser WebSocket
         # constructor cannot set headers — and rejecting browsers (below) is
@@ -331,8 +427,22 @@ def create_app(port: int = DEFAULT_PORT) -> FastAPI:
             await websocket.close(code=4401, reason="bad or missing daemon token")
             return
         supervisor = state.supervisor
+        #: The hub conversation this socket attached to, when it named one (`conversation=`).
+        conv = None
 
-        if session is None and cwd:
+        if conversation:
+            # Attach to a conversation the daemon holds — the way one conversation is shared by every
+            # door. The terminal then `session/load`s its ACP session id (from `POST /conversations`)
+            # and sees the history; turns from any door appear in it as they run.
+            from .chat import ChatError  # noqa: PLC0415
+
+            try:
+                conv = await _conversation_for(state, conversation, cwd, "terminal", "")
+            except ChatError as error:
+                await websocket.close(code=4404, reason=str(error)[:120])
+                return
+            session = conv.daemon_id
+        elif session is None and cwd:
             # Attach-or-create by directory. The client's first message is
             # `session/new` either way, so it does not need the daemon's id to
             # begin — and a client reconnecting after a dropped terminal does
@@ -349,16 +459,17 @@ def create_app(port: int = DEFAULT_PORT) -> FastAPI:
         if session in state._subscribers:
             # Two clients on one stdin would interleave answers to prompts that
             # only one of them can see.
-            await websocket.close(code=4409, reason="session already attached")
+            reason = "this conversation is open in another terminal" if conv is not None else "session already attached"
+            await websocket.close(code=4409, reason=reason)
             return
         rows = {row["sessionId"]: row for row in supervisor.sessions()}
         if session not in rows:
             await websocket.close(code=4404, reason="no such session")
             return
-        if rows[session].get("owner"):
-            # A conversation another front door is typing into (Discord). Attaching a terminal
-            # would be a second writer on its stdin; the directory lookup already skips these.
-            await websocket.close(code=4409, reason=f"session is driven by {rows[session]['owner']}")
+        if rows[session].get("owner") and conv is None:
+            # A hub conversation, reached by its session id rather than its handle. The handle is the
+            # way in (`conversation=`): that path is the one that keeps turns from two doors apart.
+            await websocket.close(code=4409, reason="that session belongs to a conversation — attach with conversation=<handle>")
             return
 
         # Claimed before `accept`, which awaits: two clients arriving together
@@ -398,14 +509,25 @@ def create_app(port: int = DEFAULT_PORT) -> FastAPI:
                     task.cancel()
                 for task in done:
                     if task is reader:
-                        if not await supervisor.write(session, task.result()):
+                        line = task.result()
+                        if conv is not None:
+                            refusal = _admit_terminal_turn(state, conv, line)
+                            if refusal is not None:
+                                # Another door's turn is running: answered here, never forwarded —
+                                # one turn at a time, whoever asked.
+                                await websocket.send_text(refusal)
+                                continue
+                        if not await supervisor.write(session, line):
                             # The child is gone. Dropping the frame silently
                             # leaves a client typing into a session that will
                             # never answer; closing tells it to start over.
                             await websocket.close(code=4410, reason="session has exited")
                             return
                     else:
-                        await websocket.send_text(task.result())
+                        line = task.result()
+                        if conv is not None and conv.external_turn:
+                            _maybe_end_terminal_turn(state, conv, line)
+                        await websocket.send_text(line)
         except (WebSocketDisconnect, RuntimeError):
             pass
         except Exception:

@@ -13,7 +13,17 @@
 //   ControlPod          unary              stop (E-Stop), release or steer one agent
 //   UnloadMemory        unary              the emergency [Unload Memory] — oMLX/Ollama weights out
 //   GetDiff             unary              the body of a diff a frame only referenced
+//   SubmitTurn          unary              start a turn, carrying OS context the person captured
+//   ListConversations   unary              the conversation hub: every door's conversations, newest first
+//   OpenConversation    unary              resolve or open one (a handle, "latest", "new") without a turn
+//   WatchConversation   server streaming   one conversation's turns as they happen, whichever door asks
 //   Ping                unary              liveness + version, what the client's reconnect loop probes
+//
+// `SubmitTurn` is the one RPC that is *not* a pure relay: everything else reports daemon state or
+// forwards a human's answer about a decision the harness already made, while this one asks the
+// harness to do something new. It is deliberately narrow — it carries a prompt and the context the
+// person chose to attach, and it still decides nothing (routing, gating and memory stay in the
+// daemon). See `THREAT_MODEL.md`, "The gRPC telemetry bridge".
 //
 // Every RPC carries the daemon token as call metadata `x-daemon-token` (the same 0600 secret in
 // ~/.sierralab/daemon.json that guards the HTTP/WebSocket surface); a missing or wrong token is
@@ -36,6 +46,10 @@ service Harness {
   rpc ControlPod(PodControlRequest) returns (PodControlReply);
   rpc UnloadMemory(UnloadRequest) returns (UnloadReply);
   rpc GetDiff(DiffRequest) returns (DiffArtifact);
+  rpc SubmitTurn(TurnRequest) returns (TurnReply);
+  rpc ListConversations(ConversationsRequest) returns (ConversationList);
+  rpc OpenConversation(ConversationOpen) returns (Conversation);
+  rpc WatchConversation(ConversationRef) returns (stream ConversationEvent);
   rpc Ping(PingRequest) returns (PingReply);
 }
 
@@ -204,7 +218,7 @@ message DiffRef {
 }
 
 message MemoryEvent {
-  string event = 1;     // load | unload | unload_all | lease_load | lease_unload | lease_failed | heavy_task | stop | headroom
+  string event = 1;     // load | unload | unload_all | lease_load | lease_unload | lease_unload_failed | lease_unreclaimed | lease_failed | heavy_task | stop | headroom
   string runtime = 2;   // omlx | ollama | claude_code
   string model = 3;
   string detail = 4;
@@ -418,4 +432,119 @@ message PingReply {
   string version = 1;   // schema major, "1"
   int64 ts_ms = 2;
   string daemon = 3;
+}
+
+// -------------------------------------------------------------------- turns
+
+// The OS context a person chose to attach to one turn, captured on their machine and on their
+// instruction — never sampled in the background. Every field is optional: a capture that could not
+// read something says so in `omitted` rather than failing whole, so the person sees which parts of
+// their screen the agent actually got.
+//
+// `window_title` and `selected_text` are *text a third party wrote* (a web page, a document), so the
+// daemon treats them as untrusted content and wraps them before any model reads them. Both have
+// already been masked in the client by the same secret patterns the rest of the harness uses, and the
+// daemon masks them again; `client_redactions` is what the client removed, kept so the record shows
+// the masking happened rather than that there was nothing to mask.
+//
+// A screenshot can contain a secret in an app that is otherwise fine to read, so pixels cannot be
+// redacted the way text can. `screenshot` is therefore empty unless the person explicitly attached
+// one, it is never routed to a cloud model unless `screenshot_cloud_ok` says so for that capture, and
+// the daemon audits its size and never its contents.
+message OsContext {
+  string app_name = 1;           // the frontmost application's localized name
+  string app_bundle_id = 2;      // what the capture policy allows or refuses, when the OS gives one
+  int32 app_pid = 3;
+  string window_title = 4;       // masked in the client; AX, so it needs Accessibility
+  string selected_text = 5;      // masked in the client; AX, empty when nothing is selected
+  bytes screenshot = 6;          // JPEG; empty when none was taken or none is sent
+  string screenshot_mime = 7;    // "image/jpeg"
+  uint32 screenshot_width = 8;
+  uint32 screenshot_height = 9;
+  bool screenshot_cloud_ok = 10; // per-capture opt-in; false means local models only
+  uint32 client_redactions = 11; // spans the client masked before sending
+  repeated string omitted = 12;  // what could not be captured, and why — shown, never silently blank
+  int64 captured_ms = 13;
+}
+
+// One turn the person asked for from a front end that is not the session's own ACP client (the
+// menu-bar deck). `session_id` empty means the daemon's default live session.
+message TurnRequest {
+  string session_id = 1;
+  string text = 2;
+  OsContext context = 3;
+  string client = 4;   // free text, for the daemon's log
+  // A hub conversation: its handle, "latest" (the newest in `cwd`, else a new one) or "new". Set, it
+  // wins over `session_id`: the turn runs in that conversation, the one every door shares.
+  string conversation = 5;
+  string cwd = 6;      // where a "latest" / "new" conversation lives; empty = the daemon's default
+}
+
+// `SubmitTurn` *accepts* the turn and returns; it does not hold it. A turn can run for hours, so the
+// answer says only that it started, and progress arrives the way it always does — pod status and
+// `stream_tail` on `StreamTelemetry`. `turn_id` is the handle for correlating the two.
+message TurnReply {
+  bool ok = 1;
+  string error = 2;        // the refusal reason, when ok is false
+  string session_id = 3;   // the session it went to
+  string turn_id = 4;      // opaque; not an id the client may construct
+  repeated string notices = 5;  // e.g. "queued as guidance: this session is driven by another client"
+  string route = 6;        // which agent or model accepted it, when the daemon knows yet
+  string conversation = 7; // the hub conversation's handle, when the turn went to one
+}
+
+// ------------------------------------------------------------------ the conversation hub
+//
+// One conversation is shared by every front door — a terminal, Discord, the menu bar, the web app —
+// and the daemon holds it (backend/daemon/chat.py). Any door may start a turn in it; turns run one at
+// a time; every door watching it sees each turn: who asked, the reply as it streams, the end.
+
+message ConversationsRequest {
+  string cwd = 1;     // empty = every folder
+  uint32 limit = 2;   // 0 = the daemon's default
+}
+
+message Conversation {
+  string handle = 1;       // what people type: "c3f9a1e"
+  string title = 2;        // the opening of its first message, masked
+  string cwd = 3;
+  string origin = 4;       // the door that opened it: terminal | discord | menubar | web
+  double last_used = 5;    // unix seconds
+  uint32 turns = 6;
+  bool live = 7;           // its agent is running (an idle one is restarted on the next turn)
+  bool busy = 8;           // a turn is running
+  string turn_origin = 9;  // whose turn, when busy
+}
+
+message ConversationList {
+  repeated Conversation conversations = 1;
+}
+
+message ConversationRef {
+  string handle = 1;
+}
+
+// `conversation` is a handle, "latest" (the newest in `cwd`, else a new one) or "new". Opening starts
+// no turn: a door opens first, starts watching, then submits — so it sees its turn from the start.
+message ConversationOpen {
+  string conversation = 1;
+  string cwd = 2;
+  string title = 3;
+  string origin = 4;   // terminal | discord | menubar | web
+}
+
+// `kind` is "turn" (someone asked: `origin`, `text`), "text" (a piece of the reply: `delta`),
+// "activity" (`label`, empty when a tool finished) or "done" (`stop`). A stream opens with the
+// conversation's last few turns as "history" events (`origin`, `text` = what was asked, `delta` = the
+// reply, `stop`), oldest first, then "watching" — so a client knows the stream is live, and a person
+// switching doors sees where the conversation is before anything new happens.
+message ConversationEvent {
+  string handle = 1;
+  string kind = 2;
+  string origin = 3;
+  string text = 4;
+  string delta = 5;
+  string label = 6;
+  string stop = 7;
+  int64 ts_ms = 8;
 }

@@ -177,6 +177,10 @@ def main(argv: list[str] | None = None) -> int:
             # Started here, not in `create_app`: the observer needs a running
             # event loop, and it is a no-op task when `observer.enabled` is off.
             observer = app.state.daemon.observer.start()
+            # The conversation hub listens to the supervisor and reaps idle agents whether or not any
+            # particular front door (Discord) is configured.
+            app.state.daemon.chats.start()
+            app.state.daemon.chats.start_reaper()
             # The Discord front door (discord_bot.py), if the environment configures one. Started
             # here for the same reason the observer is: it needs a running loop. `start()` returns
             # None and logs why when there is no token, so an unconfigured daemon is unchanged.
@@ -201,6 +205,7 @@ def main(argv: list[str] | None = None) -> int:
             # answer an approval on a session this daemon is about to kill; `stop()` unsubscribes
             # from the supervisor first, so nothing new is posted while it is closing.
             await app.state.daemon.remote.stop()
+            await app.state.daemon.chats.stop()
             await app.state.daemon.supervisor.stop_all()
             pidfile.unlink(missing_ok=True)
 

@@ -100,8 +100,8 @@ class Session:
     answered: "OrderedDict[str, str]" = field(default_factory=OrderedDict)
     #: Requests the daemon itself sent the child (knobs, isolate), awaiting their response.
     calls: dict[str, "asyncio.Future[dict[str, Any]]"] = field(default_factory=dict)
-    #: Who drives this child, when it is not a client on the WebSocket: `"discord"` for a conversation
-    #: the Discord front door opened. An owned session has no subscriber by design, so nothing is
+    #: Who drives this child, when it is not a plain client on the WebSocket: `"hub"` for a conversation
+    #: the daemon holds (`chat.Chats`) — opened from Discord, the menu bar, the web app or a terminal. An owned session has no subscriber by design, so nothing is
     #: backlogged for one (nobody will ever drain it), a directory lookup never hands it to a terminal
     #: (`find_by_cwd`), and the socket refuses to attach to it — two writers to one stdin.
     owner: str | None = None
@@ -417,7 +417,7 @@ class Supervisor:
         # prompt Discord had settled was forwarded to a child that had already moved on.)
         return session.answered.get(key) in (None, "tui")
 
-    async def answer_permission(self, session_id: str, key: str, approve: bool, *, decided_by: str = "gui", always: bool = False) -> PendingPermission:
+    async def answer_permission(self, session_id: str, key: str, approve: bool, *, decided_by: str = "gui", always: bool = False, note: str = "") -> PendingPermission:
         """Relay a human's choice into the paused ACP request, as the child's own client would.
 
         Raises ``LookupError`` when there is nothing pending under that id (already answered by
@@ -432,7 +432,11 @@ class Supervisor:
         ``decided_by`` names the front door that answered. More than one can be attached now
         (the GUI's containment modal, a TUI, the Discord bot), so which one a person used is
         recorded rather than assumed — a decision attributed to the wrong door is a decision
-        nobody can account for afterwards."""
+        nobody can account for afterwards.
+
+        ``note`` is what the person said about the decision (the GUI's reject field), relayed in the
+        same slot so a rejection's reason reaches the child's rejection memory. Capped; it is the
+        person's text, never an option or a rule."""
         session = self._sessions.get(session_id)
         if session is None or key not in session.pending:
             raise LookupError(f"no pending permission {key!r} in session {session_id!r}")
@@ -450,7 +454,7 @@ class Supervisor:
                 # same JSON-RPC response — so the door is named here, in ACP's `_meta` slot, and
                 # the child puts it on the intervention ledger. Without this a decision made on a
                 # phone reads as a person at the GUI, which is an audit trail nobody can trust.
-                "_meta": {"sierralab": {"decidedBy": decided_by}},
+                "_meta": {"sierralab": {"decidedBy": decided_by, **({"note": note.strip()[:500]} if note and note.strip() else {})}},
             },
         }
         if not await self.write_raw(session_id, json.dumps(response)):
@@ -637,6 +641,19 @@ class Supervisor:
                 queue.put_nowait(line)
             except (asyncio.QueueEmpty, asyncio.QueueFull):
                 logger.warning("daemon: %s subscriber queue overflowed", session_id)
+
+    def push_to_subscriber(self, session_id: str, line: str) -> bool:
+        """Hand a frame the *daemon* wrote to the client attached to this session, as if the child had
+        sent it — the conversation hub telling a terminal what another door asked. Never tapped (it is
+        not the child's), never backlogged (nobody is attached to miss it). False when no one is."""
+        queue = self._subscribers.get(session_id)
+        if queue is None:
+            return False
+        try:
+            queue.put_nowait(line)
+        except asyncio.QueueFull:
+            return False
+        return True
 
     async def write(self, session_id: str, line: str) -> bool:
         """A line from the *driving client*, to the child's stdin. False if there is no child.

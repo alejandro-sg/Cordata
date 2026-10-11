@@ -32,6 +32,20 @@ launchd_path() {
   printf '%s' "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 }
 
+# The Discord remote reads its two ids from the environment only, and launchd
+# starts with an empty one. Carry them into the plist from the installing
+# shell, else from backend/.env. The bot token stays in the Keychain.
+discord_env_entries() {
+  local name value
+  for name in ALLOWED_USER_ID TELEMETRY_CHANNEL_ID; do
+    value="${!name:-}"
+    if [[ -z "$value" && -f "$ROOT/backend/.env" ]]; then
+      value="$(grep -E "^$name=" "$ROOT/backend/.env" | tail -1 | cut -d= -f2- | tr -d '"'"'"' ')" || true
+    fi
+    [[ "$value" =~ ^[0-9]+$ ]] && printf '    <key>%s</key><string>%s</string>\n' "$name" "$value"
+  done
+}
+
 case "${1:-status}" in
 run)
   require_venv
@@ -119,6 +133,7 @@ install)
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key><string>$(launchd_path)</string>
+$(discord_env_entries)
   </dict>
   <!-- Restart on exit (including a crash) and at login. A restart that raced
        a previous process still holding the port is what the daemon's pidfile
@@ -135,6 +150,11 @@ PLIST_EOF
   # Unload first: `bootstrap` on an already-loaded label fails, and the usual
   # reason to re-run install is that something changed.
   launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true
+  # bootout returns before the old process is gone; bootstrapping meanwhile fails.
+  for _ in $(seq 1 30); do
+    launchctl print "gui/$UID/$LABEL" >/dev/null 2>&1 || break
+    sleep 0.5
+  done
   if launchctl bootstrap "gui/$UID" "$PLIST" 2>/dev/null; then
     ok "daemon installed and started ($LABEL)"
   else

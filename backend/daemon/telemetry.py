@@ -214,7 +214,7 @@ def diff_ref(entry: dict[str, Any]) -> pb.DiffRef:
 
 
 def memory_event_proto(payload: dict[str, Any]) -> pb.MemoryEvent:
-    detail_keys = ("size_gb", "memory_gb", "free_after_gb", "freed", "reason")
+    detail_keys = ("size_gb", "memory_gb", "held_gb", "free_after_gb", "freed", "reason")
     detail = ", ".join(f"{k}={payload[k]}" for k in detail_keys if payload.get(k) not in (None, [], ""))
     return pb.MemoryEvent(event=str(payload.get("event") or ""), runtime=str(payload.get("runtime") or ""), model=str(payload.get("model") or ""), detail=detail[:300])
 

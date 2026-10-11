@@ -6,8 +6,8 @@ Off by default (`observer.enabled`). When on, the daemon wakes every
 observer agent (a child process — `observer_runner.py`) what it makes of it, and
 write `nightly_briefing.md`.
 
-**Zero-write is structural.** The agent this drives holds `file_read` and
-`think` and nothing else (`OBSERVER_TOOLS`); it cannot run a command, fetch
+**Zero-write is structural.** The agent this drives holds `file_read`
+and nothing else (`OBSERVER_TOOLS`); it cannot run a command, fetch
 anything, or write a file, and the allowlist is asserted disjoint from
 `sub_agent_common`'s denylists at import. The briefing is written *here*, by
 daemon code, from text the child prints — a model cannot reach that file except
@@ -38,6 +38,7 @@ are.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -106,6 +107,13 @@ GIT_ENV = {
 }
 
 _NUDGE_SECONDS = 30.0
+
+
+def evidence_fingerprint(evidence: dict[str, Any]) -> str:
+    """A stable hash of what the observer would be shown, ignoring *when* it was collected — the one field
+    that differs between two looks at an unchanged tree."""
+    stable = {key: value for key, value in evidence.items() if key != "collectedAt"}
+    return hashlib.sha256(json.dumps(stable, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
 
 def _truncate(text: str, limit: int = MAX_EVIDENCE_CHARS) -> str:
@@ -296,6 +304,10 @@ class Observer:
         self._cycles = 0
         self._last: dict[str, Any] = {}
         self._cycling = False  # a pass is in flight — the Lab's observer pod reads this
+        #: project -> (fingerprint of the evidence, the observation it produced). A cycle over a project whose
+        #: evidence has not changed reuses the observation instead of paying for the same model call again:
+        #: left on overnight, the loop would otherwise read an identical tree 48 times.
+        self._memo: dict[str, tuple[str, dict[str, Any]]] = {}
 
     # ------------------------------------------------------------- wiring
 
@@ -458,6 +470,8 @@ class Observer:
             return None
 
         observations: list[dict[str, Any]] = []
+        fresh: list[dict[str, Any]] = []  # asked of the model this cycle (and so staged); the rest are reused
+        memo_updates: dict[str, tuple[str, dict[str, Any]]] = {}
         # Read the logs once per cycle, not once per project: they are the
         # configured files, not anything project-specific.
         logs = await asyncio.to_thread(log_evidence, self._logs()) if self._logs() else {}
@@ -475,14 +489,28 @@ class Observer:
                     evidence.setdefault("noted", []).append({"source": item["source"], "text": item["text"]})
             if self._preempt.is_set():
                 return self._abandon("preempted before the observer agent ran", inbox)
+            fingerprint = evidence_fingerprint(evidence)
+            remembered = self._memo.get(project)
+            if remembered is not None and remembered[0] == fingerprint and not evidence.get("noted"):
+                # Same tree, same logs, nothing queued about it: the model would read what it read last
+                # time. Reuse that reading — no call, no tokens, and no second copy of its proposals.
+                observations.append({**remembered[1], "unchanged": True})
+                continue
             answer = await self._run_child(project, evidence)
             if answer is None:
                 return self._abandon("preempted while the observer agent was running", inbox)
             answer["evidence"] = evidence
             observations.append(answer)
+            fresh.append(answer)
+            memo_updates[project] = (fingerprint, answer)
 
         # A webhook naming a project nobody has a session for still gets read.
         orphan = [item for item in inbox if item.get("project") and item["project"] not in projects]
+        if not fresh and not orphan:
+            # Nothing changed anywhere: the briefing on disk is still true. Leave it (and its timestamp) be.
+            self._last = {"lastCycle": time.time(), "observed": 0, "note": "nothing changed since the last cycle — no model call"}
+            logger.info("observer: nothing changed in %s project(s); no model call", len(projects))
+            return self._last
         if orphan:
             observations.append(
                 {
@@ -501,7 +529,12 @@ class Observer:
 
         text = render_briefing(observations, generated_at=time.time())
         await asyncio.to_thread(self._write_briefing, text)
-        staged = await asyncio.to_thread(self._stage, observations)
+        # Only what the model was asked this cycle is staged: a reused reading's proposals are already in the ledger.
+        staged = await asyncio.to_thread(self._stage, [o for o in observations if not o.get("unchanged")])
+        # Remembered only now, once the briefing is written: a cycle that was abandoned has not read anything.
+        self._memo.update(memo_updates)
+        for gone in [name for name in self._memo if name not in projects]:
+            self._memo.pop(gone, None)
         self._cycles += 1
         self._last = {
             "lastCycle": time.time(),
@@ -658,7 +691,7 @@ def render_briefing(observations: list[dict[str, Any]], *, generated_at: float) 
         "# Nightly briefing",
         "",
         f"_{when} — written by the observer daemon while nothing was attached. "
-        "The observer holds read-only tools (`file_read`, `think`): it ran no commands, "
+        "The observer holds read-only tools (just `file_read`): it ran no commands, "
         "fetched nothing, and changed nothing. The evidence below is what this daemon "
         "collected with a fixed `git` command list; anything else is the model's reading of it._",
         "",
