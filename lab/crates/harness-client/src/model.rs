@@ -16,8 +16,8 @@ use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use harness_proto::v1::{
-    DaemonState, DiffArtifact, DiffRef, IngestSummary, InterventionEvent, InterventionRequest, KnobReply, LabState, MemoryEvent, MemoryHit, ModeReply, OmlxState, Outcome, PodControlReply,
-    TelemetryFrame, UnloadReply, intervention_event,
+    Conversation, ConversationEvent, ConversationList, DaemonState, DiffArtifact, DiffRef, IngestSummary, InterventionEvent, InterventionRequest, KnobReply, LabState, MemoryEvent, MemoryHit, ModeReply, OmlxState, Outcome, PodControlReply,
+    TelemetryFrame, TurnReply, UnloadReply, intervention_event,
 };
 
 use crate::redact;
@@ -56,6 +56,12 @@ pub enum Reply {
     Mode { mode: String, reply: ModeReply },
     /// An agent was stopped, released or steered (or the daemon refused).
     Pod { pod: String, what: &'static str, reply: PodControlReply },
+    /// A turn the menu bar asked for: accepted (and running in the background), queued as guidance, or
+    /// refused. What the person is told is the route and the notices — the reply never carries the
+    /// agent's words, which arrive on the telemetry stream like any other turn's.
+    Turn { reply: TurnReply },
+    /// The hub's conversations, newest first.
+    Conversations(ConversationList),
     Failed { what: String, error: String },
 }
 
@@ -65,12 +71,45 @@ pub enum ClientEvent {
     Telemetry(Box<TelemetryFrame>),
     Intervention(InterventionEvent),
     Reply(Reply),
+    /// A turn in the followed hub conversation: someone asked, a piece of the reply, the end.
+    Conversation(ConversationEvent),
 }
 
 impl ClientEvent {
-    /// Events the UI must never miss: connection changes and anything about an approval.
+    /// Events the UI must never miss: connection changes, anything about an approval, and the start
+    /// and end of a conversation's turn (the pieces of a reply in between may be dropped under load).
     pub fn is_critical(&self) -> bool {
         matches!(self, Self::Connection(_) | Self::Intervention(_) | Self::Reply(Reply::Failed { .. }))
+            || matches!(self, Self::Conversation(event) if event.kind == "turn" || event.kind == "done")
+    }
+}
+
+/// How many turns of the followed conversation are kept for drawing, and how much of each reply.
+pub const KEEP_EXCHANGES: usize = 6;
+pub const KEEP_REPLY_CHARS: usize = 12_000;
+
+/// One turn of the followed conversation, as the deck draws it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Exchange {
+    /// Which door asked: `terminal`, `discord`, `menubar`, `web`.
+    pub origin: String,
+    pub asked: String,
+    pub reply: String,
+    /// Empty while it runs; the stop reason once it ended.
+    pub stop: String,
+}
+
+/// The followed conversation: which one, its recent turns, and what its agent is doing right now.
+#[derive(Debug, Clone, Default)]
+pub struct Transcript {
+    pub handle: String,
+    pub exchanges: VecDeque<Exchange>,
+    pub activity: Option<String>,
+}
+
+impl Transcript {
+    pub fn running(&self) -> bool {
+        self.exchanges.back().is_some_and(|exchange| exchange.stop.is_empty())
     }
 }
 
@@ -158,6 +197,9 @@ pub struct LabModel {
     pub stale: bool,
     /// The session the UI is looking at; the one that spoke last unless the user picked another.
     pub focus: Option<String>,
+    /// The hub's conversations (newest first), and the one being followed.
+    pub conversations: Vec<Conversation>,
+    pub transcript: Transcript,
 }
 
 impl Default for LabModel {
@@ -179,6 +221,8 @@ impl Default for LabModel {
             stats: Stats::default(),
             stale: false,
             focus: None,
+            conversations: Vec::new(),
+            transcript: Transcript::default(),
         }
     }
 }
@@ -244,6 +288,7 @@ impl LabModel {
             ClientEvent::Telemetry(frame) => self.apply_frame(*frame, now),
             ClientEvent::Intervention(event) => self.apply_intervention(event, now),
             ClientEvent::Reply(reply) => self.apply_reply(reply, now),
+            ClientEvent::Conversation(event) => self.apply_conversation(event),
         }
         self.stats.applies += 1;
         self.stats.max_apply = self.stats.max_apply.max(started.elapsed());
@@ -365,6 +410,53 @@ impl LabModel {
         }
     }
 
+    /// Follow a conversation (or none): the transcript starts over, because what it held was another
+    /// conversation's.
+    pub fn follow(&mut self, handle: Option<&str>) {
+        let handle = handle.unwrap_or_default();
+        if self.transcript.handle != handle {
+            self.transcript = Transcript { handle: handle.to_owned(), ..Transcript::default() };
+        }
+    }
+
+    fn apply_conversation(&mut self, event: ConversationEvent) {
+        if event.handle != self.transcript.handle {
+            return; // a late event from the conversation followed before
+        }
+        let transcript = &mut self.transcript;
+        match event.kind.as_str() {
+            "history" => {
+                // A turn from before this deck started following — replayed by the daemon, finished.
+                let exchange = Exchange { origin: event.origin, asked: redact::scrub(&event.text).0, reply: redact::scrub(&event.delta).0, stop: if event.stop.is_empty() { "end_turn".into() } else { event.stop } };
+                push_capped(&mut transcript.exchanges, exchange, KEEP_EXCHANGES);
+            }
+            "turn" => {
+                let (asked, _) = redact::scrub(&event.text);
+                push_capped(&mut transcript.exchanges, Exchange { origin: event.origin, asked, ..Exchange::default() }, KEEP_EXCHANGES);
+                transcript.activity = None;
+            }
+            "text" => {
+                if let Some(exchange) = transcript.exchanges.back_mut().filter(|exchange| exchange.stop.is_empty()) {
+                    if exchange.reply.len() < KEEP_REPLY_CHARS {
+                        exchange.reply.push_str(&event.delta);
+                    }
+                } else {
+                    // A reply already under way when following began: its question was missed.
+                    push_capped(&mut transcript.exchanges, Exchange { origin: event.origin, reply: event.delta, ..Exchange::default() }, KEEP_EXCHANGES);
+                }
+            }
+            "activity" => transcript.activity = (!event.label.is_empty()).then_some(event.label),
+            "done" => {
+                if let Some(exchange) = transcript.exchanges.back_mut() {
+                    exchange.stop = if event.stop.is_empty() { "end_turn".into() } else { event.stop };
+                    exchange.reply = redact::scrub(&exchange.reply).0;
+                }
+                transcript.activity = None;
+            }
+            _ => {}
+        }
+    }
+
     fn apply_reply(&mut self, reply: Reply, now: Instant) {
         match reply {
             Reply::Knob { pod, knob, reply } => {
@@ -406,6 +498,30 @@ impl LabModel {
                 } else {
                     self.notice(format!("{pod}: {what} refused — {}", reply.error), true, now);
                     self.log(Some(pod.clone()), Tone::Warn, format!("{pod}: {what} refused — {}", reply.error), now);
+                }
+            }
+            Reply::Conversations(list) => {
+                self.conversations = list.conversations;
+            }
+            Reply::Turn { reply } => {
+                if reply.ok {
+                    let mut what = match reply.route.as_str() {
+                        "steer" => "You sent guidance to the running agent".to_owned(),
+                        "new" => "You started a new conversation".to_owned(),
+                        _ => "Your turn is running".to_owned(),
+                    };
+                    if !reply.session_id.is_empty() {
+                        what = format!("{what} ({} · {})", reply.session_id.chars().take(8).collect::<String>(), reply.turn_id);
+                    }
+                    self.log(None, Tone::Good, what, now);
+                    // The notices are the honest part: that it was guidance and not a turn, that the
+                    // screenshot was not attached. Shown as notices, not buried in the feed.
+                    for notice in reply.notices {
+                        self.notice(notice, false, now);
+                    }
+                } else {
+                    self.notice(format!("turn not started — {}", reply.error), true, now);
+                    self.log(None, Tone::Warn, format!("Turn not started: {}", reply.error), now);
                 }
             }
             Reply::Ingest(summary) => {

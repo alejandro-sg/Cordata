@@ -92,6 +92,9 @@ impl Inbox {
             for extra in spill {
                 state.events.push_back(ClientEvent::Telemetry(Box::new(extra)));
             }
+            // A spilled notice is an event like any other: it obeys the same bound, or a UI that stalls while
+            // memory notices keep arriving grows this queue without limit.
+            self.trim(&mut state);
         }
         self.inner.pushed.fetch_add(1, Ordering::Relaxed);
         self.inner.wake.notify_one();
@@ -101,18 +104,23 @@ impl Inbox {
         {
             let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
             state.events.push_back(event);
-            while state.events.len() > MAX_EVENTS {
-                match state.events.iter().position(|e| !e.is_critical()) {
-                    Some(index) => {
-                        state.events.remove(index);
-                        self.inner.discarded.fetch_add(1, Ordering::Relaxed);
-                    }
-                    None => break, // all critical: keep them all; they are small and rare
-                }
-            }
+            self.trim(&mut state);
         }
         self.inner.pushed.fetch_add(1, Ordering::Relaxed);
         self.inner.wake.notify_one();
+    }
+
+    /// Hold the discrete queue to `MAX_EVENTS` by dropping the oldest non-critical events.
+    fn trim(&self, state: &mut State) {
+        while state.events.len() > MAX_EVENTS {
+            match state.events.iter().position(|e| !e.is_critical()) {
+                Some(index) => {
+                    state.events.remove(index);
+                    self.inner.discarded.fetch_add(1, Ordering::Relaxed);
+                }
+                None => break, // all critical: keep them all; they are small and rare
+            }
+        }
     }
 
     /// Forget telemetry from a connection that is gone. Called on disconnect, so a frame from the
@@ -228,6 +236,24 @@ mod tests {
             })
             .collect();
         assert_eq!(events.len(), 2, "{events:?}");
+    }
+
+    #[test]
+    fn spilled_memory_notices_obey_the_bound() {
+        // Two notices per frame cannot be folded into one, so every merge spills one into the event queue. A UI that
+        // never drains must still see a bounded queue.
+        let inbox = Inbox::new();
+        for n in 0..(MAX_EVENTS as u64 * 3) {
+            let frame = TelemetryFrame {
+                seq: n,
+                session_id: "s".into(),
+                memory_event: Some(harness_proto::v1::MemoryEvent { event: format!("lease_load {n}"), ..Default::default() }),
+                ..Default::default()
+            };
+            inbox.push_telemetry(frame);
+        }
+        assert!(inbox.len() <= MAX_EVENTS + 1, "the queue grew to {}", inbox.len());
+        assert!(inbox.discarded() > 0, "nothing was discarded");
     }
 
     #[test]

@@ -6,6 +6,10 @@ license.workspace = true
 rust-version.workspace = true
 description = "The Experimental Lab: a native GPUI front end for the Python orchestrator daemon"
 
+[lib]
+name = "harness_lab"
+path = "src/lib.rs"
+
 [[bin]]
 name = "harness-lab"
 path = "src/main.rs"

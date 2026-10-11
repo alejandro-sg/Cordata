@@ -510,3 +510,132 @@ fn a_store_read_animates_once_and_a_replayed_frame_does_not_replay_it() {
     }
     assert!(model.memory_hits.len() <= 32, "the canvas's queue is capped ({} held)", model.memory_hits.len());
 }
+
+#[test]
+fn a_turn_from_the_menu_bar_carries_its_context_and_is_audited_by_the_daemon() {
+    let rig = Rig::new();
+    let daemon = FakeDaemon::start("tok");
+    let handle = rig.client(fast(daemon.config()).with_name("harness-menubar"));
+    let mut model = LabModel::default();
+    assert!(pump_until(&handle, &mut model, Duration::from_secs(5), online));
+
+    let context = harness_client::DeckContext {
+        app_name: "Safari".into(),
+        app_bundle_id: "com.apple.Safari".into(),
+        app_pid: 4242,
+        window_title: "Deploy — token sk-ABCDEF0123456789ABCDEF0123456789".into(),
+        selected_text: "raise the timeout to 30s".into(),
+        screenshot_mime: "image/jpeg".into(),
+        screenshot_width: 1440,
+        screenshot_height: 900,
+        screenshot: vec![7u8; 400],
+        client_redactions: 1,
+        omitted: vec!["Selected text: Accessibility is not granted".into()],
+        captured_ms: 1_700_000_000_000,
+        screenshot_cloud_ok: false,
+    };
+    handle.send(Command::SubmitTurn { session_id: "s1".into(), text: "what does this line mean?".into(), context: context.clone(), client: "harness-menubar".into(), conversation: String::new(), cwd: String::new() }).unwrap();
+
+    assert!(pump_until(&handle, &mut model, Duration::from_secs(5), |m| m.feed.iter().any(|f| f.text.contains("Your turn is running"))), "no turn news: {:?}", model.feed);
+    // The screenshot is carried but not usable, and the person is told rather than left assuming.
+    assert!(model.notices.iter().any(|n| !n.error && n.text.contains("not attached")), "no screenshot notice: {:?}", model.notices);
+
+    let sent = daemon.state.turns.lock().unwrap();
+    assert_eq!(sent.len(), 1, "exactly one turn crossed the wire");
+    assert_eq!(sent[0].text, "what does this line mean?", "the person's own words are sent verbatim");
+    assert_eq!(sent[0].client, "harness-menubar", "the record says which front door asked — the Lab hardcodes a different name");
+    let ctx = sent[0].context.clone().expect("the context is attached");
+    assert_eq!(ctx.app_bundle_id, "com.apple.Safari");
+    assert_eq!(ctx.window_title, context.window_title, "the client masks before sending; the client itself does not rewrite what the capture produced");
+    assert_eq!(ctx.selected_text, "raise the timeout to 30s");
+    assert_eq!(ctx.screenshot.len(), 400, "the image crosses as bytes, not base64");
+    assert!(!ctx.screenshot_cloud_ok, "cloud routing is off unless the person opted in for this capture");
+    assert_eq!(ctx.omitted, vec!["Selected text: Accessibility is not granted".to_owned()], "what could not be captured travels with the payload");
+}
+
+#[test]
+fn a_turn_for_a_never_read_app_is_refused_and_nothing_is_started() {
+    let rig = Rig::new();
+    let daemon = FakeDaemon::start("tok");
+    let handle = rig.client(fast(daemon.config()));
+    let mut model = LabModel::default();
+    assert!(pump_until(&handle, &mut model, Duration::from_secs(5), online));
+
+    let context = harness_client::DeckContext { app_name: "1Password".into(), app_bundle_id: "com.1password.1password".into(), ..Default::default() };
+    handle.send(Command::SubmitTurn { session_id: "s1".into(), text: "summarise this".into(), context, client: "harness-menubar".into(), conversation: String::new(), cwd: String::new() }).unwrap();
+    assert!(
+        pump_until(&handle, &mut model, Duration::from_secs(5), |m| m.notices.iter().any(|n| n.error && n.text.contains("never read"))),
+        "the refusal is not shown: {:?}",
+        model.notices
+    );
+    assert!(daemon.state.turns.lock().unwrap().is_empty(), "a refused turn must not reach the agent");
+}
+
+#[test]
+fn a_turn_submitted_while_offline_is_refused_with_its_own_words() {
+    let rig = Rig::new();
+    // No daemon at this address: the client is offline from the first attempt.
+    let mut config = fast(DaemonConfig::new("127.0.0.1:1", "tok"));
+    config.backoff_base = Duration::from_millis(20);
+    config.backoff_max = Duration::from_millis(30);
+    let handle = rig.client(config);
+    let mut model = LabModel::default();
+    assert!(pump_until(&handle, &mut model, Duration::from_millis(500), |m| !m.connection.is_online()));
+
+    handle.send(Command::SubmitTurn { session_id: "s1".into(), text: "hello".into(), context: harness_client::DeckContext::default(), client: "harness-menubar".into(), conversation: String::new(), cwd: String::new() }).unwrap();
+    // Not the generic "offline": a turn is the one command whose words would otherwise vanish silently.
+    assert!(
+        pump_until(&handle, &mut model, Duration::from_secs(5), |m| m.notices.iter().any(|n| n.error && n.text.contains("the turn was not sent"))),
+        "no refusal: {:?}",
+        model.notices
+    );
+}
+
+#[test]
+fn a_followed_conversation_streams_every_doors_turns_into_the_transcript() {
+    use harness_proto::v1::{Conversation, ConversationEvent};
+
+    let rig = Rig::new();
+    let daemon = FakeDaemon::start("tok");
+    *daemon.state.conversations.lock().unwrap() = vec![Conversation { handle: "c3f9a1e".into(), title: "fix the flaky test".into(), turns: 2, origin: "discord".into(), ..Default::default() }];
+    let handle = rig.client(fast(daemon.config()).with_name("harness-menubar"));
+    let mut model = LabModel::default();
+    assert!(pump_until(&handle, &mut model, Duration::from_secs(5), online));
+
+    handle.send(Command::ListConversations { cwd: String::new() }).unwrap();
+    assert!(pump_until(&handle, &mut model, Duration::from_secs(5), |m| m.conversations.len() == 1), "the list never arrived");
+    assert_eq!(model.conversations[0].title, "fix the flaky test");
+
+    model.follow(Some("c3f9a1e"));
+    handle.watch_conversation(Some("c3f9a1e".into()));
+    // Give the stream a moment to subscribe before the turn is published, as a real door would.
+    std::thread::sleep(Duration::from_millis(300));
+    let event = |kind: &str| ConversationEvent { handle: "c3f9a1e".into(), kind: kind.into(), ..Default::default() };
+    daemon.state.conversation_event(ConversationEvent { origin: "discord".into(), text: "earlier".into(), delta: "an earlier answer".into(), stop: "end_turn".into(), ..event("history") });
+    assert!(pump_until(&handle, &mut model, Duration::from_secs(5), |m| !m.transcript.exchanges.is_empty()), "the replayed history never arrived");
+    assert_eq!(model.transcript.exchanges[0].reply, "an earlier answer", "a door joining late sees the conversation's last turns, finished");
+    daemon.state.conversation_event(ConversationEvent { origin: "terminal".into(), text: "why is it flaky? key sk-ABCDEF0123456789ABCDEF0123456789".into(), ..event("turn") });
+    daemon.state.conversation_event(ConversationEvent { delta: "Because the clock ".into(), ..event("text") });
+    daemon.state.conversation_event(ConversationEvent { label: "shell".into(), ..event("activity") });
+    daemon.state.conversation_event(ConversationEvent { delta: "is not mocked.".into(), ..event("text") });
+    daemon.state.conversation_event(ConversationEvent { stop: "end_turn".into(), ..event("done") });
+    assert!(pump_until(&handle, &mut model, Duration::from_secs(5), |m| m.transcript.exchanges.len() == 2 && m.transcript.exchanges.back().is_some_and(|e| !e.stop.is_empty())), "the turn never finished: {:?}", model.transcript);
+    let exchange = model.transcript.exchanges.back().unwrap();
+    assert_eq!(exchange.origin, "terminal", "who asked is kept, so the deck can say it");
+    assert!(exchange.asked.starts_with("why is it flaky?") && !exchange.asked.contains("ABCDEF0123456789"), "what was asked is masked on arrival: {}", exchange.asked);
+    assert_eq!(exchange.reply, "Because the clock is not mocked.");
+    assert!(!model.transcript.running() && model.transcript.activity.is_none(), "a finished turn shows no activity");
+
+    // Another conversation's events never land in this transcript.
+    daemon.state.conversation_event(ConversationEvent { handle: "cother1".into(), kind: "turn".into(), text: "elsewhere".into(), ..Default::default() });
+    std::thread::sleep(Duration::from_millis(200));
+    let _ = pump_until(&handle, &mut model, Duration::from_millis(200), |_| false);
+    assert_eq!(model.transcript.exchanges.len(), 2, "the replayed turn and the live one, nothing from elsewhere");
+
+    // A turn sent into a conversation names it on the wire, and `new` comes back with a handle.
+    handle.send(Command::SubmitTurn { session_id: String::new(), text: "start fresh".into(), context: harness_client::DeckContext::default(), client: "harness-menubar".into(), conversation: "new".into(), cwd: String::new() }).unwrap();
+    assert!(pump_until(&handle, &mut model, Duration::from_secs(5), |_| !daemon.state.turns.lock().unwrap().is_empty()));
+    let sent = daemon.state.turns.lock().unwrap().clone();
+    assert_eq!(sent[0].conversation, "new");
+    assert!(sent[0].context.is_none(), "an empty capture is not sent as an empty OsContext");
+}

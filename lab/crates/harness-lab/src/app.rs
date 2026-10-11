@@ -654,15 +654,10 @@ impl LabApp {
     }
 }
 
-/// Does this request take over the window by itself? A destructive reading does — at or above the
-/// router's own 0.80 gate — and so does a request Laya marked armed without scoring it (when in
-/// doubt, interrupt). Everything else waits in the tray.
-pub fn interrupts(request: &harness_proto::v1::InterventionRequest) -> bool {
-    match request.risk_score {
-        Some(score) => score >= 0.8,
-        None => request.armed,
-    }
-}
+/// Does this request take over the window by itself? The rule itself lives in
+/// `harness_client::deck` — the menu bar needs the same answer for its icon, and a second copy is a
+/// second thing to drift — and is re-exported here where the Lab's own UI reads it.
+pub use harness_client::deck::interrupts;
 
 /// Which pending request the modal shows: the one under review, else the oldest that interrupts
 /// and has not been sent to the tray. Pure, so the rule that keeps `y` from answering a question

@@ -1,0 +1,38 @@
+[package]
+name = "harness-menubar"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "The menu-bar door into the same harness: states at a glance, the deck on a hotkey"
+
+[lib]
+name = "harness_menubar"
+path = "src/lib.rs"
+
+[[bin]]
+name = "harness-menubar"
+path = "src/main.rs"
+
+[dependencies]
+harness-capture.workspace = true
+harness-client.workspace = true
+harness-lab.workspace = true
+harness-proto.workspace = true
+gpui.workspace = true
+tokio.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# The status item. gpui 0.2.2 has an `NSStatusItem` implementation but no way to reach it from
+# outside the crate, so the tray comes from here.
+tray-icon = "0.26"
+objc2.workspace = true
+# Plus the Liquid Glass backdrop (macOS 26): `NSGlassEffectView` behind the deck's own view.
+objc2-app-kit = { workspace = true, features = ["NSGlassEffectView", "NSResponder", "NSGraphics", "NSAppearance", "NSButton", "NSControl", "objc2-core-foundation"] }
+global-hotkey = "0.8"
+raw-window-handle = "0.6"
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true

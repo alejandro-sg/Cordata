@@ -35,6 +35,12 @@ pub struct FakeState {
     pub controls: Mutex<Vec<PodControlRequest>>,
     pub unloads: Mutex<Vec<UnloadRequest>>,
     pub ingested: Mutex<Vec<AstSnippet>>,
+    /// Turns the menu bar submitted, in order — the test asserts what actually crossed the wire.
+    pub turns: Mutex<Vec<TurnRequest>>,
+    /// The hub's conversations as `ListConversations` answers, and every followed conversation's
+    /// events (a test publishes; a `WatchConversation` stream relays those for its handle).
+    pub conversations: Mutex<Vec<Conversation>>,
+    conversation_events: broadcast::Sender<ConversationEvent>,
     pub heartbeat: Duration,
     /// When set, the telemetry stream stays open but sends nothing after the first frame, and
     /// heartbeats stop — a daemon that is wedged rather than gone.
@@ -42,6 +48,11 @@ pub struct FakeState {
 }
 
 impl FakeState {
+    /// Publish one event on a conversation, as if a door had started a turn there.
+    pub fn conversation_event(&self, event: ConversationEvent) {
+        let _ = self.conversation_events.send(event);
+    }
+
     /// The telemetry sender, for a test that wants to publish from its own thread.
     pub fn frames(&self) -> &broadcast::Sender<TelemetryFrame> {
         &self.frames
@@ -61,6 +72,38 @@ struct Service(Arc<FakeState>);
 impl Harness for Service {
     type StreamTelemetryStream = BoxStream<TelemetryFrame>;
     type InterventionStreamStream = BoxStream<InterventionEvent>;
+    type WatchConversationStream = BoxStream<ConversationEvent>;
+
+    async fn list_conversations(&self, request: Request<ConversationsRequest>) -> Result<Response<ConversationList>, Status> {
+        self.0.authorise(&request)?;
+        Ok(Response::new(ConversationList { conversations: self.0.conversations.lock().unwrap().clone() }))
+    }
+
+    async fn open_conversation(&self, request: Request<ConversationOpen>) -> Result<Response<Conversation>, Status> {
+        self.0.authorise(&request)?;
+        let asked = request.into_inner();
+        let mut conversations = self.0.conversations.lock().unwrap();
+        if let Some(found) = conversations.iter().find(|c| c.handle == asked.conversation) {
+            return Ok(Response::new(found.clone()));
+        }
+        let opened = Conversation { handle: format!("c{:06x}", conversations.len() + 1), title: asked.title, origin: asked.origin, ..Default::default() };
+        conversations.insert(0, opened.clone());
+        Ok(Response::new(opened))
+    }
+
+    async fn watch_conversation(&self, request: Request<ConversationRef>) -> Result<Response<Self::WatchConversationStream>, Status> {
+        self.0.authorise(&request)?;
+        let handle = request.into_inner().handle;
+        if !self.0.conversations.lock().unwrap().iter().any(|c| c.handle == handle) {
+            return Err(Status::not_found(format!("no conversation named {handle:?}")));
+        }
+        let first = ConversationEvent { handle: handle.clone(), kind: "watching".into(), ..Default::default() };
+        let live = BroadcastStream::new(self.0.conversation_events.subscribe()).filter_map(move |item| match item {
+            Ok(event) if event.handle == handle => Some(Ok(event)),
+            _ => None,
+        });
+        Ok(Response::new(Box::pin(tokio_stream::once(Ok(first)).chain(live))))
+    }
 
     async fn stream_telemetry(&self, request: Request<TelemetryRequest>) -> Result<Response<Self::StreamTelemetryStream>, Status> {
         self.0.authorise(&request)?;
@@ -181,8 +224,28 @@ impl Harness for Service {
         self.0.authorise(&request)?;
         Ok(Response::new(PingReply { version: "1".into(), ts_ms: 0, daemon: "fake".into() }))
     }
-}
 
+    async fn submit_turn(&self, request: Request<TurnRequest>) -> Result<Response<TurnReply>, Status> {
+        self.0.authorise(&request)?;
+        let asked = request.into_inner();
+        // Scripted like the real daemon's own refusals, so the client's handling of both is exercised:
+        // a never-read app, and an empty turn. The real refusal text lives in `os_context.py`.
+        if asked.context.as_ref().is_some_and(|c| c.app_bundle_id == "com.1password.1password") {
+            return Ok(Response::new(TurnReply { ok: false, error: "this app is never read".into(), ..Default::default() }));
+        }
+        if asked.text.trim().is_empty() {
+            return Ok(Response::new(TurnReply { ok: false, error: "a turn needs some text".into(), ..Default::default() }));
+        }
+        let mut notices = Vec::new();
+        if asked.context.as_ref().is_some_and(|c| !c.screenshot.is_empty()) {
+            notices.push("The screenshot was captured and recorded, but it was not attached — the harness has no way to send an image yet.".into());
+        }
+        let route = if asked.session_id.is_empty() { "new" } else { "turn" };
+        self.0.turns.lock().unwrap().push(asked.clone());
+        let conversation = if asked.conversation == "new" { "cnew001".to_owned() } else { asked.conversation.clone() };
+        Ok(Response::new(TurnReply { ok: true, error: String::new(), session_id: asked.session_id, turn_id: "t-1".into(), notices, route: route.into(), conversation }))
+    }
+}
 pub struct FakeDaemon {
     pub addr: SocketAddr,
     pub token: String,
@@ -200,6 +263,7 @@ impl FakeDaemon {
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().thread_name("fake-daemon").build().unwrap();
         let (frames, _) = broadcast::channel(16_384);
         let (events, _) = broadcast::channel(256);
+        let (conversation_events, _) = broadcast::channel(1024);
         let state = Arc::new(FakeState {
             token: token.to_owned(),
             frames,
@@ -213,6 +277,9 @@ impl FakeDaemon {
             controls: Mutex::default(),
             unloads: Mutex::default(),
             ingested: Mutex::default(),
+            turns: Mutex::default(),
+            conversations: Mutex::default(),
+            conversation_events,
             heartbeat: Duration::from_millis(200),
             mute: Default::default(),
         });

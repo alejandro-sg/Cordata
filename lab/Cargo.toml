@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/harness-proto", "crates/harness-client", "crates/harness-observer", "crates/harness-lab"]
+members = ["crates/harness-proto", "crates/harness-client", "crates/harness-observer", "crates/harness-lab", "crates/harness-menubar", "crates/harness-capture"]
 
 [workspace.package]
 edition = "2024"
@@ -38,6 +38,14 @@ gpui = { version = "0.2.2", default-features = false, features = ["font-kit", "r
 harness-proto = { path = "crates/harness-proto" }
 harness-client = { path = "crates/harness-client" }
 harness-observer = { path = "crates/harness-observer" }
+harness-lab = { path = "crates/harness-lab" }
+harness-menubar = { path = "crates/harness-menubar" }
+harness-capture = { path = "crates/harness-capture" }
+# AppKit, at the versions gpui already pulls in (so no extra build units), for the one thing gpui
+# does not expose: setting the activation policy to Accessory so the app has no Dock icon.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSApplication", "NSRunningApplication", "NSScreen", "NSWindow", "NSView", "NSWorkspace"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }
 
 [profile.dev]
 # The UI crates are unusably slow unoptimised (GPUI scenes, tree-sitter); keep our own code

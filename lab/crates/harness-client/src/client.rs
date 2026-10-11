@@ -27,8 +27,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use harness_proto::TOKEN_KEY;
 use harness_proto::v1::harness_client::HarnessClient;
 use harness_proto::v1::{
-    AstSnippet, DiffRequest, InterventionDecision, InterventionHello, InterventionReply, KnobRequest, ModeRequest, PingRequest, PodAction, PodControlRequest, TelemetryRequest, UnloadRequest,
-    intervention_reply, knob_request,
+    AstSnippet, ConversationRef, ConversationsRequest, DiffRequest, InterventionDecision, InterventionHello, InterventionReply, KnobRequest, ModeRequest, OsContext, PingRequest, PodAction,
+    PodControlRequest, TelemetryRequest, TurnRequest, UnloadRequest, intervention_reply, knob_request,
 };
 use tokio::sync::{mpsc, watch};
 use tokio::time::timeout;
@@ -110,6 +110,13 @@ impl ClientConfig {
             name: "harness-lab".into(),
         }
     }
+
+    /// What this front end calls itself in the daemon's log and the ledger. Two front doors can be
+    /// attached at once (the Lab and the menu bar), and the record should say which one asked.
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = name.into();
+        self
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -140,6 +147,9 @@ impl PodControl {
 
 /// What the UI can ask for. Every one is non-blocking to send and answers with a `Reply` event.
 #[derive(Debug, Clone)]
+// The turn variant carries the capture (and its two routing strings) inline: commands are a handful a
+// minute through a bounded queue, so boxing it would buy nothing but noise at every call site.
+#[allow(clippy::large_enum_variant)]
 pub enum Command {
     /// `[Approve & Execute]` (`approve`) or `[Reject]` / `[Reject & Isolate]` (`!approve`, `isolate`).
     Decide { intervention_id: String, approve: bool, isolate: bool, note: String },
@@ -150,6 +160,69 @@ pub enum Command {
     SetMode { session_id: String, mode: String },
     /// Stop, release or steer one agent.
     ControlPod { session_id: String, pod: String, control: PodControl },
+    /// Start a turn from a front end that is not this session's own ACP client — the menu-bar deck —
+    /// carrying the OS context the person chose to attach. The daemon accepts it and returns at once
+    /// (a turn may run for hours); progress arrives on the telemetry stream like any other turn.
+    ///
+    /// `conversation` names a hub conversation (a handle, `latest` or `new`) — the one every door
+    /// shares; when set it wins over `session_id`. `cwd` is where a `latest`/`new` one lives.
+    SubmitTurn { session_id: String, text: String, context: DeckContext, client: String, conversation: String, cwd: String },
+    /// The hub's conversations, newest first (`Reply::Conversations`).
+    ListConversations { cwd: String },
+}
+
+/// What the person attached to a turn from the menu bar — the client-side half of the proto
+/// `OsContext`. Built by `harness-capture` from what the person allowed it to read, and masked there
+/// before it ever reaches this struct: nothing here decides what may be *seen*, only what is *sent*.
+///
+/// `screenshot` is a JPEG of one window, sent as protobuf bytes (never base64). The daemon hands it
+/// to a vision model only when one is configured (`capture.visionModel`), and to a cloud one only when
+/// `screenshot_cloud_ok` says the person allowed that; otherwise it records the size and says so.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DeckContext {
+    pub app_name: String,
+    pub app_bundle_id: String,
+    pub app_pid: i32,
+    pub window_title: String,
+    pub selected_text: String,
+    pub screenshot: Vec<u8>,
+    pub screenshot_mime: String,
+    pub screenshot_width: u32,
+    pub screenshot_height: u32,
+    pub screenshot_cloud_ok: bool,
+    /// Spans the client masked before sending, so the daemon can say the masking happened rather than
+    /// that there was nothing to mask.
+    pub client_redactions: u32,
+    /// What could not be captured, and why — shown to the person, never silently blank.
+    pub omitted: Vec<String>,
+    pub captured_ms: i64,
+}
+
+impl DeckContext {
+    /// True when there is nothing to attach — an empty capture is not sent as an empty `OsContext`.
+    pub fn is_empty(&self) -> bool {
+        self.app_name.is_empty() && self.window_title.is_empty() && self.selected_text.is_empty() && self.screenshot.is_empty()
+    }
+}
+
+impl From<DeckContext> for OsContext {
+    fn from(context: DeckContext) -> Self {
+        Self {
+            app_name: context.app_name,
+            app_bundle_id: context.app_bundle_id,
+            app_pid: context.app_pid,
+            window_title: context.window_title,
+            selected_text: context.selected_text,
+            screenshot: context.screenshot,
+            screenshot_mime: context.screenshot_mime,
+            screenshot_width: context.screenshot_width,
+            screenshot_height: context.screenshot_height,
+            screenshot_cloud_ok: context.screenshot_cloud_ok,
+            client_redactions: context.client_redactions,
+            omitted: context.omitted,
+            captured_ms: context.captured_ms,
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -174,6 +247,9 @@ pub struct Handle {
     ingest: mpsc::Sender<AstSnippet>,
     counters: Arc<Counters>,
     shutdown: watch::Sender<bool>,
+    /// The hub conversation whose turns stream in (`ClientEvent::Conversation`). Kept across
+    /// reconnects: a new connection re-subscribes to whatever this says.
+    watched: watch::Sender<Option<String>>,
 }
 
 impl Handle {
@@ -182,6 +258,16 @@ impl Handle {
     }
 
     /// Queue a command. Never blocks; `Busy` if 256 are already waiting.
+    /// Follow one hub conversation's turns — whichever door starts them — or none. Replaces the one
+    /// followed before; survives reconnects.
+    pub fn watch_conversation(&self, handle: Option<String>) {
+        self.watched.send_if_modified(|current| {
+            let changed = *current != handle;
+            *current = handle;
+            changed
+        });
+    }
+
     pub fn send(&self, command: Command) -> Result<(), SendError> {
         self.commands.try_send(command).map_err(|error| match error {
             mpsc::error::TrySendError::Full(_) => SendError::Busy,
@@ -243,9 +329,10 @@ pub fn spawn(config: ClientConfig, runtime: &tokio::runtime::Handle) -> Handle {
     let (cmd_tx, cmd_rx) = mpsc::channel(COMMAND_QUEUE);
     let (ingest_tx, ingest_rx) = mpsc::channel(INGEST_QUEUE);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let (watched_tx, watched_rx) = watch::channel(None);
     let counters = Arc::new(Counters::default());
-    runtime.spawn(supervise(config, inbox.clone(), cmd_rx, ingest_rx, shutdown_rx, counters.clone()));
-    Handle { inbox, commands: cmd_tx, ingest: ingest_tx, counters, shutdown: shutdown_tx }
+    runtime.spawn(supervise(config, inbox.clone(), cmd_rx, ingest_rx, shutdown_rx, counters.clone(), watched_rx));
+    Handle { inbox, commands: cmd_tx, ingest: ingest_tx, counters, shutdown: shutdown_tx, watched: watched_tx }
 }
 
 /// `base · 2^(attempt-1)`, capped, ±20% so a fleet of clients does not retry in lockstep.
@@ -269,6 +356,7 @@ async fn supervise(
     mut ingest: mpsc::Receiver<AstSnippet>,
     mut shutdown: watch::Receiver<bool>,
     counters: Arc<Counters>,
+    watched: watch::Receiver<Option<String>>,
 ) {
     inbox.push_event(ClientEvent::Connection(ConnectionState::Connecting));
     let mut attempt: u32 = 0;
@@ -279,7 +367,7 @@ async fn supervise(
             return;
         }
         let ended = tokio::select! {
-            ended = run_connection(&config, &inbox, &mut commands, &mut ingest, &counters, &mut ever_online) => ended,
+            ended = run_connection(&config, &inbox, &mut commands, &mut ingest, &counters, &mut ever_online, watched.clone()) => ended,
             _ = shutdown.changed() => return,
         };
         // Whatever the old connection had in flight is not the new one's.
@@ -318,6 +406,8 @@ fn refuse_offline(inbox: &Inbox, counters: &Counters, command: Command) {
         Command::FetchDiff { .. } => ("diff", "the daemon is offline"),
         Command::SetMode { .. } => ("mode", "the daemon is offline; the mode was not changed"),
         Command::ControlPod { control, .. } => (control.label(), "the daemon is offline; nothing was sent to the agent"),
+        Command::SubmitTurn { .. } => ("turn", "the daemon is offline; the turn was not sent"),
+        Command::ListConversations { .. } => ("conversations", "the daemon is offline; no conversations to show"),
     };
     inbox.push_event(ClientEvent::Reply(Reply::Failed { what: what.into(), error: error.into() }));
 }
@@ -355,6 +445,7 @@ async fn run_connection(
     ingest: &mut mpsc::Receiver<AstSnippet>,
     counters: &Counters,
     ever_online: &mut bool,
+    watched: watch::Receiver<Option<String>>,
 ) -> Ended {
     let daemon = match &config.source {
         Some(source) => match source.get() {
@@ -390,6 +481,7 @@ async fn run_connection(
         reason = intervention_loop(client.clone(), inbox, decide_rx, config) => reason,
         reason = command_loop(client.clone(), inbox, commands, decide_tx, counters) => reason,
         reason = ingest_loop(client.clone(), inbox, ingest) => reason,
+        reason = watch_loop(client.clone(), inbox, watched) => reason,
     };
     Ended { was_online: true, reason }
 }
@@ -513,9 +605,80 @@ async fn command_loop(client: Client, inbox: &Inbox, commands: &mut mpsc::Receiv
                     inbox.push_event(ClientEvent::Reply(event));
                 });
             }
+            Command::ListConversations { cwd } => {
+                let (mut client, inbox) = (client.clone(), inbox.clone());
+                tokio::spawn(async move {
+                    let event = match timeout(UNARY_TIMEOUT, client.list_conversations(ConversationsRequest { cwd, limit: 12 })).await {
+                        Ok(Ok(reply)) => Reply::Conversations(reply.into_inner()),
+                        Ok(Err(status)) => Reply::Failed { what: "conversations".into(), error: status.message().to_owned() },
+                        Err(_) => Reply::Failed { what: "conversations".into(), error: "the daemon did not answer in time".into() },
+                    };
+                    inbox.push_event(ClientEvent::Reply(event));
+                });
+            }
+            Command::SubmitTurn { session_id, text, context, client: who, conversation, cwd } => {
+                let (mut client, inbox) = (client.clone(), inbox.clone());
+                tokio::spawn(async move {
+                    // The daemon accepts the turn and answers at once — it does not hold it for the
+                    // turn's duration (`PROMPT_TIMEOUT` is three hours), so the ordinary unary timeout
+                    // is the right one: it measures the daemon answering, not the agent working.
+                    let context = if context.is_empty() { None } else { Some(context.into()) };
+                    let request = TurnRequest { session_id, text, context, client: who, conversation, cwd };
+                    let event = match timeout(UNARY_TIMEOUT, client.submit_turn(request)).await {
+                        Ok(Ok(reply)) => Reply::Turn { reply: reply.into_inner() },
+                        Ok(Err(status)) => Reply::Failed { what: "turn".into(), error: status.message().to_owned() },
+                        Err(_) => Reply::Failed { what: "turn".into(), error: "the daemon did not answer in time".into() },
+                    };
+                    inbox.push_event(ClientEvent::Reply(event));
+                });
+            }
         }
     }
     "the command channel closed".into()
+}
+
+/// Stream the followed conversation's turns into the inbox, re-subscribing when the followed one
+/// changes. A stream that ends (the daemon restarted it, the conversation was forgotten) is retried
+/// after a pause rather than taking the whole connection down: telemetry is what decides "offline".
+async fn watch_loop(client: Client, inbox: &Inbox, mut watched: watch::Receiver<Option<String>>) -> String {
+    loop {
+        let Some(handle) = watched.borrow_and_update().clone() else {
+            if watched.changed().await.is_err() {
+                return std::future::pending().await;
+            }
+            continue;
+        };
+        let mut caller = client.clone();
+        match caller.watch_conversation(ConversationRef { handle: handle.clone() }).await {
+            Ok(response) => {
+                let mut stream = response.into_inner();
+                loop {
+                    tokio::select! {
+                        message = stream.message() => match message {
+                            Ok(Some(event)) => inbox.push_event(ClientEvent::Conversation(event)),
+                            Ok(None) | Err(_) => break,
+                        },
+                        changed = watched.changed() => {
+                            if changed.is_err() {
+                                return std::future::pending().await;
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            Err(status) => {
+                inbox.push_event(ClientEvent::Reply(Reply::Failed { what: format!("conversation {handle}"), error: status.message().to_owned() }));
+                // An unknown handle stays unknown: wait for the person to pick another.
+                if watched.changed().await.is_err() {
+                    return std::future::pending().await;
+                }
+                continue;
+            }
+        }
+        // Ended on its own: a short pause, then the same handle again (or whatever it is now).
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
 }
 
 async fn ingest_loop(mut client: Client, inbox: &Inbox, ingest: &mut mpsc::Receiver<AstSnippet>) -> String {

@@ -50,6 +50,30 @@ impl Theme {
         }
     }
 
+    /// For a surface drawn over macOS's Liquid Glass: the fills go translucent so the glass is what
+    /// is seen, and the hairlines go light, because a dark line on glass disappears. Text and the
+    /// meaning colours are unchanged — glass is a material, not a new palette.
+    pub fn glass(self) -> Self {
+        // `bg` stays opaque: it is also the label colour of a filled button, and a transparent one
+        // is a button with no words on it.
+        Self {
+            // Near-opaque: the glass shows at the edges and in the tint, never *through* the words —
+            // at half opacity a terminal behind the deck reads as a second layer of text.
+            panel: rgba(0x0e131a, 0.86),
+            card: rgba(0x131a23, 0.92),
+            border: rgba(0xffffff, 0.10),
+            line_strong: rgba(0xffffff, 0.20),
+            ..self
+        }
+    }
+
+    /// For the same surface over gpui's own blur, where there is no glass (before macOS 26): more
+    /// opaque fills and higher-contrast hairlines, rather than faking a refraction the platform
+    /// does not draw.
+    pub fn solid(self) -> Self {
+        Self { panel: Self::tint(self.panel, 0.93), card: Self::tint(self.card, 0.97), line_strong: rgb(0x364457), ..self }
+    }
+
     /// The same colour at a given opacity — the tinted fill behind a chip or a lit segment.
     pub fn tint(color: Rgba, alpha: f32) -> Rgba {
         Rgba { a: alpha, ..color }
@@ -151,6 +175,19 @@ pub fn human_uptime(seconds: f64) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn glass_lets_the_material_through_and_the_fallback_does_not_pretend_to() {
+        let dark = Theme::dark();
+        let (glass, solid) = (dark.glass(), dark.solid());
+        assert!(glass.panel.a < solid.panel.a && solid.panel.a < 1.0, "glass is the most translucent; the blur fallback is translucent but readable");
+        assert!(glass.card.a < solid.card.a);
+        assert_eq!((glass.text, glass.warn, glass.danger), (dark.text, dark.warn, dark.danger), "the meaning colours never change with the material");
+        assert_eq!((solid.text, solid.accent), (dark.text, dark.accent));
+        assert!(glass.border.r > 0.9 && glass.border.a < 0.2, "light hairlines on glass, where dark ones vanish");
+        assert_eq!(glass.bg.a, 1.0, "bg is a filled button's label colour, so it never goes transparent");
+    }
+
     use super::*;
 
     fn theme() -> Theme {

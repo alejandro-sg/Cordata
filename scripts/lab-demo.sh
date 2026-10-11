@@ -4,7 +4,8 @@
 # ~/.sierralab or a daemon you already run.
 #
 #   make lab-demo
-#   make lab-demo WATCH=~/some/project     # the window's observer watches that workspace
+#   make lab-demo WATCH=~/some/project        # the window's observer watches that workspace
+#   make lab-menubar-demo WATCH=~/some/project # the menu bar instead of the window (--menubar)
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 PYTHON="$ROOT/backend/.venv/bin/python"
@@ -49,6 +50,15 @@ if ! grep -q "demo daemon ready" "$DEMO_HOME/demo.log" 2>/dev/null; then
 fi
 ok "$(grep 'demo daemon ready' "$DEMO_HOME/demo.log" | head -1)"
 dim "Approvals appear on their own every ~15 s. Close the window (cmd-q) to stop the demo."
+
+# The menu bar is the same client against the same demo daemon; only the front door differs. The
+# window's --watch is meaningless there (it runs no observer), so it is not passed.
+if [[ "${1:-}" == "--menubar" ]]; then
+  dim "Watch the menu bar: the icon is idle, turns cyan while the demo works, and amber when a"
+  dim "destructive command is held. cmd-q in a terminal, or quit the process, to stop."
+  cd "$ROOT/lab"
+  exec env SIERRALAB_HOME="$DEMO_HOME" cargo run -q -p harness-menubar
+fi
 
 cd "$ROOT/lab"
 SIERRALAB_HOME="$DEMO_HOME" cargo run -q -p harness-lab -- --watch "${WATCH:-$WORKSPACE}"

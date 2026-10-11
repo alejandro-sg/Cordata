@@ -28,8 +28,8 @@ mod chrome;
 mod dock;
 pub mod dial;
 mod gauges;
-mod kit;
-mod overlays;
+pub mod kit;
+pub mod overlays;
 mod pods;
 mod side;
 
