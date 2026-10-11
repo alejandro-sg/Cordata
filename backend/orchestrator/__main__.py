@@ -66,28 +66,39 @@ def main(argv: list[str] | None = None) -> int:
     import provider_settings  # noqa: F401  (before anything that imports agent_common, which chdirs)
 
     parser = argparse.ArgumentParser(prog="orchestrator", description=__doc__.split("\n", 1)[0])
-    sub = parser.add_subparsers(dest="cmd", required=True)
-    run = sub.add_parser("run")
-    run.add_argument("goal")
-    run.add_argument("--cwd", default=os.getcwd())
-    run.add_argument("--workers")
-    run.add_argument("--dispatch", choices=("off", "shadow", "live"))
-    run.add_argument("--max-usd", type=float)
-    run.add_argument("--no-harden", action="store_true")
-    run.add_argument("--no-tier2", action="store_true")
-    run.add_argument("--json", action="store_true")
-    status = sub.add_parser("status")
+    sub = parser.add_subparsers(dest="cmd")
+    run = sub.add_parser("run", help="run an orchestrated coding task (default when goal is given)")
+    run.add_argument("goal", help="task goal / instructions")
+    run.add_argument("--cwd", default=os.getcwd(), help="target project directory (default: current directory)")
+    run.add_argument("--workers", help="comma-separated worker families (e.g. claude_code,antigravity,ollama)")
+    run.add_argument("--dispatch", choices=("off", "shadow", "live"), help="worker dispatch policy mode")
+    run.add_argument("--max-usd", type=float, help="budget cap envelope in USD")
+    run.add_argument("--no-harden", action="store_true", help="skip the cross-family hardening review pass")
+    run.add_argument("--no-tier2", action="store_true", help="skip the residual LLM review in audit")
+    run.add_argument("--json", action="store_true", help="stream NDJSON events instead of terminal formatting")
+    status = sub.add_parser("status", help="pool headroom, recent runs and handoffs")
     status.add_argument("--json", action="store_true")
-    show = sub.add_parser("show")
+    show = sub.add_parser("show", help="show one run's plan, history, and audit")
     show.add_argument("run_id")
     show.add_argument("--json", action="store_true")
-    resume = sub.add_parser("resume")
+    resume = sub.add_parser("resume", help="continue a paused run")
     resume.add_argument("run_id")
-    replay = sub.add_parser("replay")
+    replay = sub.add_parser("replay", help="judge the learned dispatch policy against always-strongest")
     replay.add_argument("--world", choices=("steep", "ceiling"), default="steep")
     replay.add_argument("--logs", type=int, default=6000)
     replay.add_argument("--ledger", action="store_true", help="judge on this machine's own logged outcomes instead of simulated ones")
-    args = parser.parse_args(argv)
+
+    args_list = list(sys.argv[1:] if argv is None else argv)
+    if not args_list:
+        parser.print_help()
+        return 0
+
+    known_cmds = {"run", "status", "show", "resume", "replay"}
+    if not any(arg in known_cmds or arg in ("-h", "--help") for arg in args_list):
+        # Allow running directly: orchestrator "Goal" or orchestrator --max-usd 2 "Goal"
+        args_list.insert(0, "run")
+
+    args = parser.parse_args(args_list)
 
     if args.cmd == "run":
         return asyncio.run(_run(args))

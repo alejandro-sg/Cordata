@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Sierralab Orchestrator CLI
+# Run from any project directory:
+#   orchestrator "Goal"
+#   orchestrator status
+#   orchestrator show <run_id>
+#   orchestrator resume <run_id>
+#   orchestrator replay
+
+set -euo pipefail
+
+# Resolve the absolute path to this script, resolving symlinks
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+  DIR="$( cd -P "$( dirname "$SOURCE" )" >/dev/null 2>&1 && pwd )"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+BIN_DIR="$( cd -P "$( dirname "$SOURCE" )" >/dev/null 2>&1 && pwd )"
+REPO_ROOT="$( cd -P "$BIN_DIR/.." >/dev/null 2>&1 && pwd )"
+
+PYTHON="$REPO_ROOT/backend/.venv/bin/python"
+
+if [[ ! -x "$PYTHON" ]]; then
+  echo "Error: Sierralab virtualenv not found at $PYTHON" >&2
+  echo "Please run: make setup (or scripts/setup.sh) in $REPO_ROOT" >&2
+  exit 1
+fi
+
+export PYTHONPATH="$REPO_ROOT/backend:${PYTHONPATH:-}"
+
+# Preserve the caller's working directory and execute orchestrator
+exec "$PYTHON" -m orchestrator "$@"

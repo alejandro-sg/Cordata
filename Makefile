@@ -1,4 +1,4 @@
-.PHONY: phase12-test gate-live setup up down restart status logs daemon daemon-install daemon-uninstall daemon-status deploy-mini deploy-mini-frontend deploy-mini-backend tui tui-build tui-test lab lab-demo lab-build lab-test lab-live lab-menubar lab-menubar-selftest lab-menubar-deck-selftest lab-menubar-demo lab-menubar-app proto evals evals-validate learning-test laya-test laya-export laya-eval stress tui-cloud tui-lab stress-cloud key check-key discord-key laya-watch settings
+.PHONY: phase12-test gate-live setup up down restart status logs daemon daemon-install daemon-uninstall daemon-status deploy-mini deploy-mini-frontend deploy-mini-backend tui tui-build tui-test lab lab-demo lab-build lab-test lab-live lab-menubar lab-menubar-selftest lab-menubar-deck-selftest lab-menubar-demo lab-menubar-app proto evals evals-validate learning-test laya-test laya-export laya-eval stress tui-cloud tui-lab stress-cloud key check-key discord-key laya-watch settings install-cli cli
 
 setup:
 	@scripts/setup.sh
@@ -220,3 +220,8 @@ laya-watch:
 # permission rules, warnings (docs/settings.md).   make settings DIR=~/some/project
 settings:
 	@backend/.venv/bin/python backend/settings_store.py $(or $(DIR),.)
+
+# Install orchestrator and sierra CLI binaries to ~/.local/bin
+install-cli cli:
+	@scripts/install-cli.sh
+
