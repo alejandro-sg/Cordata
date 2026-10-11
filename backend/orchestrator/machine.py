@@ -116,6 +116,25 @@ def walkthrough(record: RunRecord) -> str:
     """What the run did, for a person: the outcome, each step with its worker, the audit, handoffs and warnings —
     Antigravity's walkthrough artifact, from the record (no model writes it)."""
     lines = [f"# Walkthrough — {record.run_id}", "", f"**Goal:** {record.goal}", "", f"**Outcome:** {record.state}" + (f" — {record.reason}" if record.reason else "")]
+
+    # Antigravity visual artifact: Mermaid workflow diagram
+    plan_worker = record.workers.get("plan", [""])[0] if record.workers.get("plan") else "planner"
+    harden_worker = record.workers.get("harden", [""])[0] if record.workers.get("harden") else "reviewer"
+    audit_worker = record.workers.get("audit", [""])[0] if record.workers.get("audit") else "auditor"
+    lines += ["", "```mermaid", "flowchart TD", f'    Start(["Start"]) --> Plan["Plan ({plan_worker})"]']
+    prev_node = "Plan"
+    if record.plan and record.plan.get("steps"):
+        for i, step in enumerate(record.plan.get("steps", [])):
+            sid = f"Step_{i+1}"
+            sname = (step.get("name") or f"Step {i+1}").replace('"', "'")
+            sworker = step.get("worker") or "executor"
+            lines.append(f'    {prev_node} --> {sid}["{sname} ({sworker})"]')
+            prev_node = sid
+    lines.append(f'    {prev_node} --> Harden["Harden ({harden_worker})"]')
+    lines.append(f'    Harden --> Audit["Audit ({audit_worker})"]')
+    lines.append(f'    Audit --> End(["{record.state.upper()}"])')
+    lines.append("```")
+
     if record.plan:
         lines += ["", "## Steps"]
         for step in record.plan.get("steps", []):
@@ -127,9 +146,15 @@ def walkthrough(record: RunRecord) -> str:
         if audit.get("changed"):
             lines += ["", "## Changed files"] + [f"- `{path}`" for path in audit["changed"][:200]]
     if record.handoffs or record.drift_retries or record.replans:
-        lines += ["", "## Recovery", f"- handoffs: {len(record.handoffs)} · fix passes: {record.drift_retries} · replans: {record.replans}"]
+        lines += [
+            "",
+            "## Recovery",
+            f"- handoffs: {len(record.handoffs)} · fix passes: {record.drift_retries} · replans: {record.replans}",
+            "> [!NOTE]",
+            f"> Autonomous self-correction invoked: {len(record.handoffs)} handoff(s), {record.drift_retries} drift fix pass(es), {record.replans} replan(s).",
+        ]
     if record.warnings:
-        lines += ["", "## Warnings"] + [f"- {w}" for w in record.warnings]
+        lines += ["", "## Warnings", "> [!WARNING]"] + [f"> - {w}" for w in record.warnings]
     return "\n".join(lines) + "\n"
 
 

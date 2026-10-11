@@ -29,7 +29,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 DURATIONS = HERE / ".test-durations.json"
 #: Suites that need a real model (they are named *_smoke_test but are live checks; see .github/workflows/ci.yml).
-LIVE = {"_acp_smoke_test.py"}
+LIVE = {"_acp_smoke_test.py", "_acp_settings_smoke_test.py"}
 DEFAULT_TIMEOUT = 900.0
 UNKNOWN_DURATION = 30.0
 

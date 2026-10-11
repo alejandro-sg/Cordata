@@ -169,8 +169,36 @@ class Plan:
         return cls(acceptance_criteria=criteria, steps=steps, **known)
 
     def render(self) -> str:
-        """The plan as a person reads it (written beside the run in the ledger, shown by front doors)."""
-        lines = [f"# Plan {self.plan_id} (v{self.version})", "", f"**Goal:** {self.goal}", "", "## Steps"]
+        """The plan as a person reads it (written beside the run in the ledger, shown by front doors) —
+        Antigravity visual plan artifact with Mermaid workflow graph, status checklists, and scoped alerts."""
+        lines = [f"# Plan {self.plan_id} (v{self.version})", "", f"**Goal:** {self.goal}"]
+
+        # Antigravity visual artifact: Mermaid workflow graph
+        lines += ["", "```mermaid", "flowchart TD", '    Start(["Start"])']
+        prev = "Start"
+        for i, step in enumerate(self.steps, 1):
+            sid = f"Step_{i}"
+            sname = step.name.replace('"', "'")
+            lines.append(f'    {prev} --> {sid}["{i}. {sname} ({step.risk})"]')
+            prev = sid
+        lines.append(f'    {prev} --> Audit(["Audit & Verify"])')
+        lines.append("```")
+
+        # Budget envelope & scope alert
+        budget = self.budget_envelope or {}
+        max_usd = budget.get("max_usd")
+        budget_str = f"${max_usd:.2f} USD" if max_usd is not None else "unbounded"
+        max_tok = budget.get("max_tokens")
+        if max_tok:
+            budget_str += f" · {max_tok:,} tokens"
+        union_files = self.scope_union()
+        lines += [
+            "",
+            "> [!NOTE]",
+            f"> Budget envelope: {budget_str} | Steps: {len(self.steps)} | Target files: {len(union_files)}",
+        ]
+
+        lines += ["", "## Steps"]
         for i, step in enumerate(self.steps, 1):
             lines.append(f"{i}. [{step.status}] **{step.name}** (`{step.step_id}`, {step.risk}) — {step.description}")
             lines.append(f"   scope: {', '.join(step.file_scope) or '(read only)'}")

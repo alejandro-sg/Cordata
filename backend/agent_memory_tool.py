@@ -19,9 +19,11 @@ fact.
 
 import functools
 import logging
+import threading
 import time
 import uuid
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 from qdrant_client import QdrantClient
@@ -52,22 +54,42 @@ _MODEL_NAME = "multi-qa-MiniLM-L6-cos-v1"  # 384-dim, local, no download server 
 _DEFAULT_KIND = "fact"
 _VALID_KINDS = {"fact", "lesson", "strategy", "preference"}
 
-_embedder = SentenceTransformer(_MODEL_NAME)
-# timeout=5: qdrant-client's own default is no timeout at all, which is what
-# turned a LAN-hosted Qdrant's occasional unreachability into an observed
-# 15s+ hang per call rather than a fast, visible failure — see
-# MemoryStore's own _memory_op wrapper below for what happens once a call
-# actually does fail within this window.
-#
-# check_compatibility=False: without it, the client's first real call also
-# makes a separate lazy "GET server version" request to compare against its
-# own client version — under the same timeout, so an unreachable Qdrant paid
-# for *two* full 5s timeouts back to back (confirmed live: ~10s to the first
-# degraded response, not ~5s). qdrant-client and the server version this
-# deployment runs are both pinned in requirements.txt / the container image
-# below, so there's nothing this check would catch that a hard version
-# mismatch wouldn't already surface directly as request failures.
-_client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, timeout=5, check_compatibility=False)
+_embedder_inst: Any = None
+_client_inst: Any = None
+_embedder_lock = threading.Lock()
+_client_lock = threading.Lock()
+
+
+def _get_embedder() -> SentenceTransformer:
+    global _embedder_inst
+    with _embedder_lock:
+        if _embedder_inst is None:
+            try:
+                _embedder_inst = SentenceTransformer(_MODEL_NAME, local_files_only=True)
+            except Exception:
+                try:
+                    _embedder_inst = SentenceTransformer(_MODEL_NAME)
+                except Exception as err:
+                    _logger.warning("agent_memory: failed to load embedder: %s", err)
+                    raise
+        return _embedder_inst
+
+
+def _get_client() -> QdrantClient:
+    global _client_inst
+    with _client_lock:
+        if _client_inst is None:
+            _client_inst = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, timeout=5, check_compatibility=False)
+        return _client_inst
+
+
+def __getattr__(name: str) -> Any:
+    if name == "_embedder":
+        return _get_embedder()
+    if name == "_client":
+        return _get_client()
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
 
 _logger = logging.getLogger(__name__)
 
