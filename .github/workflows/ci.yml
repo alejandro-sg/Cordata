@@ -107,6 +107,9 @@ jobs:
           # Phase 2: the quota ledger (windows, soft/hard lines, provider signals, the envelope) and safe-point handoffs —
           # a provider limit injected at step 2 of 5, rolled back, handed off, resumed elsewhere, the project's tests pass.
           python _quota_ledger_smoke_test.py
+          # Phase 3: the plan contract and the plan → execute → harden → audit machine — accept, planted drift caught
+          # and fixed, Tier-2 verdicts, an unreported scope escape, bounded retries then restore, pause and resume.
+          python _orchestrator_machine_smoke_test.py
           python _os_context_smoke_test.py
           python _grpc_bridge_smoke_test.py
           python _vision_turn_smoke_test.py

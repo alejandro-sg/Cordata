@@ -10,14 +10,17 @@ The choices (*points*), each already made somewhere in the harness by a rule, a 
     engine   hand the work to the Claude Code CLI, or do it with local tools
     ask      ask a person about this call, or not
 
-Three more decision points are shaped the same way but are **not acted on in v1**, because neither has a cheap
-per-turn seam to act through (a delegated model is built once per session, and the local role table once up front):
+Two more decision points are shaped the same way but are **not acted on inside a session**, because neither has a
+cheap per-turn seam there (a delegated model is built once per session, and the local role table once up front):
 
     tier     which model tier runs a delegated task — fast · standard · strong
     effort   the reasoning effort for a local role — low · medium · high · max
 
-They are the phase-3 seam: `choose`'s signature is what a later scorer replaces, and adding them is adding a call
-site, not a change here.
+The orchestrator (`orchestrator/dispatch.py`) *does* have that seam — every role of every task is a fresh worker
+call — so it acts on them there, together with three points of its own: `planner_pool`, `executor_pool` and
+`reviewer_pool` (which worker/model takes the role). Those live in contexts prefixed `orch|` and are learned through
+`observe_arm`, from the run's own outcome rather than a turn record; the additive-only property below holds for them
+the same way — the dispatcher's gates filter, the bandit only orders what passed.
 
 It is a **bandit**, not a policy: it does not decide what is *allowed*, only which of a set of already-permitted
 options tends to turn out better here. The reward is the turn's own outcome (`outcomes.score`), re-weighted so the
@@ -63,6 +66,8 @@ MODES = ("off", "shadow", "live")
 #: The points acted on in v1. `tier` and `effort` are reserved for phase 3 (see the module docstring) — a stored
 #: context for them is harmless and simply never read, so this is a record of intent, not a validation gate.
 POINTS = ("route", "engine", "ask")
+#: The orchestrator's points (orchestrator/dispatch.py), acted on per task.
+ORCH_POINTS = ("planner_pool", "executor_pool", "reviewer_pool", "tier", "effort")
 
 #: How many turns of history the context table is rebuilt from, and how many turn ids are remembered (so a
 #: reconcile pass over the same ledger cannot count a turn twice).
@@ -305,6 +310,21 @@ class Bandit:
             _event("learn", turn, project=self.project, point=str(point), arm=str(arm), reward=value)
         self.save()
         return True
+
+    def observe_arm(self, ctx: str, arm: str, *, value: float, win: bool, cost: float = 0.0, correction: float = 0.0, save: bool = True) -> None:
+        """Fold one outcome straight into ``ctx``/``arm`` — for callers whose reward is not a turn record (the
+        orchestrator scores a whole run). Same running statistics as ``observe``."""
+        with self._lock:
+            stats = self._entry(ctx)["arms"].setdefault(str(arm), {"n": 0, "wins": 0.0, "mean": 0.0, "cost": 0.0, "correction": 0.0})
+            n = int(stats.get("n", 0) or 0) + 1
+            stats["n"] = n
+            stats["wins"] = round(float(stats.get("wins", 0.0) or 0.0) + (1.0 if win else 0.0), 4)
+            stats["mean"] = round(_running(stats.get("mean", 0.0), max(-1.0, min(1.0, float(value))), n), 4)
+            stats["cost"] = round(_running(stats.get("cost", 0.0), float(cost), n), 4)
+            stats["correction"] = round(_running(stats.get("correction", 0.0), float(correction), n), 4)
+        _event("learn", "", project=self.project, context=ctx, arm=str(arm), reward=round(float(value), 4))
+        if save:
+            self.save()
 
     def learn(self, project: str | os.PathLike | None = None, *, lam: float = 1.0, mu: float = 1.0, limit: int = LEARN_WINDOW) -> int:
         """Fold every reconciled turn in the project's ledger into the table. Returns how many it learned from.
