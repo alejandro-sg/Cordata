@@ -119,8 +119,10 @@ def test_vault_covers_generated_and_plugin_tools() -> None:
     from strands.interventions import Deny
 
     blocked = vault_proxy.VaultStatus(enabled=True, ok=False, addr="http://127.0.0.1:1", reason="the vault is unreachable and vault.egressPolicy is 'deny'")
-    real_generated, real_current = acp_server.current_generated_tool_names, acp_server.settings_store.current
-    acp_server.current_generated_tool_names = lambda: {"scrape_prices"}
+    import acp_approval  # the approval gate lives here since acp_server was split
+
+    real_generated, real_current = acp_approval.current_generated_tool_names, acp_server.settings_store.current
+    acp_approval.current_generated_tool_names = lambda: {"scrape_prices"}
     acp_server.settings_store.current = lambda cwd: acp_server.settings_store.Settings()
     original = vault_proxy.reprobe
     acp_server.vault_proxy.reprobe = lambda status, **kw: status
@@ -149,7 +151,7 @@ def test_vault_covers_generated_and_plugin_tools() -> None:
         check("http_request" not in names() and "file_read" in names(), "with the vault refusing egress, a sub-agent's kit has no network tool")
         vault_proxy._LAST = None
     finally:
-        acp_server.current_generated_tool_names = real_generated
+        acp_approval.current_generated_tool_names = real_generated
         acp_server.settings_store.current = real_current
         acp_server.vault_proxy.reprobe = original
 

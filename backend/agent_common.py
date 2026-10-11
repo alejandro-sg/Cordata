@@ -13,6 +13,7 @@ import asyncio
 import importlib.util
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -178,6 +179,9 @@ SESSIONS_DIR = BACKEND_DIR / "sessions"
 SKILLS_GENERATED_DIR = BACKEND_DIR / "skills_generated"
 WORKSPACE_DIR.mkdir(exist_ok=True)
 SESSIONS_DIR.mkdir(exist_ok=True)
+# A relative sys.path entry ('' or '.', from `python -m` or PYTHONPATH=.) means "the directory we started in";
+# pin it to that directory before moving, or every bare-module import after the chdir looks in workspace/ instead.
+sys.path[:] = [os.path.abspath(entry) if not os.path.isabs(entry) else entry for entry in sys.path]
 os.chdir(WORKSPACE_DIR)
 
 
