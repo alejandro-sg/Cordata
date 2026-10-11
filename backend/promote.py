@@ -51,6 +51,8 @@ logger = logging.getLogger(__name__)
 #: A third candidate kind, a fine-tuned Laya checkpoint, passes the same gate through ``arm_env`` instead of a
 #: store — it has no body to filter, and only its weights can differ (`laya_checkpoints.py`).
 KINDS = ("skill", "prompt")
+#: A dispatch policy (orchestrator/dispatch.py) is judged by ``evaluate_dispatch`` on the orchestration suite instead:
+#: it changes who does the work, not what the agent reads, so its evidence is pass rate *and* cost per success.
 
 MIN_REWARD_GAIN = 0.05
 DEFAULT_TASKS = 12
@@ -260,8 +262,85 @@ def cycle(
     return verdicts
 
 
+#: A dispatch policy may cost at most this much pass rate against the baseline (the policy's own MIN_TOLERANCE).
+DISPATCH_PASS_TOLERANCE = 0.01
+
+
+def judge_dispatch(base: dict[str, Any], cand: dict[str, Any], *, tolerance: float = DISPATCH_PASS_TOLERANCE) -> tuple[bool, str]:
+    """One split's verdict for a dispatch policy, from two ``SuiteResult.aggregate`` blocks: no more than ``tolerance``
+    pass rate lost, cheaper per success, no worse at surviving handoffs, and no less plan-conformant (a policy that
+    picks workers which write outside their scope is out, whatever it saves)."""
+    if not base.get("tasks") or not cand.get("tasks"):
+        return False, "no tasks"
+    if (cand["pass_rate"] or 0.0) < (base["pass_rate"] or 0.0) - tolerance:
+        return False, f"pass rate {cand['pass_rate']} < baseline {base['pass_rate']} - {tolerance}"
+    if base.get("plan_conformance") is not None and (cand.get("plan_conformance") or 0.0) < base["plan_conformance"]:
+        return False, f"plan conformance {cand.get('plan_conformance')} < baseline {base['plan_conformance']}"
+    if base.get("handoff_survival") is not None and cand.get("handoff_survival") is not None and cand["handoff_survival"] < base["handoff_survival"] - tolerance:
+        return False, f"handoff survival {cand['handoff_survival']} < baseline {base['handoff_survival']}"
+    if cand.get("cost_per_success") is None or base.get("cost_per_success") is None or cand["cost_per_success"] >= base["cost_per_success"]:
+        return False, f"no cheaper per success ({cand.get('cost_per_success')} vs {base.get('cost_per_success')})"
+    return True, f"pass {cand['pass_rate']} vs {base['pass_rate']}, cost/success {cand['cost_per_success']} vs {base['cost_per_success']}"
+
+
+def evaluate_dispatch(
+    *,
+    candidate: str = "learned",
+    baseline: str = "strongest",
+    driver: str = "sim",
+    world: str = "steep",
+    table: Any = None,
+    limit: int | None = None,
+    task_ids: list[str] | None = None,
+    run: Callable[..., Any] | None = None,
+) -> Verdict:
+    """The gate a dispatch policy passes before ``orchestrator.dispatch`` may be ``live``: the orchestration eval suite
+    (``orchestrator/evalsuite.py``) run under the baseline and the candidate on the **dev** tasks, then on the
+    **held-out** ones; both must pass ``judge_dispatch``. Never raises."""
+    import asyncio
+
+    try:
+        from orchestrator import evalsuite
+
+        runner = run or evalsuite.run_suite
+        verdict = Verdict(f"dispatch:{candidate}", False, "", driver=driver, kind="dispatch")
+        blocks: dict[str, Any] = {}
+        for split in ("dev", "heldout"):
+            base = asyncio.run(runner(policy=baseline, split=split, driver=driver, world=world, limit=limit, task_ids=task_ids))
+            cand = asyncio.run(runner(policy=candidate, split=split, driver=driver, world=world, table=table, limit=limit, task_ids=task_ids))
+            blocks[split] = {"baseline": base.aggregate(split), "candidate": cand.aggregate(split)}
+            ok, why = judge_dispatch(blocks[split]["baseline"], blocks[split]["candidate"])
+            verdict.tasks += blocks[split]["candidate"]["tasks"]
+            if not ok:
+                verdict.reason = f"{split}: {why}"
+                verdict.heldout = blocks
+                return verdict
+        verdict.promote = True
+        verdict.reason = "dev and held-out: " + judge_dispatch(blocks["heldout"]["baseline"], blocks["heldout"]["candidate"])[1]
+        verdict.heldout = blocks
+        return verdict
+    except Exception as error:
+        logger.debug("promote: dispatch evaluation failed", exc_info=True)
+        return Verdict(f"dispatch:{candidate}", False, f"evaluation error: {type(error).__name__}: {error}", kind="dispatch")
+
+
 def main(argv: list[str] | None = None) -> int:
     from evals.runner import CassetteDriver, LiveDriver
+
+    if argv is None:
+        import sys
+
+        argv = sys.argv[1:]
+    if argv[:1] == ["dispatch"]:
+        parser = argparse.ArgumentParser(prog="promote dispatch", description="Gate a dispatch policy on the orchestration eval suite.")
+        parser.add_argument("--candidate", default="learned", choices=("learned", "random", "cheapest"))
+        parser.add_argument("--driver", default="sim", choices=("sim", "live"))
+        parser.add_argument("--world", default="steep", choices=("steep", "ceiling"), help="sim driver only: which quality table is true")
+        parser.add_argument("--limit", type=int)
+        args = parser.parse_args(argv[1:])
+        verdict = evaluate_dispatch(candidate=args.candidate, driver=args.driver, world=args.world, limit=args.limit)
+        print(f"{'PROMOTE' if verdict.promote else 'hold   '} {verdict.name}: {verdict.reason}")
+        return 0
 
     parser = argparse.ArgumentParser(prog="promote", description="Evaluate staged learned skills and prompt overlays against the eval suite.")
     parser.add_argument("--project", default=os.getcwd())

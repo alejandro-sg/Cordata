@@ -110,6 +110,10 @@ jobs:
           # Phase 3: the plan contract and the plan → execute → harden → audit machine — accept, planted drift caught
           # and fixed, Tier-2 verdicts, an unreported scope escape, bounded retries then restore, pause and resume.
           python _orchestrator_machine_smoke_test.py
+          # Phases 4–5: the dispatch policy (gates before scores; cheapest competent tier, judged in two simulated worlds
+          # and by replay) and the orchestration eval suite with its promotion gate.
+          python _dispatch_smoke_test.py
+          python _orchestration_eval_smoke_test.py
           python _os_context_smoke_test.py
           python _grpc_bridge_smoke_test.py
           python _vision_turn_smoke_test.py

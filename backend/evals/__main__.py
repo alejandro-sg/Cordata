@@ -4,6 +4,8 @@
     validate                          every task is well-formed, fails before the work, passes after the oracle
     run [--driver oracle|replay|record|live] [--suite dev|heldout|all] [--category C] [--task ID ...]
         [--cassettes DIR] [--out DIR] [--timeout S]
+    orchestrate [--policy strongest|learned|random] [--driver sim|live] [--suite dev|heldout|all] [--world steep|ceiling]
+                                      the orchestration suite (orchestrator/evalsuite.py)
     compare A.json B.json             what changed between two runs
 """
 
@@ -37,6 +39,13 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--cassettes", default=str(Path(__file__).parent / "cassettes"))
     run.add_argument("--out", default=None)
     run.add_argument("--timeout", type=float, default=180.0)
+    orch = sub.add_parser("orchestrate", help="the orchestration suite: the whole plan/execute/harden/audit machine per task")
+    orch.add_argument("--policy", choices=("strongest", "learned", "random"), default="strongest")
+    orch.add_argument("--driver", choices=("sim", "live"), default="sim")
+    orch.add_argument("--suite", choices=("dev", "heldout", "all"), default="all")
+    orch.add_argument("--world", choices=("steep", "ceiling"), default="steep", help="sim driver: which quality table is true")
+    orch.add_argument("--limit", type=int)
+    orch.add_argument("--out", default=None)
     cmp_ = sub.add_parser("compare")
     cmp_.add_argument("a")
     cmp_.add_argument("b")
@@ -53,6 +62,24 @@ def main(argv: list[str] | None = None) -> int:
             print("INVALID:", problem)
         print(f"{len(CATALOG)} tasks, {len(bad)} problems")
         return 1 if bad else 0
+    if args.cmd == "orchestrate":
+        import asyncio
+
+        from orchestrator import evalsuite
+
+        result = asyncio.run(evalsuite.run_suite(policy=args.policy, split=args.suite, driver=args.driver, world=args.world, limit=args.limit))
+        for o in result.outcomes:
+            print(f"{'PASS' if o.passed else 'FAIL'} {o.id:24} {o.state:16} cost {o.cost:6.2f}  handoffs {o.handoffs}  retries {o.drift_retries}/{o.replans}  {o.seconds:5.1f}s", flush=True)
+        for split in ("dev", "heldout", "all"):
+            block = result.aggregate(split)
+            if block["tasks"]:
+                print(f"  {split:8} " + "  ".join(f"{k}={v}" for k, v in block.items()))
+        out = Path(args.out) if args.out else default_out()
+        out.mkdir(parents=True, exist_ok=True)
+        target = out / f"orchestrate-{args.policy}-{args.driver}-{args.world}.json"
+        target.write_text(json.dumps(result.to_json(), indent=1))
+        print(f"\n{target}")
+        return 0
     if args.cmd == "compare":
         print(json.dumps(compare(json.loads(Path(args.a).read_text()), json.loads(Path(args.b).read_text())), indent=2))
         return 0

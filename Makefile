@@ -146,6 +146,13 @@ orchestrator-test:
 	@backend/.venv/bin/python backend/_worker_conformance_smoke_test.py
 	@backend/.venv/bin/python backend/_quota_ledger_smoke_test.py
 	@backend/.venv/bin/python backend/_orchestrator_machine_smoke_test.py
+	@backend/.venv/bin/python backend/_dispatch_smoke_test.py
+	@backend/.venv/bin/python backend/_orchestration_eval_smoke_test.py
+
+# The orchestration eval suite: the whole machine on every coding task of the eval catalog, simulated providers.
+#   make evals-orchestration ARGS="--policy learned --world ceiling"
+evals-orchestration:
+	@cd backend && PYTHONPATH=. .venv/bin/python -m evals orchestrate $(ARGS)
 
 # The verification gate against the configured REAL model (spends cloud tokens; Discord off, Laya off, a throwaway
 # SIERRALAB_HOME). Prints what the model did.   make gate-live ARGS="1 3"
