@@ -461,6 +461,15 @@ def main():
                 emit({"jsonrpc": "2.0", "id": message["id"], "error": {"code": -32602, "message": "Invalid params", "data": {"error": "unknown mode"}}})
         elif method in ("_sierralab/lab/effort", "_sierralab/lab/dial", "_sierralab/lab/isolate", "_sierralab/lab/inject", "_sierralab/lab/release"):
             handle_control(message, method, params)
+        elif method == "_sierralab/os-context" and "id" in message:
+            # The menu-bar deck's capture, registered for the next turn the way `acp_server` does it.
+            # The demo has no model to show it to, so it is acknowledged and named in the feed — a
+            # child that never answered would hold the deck's `SubmitTurn` until it timed out.
+            app = str(params.get("app_name") or "an app")[:80]
+            emit({"jsonrpc": "2.0", "id": message["id"], "result": {"registered": True}})
+            with STATE_LOCK:
+                PODS["orchestrator"]["trace"].append({"tool": "SCREEN", "status": "done", "input": f"context from {app}", "ms": 0, "ts": time.time()})
+            publish()
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ its working directory, so a test can assert what actually reached the child:
   bridge/memory   {event}                   emits a ``_sierralab/memory`` event
   _sierralab/lab/effort | dial | isolate    answers the request (an error for value "bogus")
   _sierralab/lab/inject | release          answers (inject refuses empty text, and the pod 'stopped')
+  _sierralab/os-context                    answers {ok: true} — what the menu bar registers before a turn
   session/set_mode {modeId}                 answers {} for plan | build | auto, an error otherwise
 
 Everything is also logged as received, including any response to its permission request.
@@ -132,6 +133,8 @@ for line in sys.stdin:
             emit({"jsonrpc": "2.0", "id": message["id"], "error": {"code": -32602, "message": "Invalid params", "data": {"error": "stopped is isolated; release it first"}}})
         else:
             emit({"jsonrpc": "2.0", "id": message["id"], "result": {"pod": params.get("pod"), "queued": 1}})
+    elif method == "_sierralab/os-context":
+        emit({"jsonrpc": "2.0", "id": message["id"], "result": {"ok": True, "app": params.get("app_name", ""), "denied": False}})
     elif method == "_sierralab/lab/release":
         emit({"jsonrpc": "2.0", "id": message["id"], "result": {"pod": params.get("pod"), "isolated": False}})
     elif method in ("_sierralab/lab/effort", "_sierralab/lab/dial", "_sierralab/lab/isolate"):

@@ -58,6 +58,8 @@ class FakeOmlx:
         self.load_delay = load_delay
         self.pinned = set(pinned or ())
         self.broken = set(broken or ())  # load answers 409, as oMLX does for a model type it cannot run
+        self.leaky: set[str] = set()  # unloading one of these flips its flag but keeps its bytes in the pool
+        self.retained = 0
         self.loaded: dict[str, float] = {name: time.time() for name in (loaded or ())}
         self.requests: list[dict[str, Any]] = []
         self.events: list[str] = []  # "load X" / "unload X" / "chat X", in order
@@ -115,7 +117,8 @@ class FakeOmlx:
                             self._json({"detail": f"model {model} is pinned"}, 409)
                             return
                         with fake._lock:
-                            fake.loaded.pop(model, None)
+                            if fake.loaded.pop(model, None) is not None and model in fake.leaky:
+                                fake.retained += fake.sizes[model]
                             fake.events.append(f"unload {model}")
                         self._json({"status": "unloaded", "model_id": model})
                     return
@@ -176,7 +179,7 @@ class FakeOmlx:
                 )
             return {
                 "final_ceiling": self.ceiling,
-                "current_model_memory": sum(self.sizes[name] for name in self.loaded),
+                "current_model_memory": sum(self.sizes[name] for name in self.loaded) + self.retained,
                 "model_count": len(self.sizes),
                 "loaded_count": len(self.loaded),
                 "models": rows,

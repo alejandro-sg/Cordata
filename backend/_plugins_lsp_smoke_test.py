@@ -196,6 +196,14 @@ def test_lsp() -> None:
     lib = crate / "src" / "lib.rs"
     lib.write_text("pub fn double(x: i32) -> i32 {\n    x * 2\n}\n\npub fn broken() -> i32 {\n    let s: String = double(2);\n    s.len() as i32\n}\n")
 
+    # A cloned, untrusted crate: rust-analyzer is told not to run its build scripts, proc-macros or `cargo check`
+    # (that is the crate's own code). Its type errors come from `cargo check`, so the rest of this test trusts it.
+    check(lsp_bridge.LspClient(lsp_bridge.SERVERS[0], ("rust-analyzer",), str(crate), trusted=False).restricted == lsp_bridge.UNTRUSTED_OPTIONS["rust"], "an untrusted folder's rust-analyzer runs restricted")
+    check(lsp_bridge.LspClient(lsp_bridge.SERVERS[0], ("rust-analyzer",), str(crate), trusted=False)._configuration("rust-analyzer")["cargo"]["buildScripts"]["enable"] is False, "…including when it asks for its configuration")
+    check(not lsp_bridge.folder_trusted(str(crate)), "the crate starts untrusted")
+    settings_store.trust_project(str(crate))
+    check(lsp_bridge.LspClient(lsp_bridge.SERVERS[0], ("rust-analyzer",), str(crate), trusted=lsp_bridge.folder_trusted(str(crate))).restricted is None, "a trusted folder's rust-analyzer runs as configured")
+
     events: list = []
     unsubscribe = harness_events.subscribe(lambda kind, payload: events.append((kind, payload)))
     os.chdir(crate)

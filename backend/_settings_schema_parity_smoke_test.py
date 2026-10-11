@@ -48,6 +48,8 @@ def rust_schema() -> dict[str, tuple]:
             return ("str",)
         if kind == "Enum":
             return ("enum", tuple(re.findall(r'"([^"]*)"', args)))
+        if kind == "BundleIds":
+            return ("bundle_ids",)
         if kind == "Float":
             low, _, high = args.partition(",")
             return ("float", float(low.strip()), float(high.strip()))
@@ -97,6 +99,18 @@ def main() -> None:
         "observer.intervalMinutes",
     ):
         check(key in rust and key in settings_store.SCHEMA, f"{key} is declared on both sides")
+
+    # The keys a repository may not set for itself are a security property: one side forgetting a key means that
+    # front door lets a cloned repo loosen it.
+    source = RUST_SETTINGS.read_text(encoding="utf-8")
+    start = source.index("const TRUST_GATED_KEYS: &[&str] = &[")
+    rust_gated = set(re.findall(r'"([^"]+)"', source[start : source.index("];", start)]))
+    check(
+        rust_gated == set(settings_store.TRUST_GATED_KEYS),
+        f"the trust-gated keys agree (python only: {sorted(set(settings_store.TRUST_GATED_KEYS) - rust_gated)}, rust only: {sorted(rust_gated - set(settings_store.TRUST_GATED_KEYS))})",
+    )
+    for key in ("laya.callGuard", "laya.riskDestroy", "laya.mode", "preflight.enabled", "preflight.tests"):
+        check(key in settings_store.TRUST_GATED_KEYS, f"{key} is trust-gated")
 
     # A credential must never be settable through a settings file, which is why
     # vault.token is absent from both tables rather than range-checked.

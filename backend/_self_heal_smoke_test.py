@@ -165,6 +165,10 @@ def test_environmental_failure() -> None:
     agent, hooks, events, _ = run([call("shell", {"command": "apply_patch"}), text("ok")], diagnose)
     check(diagnose.calls == [] and phases(events) == ["command_missing"], "exit 127 (command not found) skips the Debugger entirely")
     check("call the tool directly" in tool_texts(agent)[0], "…and tells the model it probably meant a tool")
+    diagnose = FakeDiagnose([GOOD_PATCH])
+    agent, hooks, events, _ = run([call("shell", {"command": f"{sys.executable} -c 'import sys; sys.exit(124)'"}), text("ok")], diagnose)
+    check(diagnose.calls == [] and phases(events) == ["command_timed_out"], f"exit 124 (timed out) skips the Debugger entirely ({phases(events)})")
+    check("waiting, not broken" in tool_texts(agent)[0], "…and tells the model to retry, not refuse")
 
 
 def test_real_debugger_agent() -> None:

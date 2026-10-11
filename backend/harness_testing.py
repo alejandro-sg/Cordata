@@ -25,6 +25,9 @@ from strands.models.model import Model
 
 # Scripted turns are not lessons: reflection (reflect.py) would draft one, on a background thread, from every bad one.
 os.environ.setdefault("SIERRALAB_REFLECT", "off")
+# Nor does a scripted turn need a sentence-transformer loading in the background: skills rank by keywords. The real
+# embedder is exercised by `_skill_search_smoke_test.py` (an injected one, and the real one when it is cached).
+os.environ.setdefault("SIERRALAB_SKILL_EMBED", "off")
 
 
 @dataclass
@@ -34,14 +37,17 @@ class Step:
     input: dict = field(default_factory=dict)
     text: str = ""
     tool_use_id: str | None = None
+    tokens: int = 2  # what the model call reports as used (the loop's usage metrics, and `limits`, read it)
 
 
-def tool(name: str, tool_input: dict | None = None, tool_use_id: str | None = None) -> Step:
-    return Step(kind="tool", name=name, input=tool_input or {}, tool_use_id=tool_use_id)
+def tool(name: str, tool_input: dict | None = None, tool_use_id: str | None = None, *, says: str = "", tokens: int = 2) -> Step:
+    """A tool call, optionally preceded by narration in the same assistant message (``says``) — what a real model
+    does when it explains a step before taking it."""
+    return Step(kind="tool", name=name, input=tool_input or {}, tool_use_id=tool_use_id, text=says, tokens=tokens)
 
 
-def text(reply: str) -> Step:
-    return Step(kind="text", text=reply)
+def text(reply: str, *, tokens: int = 2) -> Step:
+    return Step(kind="text", text=reply, tokens=tokens)
 
 
 class ScriptedModel(Model):
@@ -90,6 +96,10 @@ class ScriptedModel(Model):
         if step.kind == "tool":
             self._ids += 1
             tool_use_id = step.tool_use_id or f"call-{self._ids}-{step.name}"
+            if step.text:
+                yield {"contentBlockStart": {"start": {}}}
+                yield {"contentBlockDelta": {"delta": {"text": step.text}}}
+                yield {"contentBlockStop": {}}
             yield {"contentBlockStart": {"start": {"toolUse": {"toolUseId": tool_use_id, "name": step.name}}}}
             yield {"contentBlockDelta": {"delta": {"toolUse": {"input": json.dumps(step.input)}}}}
             yield {"contentBlockStop": {}}
@@ -99,7 +109,8 @@ class ScriptedModel(Model):
             yield {"contentBlockDelta": {"delta": {"text": step.text}}}
             yield {"contentBlockStop": {}}
             yield {"messageStop": {"stopReason": "end_turn"}}
-        yield {"metadata": {"usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2}, "metrics": {"latencyMs": 1}}}
+        used = max(2, step.tokens)
+        yield {"metadata": {"usage": {"inputTokens": used - 1, "outputTokens": 1, "totalTokens": used}, "metrics": {"latencyMs": 1}}}
 
 
 def last_text(messages: list | None) -> str:

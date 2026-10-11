@@ -166,7 +166,9 @@ def main() -> None:
     with FakeOllama(scripts) as fake:
         env["OLLAMA_BASE_URL"] = fake.base_url
         debug = os.environ.get("LAB_TUI_DEBUG_LOG")
-        argv = [str(BINARY), "--cwd", str(project), *(["--debug-log", debug] if debug else [])]
+        # stdio, explicitly: the default (`auto`) joins a running daemon's hub, and on a machine where one is up the test
+        # would drive *that* daemon — its provider, its MCP servers, its operator's Discord — instead of the fake.
+        argv = [str(BINARY), "--cwd", str(project), "--transport", "stdio", *(["--debug-log", debug] if debug else [])]
         term = Terminal(argv, env)
         try:
             run(term, fake, project)

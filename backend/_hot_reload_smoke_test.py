@@ -91,12 +91,12 @@ def main() -> None:
             "resolve_tools' default-tools path still denies a hot-loaded generated tool to a sub-agent",
         )
 
-        explicit_names = {t.tool_name for t in sac.resolve_tools([_TEST_TOOL_NAME, "think"], caller, "smoke-test")}
+        explicit_names = {t.tool_name for t in sac.resolve_tools([_TEST_TOOL_NAME, "file_read"], caller, "smoke-test")}
         check(
             _TEST_TOOL_NAME not in explicit_names,
             "resolve_tools denies a hot-loaded generated tool even when a sub-agent spec names it explicitly",
         )
-        check("think" in explicit_names, "resolve_tools still grants an explicitly-requested safe tool alongside it")
+        check("file_read" in explicit_names, "resolve_tools still grants an explicitly-requested safe tool alongside it")
 
         # A second AfterToolCallEvent for the same tool (e.g. the writer
         # re-wrote it) must be a no-op, not a duplicate-registration error.

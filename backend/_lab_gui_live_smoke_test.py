@@ -3,7 +3,9 @@
 Starts the demo daemon (``lab_demo.py``: the real Supervisor + gRPC bridge, a scripted session, a
 fake oMLX) in a throwaway home, runs ``lab/crates/harness-client/tests/live.rs`` against it, then
 reads the daemon's ``state.db`` to prove the human's choices were audited: the rejection and the
-isolation, the approval, the knobs, the unload, and the ingested symbol.
+isolation, the approval, the knobs, the unload, and the ingested symbol. Then the menu-bar deck's
+turn (``lab/crates/harness-menubar/tests/live_turn.rs``): a capture through the real client and bridge,
+checked in the daemon's ``daemon.log`` and ledger.
 
     backend/.venv/bin/python _lab_gui_live_smoke_test.py        (or: make lab-live)
 
@@ -63,6 +65,25 @@ def main() -> int:
         check(run.returncode == 0, "the Rust client and the Python bridge agree (lab/crates/harness-client/tests/live.rs)")
         for needle in ("autonomy:", "agents:", "steer:", "modal:", "rejected + isolated", "approved:", "diff demo-", "stress:", "observer:", "ingest: accepted", "unload:"):
             check(needle in run.stdout, f"the live run reported: {needle}")
+
+        # The menu-bar deck's turn: a capture (from a fake OS source) through the real client and bridge.
+        deck = subprocess.run(
+            ["cargo", "test", "-p", "harness-menubar", "--test", "live_turn", "--", "--ignored", "--nocapture", "--test-threads=1"],
+            cwd=LAB,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        print(deck.stdout[-2000:])
+        if deck.returncode != 0:
+            print(deck.stderr[-3000:], file=sys.stderr)
+        check(deck.returncode == 0, "the deck's captured turn reached the real bridge (lab/crates/harness-menubar/tests/live_turn.rs)")
+        check("menubar turn: route=" in deck.stdout and "menubar bypass: refused" in deck.stdout, "…accepted for Safari, refused for a password manager")
+        log = (home / "daemon.log").read_text(encoding="utf-8") if (home / "daemon.log").exists() else ""
+        lines = [line for line in log.splitlines() if "grpc: submit_turn" in line and "harness-menubar" in line]
+        check(bool(lines) and "app='Safari' (com.apple.Safari)" in lines[-1] and "GitHub PR #123" in lines[-1] and "raise the deck timeout to 30s" in lines[-1], f"the daemon log names the app, the window title and the selection ({lines[-1][:200] if lines else 'no line'})")
+        check(not any("ABCDEFGHIJKLMNOPQRSTUV" in line for line in log.splitlines()), "…and no part of the key in the title reached the log")
     finally:
         demo.terminate()
         try:
@@ -92,7 +113,11 @@ def main() -> int:
     names = [(r["payload"].get("name"), r["payload"].get("change")) for r in ingest]
     check(("second_fn", "modified") in names and ("first_fn", "added") in names, f"the observer's symbols reached the state log asynchronously ({names})")
     check(("first_fn", "modified") not in names, "…and the untouched function was never re-sent as modified")
-    secrets = [r for r in state_store.recent_events(limit=500) if "ghp_" in str(r["payload"])]
+    turns = gui.get("submit_turn", [])
+    check(any(t.get("ok") and t.get("app_bundle_id") == "com.apple.Safari" and t.get("selection_chars") == len("raise the deck timeout to 30s") for t in turns), f"the deck's turn was audited by size ({turns[:2]})")
+    check(any(not t.get("ok") and t.get("app_bundle_id") == "com.1password.1password" for t in turns), "…and the password-manager bypass was audited as refused")
+    check(all("window_title" not in t and "selected_text" not in t for t in turns), "…never by what was on screen")
+    secrets = [r for r in state_store.recent_events(limit=500) if "ghp_" in str(r["payload"]) or "ABCDEFGHIJKLMNOPQRSTUV" in str(r["payload"])]
     check(not secrets, "no credential-shaped text reached the ledger")
     shutil.rmtree(home, ignore_errors=True)
     print("\nlab live smoke: ok")

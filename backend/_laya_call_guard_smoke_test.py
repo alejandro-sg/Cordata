@@ -15,6 +15,8 @@ What this pins down:
     backend/.venv/bin/python _laya_call_guard_smoke_test.py
 """
 
+import asyncio
+import inspect
 import json
 import os
 import sys
@@ -219,7 +221,9 @@ def build_rig(mode: str = "auto"):
 
 def call(handler, agent, name, **inp):
     event = SimpleNamespace(tool_use={"name": name, "input": inp, "toolUseId": "t1"}, agent=agent)
-    return handler.before_tool_call(event)
+    decision = handler.before_tool_call(event)
+    # An edit the preflight checks can read takes the handler's async path; the intervention registry awaits it.
+    return asyncio.run(decision) if inspect.isawaitable(decision) else decision
 
 
 def test_handler() -> None:

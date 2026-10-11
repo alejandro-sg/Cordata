@@ -162,6 +162,158 @@ def test_remote_taps() -> None:
     check(not seen["task"], "an unsubscribed listener stops hearing after stop()")
 
 
+# ------------------------------------------------------------------- second front doors
+
+
+def test_second_doors() -> None:
+    """More than one front door can answer a pause now (the GUI's modal, a terminal, the Discord bot). The
+    first answer wins and every later one — from *any* of the others — must never reach a child that has
+    already moved on. (This once only knew about the GUI: a terminal's late answer to a prompt Discord had
+    settled was forwarded to the child.)"""
+    import asyncio
+    from types import SimpleNamespace
+
+    from daemon.supervisor import Session, Supervisor
+
+    class Stdin:
+        def __init__(self) -> None:
+            self.writes: list[dict] = []
+
+        def write(self, data: bytes) -> None:
+            self.writes.append(json.loads(data))
+
+        async def drain(self) -> None:
+            return None
+
+    def rig() -> tuple[Supervisor, Stdin]:
+        supervisor = Supervisor()
+        stdin = Stdin()
+        supervisor._sessions["s1"] = Session(session_id="s1", cwd="/tmp", process=SimpleNamespace(returncode=None, pid=1, stdin=stdin))
+        return supervisor, stdin
+
+    ask = json.dumps(
+        {
+            "jsonrpc": "2.0", "id": 41, "method": "session/request_permission",
+            "params": {
+                "sessionId": "acp-1", "toolCall": {"toolCallId": "t", "title": "Run shell"},
+                "options": [
+                    {"optionId": "allow", "name": "Allow", "kind": "allow_once"},
+                    {"optionId": "allow_always", "name": "Always allow shell(pytest *)", "kind": "allow_always"},
+                    {"optionId": "reject", "name": "Reject", "kind": "reject_once"},
+                ],
+                "_meta": {"sierralab": {"tool": "shell"}},
+            },
+        }
+    )
+    late_tui = json.dumps({"jsonrpc": "2.0", "id": 41, "result": {"outcome": {"outcome": "selected", "optionId": "reject"}}})
+
+    for door in ("discord", "gui"):
+        supervisor, stdin = rig()
+        supervisor._deliver("s1", ask)
+        asyncio.run(supervisor.answer_permission("s1", "41", True, decided_by=door))
+        asyncio.run(supervisor.write("s1", late_tui))
+        responses = [w for w in stdin.writes if w.get("id") == 41]
+        check(len(responses) == 1 and responses[0]["result"]["outcome"]["optionId"] == "allow", f"a terminal's late answer after {door} decided never reaches the child: one response")
+        check(responses[0]["result"]["_meta"]["sierralab"]["decidedBy"] == door, f"…and the one that did is attributed to {door}")
+
+    supervisor, stdin = rig()
+    supervisor._deliver("s1", ask)
+    asyncio.run(supervisor.answer_permission("s1", "41", True, decided_by="discord", always=True))
+    check(stdin.writes[-1]["result"]["outcome"]["optionId"] == "allow_always", "`always` selects the child's own allow_always option")
+
+    supervisor, stdin = rig()
+    supervisor._deliver("s1", ask.replace('"allow_always"', '"allow_sometimes"'))
+    try:
+        asyncio.run(supervisor.answer_permission("s1", "41", True, decided_by="discord", always=True))
+        check(False, "an always-allow the child did not offer must be refused")
+    except ValueError:
+        check(not stdin.writes, "an always-allow the child did not offer is refused, and nothing is sent — an armed call can never be always-allowed")
+    asyncio.run(supervisor.answer_permission("s1", "41", False, decided_by="discord", always=True))
+    check(stdin.writes[-1]["result"]["outcome"]["optionId"] == "reject", "`always` on a denial still means a plain denial")
+
+    # The terminal answering first is still the terminal's, and is not dropped.
+    supervisor, stdin = rig()
+    supervisor._deliver("s1", ask)
+    asyncio.run(supervisor.write("s1", late_tui))
+    check(len([w for w in stdin.writes if w.get("id") == 41]) == 1 and supervisor.session("s1").answered["41"] == "tui", "a terminal answering first is forwarded and recorded as the terminal")
+
+    # `session/update` and `_sierralab/turn` are tapped for whoever asked — a chat streams its reply from them.
+    supervisor, _ = rig()
+    updates: list[dict] = []
+    turns: list[dict] = []
+    supervisor.listen("update", updates.append)
+    supervisor.listen("turn", turns.append)
+    supervisor._deliver("s1", json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "acp-1", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "hi"}}}}))
+    supervisor._deliver("s1", json.dumps({"jsonrpc": "2.0", "method": "_sierralab/turn", "params": {"sessionId": "acp-1", "tokensIn": 5, "tokensOut": 2}}))
+    check(updates and updates[0]["session_id"] == "s1" and updates[0]["update"]["content"]["text"] == "hi", "a `session/update` reaches an update listener, tagged with the daemon's session")
+    check(turns and turns[0]["tokensIn"] == 5 and turns[0]["session_id"] == "s1", "a `_sierralab/turn` receipt reaches a turn listener")
+    check(len(supervisor.backlog("s1")) == 2, "and neither is consumed")
+
+
+def test_owned_sessions() -> None:
+    """A session another front door owns (a Discord chat) is typed into by exactly one writer."""
+    from daemon.supervisor import Supervisor  # noqa: F401 — documents what is under test
+
+    app = create_app()
+    with TestClient(app) as client:
+        token = app.state.daemon.token
+        supervisor = app.state.daemon.supervisor
+        project = _ROOT / "owned"
+        project.mkdir()
+
+        async def spawn_owned():
+            return await supervisor.spawn(str(project), owner="discord")
+
+        owned = client.portal.call(spawn_owned)
+        check(owned.owner == "discord" and owned.to_json()["owner"] == "discord", "a session can be spawned for another front door, and says whose it is")
+        check(supervisor.find_by_cwd(str(project)) is None, "a directory lookup never hands a terminal the session a chat is typing into")
+        listed = client.get("/sessions", headers={"X-Daemon-Token": token}).json()["sessions"]
+        check(any(row["sessionId"] == owned.session_id and row["owner"] == "discord" for row in listed), "/sessions reports the owner")
+
+        try:
+            with client.websocket_connect(f"/ws?session={owned.session_id}&token={token}") as socket:
+                socket.receive_text()
+            code = None
+        except WebSocketDisconnect as error:
+            code = error.code
+        check(code == 4409, f"a terminal cannot attach to an owned session: two writers on one stdin (got {code})")
+
+        with client.websocket_connect(f"/ws?cwd={project}&token={token}") as socket:
+            mine = json.loads(socket.receive_text())["params"]["sessionId"]
+        check(mine != owned.session_id, "attach-or-create by folder starts the terminal its own child instead")
+        client.delete(f"/sessions/{mine}", headers={"X-Daemon-Token": token})
+
+        # Nobody will ever drain an owned session's backlog, so it is not kept.
+        client.portal.call(lambda: supervisor.write_raw(owned.session_id, json.dumps({"jsonrpc": "2.0", "id": 5, "method": "late/emit"})))
+        time.sleep(1.0)
+        check(supervisor.backlog(owned.session_id) == [], "an owned session's output is not backlogged for a reader that will never come")
+
+        # `call`: core ACP methods are typed, so the daemon's session id is not injected when asked not to.
+        async def echo(qualify: bool):
+            return await supervisor.call(owned.session_id, "echo/method", {"a": 1}, qualify=qualify)
+
+        plain = client.portal.call(echo, False)
+        qualified = client.portal.call(echo, True)
+        check('"sessionId"' not in plain["echo"] and '"sessionId"' in qualified["echo"], "`call(qualify=False)` sends exactly the params given; the default adds the session id")
+
+        # A request that is waiting when the child goes away raises LookupError — not CancelledError, which
+        # would read as the caller's own task being cancelled.
+        async def waits():
+            return await supervisor.call(owned.session_id, "late/emit", {}, timeout=30)
+
+        pending = client.portal.start_task_soon(waits)
+        time.sleep(0.3)
+        client.portal.call(supervisor.stop, owned.session_id)
+        try:
+            pending.result(10)
+            outcome = "returned"
+        except LookupError:
+            outcome = "lookup"
+        except BaseException as error:  # noqa: BLE001
+            outcome = type(error).__name__
+        check(outcome == "lookup", f"a daemon request in flight when its session exits raises LookupError (got {outcome})")
+
+
 # ------------------------------------------------------------------- token
 
 
@@ -476,9 +628,11 @@ def wait_for_text(socket, timeout: float = 5.0):
 def main() -> None:
     test_frames()
     test_remote_taps()
+    test_second_doors()
     test_token_file()
     test_log_redaction()
     test_daemon()
+    test_owned_sessions()
     test_lab_stream()
 
 

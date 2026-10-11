@@ -164,8 +164,10 @@ async def test_dispatch() -> None:
     check([u.title for u in starts][:2] == ["debugger", "file_read"], f"the dispatch and the specialist's own tool call are visible ({[u.title for u in starts]})")
     agent = server._sessions[created.session_id].agent
     check([m["role"] for m in agent.messages] == ["user", "assistant"] and "[debugger specialist" in agent.messages[1]["content"][0]["text"], "the exchange is in the orchestrator's history")
-    persisted = list((SESSIONS / f"session_{created.session_id}").rglob("message_*.json"))
-    check(len(persisted) == 2, "…and in its session files")
+    import session_store
+
+    saved = json.loads(session_store.snapshot_path(created.session_id, SESSIONS).read_text())
+    check(len(saved["data"]["messages"]) == 2 and "system_prompt" not in saved["data"], "…and in its session snapshot (without the system prompt, which is rebuilt every session)")
     outcome = laya_events(conn, "outcome")
     check(outcome and outcome[-1]["agreed"] is True and outcome[-1]["clean"] is True, "the specialist turn is scored (agreed, clean)")
     listed = await server.list_sessions(cwd=str(cwd))

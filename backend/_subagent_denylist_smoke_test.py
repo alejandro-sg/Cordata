@@ -39,9 +39,9 @@ def main() -> None:
     assert default_names, "resolve_tools(None, ...) returned no tools at all -- suspicious, check agent_common.TOOLS"
 
     # Explicitly naming a forbidden tool must still be denied, not honored.
-    explicit_names = _tool_names(sac.resolve_tools(["shell", "think"], caller, "smoke-test"))
+    explicit_names = _tool_names(sac.resolve_tools(["shell", "file_read"], caller, "smoke-test"))
     assert "shell" not in explicit_names, "resolve_tools must deny an explicitly-requested forbidden tool ('shell')"
-    assert "think" in explicit_names, "resolve_tools must still grant an explicitly-requested safe tool ('think')"
+    assert "file_read" in explicit_names, "resolve_tools must still grant an explicitly-requested safe tool ('file_read')"
 
     # Explicit empty list means "give this sub-agent nothing" -- not the
     # same code path as "no tools key at all" (see resolve_tools' own

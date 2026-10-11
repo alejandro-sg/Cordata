@@ -136,7 +136,7 @@ def observer_for(
 
 def test_the_observer_cannot_write() -> None:
     names = set(observer_runner.OBSERVER_TOOLS)
-    check(names == {"file_read", "think"}, f"the allowlist is exactly {sorted(names)}")
+    check(names == {"file_read"}, f"the allowlist is exactly {sorted(names)}")
     check(
         not names & (sac.DENIED_TOOLS | sac.ORCHESTRATOR_ONLY_TOOLS),
         "it is disjoint from sub_agent_common's denied and orchestrator-only toolsets",
@@ -284,6 +284,61 @@ def test_a_cycle_writes_the_briefing_and_stages_proposals() -> None:
     check(state_store.pending_interventions() == [], "and does not show up in the daemon-wide one either")
     events = state_store.recent_events(kind="observation")
     check(len(events) == 1, "an observation event was appended")
+
+
+COUNTING_STUB = '''\
+import json, os, sys
+request = json.loads(sys.stdin.readline() or "{}")
+with open(os.environ["OBSERVER_RUNS"], "a") as handle:
+    handle.write(request.get("project", "?") + "\\n")
+print(json.dumps({"summary": "read " + os.path.basename(request.get("project", "")), "proposals": [{"title": "Look at " + os.path.basename(request.get("project", "")), "why": "x", "next": "y"}], "project": request.get("project")}))
+'''
+
+
+def test_an_unchanged_tree_costs_nothing() -> None:
+    """The proactive loop paid for a model call per project per cycle even when nothing had changed — left on
+    overnight, 48 reads of an identical tree. An unchanged project now reuses its last reading."""
+    runs = _TMPDIR / "runs.txt"
+    runs.unlink(missing_ok=True)
+    os.environ["OBSERVER_RUNS"] = str(runs)
+    stub = _TMPDIR / "counting_stub.py"
+    stub.write_text(COUNTING_STUB, encoding="utf-8")
+    repo_a, repo_b = make_repo(_TMPDIR / "memo_a"), make_repo(_TMPDIR / "memo_b")
+    briefing = _TMPDIR / "memo_briefing.md"
+    briefing.unlink(missing_ok=True)
+    observer = observer_mod.Observer(
+        projects=lambda: [str(repo_a), str(repo_b)], busy=lambda: False, settings=lambda: ON, briefing_path=briefing,
+        runner=lambda: [sys.executable, str(stub)], logs=lambda: [],
+    )
+
+    def calls() -> int:
+        return len(runs.read_text().splitlines()) if runs.exists() else 0
+
+    rows_before = len(state_store.connect().execute("SELECT id FROM interventions").fetchall())
+    asyncio.run(observer.cycle())
+    check(calls() == 2, "the first cycle asks the model about both projects")
+    first = briefing.read_text(encoding="utf-8")
+    check("read memo_a" in first and "read memo_b" in first, "and the briefing covers both")
+    staged_after_first = len(state_store.connect().execute("SELECT id FROM interventions").fetchall())
+    check(staged_after_first == rows_before + 2, "…staging a proposal each")
+
+    result = asyncio.run(observer.cycle())
+    check(calls() == 2, "a second cycle over unchanged trees makes no model call at all")
+    check(result is not None and "no model call" in result["note"], f"and says so ({result and result.get('note')})")
+    check(briefing.read_text(encoding="utf-8") == first, "the briefing on disk is left as it was — it is still true")
+    check(len(state_store.connect().execute("SELECT id FROM interventions").fetchall()) == staged_after_first, "and nothing is staged twice")
+
+    (repo_a / "work.py").write_text("print('changed again')\n", encoding="utf-8")
+    asyncio.run(observer.cycle())
+    check(calls() == 3 and runs.read_text().splitlines()[-1] == str(repo_a), "when one project changes, only that one is read")
+    text = briefing.read_text(encoding="utf-8")
+    check("read memo_a" in text and "read memo_b" in text, "yet the briefing still reports both — the unchanged one from its last reading")
+    check(len(state_store.connect().execute("SELECT id FROM interventions").fetchall()) == staged_after_first + 1, "and only the fresh reading's proposal is staged")
+
+    observer.observe("the deploy failed", project=str(repo_b))
+    asyncio.run(observer.cycle())
+    check(calls() == 4 and runs.read_text().splitlines()[-1] == str(repo_b), "a queued observation about an unchanged project is still read")
+    os.environ.pop("OBSERVER_RUNS", None)
 
 
 def test_a_busy_daemon_is_not_observed() -> None:
@@ -459,6 +514,7 @@ def main() -> None:
     test_projects_come_from_the_session_index()
     test_quiet_hours()
     test_a_cycle_writes_the_briefing_and_stages_proposals()
+    test_an_unchanged_tree_costs_nothing()
     test_a_busy_daemon_is_not_observed()
     test_off_is_off()
     test_preemption_kills_the_child()

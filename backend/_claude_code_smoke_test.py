@@ -235,6 +235,10 @@ def main() -> None:
             denied = argv[argv.index("--disallowedTools") + 1]
             check("Bash(git status:*)" in allowed and "Bash(curl" not in allowed and "Read(**/.env)" in denied and "WebFetch" in denied, "an explicit allowlist and a denylist that covers .env and the network")
             check("--strict-mcp-config" in argv and "--no-session-persistence" in argv, "no MCP servers, no session left on disk")
+            check(
+                argv[argv.index("--model") + 1] == cct.DEFAULT_MODEL == "sonnet" and argv[argv.index("--effort") + 1] == cct.DEFAULT_EFFORT == "medium",
+                "a run uses a mid-size model at medium effort unless the person said otherwise — it spends their Claude Code usage",
+            )
 
             check(len(progress) >= 1 and "Read app.py" in progress[0]["progress"], f"progress streams while it runs ({progress[0]['progress'] if progress else None})")
             tasks = [payload for kind, payload in events if kind == "task"]
@@ -296,6 +300,38 @@ def main() -> None:
             _, result = run("anything")
             check(result["status"] == "error" and "isolated" in data(result)["reason"], "an isolated pod refuses to be started again")
             lab2.release("claude_code_engineer")
+
+            # ------------------------------ Strands' cancel signal stops a running CLI (the person stops the turn)
+            import threading
+
+            Harness(project, vault=vault_ok, budget=budget_for())
+            (project / "hanging.pid").unlink(missing_ok=True)
+
+            async def cancel_by_signal():
+                signal_event = threading.Event()
+                items: list = []
+
+                async def collect_signalled():
+                    async for item in cct.run_engineer("[[HANG]] until the turn is stopped", timeout_seconds=60, cancel_signal=signal_event):
+                        items.append(item)
+
+                task = asyncio.create_task(collect_signalled())
+                for _ in range(100):
+                    await asyncio.sleep(0.1)
+                    if (project / "hanging.pid").exists():
+                        break
+                pid = int((project / "hanging.pid").read_text())
+                alive_before = alive(pid)
+                started_at = time.monotonic()
+                signal_event.set()
+                await asyncio.wait_for(task, 15)
+                await asyncio.sleep(0.3)
+                return pid, alive_before, time.monotonic() - started_at, items[-1]
+
+            pid, alive_before, took, outcome = asyncio.run(cancel_by_signal())
+            check(alive_before and not alive(pid) and took < 5, f"setting the cancel signal kills the CLI's process group within {took:.1f}s (not at the 60s timeout)")
+            check(outcome["status"] == "error" and "cancelled" in data(outcome)["reason"] and not data(outcome)["ok"], "…and the result says it was cancelled, not that it failed")
+            (project / "hanging.pid").unlink(missing_ok=True)
 
             # ------------------------------------------ memory: room first, deterministically
             with FakeOmlx(loaded={"Ternary-Bonsai-2-27B-mlx-2bit"}) as omlx:

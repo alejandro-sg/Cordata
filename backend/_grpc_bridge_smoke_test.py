@@ -539,6 +539,119 @@ async def test_memory_and_diffs(rig: Rig) -> None:
     call.cancel()
 
 
+async def test_submit_turn(rig: "Rig") -> None:
+    """`SubmitTurn`: the menu bar's prompt, with the OS context the person attached.
+
+    The session in this rig is one the daemon merely relays (a TUI's), so the route under test is the
+    honest one: the text is queued as guidance and the reply says so. What the child must actually
+    *receive* is the point — the context as its own `_sierralab/os-context`, keyed by the child's
+    session and not the daemon's, and the person's words in the inject."""
+    import os_context
+
+    def received(method):
+        return [r for r in rig.child_log() if r["kind"] == "received" and r["method"] == method]
+
+    def audit(action):
+        return [row["payload"] for row in state_store.recent_events(kind="gui", limit=200) if row["payload"].get("action") == action]
+
+    def request(**context):
+        return pb.TurnRequest(
+            session_id=rig.sid,
+            text="what am I looking at?",
+            client="harness-menubar",
+            context=pb.OsContext(
+                app_name="Safari", app_bundle_id="com.apple.Safari", app_pid=4242,
+                window_title="Deploy — token sk-ABCDEF0123456789ABCDEF0123456789",
+                selected_text="raise the timeout to 30s", client_redactions=3,
+                omitted=["Selected text: Accessibility is not granted"],
+                screenshot=b"\xff\xd8fakejpeg" * 40, screenshot_mime="image/jpeg",
+                screenshot_width=1600, screenshot_height=1000,
+                **context,
+            ),
+        )
+
+    import logging
+
+    from daemon import grpc_bridge
+
+    class _Lines(logging.Handler):
+        def __init__(self) -> None:
+            super().__init__(logging.INFO)
+            self.lines: list[str] = []
+
+        def emit(self, record: logging.LogRecord) -> None:
+            self.lines.append(record.getMessage())
+
+    lines = _Lines()
+    level = grpc_bridge.logger.level
+    grpc_bridge.logger.addHandler(lines)
+    grpc_bridge.logger.setLevel(logging.INFO)
+    before = time.monotonic()
+    try:
+        reply = await rig.stub.SubmitTurn(request(), metadata=rig.meta)
+    finally:
+        grpc_bridge.logger.removeHandler(lines)
+        grpc_bridge.logger.setLevel(level)
+    elapsed = time.monotonic() - before
+    logged = [line for line in lines.lines if "submit_turn" in line]
+    check(bool(logged) and "app='Safari' (com.apple.Safari)" in logged[-1] and "title='Deploy" in logged[-1] and "raise the timeout to 30s" in logged[-1], f"the daemon log names the app, the title and the selection ({logged[-1][:160] if logged else 'no line'})")
+    check(bool(logged) and "ABCDEF0123456789ABCDEF" not in logged[-1], "…masked again on the daemon's side: the token in the title never reaches the log")
+    check(reply.ok and reply.route == "steer" and len(reply.turn_id) == 12, f"SubmitTurn accepts a relayed session's turn and returns at once (route={reply.route!r}, {elapsed * 1000:.0f} ms)")
+    check(elapsed < 5, "…well inside the client's unary timeout: a turn may run for hours, so the RPC must not hold it")
+    check(any("does not start a new turn" in n for n in reply.notices), f"…and says plainly that it was guidance, not a turn ({list(reply.notices)[:2]})")
+    check(any("not attached" in n for n in reply.notices), "…and that the screenshot was not attached, rather than dropping it silently")
+
+    context_calls = received("_sierralab/os-context")
+    sent = context_calls[-1]["params"] if context_calls else {}
+    check(bool(context_calls) and sent.get("window_title", "").startswith("Deploy"), "the child receives the capture as its own `_sierralab/os-context`, before the prompt")
+    check("sessionId" not in sent, "…keyed by the child's own session, not the daemon's (qualify=False)")
+    check(sent.get("app_bundle_id") == "com.apple.Safari" and sent.get("selected_text") == "raise the timeout to 30s", "…with the app and the person's selection")
+    check("screenshot" not in sent and "screenshot_bytes" not in sent, "…and never the pixels: image input is not wired up, so the bytes do not travel")
+    injects = received("_sierralab/lab/inject")
+    check(bool(injects) and injects[-1]["params"]["text"] == "what am I looking at?", "the person's words reach the session as guidance")
+
+    row = audit("submit_turn")[0]  # newest first
+    check(row["route"] == "steer" and row["ok"] is True and row["client"] == "harness-menubar", f"the turn is audited ({row})")
+    check(row["title_chars"] > 0 and row["selection_chars"] == len("raise the timeout to 30s") and row["client_redactions"] == 3, "…by size, what the client masked, and which fields were present")
+    check(row["screenshot_bytes"] == len(b"\xff\xd8fakejpeg") * 40 and row["screenshot_cloud_ok"] is False, "…with the screenshot as a byte count only, and the cloud opt-in as it was")
+    check("Deploy" not in json.dumps(row) and "raise the timeout" not in json.dumps(row) and "sk-" not in json.dumps(row), "the ledger keeps no copy of the window's text")
+
+    # A denial is the daemon's own second look: a client that skips the Rust capture policy cannot
+    # send a password manager's window.
+    denied = await rig.stub.SubmitTurn(
+        pb.TurnRequest(session_id=rig.sid, text="summarise this", client="rogue", context=pb.OsContext(app_name="1Password", app_bundle_id="com.1password.1password")),
+        metadata=rig.meta,
+    )
+    check(not denied.ok and "never-read" in denied.error, f"a never-read app's context is refused outright ({denied.error!r})")
+    check(len(received("_sierralab/os-context")) == len(context_calls), "…and nothing about it reaches the child")
+    check(audit("submit_turn")[0]["ok"] is False and audit("submit_turn")[0]["app_bundle_id"] == "com.1password.1password", "the refusal is in the ledger with its reason")
+
+    # A vision model configured: the screenshot still does not ride along with *guidance* — a relayed
+    # session cannot start a turn, and an inject is text — and the ledger says nobody saw it.
+    import settings_store
+
+    user_settings = settings_store.user_dir() / "settings.json"
+    previous = user_settings.read_text() if user_settings.exists() else None
+    user_settings.parent.mkdir(parents=True, exist_ok=True)
+    user_settings.write_text(json.dumps({"capture": {"visionModel": "qwen2.5vl:7b"}}))
+    try:
+        steered = await rig.stub.SubmitTurn(request(), metadata=rig.meta)
+    finally:
+        if previous is None:
+            user_settings.unlink()
+        else:
+            user_settings.write_text(previous)
+    check(steered.ok and any("text only" in n for n in steered.notices), f"with a vision model set, a steer still sends no image, and says so ({list(steered.notices)[:3]})")
+    check(audit("submit_turn")[0].get("screenshot_sent_to") == "", "…and the ledger records that no model saw it")
+    sent = received("_sierralab/os-context")[-1]["params"]
+    check("screenshot_b64" not in sent and "vision_model" not in sent, "…the bytes never reached the child")
+    check(os_context.refusal("com.1password.1password") is not None, "…and the policy the daemon enforces is the same one the client carries")
+
+    empty = await rig.stub.SubmitTurn(pb.TurnRequest(session_id=rig.sid, text="   "), metadata=rig.meta)
+    check(not empty.ok and "some text" in empty.error, "a turn with no words is refused")
+    check(await aborted_with(rig.stub.SubmitTurn(pb.TurnRequest(session_id=rig.sid, text="hi")), grpc.StatusCode.UNAUTHENTICATED), "SubmitTurn needs the token")
+
+
 async def test_mirrored_thresholds_agree_with_the_child() -> None:
     """The daemon mirrors the child's dial range and score bands instead of importing them
     (importing `lab`/`laya_risk` would pull the agent stack into a stdlib-only process). The
@@ -613,6 +726,7 @@ async def main() -> None:
             await test_pod_control(rig)
             await test_ingest(rig)
             await test_memory_and_diffs(rig)
+            await test_submit_turn(rig)
             await test_risk_labels_only_tighten(rig)
             await test_interventions(rig)  # last: it ends the session
         await test_mirrored_thresholds_agree_with_the_child()
