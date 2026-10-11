@@ -757,12 +757,21 @@ pub struct Store {
 }
 
 pub fn default_user_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("CORDATA_HOME").filter(|dir| !dir.is_empty()) {
+        return PathBuf::from(dir);
+    }
     if let Some(dir) = std::env::var_os("SIERRALAB_HOME").filter(|dir| !dir.is_empty()) {
         return PathBuf::from(dir);
     }
-    std::env::var_os("HOME")
-        .map(|home| PathBuf::from(home).join(".sierralab"))
-        .unwrap_or_else(|| PathBuf::from(".sierralab"))
+    if let Some(home) = std::env::var_os("HOME") {
+        let cordata = PathBuf::from(&home).join(".cordata");
+        let sierralab = PathBuf::from(&home).join(".sierralab");
+        if !cordata.exists() && sierralab.exists() {
+            return sierralab;
+        }
+        return cordata;
+    }
+    PathBuf::from(".cordata")
 }
 
 fn expand_home(text: &str) -> PathBuf {
@@ -906,10 +915,15 @@ impl Store {
     }
 
     pub fn path(&self, scope: Scope) -> PathBuf {
+        let base = if self.cwd.join(".cordata").exists() {
+            self.cwd.join(".cordata")
+        } else {
+            self.cwd.join(".sierralab")
+        };
         match scope {
             Scope::User => self.user_dir.join("settings.json"),
-            Scope::Project => self.cwd.join(".sierralab").join("settings.json"),
-            Scope::Local => self.cwd.join(".sierralab").join("settings.local.json"),
+            Scope::Project => base.join("settings.json"),
+            Scope::Local => base.join("settings.local.json"),
         }
     }
 
@@ -1201,15 +1215,17 @@ impl Store {
 /// as `settings_store.instruction_files`.
 pub fn instruction_files(store: &Store) -> Vec<(Scope, PathBuf)> {
     let project = [
+        store.cwd.join("CORDATA.md"),
+        store.cwd.join(".cordata").join("CORDATA.md"),
         store.cwd.join("SIERRALAB.md"),
         store.cwd.join(".sierralab").join("SIERRALAB.md"),
         store.cwd.join("AGENTS.md"),
         store.cwd.join("CLAUDE.md"),
     ];
     let candidates: [(Scope, Vec<PathBuf>); 3] = [
-        (Scope::User, vec![store.user_dir.join("SIERRALAB.md")]),
+        (Scope::User, vec![store.user_dir.join("CORDATA.md"), store.user_dir.join("SIERRALAB.md")]),
         (Scope::Project, project.to_vec()),
-        (Scope::Local, vec![store.cwd.join("SIERRALAB.local.md")]),
+        (Scope::Local, vec![store.cwd.join("CORDATA.local.md"), store.cwd.join("SIERRALAB.local.md")]),
     ];
     candidates
         .into_iter()

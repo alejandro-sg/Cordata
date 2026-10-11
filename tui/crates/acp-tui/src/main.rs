@@ -27,7 +27,7 @@ use crate::app::{App, Effect, Message, SwitchTarget, TabBadge};
 use crate::term::InlineTerm;
 use crate::ui::transcript;
 
-/// Interactive terminal client for the sierralab-agents ACP backend.
+/// Interactive terminal client for the Cordata ACP backend.
 #[derive(Parser)]
 #[command(version)]
 struct Args {

@@ -1,4 +1,4 @@
-//! Scriptable concurrent stress runner for the sierralab-agents ACP backend.
+//! Scriptable concurrent stress runner for the Cordata ACP backend.
 //!
 //!     acp-stress scenarios.json --concurrency 5 --out results.jsonl
 

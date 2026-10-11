@@ -65,7 +65,7 @@ Both front doors gate the same four tools before they run for real —
 
 **Every ACP approval is recorded on the ledger, and a recorded one can be
 replayed.** `_resolve_interrupts` stages the pending approval in
-`~/.sierralab/state.db` (`interventions`, keyed by the Strands interrupt id)
+`~/.cordata/state.db` (or `~/.sierralab/state.db`, `interventions`, keyed by the Strands interrupt id)
 before the user is asked, and closes it with what they chose; both transitions
 are also appended to the append-only `events` table, with Laya's risk score and
 band. Two properties matter for this document:
@@ -87,7 +87,7 @@ band. Two properties matter for this document:
   a user decision, so the ledger never credits a fail-closed default to a
   person. Nothing approves a call that nobody saw.
 
-It lives in the user's private harness directory (`~/.sierralab/`, forced to
+It lives in the user's private harness directory (`~/.cordata/` or `~/.sierralab/`, forced to
 0700, with `state.db` and its `-wal`/`-shm` at 0600 — `state_store._make_private`;
 a default umask would leave both world-readable) rather than beside the source,
 because a row records the tool input and the settings snapshot a session ran
@@ -122,7 +122,7 @@ capability, it would silently report doing something that never happened.
 
 ### Settings files, permission rules and project trust (ACP front door)
 
-`settings_store.py` layers `~/.sierralab/settings.json`, `<project>/.sierralab/settings.json` and
+`settings_store.py` layers `~/.cordata/settings.json` (or `~/.sierralab/settings.json`), `<project>/.cordata/settings.json` (or `.sierralab/`) and
 `settings.local.json` over the approval gate (`docs/settings.md`). The new attack surface is that
 the project files arrive with a cloned repository:
 
@@ -151,14 +151,14 @@ the project files arrive with a cloned repository:
   below) could do it for the next session. They are trust-gated now, with `preflight.*`,
   `learning.rejections` and `context.outlineLines` (`TRUST_GATED_KEYS`; the TUI's mirror is held to
   it by `_settings_schema_parity_smoke_test.py`).
-- **A shell write to a policy file is scored like `file_write` to it.** `printf … > .sierralab/settings.json`,
+- **A shell write to a policy file is scored like `file_write` to it.** `printf … > .cordata/settings.json` (or `.sierralab/`),
   `tee` / `cp` / `mv` / `sed -i` into a settings file or any MCP declaration (`.mcp.json`, `mcp.json`,
   `mcp.local.json`, `.cursor/` / `.vscode/mcp.json`, `backend/mcp_servers.json`) scores 0.9 and asks in
   every mode; it used to score 0.4 ("overwrites a file") and run in `auto`.
 
 **What this does not do.** Rules are not a sandbox: a pattern can't anticipate everything an
 allowed program can do (`allow shell(npm *)` includes `npm exec`). Instruction files
-(`SIERRALAB.md`, and — as a fallback — a repo's own `AGENTS.md` / `CLAUDE.md`) are read into the
+(`CORDATA.md`, `SIERRALAB.md`, and — as a fallback — a repo's own `AGENTS.md` / `CLAUDE.md`) are read into the
 system prompt from folders that have *not* been trusted, because they cannot change the gate; a
 hostile one can still steer the model toward a request you then have to refuse, so the connect
 banner names the files being read and `/memory` lists them. Trust is per-folder-path, not
@@ -170,7 +170,7 @@ The agentic harness layer (`docs/agentic-harness.md`) added code that runs witho
 approval on every individual call. Four surfaces, each with its own containment:
 
 - **Project MCP servers (`backend/mcp-servers/`, `plugin_host.py`)**. The config file a project
-  ships (`.mcp.json`, `.sierralab/mcp.json` / `mcp.local.json`, plus the backend's own list)
+  ships (`.mcp.json`, `.cordata/mcp.json` / `mcp.local.json`, `.sierralab/`, plus the backend's own list)
   tells the *backend itself* which MCP servers to spawn — this is deliberately not behind the
   per-call approval gate, because starting a plugin is a launch-time action, not a tool call. The
   mitigations that make this survivable: a project's own plugin declarations are auto-started
@@ -249,7 +249,7 @@ tunable. Three properties hold it:
 
 * **Loopback is not an authorization boundary.** Any local process — and any
   page in a local browser — can open a connection to it. So every route and the
-  socket require the token in `~/.sierralab/daemon.json`, written mode 0600 in
+  socket require the token in `~/.cordata/daemon.json` (or `~/.sierralab/daemon.json`), written mode 0600 in
   the user's private harness directory. The token is deliberately *not* in
   `settings.json`: that file is layered, printed by `/config` and shareable.
   It is read from the file rather than passed as a flag, because `argv` is
@@ -504,7 +504,7 @@ tolerable:
 * **Fail-closed, twice.** The bot is off unless `DISCORD_BOT_TOKEN`,
   `ALLOWED_USER_ID` and `TELEMETRY_CHANNEL_ID` are all present and parse — a
   missing allowlist disables it rather than opening it to everyone, and
-  `SIERRALAB_DISCORD=0` is a kill switch checked before the token is even read.
+  `CORDATA_DISCORD=0` (or `SIERRALAB_DISCORD=0`) is a kill switch checked before the token is even read.
   An unparseable id disables the bot with a logged reason and never raises into
   daemon startup.
 * **Zero-trust click and message.** Button callbacks (`_click`) and `on_message` check the author against
@@ -522,12 +522,12 @@ tolerable:
   so a compromised Discord operator account can start agents and approve what they ask, exactly as a compromised
   GUI session could, and no more. Bounds: at most three such processes at once (`chat.MAX_LIVE`; a fourth first stops the least-recently-used *idle* one, and is
   refused with a message — not queued — only while all three are mid-turn), an idle one is stopped after 20 minutes, the conversation store is
-  `~/.sierralab/discord_chats.json` mode 0600 holding ids, folders, token counts and a short title (the first 80 characters of the opening message, secret-masked — never the conversation, which lives in the agent's own session files), a chat starts in
-  the folder named by `SIERRALAB_DISCORD_CWD` / your newest session / a private workspace and **says which in its
+  `~/.cordata/discord_chats.json` (or `~/.sierralab/`, mode 0600 holding ids, folders, token counts and a short title — the first 80 characters of the opening message, secret-masked — never the conversation, which lives in the agent's own session files), a chat starts in
+  the folder named by `CORDATA_DISCORD_CWD` (fallback `SIERRALAB_DISCORD_CWD`) / your newest session / a private workspace and **says which in its
   first line along with its mode**, and `!mode` can only pick among the three modes the TUI offers. An owned
   session is invisible to a terminal's directory lookup and refused by the socket (`4409`): one writer per stdin.
 * **Offloaded tool output is a new place data rests — and what keeps it harmless.** A tool result over
-  `context.toolOutputChars` is written whole to `~/.sierralab/offloaded/<session>/` (`context_offload.py`, Strands'
+  `context.toolOutputChars` is written whole to `~/.cordata/offloaded/<session>/` (or `~/.sierralab/`, `context_offload.py`, Strands'
   `ContextOffloader`) so the model can read a slice back instead of re-running a command. It can hold anything
   a tool printed, so: the directory is `0700` and each file `0600`; the write is on the host, never through the
   agent's sandbox, and registered credentials are masked *before* it (the plugin runs ahead of `SecretRedactionHooks`
@@ -717,7 +717,7 @@ startup environment, and module globals are one `import` from `python_repl`.
 
 - **Sourced from the shell environment or the macOS Keychain — never a file.**
   An exported variable wins; otherwise, only for the active provider, the
-  Keychain item `sierralab-ollama-api-key` / `sierralab-anthropic-api-key` is
+  Keychain item `cordata-ollama-api-key` / `cordata-anthropic-api-key` (fallback `sierralab-*`) is
   read once at startup (`secret_guard._keychain_get`; a missing item or
   non-macOS just means "no key", and the ACP session fails with the fix in the
   message instead of a bare 401). The Keychain is not an agent boundary: `shell`
@@ -785,7 +785,7 @@ properties hold the gate:
   exact failure this exists to prevent. `"proxy"` is the deliberate alternative:
   route through the configured address without credentials rather than stop.
 * **The token is never a setting.** Read through `secret_guard.take_secret` from
-  the Keychain item `sierralab-agent-vault-token`, so it is not in a file that
+  the Keychain item `cordata-agent-vault-token` (fallback `sierralab-agent-vault-token`), so it is not in a file that
   is layered, printed by `/config` or shared. It is passed to the vault CLI and
   never enters a tool's environment.
 * **TLS is re-pointed, not switched off.** Verification is redirected at the

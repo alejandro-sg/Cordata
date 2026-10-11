@@ -265,13 +265,21 @@ BUILTIN_DENY = (
 
 
 def user_dir() -> Path:
-    return Path(os.environ.get("SIERRALAB_HOME") or Path.home() / ".sierralab")
+    env_dir = os.environ.get("CORDATA_HOME") or os.environ.get("SIERRALAB_HOME")
+    if env_dir:
+        return Path(env_dir)
+    cordata = Path.home() / ".cordata"
+    sierralab = Path.home() / ".sierralab"
+    if not cordata.exists() and sierralab.exists():
+        return sierralab
+    return cordata
 
 
 def settings_path(scope: str, cwd: str | os.PathLike) -> Path:
     if scope == "user":
         return user_dir() / "settings.json"
-    base = Path(cwd) / ".sierralab"
+    p_cwd = Path(cwd)
+    base = p_cwd / ".cordata" if (p_cwd / ".cordata").exists() else p_cwd / ".sierralab"
     return base / ("settings.json" if scope == "project" else "settings.local.json")
 
 
@@ -587,9 +595,16 @@ def instruction_files(cwd: str | os.PathLike) -> list[tuple[str, Path]]:
     cwd = Path(cwd)
     found: list[tuple[str, Path]] = []
     candidates = [
-        ("user", [user_dir() / "SIERRALAB.md"]),
-        ("project", [cwd / "SIERRALAB.md", cwd / ".sierralab" / "SIERRALAB.md", cwd / "AGENTS.md", cwd / "CLAUDE.md"]),
-        ("local", [cwd / "SIERRALAB.local.md"]),
+        ("user", [user_dir() / "CORDATA.md", user_dir() / "SIERRALAB.md"]),
+        ("project", [
+            cwd / "CORDATA.md",
+            cwd / ".cordata" / "CORDATA.md",
+            cwd / "SIERRALAB.md",
+            cwd / ".sierralab" / "SIERRALAB.md",
+            cwd / "AGENTS.md",
+            cwd / "CLAUDE.md",
+        ]),
+        ("local", [cwd / "CORDATA.local.md", cwd / "SIERRALAB.local.md"]),
     ]
     for scope, options in candidates:
         for path in options:

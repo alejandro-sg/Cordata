@@ -32,12 +32,12 @@ tools are named differently — same idea, different registry:
 | `Read` | `file_read` | |
 | `Write` / `Edit` | `file_write` | one tool covers both create and modify |
 | `Bash` | `shell` | a real host shell either way — `gh`, `git`, etc. all still work |
-| `Grep` / `Glob` | `shell` | no dedicated search tool here; use `grep`/`find` via `shell` |
-| `Task` (parallel sub-agents) | `orchestrate` | hands a multi-step task to the orchestrator (plan → execute → audit); not the same contract as Claude Code's Task tool |
-| `WebSearch` / `WebFetch` | `http_request` | raw HTTP only — no search index, no HTML→markdown conversion |
-| `AskUserQuestion` | — | no equivalent; ask in plain chat text instead |
-| `TaskCreate` / `TaskUpdate` (todo tracking) | — | no equivalent; track progress in chat or a scratch file instead |
-| `Artifact` | — | no equivalent; write files to `backend/workspace/` instead |
+| `Grep` / `Glob` | `code_search` / `code_outline` | fast ripgrep-backed search; fallback to `shell` (`grep`/`find`) |
+| `Task` (parallel sub-agents) | `orchestrate` | hands a multi-step task to the orchestrator (plan → execute → audit); worker pools across Claude Code, Antigravity, Ollama |
+| `WebSearch` / `WebFetch` | `web_fetch` / `http_request` | `web_fetch` parses HTML to markdown; `http_request` handles raw HTTP calls |
+| `AskUserQuestion` | — | ask in plain chat text or via interactive approval prompts |
+| `TaskCreate` / `TaskUpdate` (todo tracking) | — | track progress in chat, checkpoints, or orchestrator plans |
+| `Artifact` | `plan_artifact` | orchestrator auto-generates `plan.md` and `walkthrough.md` in `~/.cordata/orchestrator/<run_id>/` (or `~/.sierralab/`, Antigravity artifact model) |
 
 A skill that assumes one of the unavailable tools still describes a valid
 methodology — the missing step just becomes "ask the user directly" or

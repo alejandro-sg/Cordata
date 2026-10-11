@@ -220,7 +220,7 @@ def test_the_token_comes_from_the_keychain() -> None:
     try:
         env: dict[str, str] = {}
         status = vault_proxy.install(Prefs(**{"vault.enabled": True, "vault.addr": addr}), environ=env)
-        check(asked == [vault_proxy.KEYCHAIN_SERVICE], "the Keychain service named by KEYCHAIN_SERVICE is asked")
+        check(asked in ([vault_proxy.KEYCHAIN_SERVICE], [(vault_proxy.KEYCHAIN_SERVICE, vault_proxy.LEGACY_KEYCHAIN_SERVICE)]), "the Keychain service named by KEYCHAIN_SERVICE is asked")
         check("stub-token" not in env.values(), "the vault token never enters the tool environment")
         check(status.credentialed is True, "an available token still yields a credentialed session")
     finally:

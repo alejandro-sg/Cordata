@@ -221,7 +221,7 @@ laya-watch:
 settings:
 	@backend/.venv/bin/python backend/settings_store.py $(or $(DIR),.)
 
-# Install orchestrator and sierra CLI binaries to ~/.local/bin
+# Install cordata, orchestrator and sierra CLI binaries to ~/.local/bin
 install-cli cli:
 	@scripts/install-cli.sh
 

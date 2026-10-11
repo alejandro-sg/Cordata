@@ -207,12 +207,12 @@ def default_cwd(supervisor: Any, environ: dict[str, str] | None = None) -> str:
     folder of the newest session a person is driving (the project they are plausibly asking about),
     else a private workspace. Always shown in the thread's first line — never a surprise."""
     env = os.environ if environ is None else environ
-    named = (env.get("SIERRALAB_DISCORD_CWD") or "").strip()
+    named = (env.get("CORDATA_DISCORD_CWD") or env.get("SIERRALAB_DISCORD_CWD") or "").strip()
     if named:
         try:
             return resolve_dir(named)
         except ChatError:
-            logger.warning("chat: SIERRALAB_DISCORD_CWD=%r is not a folder; ignoring it", named)
+            logger.warning("chat: CORDATA_DISCORD_CWD=%r is not a folder; ignoring it", named)
     rows = [row for row in supervisor.sessions() if row.get("alive") and not row.get("owner")]
     if rows:
         return str(max(rows, key=lambda row: row.get("started") or 0)["cwd"])

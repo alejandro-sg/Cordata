@@ -162,7 +162,14 @@ class CliWorker(Worker):
     def find_binary(self) -> str | None:
         import shutil
 
-        candidate = self._binary or (os.environ.get(self.binary_env) or "").strip() or shutil.which(self.binary_name)
+        env_val = (os.environ.get(self.binary_env) or "").strip()
+        if not env_val and self.binary_env.startswith("SIERRALAB_"):
+            alt = "CORDATA_" + self.binary_env.removeprefix("SIERRALAB_")
+            env_val = (os.environ.get(alt) or "").strip()
+        elif not env_val and self.binary_env.startswith("CORDATA_"):
+            alt = "SIERRALAB_" + self.binary_env.removeprefix("CORDATA_")
+            env_val = (os.environ.get(alt) or "").strip()
+        candidate = self._binary or env_val or shutil.which(self.binary_name)
         if not candidate:
             fallback = Path.home() / ".local" / "bin" / self.binary_name
             candidate = str(fallback) if fallback.exists() else None
@@ -228,7 +235,7 @@ class CliWorker(Worker):
         return None
 
     def _egress(self) -> tuple[dict[str, str] | None, str]:
-        if os.environ.get("SIERRALAB_VAULT_DIRECT") in ("1", "true", "yes"):
+        if (os.environ.get("CORDATA_VAULT_DIRECT") or os.environ.get("SIERRALAB_VAULT_DIRECT")) in ("1", "true", "yes"):
             return {}, ""
         try:
             status = self._vault()

@@ -39,6 +39,7 @@ async def _run(args: argparse.Namespace) -> int:
     dispatcher = config.dispatcher(prefs, ledger=ledger, project=cwd, mode=args.dispatch, families=families)
     run_config = config.run_config(prefs)
     if getattr(args, "allow_direct", False):
+        os.environ["CORDATA_VAULT_DIRECT"] = "1"
         os.environ["SIERRALAB_VAULT_DIRECT"] = "1"
     if args.max_usd is not None:
         run_config.max_usd = args.max_usd

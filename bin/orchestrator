@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# Sierralab CLI (orchestrator / sierra)
+# Cordata CLI (cordata / orchestrator / sierra)
 # Fast, interactive AI coding assistant (Claude Code & Antigravity style)
 # with autonomous multi-worker orchestration.
 #
 # Interactive mode (default):
-#   sierra                              # Launch interactive TUI session
-#   sierra "what is this project"       # Launch interactive TUI with initial query
-#   sierra -c                           # Continue newest session
-#   sierra --resume <id>                # Resume session by ID
+#   cordata                             # Launch interactive TUI session
+#   cordata "what is this project"      # Launch interactive TUI with initial query
+#   cordata -c                          # Continue newest session
+#   cordata --resume <id>               # Resume session by ID
 #
 # Batch autonomous commands:
-#   sierra run "<goal>"                 # Autonomous multi-worker coding run
-#   sierra status                       # Worker pool headroom & recent runs
-#   sierra show <run_id>                # Inspect plan, history, and audit
-#   sierra resume <run_id>              # Continue paused batch run
-#   sierra replay                       # Replay learned dispatch policy
+#   cordata run "<goal>"                # Autonomous multi-worker coding run
+#   cordata status                      # Worker pool headroom & recent runs
+#   cordata show <run_id>               # Inspect plan, history, and audit
+#   cordata resume <run_id>             # Continue paused batch run
+#   cordata replay                      # Replay learned dispatch policy
 
 set -euo pipefail
 
@@ -35,7 +35,7 @@ if [[ ! -x "$TUI_BIN" ]]; then
 fi
 
 if [[ ! -x "$PYTHON" ]]; then
-  echo "Error: Sierralab virtualenv not found at $PYTHON" >&2
+  echo "Error: Cordata virtualenv not found at $PYTHON" >&2
   echo "Please run: make setup (or scripts/setup.sh) in $REPO_ROOT" >&2
   exit 1
 fi
@@ -59,19 +59,22 @@ fi
 # Help flag handling
 if [[ "$#" -eq 1 && ("$1" == "-h" || "$1" == "--help") ]]; then
   cat << 'EOF'
-Sierralab Agents — AI Coding Assistant & Autonomous Orchestrator
+Cordata — AI Coding Assistant & Autonomous Orchestrator
 
 Interactive Assistant (Claude Code & Antigravity style):
-  sierra [PROMPT]                  Launch interactive TUI (optionally with initial query)
-  sierra -c, --continue            Resume newest session in current directory
-  sierra --resume SESSION_ID       Resume an existing interactive session
+  cordata [PROMPT]                 Launch interactive TUI (optionally with initial query)
+  cordata -c, --continue           Resume newest session in current directory
+  cordata --resume SESSION_ID      Resume an existing interactive session
 
 Autonomous Batch Commands:
-  sierra run "<goal>" [OPTIONS]    Run an orchestrated coding task across CLI workers
-  sierra status                    Inspect worker headroom, recent runs and handoffs
-  sierra show RUN_ID               Show one run's plan, history, and audit
-  sierra resume RUN_ID             Continue a paused batch run
-  sierra replay [OPTIONS]          Benchmark learned dispatch policy against baseline
+  cordata run "<goal>" [OPTIONS]   Run an orchestrated coding task across CLI workers
+  cordata status                   Inspect worker headroom, recent runs and handoffs
+  cordata show RUN_ID              Show one run's plan, history, and audit
+  cordata resume RUN_ID            Continue a paused batch run
+  cordata replay [OPTIONS]         Benchmark learned dispatch policy against baseline
+
+Aliases:
+  sierra, orchestrator
 
 Options:
   --cwd DIR                        Target project directory (default: current directory)

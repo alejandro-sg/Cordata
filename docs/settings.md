@@ -14,9 +14,9 @@ Three JSON files; a later one wins on a conflict.
 
 | scope | file | for |
 |---|---|---|
-| `user` | `~/.sierralab/settings.json` (`SIERRALAB_HOME` moves the directory) | your own defaults everywhere (written with mode `0600`) |
-| `project` | `<project>/.sierralab/settings.json` | shared with the team — commit it |
-| `local` | `<project>/.sierralab/settings.local.json` | this machine only; created with a `.gitignore` next to it |
+| `user` | `~/.cordata/settings.json` (or `~/.sierralab/settings.json`; `CORDATA_HOME` / `SIERRALAB_HOME` moves it) | your own defaults everywhere (written with mode `0600`) |
+| `project` | `<project>/.cordata/settings.json` (or `.sierralab/`) | shared with the team — commit it |
+| `local` | `<project>/.cordata/settings.local.json` (or `.sierralab/`) | this machine only; created with a `.gitignore` next to it |
 
 Plain JSON, no comments. A file that isn't valid JSON is ignored and reported (the TUI shows a
 notice at connect; `/config path` lists the files) — and **never overwritten** by a write.
@@ -119,7 +119,7 @@ In the TUI:
 /permissions remove shell(git status)
 /trust                               trust this folder (below)
 /memory                              instruction files in the system prompt
-/init                                ask the agent to draft SIERRALAB.md for this project
+/init                                ask the agent to draft CORDATA.md for this project
 /status                              session, mode, model, Laya, rule counts
 ```
 
@@ -197,7 +197,7 @@ several lines, or for a pattern containing `)`.
 
 ## Trust
 
-A cloned repository can ship its own `.sierralab/settings*.json`. Its `deny` and `ask` rules only
+A cloned repository can ship its own `.cordata/settings*.json` (or `.sierralab/`). Its `deny` and `ask` rules only
 restrict, so they always apply. But `allow` rules and a more permissive default mode would let a
 stranger's repo switch off the approval prompts, so **project and local `allow` rules, and
 `permissions.defaultMode: "auto"` from those files, are ignored until the folder is trusted**: listed in the
@@ -222,12 +222,12 @@ you which — but they can only advise the model; every gated tool call still ne
 Read into the system prompt when a session starts, broad to specific, capped at 16 000 characters
 in total:
 
-1. `~/.sierralab/SIERRALAB.md` — yours, everywhere
-2. the project's: the first that exists of `SIERRALAB.md`, `.sierralab/SIERRALAB.md`, `AGENTS.md`,
+1. `~/.cordata/CORDATA.md` (or `~/.sierralab/SIERRALAB.md`) — yours, everywhere
+2. the project's: the first that exists of `CORDATA.md`, `.cordata/CORDATA.md`, `SIERRALAB.md`, `.sierralab/SIERRALAB.md`, `AGENTS.md`,
    `CLAUDE.md` — so a repo set up for another tool still works
-3. `SIERRALAB.local.md` — this machine only (gitignored by the `.gitignore` next to the local settings)
+3. `CORDATA.local.md` (or `SIERRALAB.local.md`) — this machine only (gitignored by the `.gitignore` next to the local settings)
 
-`/init` has the agent read the project and write `SIERRALAB.md` (it asks before writing, like any
+`/init` has the agent read the project and write `CORDATA.md` (it asks before writing, like any
 file write). `/memory` lists what's being read. Changes apply to the next session.
 
 ## Where each thing is applied
@@ -249,9 +249,9 @@ file write). `/memory` lists what's being read. Changes apply to the next sessio
 Off by default. Turned on, tool subprocesses do not hold real credentials —
 they hold placeholders (`OPENAI_API_KEY=__openai_api_key__`) and the process is
 pointed at the vault's local proxy, which substitutes the real value on the way
-out. The vault token lives in the Keychain (`sierralab-agent-vault-token`),
-never in a settings file, and the vault's CA is named by `SIERRALAB_VAULT_CA`
-when one has been exported.
+out. The vault token lives in the Keychain (`cordata-agent-vault-token`,
+fallback `sierralab-agent-vault-token`), never in a settings file, and the vault's CA is named by
+`CORDATA_VAULT_CA` (or `SIERRALAB_VAULT_CA`) when one has been exported.
 
 With `vault.egressPolicy: "deny"` (the default), a vault that cannot be reached
 at `vault.addr` means `shell`, `python_repl` and `http_request` are *refused*
@@ -377,11 +377,11 @@ follows the same Keychain path as the provider keys (see `.env.example` and
 
 | Variable | Meaning |
 | --- | --- |
-| `DISCORD_BOT_TOKEN` | The bot token. Prefer `make discord-key` (Keychain service `sierralab-discord-bot-token`) or export it; **not** a file value. Read once at startup, then removed from the process environment and masked everywhere. |
+| `DISCORD_BOT_TOKEN` | The bot token. Prefer `make discord-key` (Keychain service `cordata-discord-bot-token`, fallback `sierralab-discord-bot-token`) or export it; **not** a file value. Read once at startup, then removed from the process environment and masked everywhere. |
 | `ALLOWED_USER_ID` | The one Discord user id allowed to chat, approve, deny or steer (Developer Mode → Copy ID). Required — with no allowlist the bot stays off. |
 | `TELEMETRY_CHANNEL_ID` | The channel the bot announces in and takes new chats from; chats and task threads open under it. |
-| `SIERRALAB_DISCORD` | `0`/`off`/`false`/`no` disables the bot even when the three above are set (kill switch, checked before the token is read). |
-| `SIERRALAB_DISCORD_CWD` | The folder a new chat works in. Unset: your newest terminal/GUI session's folder, else `~/.sierralab/discord-workspace`. `!new <folder>` picks one per chat. |
+| `CORDATA_DISCORD` | `0`/`off`/`false`/`no` disables the bot even when the three above are set (kill switch, checked before the token is read; fallback `SIERRALAB_DISCORD`). |
+| `CORDATA_DISCORD_CWD` | The folder a new chat works in. Unset: your newest terminal/GUI session's folder, else `~/.cordata/discord-workspace` (fallback `SIERRALAB_DISCORD_CWD`). `!new <folder>` picks one per chat. |
 
 All three of the first rows' names must be present and parse (the ids as
 integers) for the bot to start; otherwise it logs the reason and is a no-op.
@@ -393,7 +393,7 @@ is logged as the actionable message it is rather than crashing the daemon. The b
 the channel (without thread permission, the channel itself becomes the one chat).
 
 Commands (plain text, anywhere the bot listens): `!status` · `!stop` · `!mode auto|build|plan` ·
-`!new <folder>` · `!usage` · `!help`. Chats are persisted in `~/.sierralab/discord_chats.json` (0600, newest 40);
+`!new <folder>` · `!usage` · `!help`. Chats are persisted in `~/.cordata/discord_chats.json` (or `~/.sierralab/`, 0600, newest 40);
 at most three agent processes run at once and an idle one is stopped after 20 minutes — the next reply in its
 thread starts a new process and `session/load`s the conversation.
 

@@ -152,13 +152,13 @@ def _keychain_get(service: str) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
-def take_secret(*names: str, keychain: str | None = None) -> Secret:
+def take_secret(*names: str, keychain: str | Iterable[str] | None = None) -> Secret:
     """The first non-empty value among ``names`` as a ``Secret``, with *every*
     listed variable removed from ``os.environ`` (an alias set to the same key
     must not survive just because the primary name won).
 
-    ``keychain`` names a macOS Keychain service to fall back to when none of
-    ``names`` is set in the environment (see ``_keychain_get``).
+    ``keychain`` names a macOS Keychain service (or sequence of services) to
+    fall back to when none of ``names`` is set in the environment (see ``_keychain_get``).
 
     Warns when a name is defined in backend/.env: unlike an exported shell
     variable, that file sits on disk where the agent's file tools can read it.
@@ -178,9 +178,13 @@ def take_secret(*names: str, keychain: str | None = None) -> Secret:
             )
         value = value or candidate
     if not value and keychain:
-        value = _keychain_get(keychain)
-        if value:
-            source = f"macOS Keychain item {keychain}"
+        services = (keychain,) if isinstance(keychain, str) else tuple(keychain)
+        for svc in services:
+            val = _keychain_get(svc)
+            if val:
+                value = val
+                source = f"macOS Keychain item {svc}"
+                break
     return Secret(value, source)
 
 

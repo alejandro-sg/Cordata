@@ -191,8 +191,8 @@ class QuotaLedger:
                     "INSERT OR REPLACE INTO quota_pools (pool_id, family, model_regex, unit, soft_threshold_pct, hard_threshold_pct, window_seconds, window_limit, weekly_limit) VALUES (?,?,?,?,?,?,?,?,?)",
                     (pool.pool_id, pool.family, pool.model_regex, pool.unit, pool.soft_threshold_pct, pool.hard_threshold_pct, pool.window_seconds, None if math.isinf(pool.window_limit) else pool.window_limit, pool.weekly_limit),
                 )
-        except sqlite3.Error:
-            logger.warning("quota ledger: could not record the pool table", exc_info=True)
+        except sqlite3.Error as err:
+            logger.warning("quota ledger: could not record the pool table: %s", err)
 
     def pool_for(self, family: str, model: str | None) -> Pool:
         for pool in self.pools:
@@ -288,8 +288,8 @@ class QuotaLedger:
         horizon = max(pool.window_seconds, WEEK if pool.weekly_limit else 0)
         try:
             rows = self._conn().execute("SELECT * FROM quota_usage WHERE pool_id = ? AND ts > ?", (pool.pool_id, now - horizon)).fetchall()
-        except sqlite3.Error:
-            logger.warning("quota ledger: could not read usage", exc_info=True)
+        except sqlite3.Error as err:
+            logger.warning("quota ledger: could not read usage: %s", err)
             return PoolState(pool.pool_id, pool.family, pool.unit, 0.0, None, 1.0, "exhausted", pool.window_seconds)
         used = sum(self._amount(pool, r) for r in rows if r["ts"] > now - pool.window_seconds)
         weekly = sum(self._amount(pool, r) for r in rows) if pool.weekly_limit else 0.0

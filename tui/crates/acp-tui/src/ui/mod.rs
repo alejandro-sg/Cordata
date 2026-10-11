@@ -30,35 +30,31 @@ pub struct LiveFrame {
 
 /// The banner written once when the session connects.
 pub fn welcome_lines(info: &SessionInfo, width: u16) -> Vec<Line<'static>> {
-    let dim = Style::new().fg(Color::Gray);
-    let label = Style::new().fg(Color::DarkGray);
-    let mut lines = vec![Line::from(vec![
-        Span::styled(
-            "◆ sierralab-agents",
-            Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" · ACP terminal client", dim),
-    ])];
+    let dim = Style::new().fg(Color::DarkGray);
     let session: String = info.session_id.chars().take(8).collect();
-    let resumed = if info.resumed { " (resumed)" } else { "" };
-    for (key, value) in [
-        ("session", format!("{session}{resumed}")),
-        ("cwd    ", footer::short_path(&info.cwd)),
-        ("link   ", info.transport.clone()),
-    ] {
-        lines.push(Line::from(vec![
-            Span::styled(format!("  {key}  "), label),
-            Span::styled(value, dim),
-        ]));
-    }
-    lines.push(Line::styled(
-        text::truncate(
-            "  ? for help · /config for settings · Tab changes mode · Esc cancels a turn",
-            width as usize,
+    let cwd = footer::short_path(&info.cwd);
+
+    vec![
+        Line::from(vec![
+            Span::styled("✦ ", Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled("CORDATA", Style::new().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(" · autonomous coding intelligence", Style::new().fg(Color::Gray)),
+            Span::styled("  [", dim),
+            Span::styled(session, Style::new().fg(Color::Cyan)),
+            Span::styled("]", dim),
+        ]),
+        Line::from(vec![
+            Span::styled("  cwd ", dim),
+            Span::styled(cwd, Style::new().fg(Color::Gray)),
+        ]),
+        Line::styled(
+            text::truncate(
+                "  ? help · /config · Tab cycle mode · Esc cancel",
+                width as usize,
+            ),
+            dim,
         ),
-        label,
-    ));
-    lines
+    ]
 }
 
 /// Draw the live region: reply tail / running tool cards, then the prompt box (or

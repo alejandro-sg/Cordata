@@ -73,12 +73,14 @@ CHANNEL_ENV = "TELEMETRY_CHANNEL_ID"
 #: An escape hatch that needs no edit to the environment it was launched with: `SIERRALAB_DISCORD=off`
 #: keeps the token in place and the bot down (a person debugging the daemon should not have to delete a
 #: credential to stop it talking).
-KILL_ENV = "SIERRALAB_DISCORD"
+KILL_ENV = "CORDATA_DISCORD"
+LEGACY_KILL_ENV = "SIERRALAB_DISCORD"
 OFF = ("0", "off", "false", "no")
 
 #: The Keychain item holding the bot token, if it is not in the environment:
-#: `security add-generic-password -a "$USER" -s sierralab-discord-bot-token -w` (or `make discord-key`).
-KEYCHAIN_ITEM = "sierralab-discord-bot-token"
+#: `security add-generic-password -a "$USER" -s cordata-discord-bot-token -w` (or `make discord-key`).
+KEYCHAIN_ITEM = "cordata-discord-bot-token"
+KEYCHAIN_ITEMS = ("cordata-discord-bot-token", "sierralab-discord-bot-token")
 
 #: The directive's destructive line, and `laya.riskDestroy`'s default. Read per project so a session
 #: that raised or lowered its own line is asked about at the line it actually set.
@@ -174,7 +176,7 @@ class RemoteConfig:
         exposure `secret_guard` exists to prevent.
         """
         env = os.environ if environ is None else environ
-        if str(env.get(KILL_ENV, "")).strip().lower() in OFF:
+        if str(env.get(KILL_ENV, "") or env.get(LEGACY_KILL_ENV, "")).strip().lower() in OFF:
             return cls(reason=f"{KILL_ENV} is off")
         if token is None:
             # `environ` is the smoke test's seam (and any caller that already read one). The real
@@ -183,7 +185,7 @@ class RemoteConfig:
             if environ is not None:
                 token = str(env.get(TOKEN_ENV) or "")
             else:
-                token = secret_guard.take_secret(TOKEN_ENV, keychain=KEYCHAIN_ITEM).reveal() or ""
+                token = secret_guard.take_secret(TOKEN_ENV, keychain=KEYCHAIN_ITEMS).reveal() or ""
         secret_guard.register_secret(token)
         ids: dict[str, int] = {}
         for name in (ALLOWED_ENV, CHANNEL_ENV):

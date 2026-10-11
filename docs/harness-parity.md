@@ -23,14 +23,14 @@ scrollback), **Kilo CLI** (`kilo.jsonc`, permission wildcards, "always run", `ru
 | Reasoning and sub-agent activity visible | DeepSeek-TUI | ✅ | live tail, per-agent rows, hand-offs |
 | Fast triage in front of the LLM (Laya) | — | ✅ | `docs/laya-triage.md`. Ours alone; near chance before fine-tuning |
 | Secrets kept from the agent | — | ✅ | `THREAT_MODEL.md`; env/Keychain only, masked, built-in Keychain deny rule |
-| Resume a session by id | Claude Code, Kilo `--continue` | 🟡 | `--resume <id>`; text history only, comes back in the default mode. No picker (ACP `list_sessions` isn't implemented in the backend), no `--continue` |
+| Resume a session by id / folder | Claude Code, Kilo `--continue` | ✅ | `--resume <id>` and `-c` / `--continue` (resumes newest session for current folder); text history replayed |
 | `/status` | Claude Code | 🟡 | session, mode, model, Laya, rule counts. No usage/cost — ACP has no usage push |
 | `/clear` | Claude Code | 🟡 | clears the screen; the *conversation* continues (a new conversation needs a new session) |
 | New conversation without restarting (`/new`) | Claude Code | ⬜ | needs a second `new_session` on the live connection |
 | `/compact` (summarise to free context) | Claude Code | ⬜ | Strands has a conversation manager; no ACP surface for it yet |
 | Snapshots and `/undo` / `/restore` of file changes | DeepSeek-TUI | ✅ | `checkpoints.py` snapshots into a shadow git repo before any call that may write; `/undo`, `/checkpoints`; see `docs/agentic-harness.md` |
 | `/export` / `/copy` | Claude Code | ⬜ | selecting text in the terminal works; no command |
-| Non-interactive single prompt (`-p`, `kilo run`) | Claude Code, Kilo | 🟡 | `acp-stress` runs scripted prompts and prints JSONL; there is no `acp-tui -p "…"` |
+| Non-interactive single prompt / run (`-p`, `kilo run`) | Claude Code, Kilo | ✅ | `cordata [PROMPT]` launches interactive TUI with initial query; `cordata run "<goal>"` runs autonomous multi-worker batch tasks; `acp-stress` runs scripted benchmark scenarios |
 | `@file` mentions | Claude Code, Kilo | ⬜ | the backend reads ACP resource blocks; the TUI doesn't send them |
 | User-defined hooks | Claude Code | ⬜ | the backend uses Strands hooks internally (secret masking, untrusted-output guard) but exposes none |
 | MCP server management in the terminal | Claude Code `/mcp`, Kilo | ⬜ | the web UI has it (`provider_settings`, `mcp_manager`); the TUI doesn't |

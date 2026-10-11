@@ -58,9 +58,9 @@ def enabled_families(preferences: Any) -> list[str]:
 @functools.lru_cache(maxsize=8)
 def family_available(family: str) -> bool:
     if family == "claude_code":
-        return bool(os.environ.get("SIERRALAB_CLAUDE_BIN") or shutil.which("claude") or os.path.exists(os.path.expanduser("~/.local/bin/claude")))
+        return bool(os.environ.get("CORDATA_CLAUDE_BIN") or os.environ.get("SIERRALAB_CLAUDE_BIN") or shutil.which("claude") or os.path.exists(os.path.expanduser("~/.local/bin/claude")))
     if family == "antigravity":
-        return bool(os.environ.get("SIERRALAB_AGY_BIN") or shutil.which("agy") or os.path.exists(os.path.expanduser("~/.local/bin/agy")))
+        return bool(os.environ.get("CORDATA_AGY_BIN") or os.environ.get("SIERRALAB_AGY_BIN") or shutil.which("agy") or os.path.exists(os.path.expanduser("~/.local/bin/agy")))
     if family == "ollama":
         try:
             import ollama_cloud

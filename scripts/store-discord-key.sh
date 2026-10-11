@@ -17,7 +17,7 @@ fi
 
 log "Paste your Discord bot token (hidden), press Enter, then paste it again to confirm."
 # `security -w` with no value prompts twice, with echo off; -U updates an existing item.
-security add-generic-password -U -a "$USER" -s sierralab-discord-bot-token -w || { err "not stored."; exit 1; }
+security add-generic-password -U -a "$USER" -s cordata-discord-bot-token -w || { err "not stored."; exit 1; }
 echo
 
 # A stale exported variable would still win over what was just stored — DiscordRemote's
@@ -28,7 +28,7 @@ if [[ -n "${DISCORD_BOT_TOKEN:-}" ]]; then
   warn "DISCORD_BOT_TOKEN is exported in this shell and OVERRIDES the Keychain — unset it (fish: set -e DISCORD_BOT_TOKEN) or it will keep being used."
 fi
 
-token="$(security find-generic-password -s sierralab-discord-bot-token -w 2>/dev/null || true)"
+token="$(security find-generic-password -s cordata-discord-bot-token -w 2>/dev/null || security find-generic-password -s sierralab-discord-bot-token -w 2>/dev/null || true)"
 if [[ -z "$token" ]]; then
   err "stored, but reading it back returned nothing."
   exit 1

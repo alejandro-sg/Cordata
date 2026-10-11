@@ -19,20 +19,28 @@ how it is built, how to use it, and where the build departed from the plan and w
 From a session (the ACP front doors — TUI, Zed, Discord): the agent calls **`orchestrate(goal)`** for multi-step
 work. It asks first (build mode), like `claude_code_engineer`; a confident Laya `team` route only hints at it.
 
-From a shell:
+From a shell (from any directory, using `cordata` / `sierra` / `orchestrator` installed via `make cli`):
 
 ```bash
-cd backend && .venv/bin/python -m orchestrator run "Add retries to the HTTP client and test them" --cwd ~/proj
+cordata run "Add retries to the HTTP client and test them" --cwd ~/proj
+# aliases: sierra run, orchestrator run
 ```
 
 ```bash
-cd backend && .venv/bin/python -m orchestrator status
+cordata status
+# or: orchestrator status
+```
+
+To run without the Agent Vault proxy in development/testing, pass `--allow-direct` or set `CORDATA_VAULT_DIRECT=1` (or `SIERRALAB_VAULT_DIRECT=1`):
+
+```bash
+cordata run "Add retries to the HTTP client" --allow-direct
 ```
 
 `status` shows every quota pool's headroom, recent runs and handoffs — from `state.db`, spending nothing. `show
 RUN_ID` prints a run's plan, history and audit; `resume RUN_ID` continues a paused one; `replay` judges the learned
 dispatch policy (below). The TUI's `/status` and Discord's `!status` render the same pools (zero model tokens).
-Every run also writes `~/.sierralab/orchestrator/<run_id>/plan.md` and `walkthrough.md` (what each step did, who did
+Every run also writes `~/.cordata/orchestrator/<run_id>/plan.md` (or `~/.sierralab/`) and `walkthrough.md` (what each step did, who did
 it, the audit, the recovery) — Antigravity's artifact model, rendered from the record rather than written by a model.
 
 Settings (`orchestrator.*`, all trust-gated): see [`settings.md`](settings.md). The pools default to conservative

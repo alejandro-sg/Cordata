@@ -1851,7 +1851,7 @@ async def _main() -> None:
     # tries to start these same MCP clients itself, from a throwaway
     # thread/loop that doesn't survive to serve a real tool call afterward.
     _protect_protocol_stdout()
-    await start_mcp_clients()
+    asyncio.create_task(start_mcp_clients())
     # One JSON-RPC message is one line, and asyncio's default line limit is 64 KiB: a prompt with a
     # large embedded file, or the menu bar's screenshot (`_sierralab/os-context`, up to 4 MiB of
     # JPEG as base64), would otherwise end the connection. The supervisor's side reads with a far

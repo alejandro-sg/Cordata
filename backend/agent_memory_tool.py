@@ -26,19 +26,6 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-from qdrant_client import QdrantClient
-from qdrant_client.models import (
-    Direction,
-    Distance,
-    FieldCondition,
-    Filter,
-    IsEmptyCondition,
-    MatchValue,
-    OrderBy,
-    PayloadField,
-    VectorParams,
-)
-from sentence_transformers import SentenceTransformer
 from strands import tool
 
 from settings import (
@@ -56,14 +43,19 @@ _VALID_KINDS = {"fact", "lesson", "strategy", "preference"}
 
 _embedder_inst: Any = None
 _client_inst: Any = None
+_cached_active_filter: Any = None
+_cached_deprecated_filter: Any = None
+_cached_missing_status_filter: Any = None
 _embedder_lock = threading.Lock()
 _client_lock = threading.Lock()
+_logger = logging.getLogger(__name__)
 
 
-def _get_embedder() -> SentenceTransformer:
+def _get_embedder() -> Any:
     global _embedder_inst
     with _embedder_lock:
         if _embedder_inst is None:
+            from sentence_transformers import SentenceTransformer
             try:
                 _embedder_inst = SentenceTransformer(_MODEL_NAME, local_files_only=True)
             except Exception:
@@ -75,12 +67,37 @@ def _get_embedder() -> SentenceTransformer:
         return _embedder_inst
 
 
-def _get_client() -> QdrantClient:
+def _get_client() -> Any:
     global _client_inst
     with _client_lock:
         if _client_inst is None:
+            from qdrant_client import QdrantClient
             _client_inst = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, timeout=5, check_compatibility=False)
         return _client_inst
+
+
+def _get_active_filter() -> Any:
+    global _cached_active_filter
+    if _cached_active_filter is None:
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
+        _cached_active_filter = Filter(must=[FieldCondition(key="status", match=MatchValue(value="active"))])
+    return _cached_active_filter
+
+
+def _get_deprecated_filter() -> Any:
+    global _cached_deprecated_filter
+    if _cached_deprecated_filter is None:
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
+        _cached_deprecated_filter = Filter(must=[FieldCondition(key="status", match=MatchValue(value="deprecated"))])
+    return _cached_deprecated_filter
+
+
+def _get_missing_status_filter() -> Any:
+    global _cached_missing_status_filter
+    if _cached_missing_status_filter is None:
+        from qdrant_client.models import Filter, IsEmptyCondition, PayloadField
+        _cached_missing_status_filter = Filter(must=[IsEmptyCondition(is_empty=PayloadField(key="status"))])
+    return _cached_missing_status_filter
 
 
 def __getattr__(name: str) -> Any:
@@ -88,14 +105,13 @@ def __getattr__(name: str) -> Any:
         return _get_embedder()
     if name == "_client":
         return _get_client()
+    if name == "_ACTIVE_FILTER":
+        return _get_active_filter()
+    if name == "_DEPRECATED_FILTER":
+        return _get_deprecated_filter()
+    if name == "_MISSING_STATUS_FILTER":
+        return _get_missing_status_filter()
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
-
-
-_logger = logging.getLogger(__name__)
-
-_ACTIVE_FILTER = Filter(must=[FieldCondition(key="status", match=MatchValue(value="active"))])
-_DEPRECATED_FILTER = Filter(must=[FieldCondition(key="status", match=MatchValue(value="deprecated"))])
-_MISSING_STATUS_FILTER = Filter(must=[IsEmptyCondition(is_empty=PayloadField(key="status"))])
 
 
 @dataclass
@@ -164,6 +180,7 @@ class MemoryStore:
         if self._ensured:
             return
         if not _client.collection_exists(self._collection):
+            from qdrant_client.models import Distance, VectorParams
             _client.create_collection(
                 self._collection,
                 vectors_config=VectorParams(size=_embedder.get_embedding_dimension(), distance=Distance.COSINE),
@@ -344,6 +361,7 @@ class MemoryStore:
         overflow = active_count - MEMORY_MAX_ACTIVE_ENTRIES
         if overflow <= 0:
             return
+        from qdrant_client.models import Direction, OrderBy
         records, _ = _client.scroll(
             self._collection,
             scroll_filter=_ACTIVE_FILTER,
@@ -364,6 +382,7 @@ class MemoryStore:
         overflow = deprecated_count - (MEMORY_MAX_ACTIVE_ENTRIES * 2)
         if overflow <= 0:
             return
+        from qdrant_client.models import Direction, OrderBy
         records, _ = _client.scroll(
             self._collection,
             scroll_filter=_DEPRECATED_FILTER,

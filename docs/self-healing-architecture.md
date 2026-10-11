@@ -48,7 +48,7 @@ This document adds a **fourth skill file** (self-healing conventions), a **new h
 
 6. **Add a fourth `SKILL.md`**: `backend/skills/self-healing/SKILL.md`, documenting for the agent itself the sequence it must follow (think → skill_forge → wait for approval → retry), mirroring how `backend/skills/skill-authoring/SKILL.md` already documents manual skill-writing conventions.
 
-None of steps 1–6 touch `main.py`'s existing `_APPROVAL_REQUIRED_TOOLS` list, `AgentTools.tsx`'s existing three hooks, or `local_swarm_tool.py` — this is additive.
+None of steps 1–6 touch `main.py`'s existing `_APPROVAL_REQUIRED_TOOLS` list or `AgentTools.tsx`'s existing three hooks — this is additive.
 
 ---
 

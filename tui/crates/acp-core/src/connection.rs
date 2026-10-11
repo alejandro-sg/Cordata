@@ -53,9 +53,13 @@ pub(crate) async fn run(
                 hub_url = Some(daemon.conversation_url(&row.handle));
                 options.resume = Some(row.acp_session_id.clone());
                 options.continue_latest = false;
-                let title = if row.title.is_empty() { "new conversation".to_owned() } else { format!("“{}”", row.title) };
+                let title = if row.title.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · “{}”", row.title)
+                };
                 let _ = events.send(AppEvent::Notice(format!(
-                    "conversation {} · {title} — shared with Discord, the menu bar and the web app; continue it anywhere with its handle",
+                    "conversation {}{title}",
                     row.handle
                 )));
                 options.hub_handle = Some(row.handle);

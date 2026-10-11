@@ -1,6 +1,6 @@
-# sierralab-agents
+# Cordata
 
-Local-only research skeleton: Strands Agents SDK (Python) → AG-UI → CopilotKit (Next.js),
+Local-only autonomous coding intelligence: Strands Agents SDK (Python) → AG-UI → CopilotKit (Next.js),
 plus an [Agent Client Protocol](https://agentclientprotocol.com) front door for ACP editors
 (Zed, etc.) onto the same agent. No Okta/O4AA, no AgentCore, no cloud calls — everything
 runs on localhost (+ one local container, Qdrant, for semantic memory), backed by your
@@ -21,7 +21,7 @@ want the included Qdrant container for long-term agent memory — optional, ever
 works without it.
 
 ```bash
-git clone <this-repo-url> && cd sierralab-agents
+git clone <this-repo-url> && cd cordata
 scripts/setup.sh    # backend venv + pinned deps, frontend deps, .env files from templates
 scripts/dev-up.sh   # Qdrant (if available) + backend + frontend
 ```
@@ -35,6 +35,23 @@ Open `http://localhost:3000`.
 
 Same commands via `make setup` / `make up` / `make down` / `make restart` / `make status`.
 Details, including what each script actually does, in `scripts/README.md`.
+
+### Global CLI (`cordata` / `sierra` / `orchestrator`)
+
+Run `make cli` (or `scripts/install-cli.sh`) to link `cordata`, `sierra`, `orchestrator`, and `acp-tui` into `~/.local/bin/`. You can then invoke the assistant from any directory:
+
+```bash
+# Interactive assistant (Claude Code & Antigravity style)
+cordata                               # Interactive TUI session
+cordata "what is this project"        # Launch TUI immediately with initial query
+cordata -c                            # Resume newest session in current folder
+cordata --resume <session_id>         # Resume a specific session
+
+# Autonomous batch orchestrator (multi-worker planning & execution)
+cordata run "Add retries and test"    # Autonomous run across Claude Code, Antigravity, Ollama
+cordata status                        # Quota headroom, recent runs and handoffs (zero token cost)
+cordata show <run_id>                 # Inspect run plan, walkthrough, and audit
+```
 
 There's no confirmation gate at the process level (`BYPASS_TOOL_CONSENT` — a headless
 server has no TTY to prompt on) — the real safety net is per-tool human-in-the-loop
@@ -101,7 +118,7 @@ the observer are the sub-agents left in-process; multi-step work goes to `orches
   Cloud at `https://ollama.com/v1`). Set in the environment or `backend/.env`.
 - **API keys never go in `.env`** (the agent's file tools can read it). Store one once in the
   macOS Keychain with `make key` (hidden prompt, then verifies the key against Ollama;
-  the Keychain service is `sierralab-ollama-api-key`, or `sierralab-anthropic-api-key` for
+  the Keychain service is `cordata-ollama-api-key` [fallback: `sierralab-ollama-api-key`], or `cordata-anthropic-api-key` for
   Anthropic) — or export
   `OLLAMA_API_KEY` / `CLOUD_OPENAI_API_KEY` / `ANTHROPIC_API_KEY` (an exported variable wins).
   The Keychain is only consulted when that provider is the active one. The backend reads the key once, removes it
@@ -112,7 +129,7 @@ the observer are the sub-agents left in-process; multi-step work goes to `orches
   they hold placeholder credentials (`OPENAI_API_KEY=__openai_api_key__`) and reach the network
   through a local proxy that substitutes the real value on the way out, so a command that prints
   or exports its environment leaks a marker. The vault token comes from the Keychain
-  (`sierralab-agent-vault-token`), never a settings file. If the vault is enabled and unreachable,
+  (`cordata-agent-vault-token`, fallback `sierralab-agent-vault-token`), never a settings file. If the vault is enabled and unreachable,
   the default `vault.egressPolicy: deny` refuses `shell`/`python_repl`/`http_request` in **every**
   mode rather than falling through to direct egress — `docs/settings.md` ("Agent Vault") and
   `THREAT_MODEL.md` ("Agent Vault is egress-only"; it is not a filesystem sandbox).
@@ -156,10 +173,12 @@ call by every agent, so even `auto` mode stops at anything destructive ([`docs/a
 
 ## Terminal clients (Rust)
 
-`tui/` holds an interactive terminal client (`acp-tui`, a Claude-Code-style UI over ACP — it prints
-into your terminal's own scrollback, so you scroll with the wheel as usual)
-and a concurrent stress runner (`acp-stress`) for this backend — see
-[`tui/README.md`](tui/README.md). `make tui`, `make tui-test`, `make stress`.
+`tui/` holds an interactive terminal client (`acp-tui`, invoked globally as `cordata` or `sierra` / `orchestrator` — a sleek, AI-forward Claude-Code/Antigravity-style UI over ACP that prints into your terminal's own scrollback) and a concurrent stress runner (`acp-stress`) — see [`tui/README.md`](tui/README.md).
+
+- **Instant startup (<1.5s cold start):** heavy models (`sentence-transformers`, Qdrant client) are lazily loaded on first memory call, and MCP clients connect asynchronously in the background.
+- **Futuristic, noise-free interface:** clean status header (`✦ CORDATA · autonomous coding intelligence`), inline streaming markdown, collapsible tool cards (`Ctrl+E`), reasoning tail (`Ctrl+R`), and Laya classification badges.
+- **Zero friction:** run `cordata` from any directory, pass queries directly (`cordata "what is this repo?"`), cycle modes with `Tab` (Plan/Build/Auto), pick models with `Ctrl+O`, pick temperature with `Ctrl+T`, or resume the latest session with `cordata -c`.
+- `make cli` (installs to `~/.local/bin`), `make tui`, `make tui-test`, `make stress`.
 
 ### The daemon (sessions that outlive the terminal)
 
@@ -173,7 +192,7 @@ make daemon                                    # foreground; make daemon-install
 make tui ARGS="--transport ws"                 # attaches by cwd, or starts a session there
 ```
 
-The daemon binds loopback only, requires the token in `~/.sierralab/daemon.json` (0600), and rejects
+The daemon binds loopback only, requires the token in `~/.cordata/daemon.json` (or `~/.sierralab/daemon.json`, 0600), and rejects
 any WebSocket handshake carrying a browser `Origin`. It proxies ACP frames **verbatim** — it never
 parses and re-encodes them — so `--transport ws` and the default `--transport stdio` are
 semantically identical, and no protocol change here needs a matching change there. If the *child*
@@ -183,7 +202,7 @@ the ledger (`state.db`) instead of quietly dropping the question. See
 
 While nobody is attached the daemon can watch the projects itself (`observer.enabled`, off by
 default): it reads each one with a fixed `git` command list, hands that to a read-only agent, and
-writes `~/.sierralab/nightly_briefing.md`. The agent holds `file_read` and `think` and nothing
+writes `~/.cordata/nightly_briefing.md` (or `~/.sierralab/nightly_briefing.md`). The agent holds `file_read` and `think` and nothing
 else, so the zero-write rule is structural rather than a prompt — and a client attaching kills a
 cycle in flight. A deploy hook or CI job can feed it with `POST /observe`. Keys and limits:
 [`docs/settings.md`](docs/settings.md); what it can and can't do:
@@ -218,7 +237,7 @@ What it does once it is up:
 The bot is off unless all three names are set and both ids parse; a stranger's click or message is
 dropped and changes nothing, and an approval relays through the same arbitration the GUI and TUI use
 (first answer wins). Message Content Intent must be on for the application. A new chat starts in
-`SIERRALAB_DISCORD_CWD`, else your newest terminal session's folder, else a private workspace — and
+`CORDATA_DISCORD_CWD` (fallback `SIERRALAB_DISCORD_CWD`), else your newest terminal session's folder, else a private workspace — and
 says which in its first line. Details: [`THREAT_MODEL.md`](THREAT_MODEL.md), "Discord remote control";
 the names: [`docs/settings.md`](docs/settings.md).
 
@@ -242,7 +261,7 @@ offers, and what this harness does and does not use of it, is in [`docs/strands-
 
 Preferences work the way Claude Code's and Kilo's do: layered `settings.json` files (user / project /
 local), `allow` / `ask` / `deny` permission rules, "always allow" from the approval prompt, and
-`SIERRALAB.md` instructions — `/config`, `/permissions`, `/trust`, `/init` in the TUI. See
+`CORDATA.md` (or `SIERRALAB.md`) instructions — `/config`, `/permissions`, `/trust`, `/init` in the TUI. See
 [`docs/settings.md`](docs/settings.md); what is and isn't at parity with Claude Code, Kilo CLI and
 DeepSeek-TUI is in [`docs/harness-parity.md`](docs/harness-parity.md).
 
@@ -473,7 +492,7 @@ door, with real parity on the things that matter for using it day to day:
   before running, via Strands' own `strands.interventions` system (`_ApprovalHandler` in
   `acp_server.py`) translated into ACP's native `session/request_permission` — the same
   tools main.py gates behind an approval card on the web. Each prompt is staged in
-  `~/.sierralab/state.db` before it is shown and closed with the answer, with Laya's risk
+  `~/.cordata/state.db` (or `~/.sierralab/state.db`) before it is shown and closed with the answer, with Laya's risk
   score and band alongside it, so "what was asked, who approved it, under which rule" is
   answerable later and a turn that resumes does not ask the same call twice.
 - **Model & temperature as native config-option dropdowns** (`session/set_config_option`)
@@ -496,10 +515,10 @@ door, with real parity on the things that matter for using it day to day:
 
 ```json
 "agent_servers": {
-  "sierralab-agent": {
+  "cordata-agent": {
     "type": "custom",
-    "command": "/absolute/path/to/sierralab-agents/backend/.venv/bin/python3",
-    "args": ["/absolute/path/to/sierralab-agents/backend/acp_server.py"],
+    "command": "/absolute/path/to/cordata/backend/.venv/bin/python3",
+    "args": ["/absolute/path/to/cordata/backend/acp_server.py"],
     "env": {}
   }
 }

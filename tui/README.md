@@ -1,4 +1,4 @@
-# sierralab-agents terminal clients (Rust, ACP)
+# Cordata terminal clients (Rust, ACP)
 
 Two binaries over one protocol library, all talking to `backend/acp_server.py`
 (the same Agent Client Protocol server Zed uses):
@@ -14,6 +14,19 @@ crate (pinned `=2.2.0`, default features only).
 
 ## Run
 
+Using the global `cordata` / `sierra` / `orchestrator` CLI (installed via `make cli` to `~/.local/bin`):
+
+```sh
+cordata                              # new interactive session in current directory
+cordata "what is this project"       # launch with initial prompt (Claude Code style)
+cordata -c                           # resume newest session in current directory
+cordata --resume <session-id>        # resume session by ID
+cordata --cwd ~/some/project         # launch in specified project folder
+cordata run "<goal>"                 # autonomous multi-worker batch run
+```
+
+Or running directly via cargo / make:
+
 ```sh
 cd tui
 cargo run -p acp-tui                         # new session in the current directory
@@ -26,10 +39,11 @@ cargo run -p acp-stress -- scenarios/smoke.json -c 4 -o results.jsonl
 
 The backend is found automatically (`backend/.venv/bin/python` +
 `backend/acp_server.py`, walking up from the binary, then the cwd); override
-with `--backend-root` or `ACP_TUI_BACKEND_ROOT`. You need `scripts/setup.sh`
-done and your oMLX model server running — without it every turn fails with
-`Connection error`. The backend takes ~8 s to start (it loads models), so the
-footer shows `connecting` at first.
+with `--backend-root` or `ACP_TUI_BACKEND_ROOT`.
+
+Startup is near-instant (<1.5s cold start): heavy dependencies (`SentenceTransformer`, Qdrant)
+are lazily initialized on first use, and MCP client initialization connects asynchronously in the background
+without blocking the ACP handshake.
 
 ### Using a cloud model (and keeping its key from the agent)
 
@@ -74,9 +88,9 @@ narrow terminal. Multi-line paste goes into the box as one paste; it doesn't sub
   for reasoning that finishes afterwards.
 - **Tool calls** are bordered cards: status glyph, the command or input, and a collapsed result
   (Ctrl+E / `/tools` expands). `shell`, `python_repl`, `file_write` ask first in `build` mode.
-- **Sub-agent teams** (`local_swarm` / `local_graph`) get one row per agent, live: `⠙ cat_agent
-  thinking: …` while it runs, `✓ dog_agent <its summary>` when done, `→ a → b` for hand-offs, and
-  the team's final result under `result`. The agents' own system prompts aren't dumped into the card.
+- **Sub-agents and orchestrator runs** get one row per worker, live: `⠙ architect
+  thinking: …` while it runs, `✓ debugger <summary>` when done, `→ a → b` for hand-offs, and
+  the final result under `result`.
 - **Replies** render basic markdown: headings, bullets, numbered lists, quotes, `code`, **bold**
   and fenced code blocks.
 - **Laya, live.** The moment you send a prompt, a dim `◆ laya` line appears under it (~70 ms):
@@ -97,7 +111,7 @@ narrow terminal. Multi-line paste goes into the box as one paste; it doesn't sub
 | `s` | allow and **save the rule** ("Always allow shell(git status)"), when the box offers it |
 | Esc / Ctrl+C | cancel the running turn (not while the approval box is open) · Esc/Ctrl+C clears the box when idle |
 | Up / Down | earlier / later prompts (on the first / last line of the box) |
-| Tab / Shift+Tab | cycle mode forward / back: plan → build → auto |
+| Tab / Shift+Tab | cycle mode: plan → build → auto (or autocomplete slash commands when typing `/...`) |
 | Ctrl+O (also Ctrl+M where the terminal distinguishes it) | model picker |
 | Ctrl+T | temperature picker |
 | Ctrl+R / Ctrl+E | expand reasoning / tool results |
@@ -132,9 +146,9 @@ Scrolling is your terminal's: wheel, trackpad, Shift+PageUp/PageDown, or its scr
 `/tools`, `/laya [on|off]`, `/config`, `/permissions`, `/trust`, `/memory`, `/init`, `/status`,
 `/clear`, `/quit`. A path like `/usr/bin/env is missing` is still a normal prompt.
 
-**Preferences and permissions** are layered JSON files — `~/.sierralab/settings.json`,
-`<project>/.sierralab/settings.json` (commit it), `<project>/.sierralab/settings.local.json`
-(this machine) — plus instruction files (`SIERRALAB.md`, or `AGENTS.md` / `CLAUDE.md`), the way
+**Preferences and permissions** are layered JSON files — `~/.cordata/settings.json` (or `~/.sierralab/settings.json`),
+`<project>/.cordata/settings.json` (or `.sierralab/`, commit it), `<project>/.cordata/settings.local.json`
+(this machine) — plus instruction files (`CORDATA.md`, `SIERRALAB.md`, or `AGENTS.md` / `CLAUDE.md`), the way
 Claude Code and Kilo do it:
 
 ```text
@@ -143,7 +157,7 @@ Claude Code and Kilo do it:
 /permissions allow shell(git status)     deny always wins, in every mode
 /permissions deny  file_write(*.env) project
 /trust                                   let this folder's project settings loosen permissions
-/init                                    have the agent draft SIERRALAB.md
+/init                                    have the agent draft CORDATA.md
 ```
 
 Everything — keys, rule syntax, the trust model, what applies when — is in
@@ -194,7 +208,7 @@ per session: a second terminal on the same directory is refused, and `/new` is
 unavailable over `ws` for the same reason. The banner's `link` row says which
 transport you are on.
 
-The token and port come from `~/.sierralab/daemon.json` (0600); `--daemon-url`
+The token and port come from `~/.cordata/daemon.json` (or `~/.sierralab/daemon.json`, 0600); `--daemon-url`
 overrides the URL, for a daemon whose config you don't have on disk. Nothing
 else changes: the daemon proxies ACP frames verbatim, so `--resume`,
 `--continue`, permissions and Laya behave identically either way.
@@ -267,7 +281,6 @@ screen drops them with it; files are not touched. `/back list` shows the checkpo
 ## Not done
 
 Provider switching (it's environment on purpose), free-float temperature, skills/MCP management,
-session enumeration (add `list_sessions` to `acp_server.py` first — don't read `backend/sessions/`
-off disk behind the protocol's back), `/compact`, `@file` mentions,
-a non-interactive `-p` mode. The full list, with the reference tool for each, is in
+session enumeration in the TUI picker (add `list_sessions` to `acp_server.py` first — don't read `backend/sessions/`
+off disk behind the protocol's back), `/compact`, and `@file` mentions. The full list, with the reference tool for each, is in
 [`docs/harness-parity.md`](../docs/harness-parity.md).

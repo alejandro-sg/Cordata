@@ -345,9 +345,7 @@ impl App {
             AppEvent::AgentText(text) => self.append_agent(&text),
             AppEvent::AgentThought(text) => self.append_thought(&text),
             AppEvent::ReplayComplete => {
-                self.messages.push(Message::Divider(
-                    "resumed — earlier tool calls not shown (the backend replays text only); mode reset to build".into(),
-                ));
+                self.messages.push(Message::Divider("resumed session".into()));
             }
             AppEvent::Laya(LayaEvent::Decision(decision)) => self.on_laya_decision(decision),
             AppEvent::Laya(LayaEvent::Outcome(outcome)) => {
@@ -525,26 +523,14 @@ impl App {
             }
             HarnessEvent::Lsp(event) => {
                 let server = event.get("server").and_then(Value::as_str).unwrap_or("?");
-                match event.get("event").and_then(Value::as_str) {
-                    Some("started") => {
-                        let command = event
-                            .get("command")
-                            .and_then(Value::as_str)
-                            .unwrap_or(server);
-                        self.messages.push(Message::Info(sanitize(&format!(
-                            "language server for {server} started ({command}) — edits now report diagnostics"
-                        ))));
-                    }
-                    Some("failed") => {
-                        let error = event
-                            .get("error")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default();
-                        self.messages.push(Message::Info(sanitize(&format!(
-                            "language server for {server} failed: {error}"
-                        ))));
-                    }
-                    _ => {}
+                if event.get("event").and_then(Value::as_str) == Some("failed") {
+                    let error = event
+                        .get("error")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    self.messages.push(Message::Error(sanitize(&format!(
+                        "language server for {server} failed: {error}"
+                    ))));
                 }
             }
         }

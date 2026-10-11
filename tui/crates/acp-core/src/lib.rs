@@ -1,4 +1,4 @@
-//! All ACP protocol logic for the sierralab-agents terminal clients. Zero UI
+//! All ACP protocol logic for the Cordata terminal clients. Zero UI
 //! dependencies: `acp-tui` and `acp-stress` both consume `SessionHandle` +
 //! `AppEvent`, so the connection/session/permission code exists exactly once.
 

@@ -91,11 +91,24 @@ def run_line(run: dict[str, Any]) -> str:
 
 
 def render(data: dict[str, Any], *, marks: bool = False) -> str:
-    lines = ["quota pools"] + [f"  {pool_line(p, marks=marks)}" for p in data.get("pools", [])]
+    card_width = 72
+    top = "╭── Quota Pools " + "─" * (card_width - 16) + "╮"
+    bot = "╰" + "─" * card_width + "╯"
+    lines = [top] + [f"│  {pool_line(p, marks=marks)}" for p in data.get("pools", [])] + [bot]
+
     runs = data.get("runs") or []
-    lines.append("orchestrator runs" + ("" if runs else "  (none)"))
-    lines += [f"  {run_line(r)}" for r in runs]
+    lines.append("╭── Orchestrator Runs " + "─" * (card_width - 22) + "╮")
+    if runs:
+        lines += [f"│  {run_line(r)}" for r in runs]
+    else:
+        lines.append("│  (none)")
+    lines.append(bot)
+
     handoffs = data.get("handoffs") or []
-    lines.append("handoffs" + ("" if handoffs else "  (none)"))
-    lines += [f"  {handoff_line(h)}" for h in handoffs]
+    lines.append("╭── Recent Handoffs " + "─" * (card_width - 20) + "╮")
+    if handoffs:
+        lines += [f"│  {handoff_line(h)}" for h in handoffs]
+    else:
+        lines.append("│  (none)")
+    lines.append(bot)
     return "\n".join(lines)

@@ -16,7 +16,7 @@ fi
 
 log "Paste your Ollama API key (hidden), press Enter, then paste it again to confirm."
 # `security -w` with no value prompts twice, with echo off; -U updates an existing item.
-security add-generic-password -U -a "$USER" -s sierralab-ollama-api-key -w || { err "not stored."; exit 1; }
+security add-generic-password -U -a "$USER" -s cordata-ollama-api-key -w || { err "not stored."; exit 1; }
 
 echo
 # A stale exported variable would still win over what was just stored, so the check

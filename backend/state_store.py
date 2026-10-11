@@ -237,7 +237,7 @@ def path() -> Path:
     `SIERRALAB_STATE_DB` overrides the whole path, which is how the smoke tests
     stay off a developer's real ledger.
     """
-    override = os.environ.get("SIERRALAB_STATE_DB")
+    override = os.environ.get("CORDATA_STATE_DB") or os.environ.get("SIERRALAB_STATE_DB")
     return Path(override) if override else settings_store.user_dir() / DEFAULT_NAME
 
 
@@ -262,8 +262,8 @@ def _make_private(target: Path) -> None:
         for candidate in (target, target.with_name(target.name + "-wal"), target.with_name(target.name + "-shm")):
             if candidate.exists():
                 os.chmod(candidate, 0o600)
-    except OSError:
-        logger.warning("state_store: could not restrict %s to its owner", target, exc_info=True)
+    except OSError as err:
+        logger.warning("state_store: could not restrict %s to its owner: %s", target, err)
 
 
 def _configure(conn: sqlite3.Connection) -> None:

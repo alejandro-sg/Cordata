@@ -122,15 +122,23 @@ impl std::fmt::Debug for DaemonConfig {
 }
 
 impl DaemonConfig {
-    /// The daemon config file: `SIERRALAB_DAEMON_CONFIG`, else
-    /// `~/.sierralab/daemon.json`.
+    /// The daemon config file: `CORDATA_DAEMON_CONFIG` / `SIERRALAB_DAEMON_CONFIG`, else
+    /// `~/.cordata/daemon.json` (or `~/.sierralab/daemon.json`).
     pub fn path() -> Result<PathBuf> {
-        if let Some(override_path) = std::env::var_os(DAEMON_CONFIG_ENV) {
+        if let Some(override_path) = std::env::var_os("CORDATA_DAEMON_CONFIG")
+            .or_else(|| std::env::var_os(DAEMON_CONFIG_ENV))
+        {
             return Ok(PathBuf::from(override_path));
         }
         let home = std::env::var_os("HOME")
             .ok_or_else(|| Error::DaemonConfigNotFound(PathBuf::from("$HOME is not set")))?;
-        Ok(PathBuf::from(home).join(".sierralab").join("daemon.json"))
+        let cordata = PathBuf::from(&home).join(".cordata").join("daemon.json");
+        let sierralab = PathBuf::from(&home).join(".sierralab").join("daemon.json");
+        if !cordata.exists() && sierralab.exists() {
+            Ok(sierralab)
+        } else {
+            Ok(cordata)
+        }
     }
 
     pub fn discover() -> Result<Self> {
