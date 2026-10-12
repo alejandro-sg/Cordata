@@ -8,8 +8,8 @@ the Laya router checkpoint, the Python agent stack, the Claude Code CLI. Out-of-
 there is not an exception to catch; it is the whole machine thrashing or a process
 killed. So loading is never "just do it":
 
-    ceiling            48 GB      (SIERRALAB_MEMORY_CEILING_GB)
-    − reserve          10 GB      (SIERRALAB_MEMORY_RESERVE_GB — macOS, LanceDB, Laya,
+    ceiling            48 GB      (CORDATA_MEMORY_CEILING_GB)
+    − reserve          10 GB      (CORDATA_MEMORY_RESERVE_GB — macOS, LanceDB, Laya,
                                    the harness, the Claude CLI)
     = budget           38 GB      for model weights
 
@@ -158,8 +158,8 @@ class MemoryBudget:
     ) -> None:
         self._omlx = omlx
         self._ollama = ollama
-        self.ceiling_gb = ceiling_gb if ceiling_gb is not None else _env_gb("SIERRALAB_MEMORY_CEILING_GB", DEFAULT_CEILING_GB)
-        self.reserve_gb = reserve_gb if reserve_gb is not None else _env_gb("SIERRALAB_MEMORY_RESERVE_GB", DEFAULT_RESERVE_GB)
+        self.ceiling_gb = ceiling_gb if ceiling_gb is not None else _env_gb("CORDATA_MEMORY_CEILING_GB", DEFAULT_CEILING_GB)
+        self.reserve_gb = reserve_gb if reserve_gb is not None else _env_gb("CORDATA_MEMORY_RESERVE_GB", DEFAULT_RESERVE_GB)
         self._lock = threading.RLock()
 
     @property

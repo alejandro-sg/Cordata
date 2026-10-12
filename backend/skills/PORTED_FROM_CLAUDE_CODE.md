@@ -37,7 +37,7 @@ tools are named differently — same idea, different registry:
 | `WebSearch` / `WebFetch` | `web_fetch` / `http_request` | `web_fetch` parses HTML to markdown; `http_request` handles raw HTTP calls |
 | `AskUserQuestion` | — | ask in plain chat text or via interactive approval prompts |
 | `TaskCreate` / `TaskUpdate` (todo tracking) | — | track progress in chat, checkpoints, or orchestrator plans |
-| `Artifact` | `plan_artifact` | orchestrator auto-generates `plan.md` and `walkthrough.md` in `~/.cordata/orchestrator/<run_id>/` (or `~/.sierralab/`, Antigravity artifact model) |
+| `Artifact` | `plan_artifact` | orchestrator auto-generates `plan.md` and `walkthrough.md` in `~/.cordata/orchestrator/<run_id>/` (or `~/.cordata/`, Antigravity artifact model) |
 
 A skill that assumes one of the unavailable tools still describes a valid
 methodology — the missing step just becomes "ask the user directly" or

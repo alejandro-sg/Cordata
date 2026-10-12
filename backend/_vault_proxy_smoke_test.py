@@ -100,7 +100,7 @@ def test_healthy_sets_the_environment() -> None:
         check("ANTHROPIC_API_KEY" not in env, "no placeholder under a name this harness reads itself")
         check("SSL_CERT_FILE" not in env, "no CA bundle is guessed when none was configured")
 
-        withca = vault_proxy.build_proxy_env(addr, environ={"SIERRALAB_VAULT_CA": "/tmp/vault-ca.pem"})
+        withca = vault_proxy.build_proxy_env(addr, environ={"CORDATA_VAULT_CA": "/tmp/vault-ca.pem"})
         check(withca["SSL_CERT_FILE"] == "/tmp/vault-ca.pem" and withca["CURL_CA_BUNDLE"] == "/tmp/vault-ca.pem", "CA bundle reaches the TLS clients")
         check("NODE_TLS_REJECT_UNAUTHORIZED" not in withca, "TLS verification is never switched off")
     finally:
@@ -108,7 +108,7 @@ def test_healthy_sets_the_environment() -> None:
 
 
 def test_placeholders_never_shadow_the_harness_keys() -> None:
-    env = {"SIERRALAB_VAULT_PLACEHOLDERS": "ANTHROPIC_API_KEY, OLLAMA_API_KEY,CUSTOM_TOKEN,custom_token"}
+    env = {"CORDATA_VAULT_PLACEHOLDERS": "ANTHROPIC_API_KEY, OLLAMA_API_KEY,CUSTOM_TOKEN,custom_token"}
     names = vault_proxy.placeholders(env)
     check("ANTHROPIC_API_KEY" not in names and "OLLAMA_API_KEY" not in names, "reserved names are refused even on request")
     check(names.get("CUSTOM_TOKEN") == "__custom_token__", "an operator may add placeholder names")
@@ -220,7 +220,7 @@ def test_the_token_comes_from_the_keychain() -> None:
     try:
         env: dict[str, str] = {}
         status = vault_proxy.install(Prefs(**{"vault.enabled": True, "vault.addr": addr}), environ=env)
-        check(asked in ([vault_proxy.KEYCHAIN_SERVICE], [(vault_proxy.KEYCHAIN_SERVICE, vault_proxy.LEGACY_KEYCHAIN_SERVICE)]), "the Keychain service named by KEYCHAIN_SERVICE is asked")
+        check(asked == [vault_proxy.KEYCHAIN_SERVICE], "the Keychain service named by KEYCHAIN_SERVICE is asked")
         check("stub-token" not in env.values(), "the vault token never enters the tool environment")
         check(status.credentialed is True, "an available token still yields a credentialed session")
     finally:

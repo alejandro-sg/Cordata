@@ -123,10 +123,10 @@ _ENV_FILE = re.compile(r"(^|/)\.env(\.[^/]*)?$", re.IGNORECASE)
 _ENV_TEMPLATE = re.compile(r"\.env\.(example|sample|template|dist)$", re.IGNORECASE)
 #: Files that decide what the harness asks about: editing one is how a prompt would be talked out of existing.
 #: The MCP declarations are among them: every one `plugin_host` reads (`.mcp.json`, `mcp.json`, `mcp.local.json`,
-#: `.sierralab/`, `.cursor/` and `.vscode/mcp.json`, the backend's own `mcp_servers.json`) names a command that is started
+#: `.cordata/`, `.cursor/` and `.vscode/mcp.json`, the backend's own `mcp_servers.json`) names a command that is started
 #: as the user the next time a session opens.
 _POLICY_FILE = re.compile(
-    r"(^|/)(\.sierralab/settings(\.local)?\.json|\.claude/settings(\.local)?\.json|SIERRALAB\.md|\.?mcp(\.local)?\.json|mcp_servers\.json)$",
+    r"(^|/)(\.cordata/settings(\.local)?\.json|\.claude/settings(\.local)?\.json|CORDATA\.md|\.?mcp(\.local)?\.json|mcp_servers\.json)$",
     re.IGNORECASE,
 )
 _CI_FILE = re.compile(r"(^|/)(\.github/workflows/|\.gitlab-ci|Jenkinsfile|azure-pipelines|\.circleci/)", re.IGNORECASE)

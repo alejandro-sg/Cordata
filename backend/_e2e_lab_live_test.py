@@ -21,7 +21,7 @@ from pathlib import Path
 
 _TMP = tempfile.TemporaryDirectory()
 ROOT = Path(_TMP.name)
-os.environ["SIERRALAB_HOME"] = str(ROOT / "home")
+os.environ["CORDATA_HOME"] = str(ROOT / "home")
 os.environ["LAYA_TRIAGE_LOG"] = str(ROOT / "laya.jsonl")
 os.environ.setdefault("BYPASS_TOOL_CONSENT", "true")
 os.environ.pop("OLLAMA_BASE_URL", None)  # the real daemon, http://localhost:11434/v1
@@ -73,7 +73,7 @@ class HumanConn:
         return acp.schema.RequestPermissionResponse(outcome=acp.schema.AllowedOutcome(outcome="selected", option_id=option_id))
 
     def states(self) -> list[dict]:
-        return [params for method, params in self.ext if method == "sierralab/lab"]
+        return [params for method, params in self.ext if method == "cordata/lab"]
 
     def text(self) -> str:
         return "".join(getattr(getattr(u, "content", None), "text", "") or "" for u in self.updates if type(u).__name__ == "AgentMessageChunk")
@@ -101,7 +101,7 @@ async def main() -> None:
     sent: list[dict] = []
     ollama_cloud.subscribe_requests(sent.append)
 
-    server = acp_server.SierraLabAcpAgent()
+    server = acp_server.CordataAcpAgent()
     conn = HumanConn()
     server.on_connect(conn)
     lab_module.get().reset()

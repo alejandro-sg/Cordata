@@ -64,7 +64,7 @@ logger = logging.getLogger(__name__)
 #: oMLX needs no key; the OpenAI client requires a non-empty one.
 DUMMY_API_KEY = "not-needed"
 DEFAULT_MAX_TOKENS = 16384
-PRISM_ENV = "SIERRALAB_PRISM"  # on | off — wins over the omlx.prism setting (tests, CI)
+PRISM_ENV = "CORDATA_PRISM"  # on | off — wins over the omlx.prism setting (tests, CI)
 
 
 class ModelNotLoaded(RuntimeError):

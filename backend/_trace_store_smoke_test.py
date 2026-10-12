@@ -1,7 +1,7 @@
 """Regression check for trace_store.py — the gate, ingestion, and search.
 
 Hermetic and fast. The real corpus lives beside the checkout and the real
-embedder is a 90MB sentence-transformer; this points `SIERRALAB_TRACE_DIR` at a
+embedder is a 90MB sentence-transformer; this points `CORDATA_TRACE_DIR` at a
 temp directory and replaces `trace_store._embedder` with a deterministic stub
 before any row is written, so nothing here touches a developer's `memory.lance`
 or loads torch.
@@ -14,7 +14,7 @@ import tempfile
 from pathlib import Path
 
 _TMP = tempfile.TemporaryDirectory()
-os.environ["SIERRALAB_TRACE_DIR"] = str(Path(_TMP.name) / "memory.lance")
+os.environ["CORDATA_TRACE_DIR"] = str(Path(_TMP.name) / "memory.lance")
 
 import trace_store  # noqa: E402  (must follow the env var above)
 
@@ -262,7 +262,7 @@ def main() -> None:
     trace_store.record_turn = lambda **kwargs: seen.update(kwargs) or 1
     try:
         agent = types.SimpleNamespace(_sessions={"sx": types.SimpleNamespace(preferences=ON, cwd=str(Path(_TMP.name)))})
-        acp_server.SierraLabAcpAgent._ingest_turn(
+        acp_server.CordataAcpAgent._ingest_turn(
             agent, "sx", "fix the import cycle", {"call-1": {"name": "shell", "input": {"command": "make"}, "status": "failed"}}
         )
         for _ in range(100):

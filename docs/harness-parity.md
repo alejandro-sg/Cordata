@@ -15,7 +15,7 @@ scrollback), **Kilo CLI** (`kilo.jsonc`, permission wildcards, "always run", `ru
 | Permission rules `allow` / `ask` / `deny` with patterns | Claude Code, Kilo | ✅ | `deny` holds in every mode; shell commands are split before matching. Not a sandbox |
 | "Always allow" from the approval prompt, saved as a rule | Claude Code, Kilo | ✅ | exact-command rules only; no prefix/wildcard suggestions |
 | Project trust before a repo's settings can loosen permissions | Claude Code (trust dialog) | 🟡 | `/trust` and "Always allow"; no first-run dialog — the banner and `/permissions` show what's ignored |
-| Instruction files (`CLAUDE.md` / `AGENTS.md`) | Claude Code, Kilo | ✅ | `SIERRALAB.md`, falling back to `AGENTS.md` / `CLAUDE.md`; user + project + local. No `@import`, no `#` quick-add |
+| Instruction files (`CLAUDE.md` / `AGENTS.md`) | Claude Code, Kilo | ✅ | `CORDATA.md`, falling back to `AGENTS.md` / `CLAUDE.md`; user + project + local. No `@import`, no `#` quick-add |
 | `/init` drafts the instruction file | Claude Code | ✅ | asks the agent; it writes through the normal approval gate |
 | Plan / build / auto modes, cycled with Tab | Claude Code, DeepSeek-TUI | ✅ | Tab / Shift+Tab, `/mode`, `permissions.defaultMode` |
 | Model + temperature switching | Claude Code `/model`, Kilo | ✅ | picker (Ctrl+O / Ctrl+T), `/model`, `/temp`, settings |
@@ -24,17 +24,17 @@ scrollback), **Kilo CLI** (`kilo.jsonc`, permission wildcards, "always run", `ru
 | Fast triage in front of the LLM (Laya) | — | ✅ | `docs/laya-triage.md`. Ours alone; near chance before fine-tuning |
 | Secrets kept from the agent | — | ✅ | `THREAT_MODEL.md`; env/Keychain only, masked, built-in Keychain deny rule |
 | Resume a session by id / folder | Claude Code, Kilo `--continue` | ✅ | `--resume <id>` and `-c` / `--continue` (resumes newest session for current folder); text history replayed |
-| `/status` | Claude Code | 🟡 | session, mode, model, Laya, rule counts. No usage/cost — ACP has no usage push |
+| `/status`, `/cost` | Claude Code | ✅ | session, mode, model, Laya, rules, the orchestrator's quota pools; `/cost` adds this session's tokens (the backend pushes a receipt per turn) |
 | `/clear` | Claude Code | 🟡 | clears the screen; the *conversation* continues (a new conversation needs a new session) |
 | New conversation without restarting (`/new`) | Claude Code | ⬜ | needs a second `new_session` on the live connection |
-| `/compact` (summarise to free context) | Claude Code | ⬜ | Strands has a conversation manager; no ACP surface for it yet |
+| `/compact` (summarise to free context) | Claude Code | ✅ | `/compact [focus]` → `_cordata/context/compact`; refused mid-turn; the footer shows a context gauge fed by `_cordata/context` |
 | Snapshots and `/undo` / `/restore` of file changes | DeepSeek-TUI | ✅ | `checkpoints.py` snapshots into a shadow git repo before any call that may write; `/undo`, `/checkpoints`; see `docs/agentic-harness.md` |
-| `/export` / `/copy` | Claude Code | ⬜ | selecting text in the terminal works; no command |
+| `/export` / `/copy` | Claude Code | ✅ | `/export [file]` writes the conversation as markdown; `/copy` puts the last reply on the clipboard |
 | Non-interactive single prompt / run (`-p`, `kilo run`) | Claude Code, Kilo | ✅ | `cordata [PROMPT]` launches interactive TUI with initial query; `cordata run "<goal>"` runs autonomous multi-worker batch tasks; `acp-stress` runs scripted benchmark scenarios |
-| `@file` mentions | Claude Code, Kilo | ⬜ | the backend reads ACP resource blocks; the TUI doesn't send them |
+| `@file` mentions | Claude Code, Kilo | ✅ | fuzzy menu while typing `@`; the file's contents go with the prompt (capped, secrets refused) — `docs/competitive-gap.md` |
 | User-defined hooks | Claude Code | ⬜ | the backend uses Strands hooks internally (secret masking, untrusted-output guard) but exposes none |
 | MCP server management in the terminal | Claude Code `/mcp`, Kilo | ⬜ | the web UI has it (`provider_settings`, `mcp_manager`); the TUI doesn't |
-| Custom slash commands / skills from files | Claude Code, Kilo | ⬜ | |
+| Custom slash commands from files | Claude Code, Kilo | ✅ | `.cordata/commands/*.md` and Claude's `.claude/commands/*.md`, with `$ARGUMENTS` / `$1…$9` and a front-matter description |
 | Themes, vim mode, status-line command | Claude Code | ⬜ | not planned |
 
 ## What this harness does that the references do not

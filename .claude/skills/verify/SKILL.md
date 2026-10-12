@@ -9,22 +9,22 @@ they're CI. Drive the real processes.
 ```bash
 export VER=/tmp/slverify          # any scratch dir
 mkdir -p $VER/home $VER/proj
-SIERRALAB_HOME=$VER/home backend/.venv/bin/python -m daemon.main --port 8790 --grpc-port 8791
+CORDATA_HOME=$VER/home backend/.venv/bin/python -m daemon.main --port 8790 --grpc-port 8791
 ```
 
-`SIERRALAB_HOME` isolates *everything* (token, state.db, settings) — no need for
-`SIERRALAB_DAEMON_CONFIG`. Ports 8790/8791 avoid clobbering a real daemon on 8765/8766.
+`CORDATA_HOME` isolates *everything* (token, state.db, settings) — no need for
+`CORDATA_DAEMON_CONFIG`. Ports 8790/8791 avoid clobbering a real daemon on 8765/8766.
 The token lands at `$VER/home/daemon.json`, mode 0600.
 
 To exercise a *live session* without a model, point the daemon at the repo's own fake child
 (real daemon, real bridge, real wire, canned agent):
 
 ```bash
-SIERRALAB_ACP_ENTRYPOINT="$PWD/backend/.venv/bin/python $PWD/backend/fixtures/fake_acp_bridge_child.py"
+CORDATA_ACP_ENTRYPOINT="$PWD/backend/.venv/bin/python $PWD/backend/fixtures/fake_acp_bridge_child.py"
 ```
 
 Its control methods (see the fixture's docstring): `bridge/lab`, `bridge/permit`, `bridge/diff`,
-`bridge/memory`, and it answers `_sierralab/lab/{effort,dial,isolate}`.
+`bridge/memory`, and it answers `_cordata/lab/{effort,dial,isolate}`.
 
 ## Driving the three front doors
 
@@ -50,7 +50,7 @@ Its control methods (see the fixture's docstring): `bridge/lab`, `bridge/permit`
   list after the generator has finished starves it and `next(events)` raises `StopIteration`.
 * **The fake child logs `{"kind": "response", "result": {...}}`** for answers — `optionId` is
   nested under `result.outcome`, not a top-level field.
-* **`risk_*` / `armed` on a request come from the child's `_meta.sierralab`**, so a hand-built
+* **`risk_*` / `armed` on a request come from the child's `_meta.cordata`**, so a hand-built
   permit with no risk fields shows `armed=False, band='', score=0.0`. Put them in the meta.
 * **Pipe buffering**: run drivers with `python -u` writing to a file; piping through `tail`/`head`
   hides all output until the process exits.
@@ -60,10 +60,10 @@ Its control methods (see the fixture's docstring): `bridge/lab`, `bridge/permit`
 `lab/target/debug/harness-lab` opens a real window when a display exists. On a headless session
 `screencapture` fails (`could not create image from display`) — don't report the GUI as broken for
 that. The app's *behavior* is still observable: it watches `--watch <dir>`, parses saved files with
-tree-sitter and ingests changed symbols, which lands as `kind='ingest'` rows in `$SIERRALAB_HOME/state.db`.
+tree-sitter and ingests changed symbols, which lands as `kind='ingest'` rows in `$CORDATA_HOME/state.db`.
 
 ```bash
-SIERRALAB_HOME=$VER/home lab/target/debug/harness-lab --watch $VER/proj &
+CORDATA_HOME=$VER/home lab/target/debug/harness-lab --watch $VER/proj &
 sqlite3 $VER/home/state.db "select kind, count(*) from events group by kind;"
 ```
 

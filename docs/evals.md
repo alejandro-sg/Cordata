@@ -12,8 +12,8 @@ skill or a prompt overlay is promoted only if it raises the score here without b
 `bandit.py` are allowed to learn from — and what stops them learning the wrong thing.
 
 A run is measured against an **arm**: `run_suite(tasks, driver, config={...})` puts the arm in force for the
-whole run — a candidate skill directory (`SIERRALAB_EXTRA_SKILLS`) or a candidate prompt overlay
-(`SIERRALAB_PROMPT_OVERLAY`), applied by `sandbox` and removed on exit, with the arm's name recorded on every
+whole run — a candidate skill directory (`CORDATA_EXTRA_SKILLS`) or a candidate prompt overlay
+(`CORDATA_PROMPT_OVERLAY`), applied by `sandbox` and removed on exit, with the arm's name recorded on every
 `TaskResult` so a saved run says which arm produced it. Without it the gate would compare a candidate against
 itself.
 
@@ -86,7 +86,7 @@ on a different day. Change the prompt and you get a miss, not a stale answer.
 
 ### Reading a run
 
-Runs are saved as JSON under `~/.sierralab/evals/`. `python -m evals compare A.json B.json` names the tasks that
+Runs are saved as JSON under `~/.cordata/evals/`. `python -m evals compare A.json B.json` names the tasks that
 flipped in either direction. The aggregate splits dev from held-out and breaks results down by category, with the
 mean reward from the same `outcomes.score` the live turns use — so an eval number and a production number mean the
 same thing.

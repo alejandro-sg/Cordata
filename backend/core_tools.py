@@ -442,7 +442,7 @@ def clock() -> ContextInjector:
     on the turn, instead of a tool schema on every call and a round trip whenever a date matters. Ephemeral — it augments
     the model's input for that call and never enters the stored conversation, so a session resumed next week is told
     the time it is then, not the time it was."""
-    return ContextInjector(lambda context: now_text(), name="sierralab:clock", trigger="userTurn")
+    return ContextInjector(lambda context: now_text(), name="cordata:clock", trigger="userTurn")
 
 
 class CoreToolHooks(HookProvider):

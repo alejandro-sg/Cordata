@@ -7,6 +7,7 @@
     resume RUN_ID                 continue a paused run
     replay [--world steep|ceiling] [--logs N] [--ledger]
                                   judge the learned dispatch policy against always-strongest by replay
+    doctor [--json] [--cwd DIR]   is everything this tool leans on in place? — local checks, spends nothing
 
 Settings (``orchestrator.*``, docs/settings.md) give the defaults; flags override them for one run.
 """
@@ -28,6 +29,20 @@ def _prefs(cwd: str) -> Any:
     return settings_store.current(cwd)
 
 
+def _printer(as_json: bool):
+    """The event listener for a run on a terminal: one line per state change or worker dispatch, or NDJSON."""
+
+    def show(event: dict[str, Any]) -> None:
+        if as_json:
+            print(json.dumps(event, default=str), flush=True)
+        elif event["kind"] == "state":
+            print(f"[{event['state']}]" + "".join(f" {k}={v}" for k, v in event.items() if k not in ("kind", "run_id", "state", "ts")), flush=True)
+        elif event["kind"] in ("step_dispatch", "step_result", "handoff", "rollback", "paused", "budget_exhausted"):
+            print("  " + event["kind"] + " " + " ".join(f"{k}={v}" for k, v in event.items() if k not in ("kind", "run_id")), flush=True)
+
+    return show
+
+
 async def _run(args: argparse.Namespace) -> int:
     from . import config
     from .machine import OrchestratorMachine
@@ -40,7 +55,6 @@ async def _run(args: argparse.Namespace) -> int:
     run_config = config.run_config(prefs)
     if getattr(args, "allow_direct", False):
         os.environ["CORDATA_VAULT_DIRECT"] = "1"
-        os.environ["SIERRALAB_VAULT_DIRECT"] = "1"
     if args.max_usd is not None:
         run_config.max_usd = args.max_usd
     if args.no_harden:
@@ -48,13 +62,7 @@ async def _run(args: argparse.Namespace) -> int:
     if args.no_tier2:
         run_config.tier2 = False
 
-    def show(event: dict[str, Any]) -> None:
-        if args.json:
-            print(json.dumps(event, default=str), flush=True)
-        elif event["kind"] == "state":
-            print(f"[{event['state']}]" + "".join(f" {k}={v}" for k, v in event.items() if k not in ("kind", "run_id", "state", "ts")), flush=True)
-        elif event["kind"] in ("step_dispatch", "step_result", "handoff", "rollback", "paused", "budget_exhausted"):
-            print("  " + event["kind"] + " " + " ".join(f"{k}={v}" for k, v in event.items() if k not in ("kind", "run_id")), flush=True)
+    show = _printer(args.json)
 
     machine = OrchestratorMachine(goal=args.goal, project=cwd, dispatcher=dispatcher, ledger=ledger, config=run_config, on_event=show)
     record = await machine.run()
@@ -85,19 +93,26 @@ def main(argv: list[str] | None = None) -> int:
     show = sub.add_parser("show", help="show one run's plan, history, and audit")
     show.add_argument("run_id")
     show.add_argument("--json", action="store_true")
-    resume = sub.add_parser("resume", help="continue a paused run")
+    resume = sub.add_parser("resume", help="continue a paused or interrupted run")
     resume.add_argument("run_id")
+    resume.add_argument("--allow-direct", action="store_true", help="allow direct network access without an active vault proxy")
+    resume.add_argument("--max-usd", type=float, help="budget cap envelope in USD (a resumed run otherwise gets the default, not the original run's)")
+    resume.add_argument("--json", action="store_true", help="stream NDJSON events instead of terminal formatting")
     replay = sub.add_parser("replay", help="judge the learned dispatch policy against always-strongest")
     replay.add_argument("--world", choices=("steep", "ceiling"), default="steep")
     replay.add_argument("--logs", type=int, default=6000)
     replay.add_argument("--ledger", action="store_true", help="judge on this machine's own logged outcomes instead of simulated ones")
+
+    doctor = sub.add_parser("doctor", help="check the tools, services and settings this depends on")
+    doctor.add_argument("--json", action="store_true")
+    doctor.add_argument("--cwd", default=os.getcwd())
 
     args_list = list(sys.argv[1:] if argv is None else argv)
     if not args_list:
         parser.print_help()
         return 0
 
-    known_cmds = {"run", "status", "show", "resume", "replay"}
+    known_cmds = {"run", "status", "show", "resume", "replay", "doctor"}
     if not any(arg in known_cmds or arg in ("-h", "--help") for arg in args_list):
         # Allow running directly: orchestrator "Goal" or orchestrator --max-usd 2 "Goal"
         args_list.insert(0, "run")
@@ -106,6 +121,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "run":
         return asyncio.run(_run(args))
+    if args.cmd == "doctor":
+        from . import doctor as doctor_module
+
+        checks = doctor_module.run_checks(os.path.realpath(args.cwd))
+        print(json.dumps([c.to_json() for c in checks], indent=1) if args.json else doctor_module.render(checks, color=sys.stdout.isatty()))
+        return 1 if any(c.level == doctor_module.FAIL for c in checks) else 0
     if args.cmd == "status":
         from .status import render, status_data
 
@@ -143,7 +164,12 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         prefs = _prefs(record.cwd)
         ledger = config.ledger(prefs)
-        done = asyncio.run(resume_run(args.run_id, config.dispatcher(prefs, ledger=ledger, project=record.cwd), ledger=ledger, config=config.run_config(prefs)))
+        if args.allow_direct:
+            os.environ["CORDATA_VAULT_DIRECT"] = "1"
+        run_config = config.run_config(prefs)
+        if args.max_usd is not None:
+            run_config.max_usd = args.max_usd
+        done = asyncio.run(resume_run(args.run_id, config.dispatcher(prefs, ledger=ledger, project=record.cwd), ledger=ledger, config=run_config, on_event=_printer(args.json)))
         print(f"{done.run_id}: {done.state}" + (f" — {done.reason}" if done.reason else ""))
         return 0 if done.state == "done" else 1
     if args.cmd == "replay":

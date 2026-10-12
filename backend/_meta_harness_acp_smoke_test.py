@@ -4,7 +4,7 @@
   ``claude_code_engineer`` tool → the approval gate asks (and refuses in plan mode / with
   the vault down) → the Claude Code CLI is spawned through the Strands ``Sandbox`` with
   ``HTTPS_PROXY`` set and no ``.env`` → its output is captured and its progress and
-  completion stream back as ACP tool updates, ``_sierralab/task`` and Lab state — the
+  completion stream back as ACP tool updates, ``_cordata/task`` and Lab state — the
   events the Ratatui Lab renders. A trivial task is *not* routed to it.
 * **Phase 7 gate.** A simple architecture-planning prompt → Laya routes it to the architect →
   which runs on a Prism model on oMLX, loaded just before and unloaded just after; the
@@ -125,7 +125,7 @@ def update_text(update) -> str:
 
 
 def lab_states(conn) -> list[dict]:
-    return [params for method, params in conn.ext if method == "sierralab/lab"]
+    return [params for method, params in conn.ext if method == "cordata/lab"]
 
 
 def quiet_ollama() -> ollama_cli.OllamaCli:
@@ -196,7 +196,7 @@ async def test_claude_route(vault_addr: str) -> None:
     check(final and final[-1].status == "completed", "the tool call ends completed")
     check((cwd / "changed.txt").read_text() == "refactored\n", "the CLI ran in the project and edited a file")
     check((cwd / ".env").read_text() == "SECRET=do-not-leak\n", ".env untouched")
-    tasks = [p for m, p in conn.ext if m == "sierralab/task" and p.get("source") == "claude_code_engineer"]
+    tasks = [p for m, p in conn.ext if m == "cordata/task" and p.get("source") == "claude_code_engineer"]
     check(tasks and tasks[0]["state"] == "running" and tasks[-1]["state"] == "completed", "a progress task opens and completes — the TUI's progress bar")
     states = lab_states(conn)
     seen = [row for snap in states for row in snap["pods"] if row["name"] == "claude_code_engineer"]
@@ -287,7 +287,7 @@ async def test_architect_on_prism(fake: FakeOmlx, vault_addr: str) -> None:
     snap = lab_states(conn)[-1]
     architect_pod = next(row for row in snap["pods"] if row["name"] == "architect")
     check(architect_pod["model"] == "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit", f"the Lab pod shows the Prism model ({architect_pod['model']})")
-    memory = [p for m, p in conn.ext if m == "sierralab/memory"]
+    memory = [p for m, p in conn.ext if m == "cordata/memory"]
     check([p["event"] for p in memory if p["event"].startswith("lease")] == ["lease_load", "lease_unload"], "memory events announce the load and the unload")
 
 
@@ -318,7 +318,7 @@ async def test_memory_tools_and_heavy_task(fake: FakeOmlx, vault_addr: str, stub
     check(fake.events == [f"load {ARCH_WIRE}", f"unload {ARCH_WIRE}"], f"the heavy Claude task unloaded the Prism model before spawning it ({fake.events})")
     check(not fake.loaded, "unified memory is clear of Prism weights")
     check(stub.calls and stub.calls[0][1:] == ["stop", "llama3:8b"], "ollama_resource_manager stop ran `ollama stop llama3:8b`")
-    memory = [p["event"] for m, p in conn.ext if m == "sierralab/memory"]
+    memory = [p["event"] for m, p in conn.ext if m == "cordata/memory"]
     check(memory[:2] == ["load", "stop"] and "heavy_task" in memory, f"the memory events narrate it ({memory})")
     results = [b["toolResult"] for m in server._sessions[sid].agent.messages for b in m["content"] if "toolResult" in b]
     check(len(results) == 4 and all(r["status"] == "success" for r in results), "every tool returned a Strands ToolResult with status=success")

@@ -47,8 +47,10 @@ fn right_variants(app: &App) -> (Vec<String>, Style) {
             1 => " · 1 tool call".to_owned(),
             n => format!(" · {n} tool calls"),
         };
+        let doing = activity(app).unwrap_or_else(|| "working".to_owned());
         return (
             vec![
+                format!("{spinner} {doing} {elapsed}s{tools} · Esc cancels"),
                 format!("{spinner} working {elapsed}s{tools} · Esc cancels"),
                 format!("{spinner} {elapsed}s · Esc cancels"),
                 format!("{spinner} {elapsed}s"),
@@ -64,6 +66,31 @@ fn right_variants(app: &App) -> (Vec<String>, Style) {
         ],
         Style::new().fg(Color::DarkGray),
     )
+}
+
+/// What the agent is doing right now, in a word, from the newest tool call still running.
+fn activity(app: &App) -> Option<String> {
+    use acp_core::{ToolKind, ToolStatus};
+    app.messages.iter().rev().find_map(|message| match message {
+        crate::app::Message::Tool(card) if matches!(card.status, ToolStatus::Pending | ToolStatus::InProgress) => Some(match card.kind {
+            ToolKind::Execute => format!("running {}", card.name),
+            ToolKind::Edit => format!("editing · {}", card.name),
+            ToolKind::Read => format!("reading · {}", card.name),
+            ToolKind::Search => format!("searching · {}", card.name),
+            _ => card.name.clone(),
+        }),
+        _ => None,
+    })
+}
+
+fn context_color(pct: f64) -> Color {
+    if pct >= 0.85 {
+        Color::Red
+    } else if pct >= 0.6 {
+        Color::Yellow
+    } else {
+        Color::Cyan
+    }
 }
 
 pub fn line(app: &App, width: u16) -> Line<'static> {
@@ -125,52 +152,74 @@ pub fn line(app: &App, width: u16) -> Line<'static> {
         }
     }
 
-    // Optional parts, dropped from the least important when the line is tight.
+    // Optional segments in the order they are worth keeping on a narrow terminal: the goal being chased, how full the
+    // context is, the model, then where we are. Each is a few spans and its width.
+    let mut segments: Vec<(Vec<Span<'static>>, usize)> = Vec::new();
+    let mut add = |spans: Vec<Span<'static>>| {
+        let w = spans.iter().map(|s| display_width(&s.content)).sum::<usize>();
+        segments.push((spans, w));
+    };
+    if let Some(goal) = &app.goal {
+        let label = if goal.checking {
+            format!("◎ goal {}/{} checking", goal.turn, goal.max)
+        } else {
+            format!("◎ goal {}/{}", goal.turn, goal.max)
+        };
+        add(vec![Span::styled(label, Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD))]);
+    }
+    if let Some(gauge) = &app.context {
+        let approx = if gauge.estimated { "~" } else { "" };
+        match gauge.pct {
+            Some(pct) => add(vec![
+                Span::styled("ctx ", dim),
+                Span::styled(crate::extras::meter(pct, 6), Style::new().fg(context_color(pct))),
+                Span::styled(format!(" {approx}{:.0}%", pct * 100.0), Style::new().fg(context_color(pct))),
+            ]),
+            None => add(vec![Span::styled(format!("ctx {approx}{}", crate::extras::short_count(gauge.used)), dim)]),
+        }
+    }
     let model = [app.config("model"), app.config("temperature")]
         .into_iter()
         .flatten()
         .map(|option| option.current_name().to_owned())
         .collect::<Vec<_>>()
         .join(" · ");
+    if !model.is_empty() {
+        add(vec![Span::styled(model, Style::new())]);
+    }
     let cwd = app
         .session
         .as_ref()
         .map(|session| short_path(&session.cwd))
         .unwrap_or_default();
-    let (variants, right_style) = right_variants(app);
-
-    let head_width: usize = head.iter().map(|s| display_width(&s.content)).sum();
-    let width_of = |text: &str| {
-        if text.is_empty() {
-            0
-        } else {
-            display_width(text) + 3
+    if !cwd.is_empty() {
+        let mut spans = vec![Span::styled(cwd, dim)];
+        if let Some(branch) = &app.branch {
+            spans.push(Span::styled(format!(" ⎇ {branch}"), Style::new().fg(Color::Gray)));
         }
+        add(spans);
+    }
+
+    let (variants, right_style) = right_variants(app);
+    let head_width: usize = head.iter().map(|s| display_width(&s.content)).sum();
+    // The fullest arrangement that fits: all segments with the longest hint, then fewer segments, then shorter hints.
+    let fits = |count: usize, variant: usize| {
+        let used: usize = segments.iter().take(count).map(|(_, w)| w + 3).sum();
+        head_width + used + display_width(&variants[variant]) + 2 <= width
     };
-    // Most informative combination that fits: model and cwd with the full hint,
-    // then model with progressively shorter hints, then just the hint.
-    let mut plans: Vec<(bool, bool, usize)> = vec![(true, true, 0), (true, false, 0)];
-    plans.extend((1..variants.len()).map(|v| (true, false, v)));
-    plans.extend((0..variants.len()).map(|v| (false, false, v)));
-    let (with_model, with_cwd, variant) = plans
-        .into_iter()
-        .find(|&(m, c, v)| {
-            let optional =
-                if m { width_of(&model) } else { 0 } + if c { width_of(&cwd) } else { 0 };
-            head_width + optional + display_width(&variants[v]) + 2 <= width
-        })
-        .unwrap_or((false, false, variants.len() - 1));
+    let (count, variant) = (0..=segments.len())
+        .rev()
+        .find_map(|count| (0..variants.len()).find(|&v| fits(count, v)).map(|v| (count, v)))
+        .unwrap_or((0, variants.len() - 1));
     let right = variants[variant].clone();
     let right_width = display_width(&right);
 
     let mut spans = head;
     let mut used = head_width;
-    for (include, text, style) in [(with_model, model, Style::new()), (with_cwd, cwd, dim)] {
-        if include && !text.is_empty() {
-            used += width_of(&text);
-            spans.push(Span::styled(" · ", dim));
-            spans.push(Span::styled(text, style));
-        }
+    for (segment, w) in segments.into_iter().take(count) {
+        used += w + 3;
+        spans.push(Span::styled(" · ", dim));
+        spans.extend(segment);
     }
     if used + right_width < width {
         spans.push(Span::raw(" ".repeat(width - used - right_width)));

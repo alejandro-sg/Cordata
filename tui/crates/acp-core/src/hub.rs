@@ -142,7 +142,12 @@ fn parse_response(raw: &[u8]) -> Result<serde_json::Value> {
     }
     let value: serde_json::Value = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
     if status != 200 {
-        let detail = value.get("detail").and_then(|detail| detail.as_str()).map(str::to_owned).unwrap_or_else(|| format!("HTTP {status}"));
+        // The daemon words its refusals as `{"error": …}`; FastAPI's own validation answers use `detail`.
+        let detail = ["error", "detail"]
+            .iter()
+            .find_map(|key| value.get(*key).and_then(|text| text.as_str()))
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("HTTP {status}"));
         return Err(Error::DaemonUnreachable(detail));
     }
     Ok(value)
@@ -178,8 +183,12 @@ mod tests {
     #[test]
     fn a_refusal_carries_the_daemons_sentence() {
         let refused = b"HTTP/1.1 400 Bad Request\r\ncontent-length: 41\r\n\r\n{\"detail\":\"no conversation named 'cx'\"}  ";
+        let worded = b"HTTP/1.1 400 Bad Request\r\ncontent-length: 33\r\n\r\n{\"error\":\"no API key is set yet\"}  ";
         let error = parse_response(refused).unwrap_err().to_string();
         assert!(error.contains("no conversation named"), "{error}");
+        // …and the daemon's own `error` wording is shown, not a bare "HTTP 400".
+        let error = parse_response(worded).unwrap_err().to_string();
+        assert!(error.contains("no API key is set yet") && !error.contains("HTTP 400"), "{error}");
     }
 
     #[test]

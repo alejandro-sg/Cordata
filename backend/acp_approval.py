@@ -103,20 +103,20 @@ def _answered_by(result) -> str | None:
     """The front door that answered, when the client said so in ACP's `_meta` slot.
 
     The daemon relays a permission answer itself when the decision came from a
-    remote door — the Discord bot — and stamps `_meta.sierralab.decidedBy` on the
+    remote door — the Discord bot — and stamps `_meta.cordata.decidedBy` on the
     response it writes to this child. Everything else (a TUI, the GUI's modal, a
     Zed session) sends no `_meta` and is a person on the socket. Returns None
     rather than a guess when the slot is absent or shaped differently."""
     meta = getattr(result, "field_meta", None)
-    slot = meta.get("sierralab") if isinstance(meta, dict) else None
+    slot = meta.get("cordata") if isinstance(meta, dict) else None
     door = slot.get("decidedBy") if isinstance(slot, dict) else None
     return str(door) if isinstance(door, str) and door else None
 
 
 def _answer_note(result) -> str:
-    """What the person wrote about a rejection, when a front door relayed it (`_meta.sierralab.note`). Their text, capped."""
+    """What the person wrote about a rejection, when a front door relayed it (`_meta.cordata.note`). Their text, capped."""
     meta = getattr(result, "field_meta", None)
-    slot = meta.get("sierralab") if isinstance(meta, dict) else None
+    slot = meta.get("cordata") if isinstance(meta, dict) else None
     note = slot.get("note") if isinstance(slot, dict) else None
     return str(note).strip()[:500] if isinstance(note, str) else ""
 
@@ -194,7 +194,7 @@ class _ApprovalHandler(InterventionHandler):
     uses internally for the web front door's HITL, but with no AG-UI runtime
     underneath it here).
 
-    One instance per session, held onto directly (see SierraLabAcpAgent's
+    One instance per session, held onto directly (see CordataAcpAgent's
     _sessions dict) so set_session_mode() can flip ``self.mode`` on the same
     object the running agent's hook registry already points at — no need to
     rebuild the Agent (and lose its conversation state) just to change modes.
@@ -224,7 +224,7 @@ class _ApprovalHandler(InterventionHandler):
         self._checkpointed: "collections.OrderedDict[str, str | None]" = collections.OrderedDict()
         self._unprotected_said: set[str] = set()
         #: The bandit's view of this turn, stashed by the orchestrator thread so a tool call's ask decision is
-        #: made in the same context the turn's other choices were (`SierraLabAcpAgent._apply_bandit`). None when
+        #: made in the same context the turn's other choices were (`CordataAcpAgent._apply_bandit`). None when
         #: the bandit is off or the turn abstained, in which case the ask arm is not consulted at all.
         self._bandit_decision: "RouteDecision | None" = None
         self._bandit_route: dict | None = None

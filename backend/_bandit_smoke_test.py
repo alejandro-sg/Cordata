@@ -28,8 +28,8 @@ from types import SimpleNamespace
 
 _TMP = tempfile.TemporaryDirectory()
 ROOT = Path(_TMP.name).resolve()
-os.environ["SIERRALAB_HOME"] = str(ROOT / "home")
-os.environ["SIERRALAB_STATE_DB"] = str(ROOT / "state.db")
+os.environ["CORDATA_HOME"] = str(ROOT / "home")
+os.environ["CORDATA_STATE_DB"] = str(ROOT / "state.db")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -243,7 +243,7 @@ def test_ask_read_is_tighten_only() -> None:
 
     # An abstained decision is left alone: _apply_bandit touches none of its guard-bearing fields.
     abstained = acp_server.RouteDecision(target=None, action="none", abstained=True, risk="destructive", risk_confidence=0.9)
-    agent = object.__new__(acp_server.SierraLabAcpAgent)
+    agent = object.__new__(acp_server.CordataAcpAgent)
     state = SimpleNamespace(cwd=PROJECT, handler=handler)
     check(agent._apply_bandit(state, abstained, "do it") == {}, "an abstained decision gets no bandit choice")
     check(abstained.action == "none" and abstained.risk == "destructive" and abstained.risk_confidence == 0.9 and abstained.armed, "…and its risk fields are untouched")

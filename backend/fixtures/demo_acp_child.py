@@ -110,7 +110,7 @@ def snapshot():
 
 
 def publish():
-    emit({"jsonrpc": "2.0", "method": "_sierralab/lab", "params": snapshot()})
+    emit({"jsonrpc": "2.0", "method": "_cordata/lab", "params": snapshot()})
 
 
 def say(pod, text):
@@ -202,7 +202,7 @@ def permit(rpc_id, pod, tool, kind, title_input, meta):
                     {"optionId": "allow_always", "name": "Always allow", "kind": "allow_always"},
                     {"optionId": "reject", "name": "Reject", "kind": "reject_once"},
                 ],
-                "_meta": {"sierralab": {"pod": pod, "tool": tool, **meta}},
+                "_meta": {"cordata": {"pod": pod, "tool": tool, **meta}},
             },
         }
     )
@@ -232,7 +232,7 @@ def diff_event(diff_id, lines):
     emit(
         {
             "jsonrpc": "2.0",
-            "method": "_sierralab/diff",
+            "method": "_cordata/diff",
             "params": {
                 "id": diff_id,
                 "source": "claude_code_engineer",
@@ -351,7 +351,7 @@ def scenario():
 
         # 4. the engineer's finished work
         diff_event(f"demo-{round_no}", 10_000)
-        emit({"jsonrpc": "2.0", "method": "_sierralab/memory", "params": {"event": "heavy_task", "runtime": "claude_code", "model": "claude-code-cli"}})
+        emit({"jsonrpc": "2.0", "method": "_cordata/memory", "params": {"event": "heavy_task", "runtime": "claude_code", "model": "claude-code-cli"}})
         FOCUS["id"] = "orchestrator"
         THREAT.update({"score": 0.12, "confidence": 0.9, "band": "safe", "pod": "orchestrator", "tool": "summary"})
         publish()
@@ -388,18 +388,18 @@ def handle_control(message, method, params):
     if pod is None:
         return refuse(f"no pod named {params.get('pod')!r}")
     with STATE_LOCK:
-        if method == "_sierralab/lab/effort":
+        if method == "_cordata/lab/effort":
             if not pod["effort_adjustable"]:
                 return refuse(f"{pod['name']} has no reasoning_effort knob")
             if params.get("value") not in EFFORTS:
                 return refuse("reasoning_effort must be low, medium, high or max")
             pod["effort"] = params["value"]
             applied = pod["effort"]
-        elif method == "_sierralab/lab/dial":
+        elif method == "_cordata/lab/dial":
             value = float(params.get("value"))
             pod["dial"] = round(min(DIAL_DEFAULT, max(DIAL_MIN, value)), 2)
             applied = pod["dial"]
-        elif method == "_sierralab/lab/inject":
+        elif method == "_cordata/lab/inject":
             text = str(params.get("text") or "").strip()
             if not text:
                 return refuse("guidance is empty")
@@ -410,7 +410,7 @@ def handle_control(message, method, params):
             emit({"jsonrpc": "2.0", "id": ident, "result": {"pod": pod["id"], "queued": len(pod["guidance"])}})
             publish()
             return
-        elif method == "_sierralab/lab/release":
+        elif method == "_cordata/lab/release":
             pod["isolated"], pod["status"], pod["since"] = False, "idle", time.time()
             emit({"jsonrpc": "2.0", "id": ident, "result": {"pod": pod["id"], "isolated": False}})
             publish()
@@ -428,7 +428,7 @@ def handle_control(message, method, params):
 
 
 def main():
-    emit({"jsonrpc": "2.0", "method": "_sierralab/hello"})
+    emit({"jsonrpc": "2.0", "method": "_cordata/hello"})
     started = False
     for line in sys.stdin:
         line = line.rstrip("\r\n")
@@ -441,7 +441,7 @@ def main():
         if method is None and "id" in message:
             outcome = ((message.get("result") or {}).get("outcome") or {})
             log("response", {"id": message["id"], "outcome": outcome})
-            emit({"jsonrpc": "2.0", "method": "_sierralab/answered", "params": {"id": message["id"], "optionId": outcome.get("optionId")}})
+            emit({"jsonrpc": "2.0", "method": "_cordata/answered", "params": {"id": message["id"], "optionId": outcome.get("optionId")}})
             if message["id"] in PERMITS:
                 ANSWERS[message["id"]] = outcome.get("optionId") or "reject"
                 PERMITS.pop(message["id"]).set()
@@ -459,9 +459,9 @@ def main():
                 publish()
             else:
                 emit({"jsonrpc": "2.0", "id": message["id"], "error": {"code": -32602, "message": "Invalid params", "data": {"error": "unknown mode"}}})
-        elif method in ("_sierralab/lab/effort", "_sierralab/lab/dial", "_sierralab/lab/isolate", "_sierralab/lab/inject", "_sierralab/lab/release"):
+        elif method in ("_cordata/lab/effort", "_cordata/lab/dial", "_cordata/lab/isolate", "_cordata/lab/inject", "_cordata/lab/release"):
             handle_control(message, method, params)
-        elif method == "_sierralab/os-context" and "id" in message:
+        elif method == "_cordata/os-context" and "id" in message:
             # The menu-bar deck's capture, registered for the next turn the way `acp_server` does it.
             # The demo has no model to show it to, so it is acknowledged and named in the feed — a
             # child that never answered would hold the deck's `SubmitTurn` until it timed out.

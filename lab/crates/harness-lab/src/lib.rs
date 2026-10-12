@@ -12,7 +12,7 @@ pub mod app;
 pub mod theme;
 pub mod ui;
 
-/// The workspace the Lab's observer watches. The first `--watch` wins; `SIERRALAB_LAB_WATCH` is the
+/// The workspace the Lab's observer watches. The first `--watch` wins; `CORDATA_LAB_WATCH` is the
 /// environment's way to say the same thing; otherwise the directory the app was started in. Here
 /// rather than in the binary so it is testable, and so the menu bar can read the same rule.
 pub fn workspace_root(args: impl Iterator<Item = String>) -> std::path::PathBuf {
@@ -26,7 +26,7 @@ pub fn workspace_root(args: impl Iterator<Item = String>) -> std::path::PathBuf 
             return std::path::PathBuf::from(path);
         }
     }
-    if let Some(path) = std::env::var_os("SIERRALAB_LAB_WATCH").filter(|p| !p.is_empty()) {
+    if let Some(path) = std::env::var_os("CORDATA_LAB_WATCH").filter(|p| !p.is_empty()) {
         return std::path::PathBuf::from(path);
     }
     std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
@@ -657,9 +657,9 @@ mod tests {
         assert_eq!(workspace_root(args(&["--watch=/tmp/two"])), PathBuf::from("/tmp/two"));
         // No flag: the environment, which this test sets for itself (nothing else reads it here).
         // SAFETY: single-threaded at this point of the test binary.
-        unsafe { std::env::set_var("SIERRALAB_LAB_WATCH", "/tmp/three") };
+        unsafe { std::env::set_var("CORDATA_LAB_WATCH", "/tmp/three") };
         assert_eq!(workspace_root(args(&["--other"])), PathBuf::from("/tmp/three"));
-        unsafe { std::env::remove_var("SIERRALAB_LAB_WATCH") };
+        unsafe { std::env::remove_var("CORDATA_LAB_WATCH") };
         assert_eq!(workspace_root(args(&[])), std::env::current_dir().unwrap());
     }
 }

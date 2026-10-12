@@ -14,9 +14,9 @@ Three JSON files; a later one wins on a conflict.
 
 | scope | file | for |
 |---|---|---|
-| `user` | `~/.cordata/settings.json` (or `~/.sierralab/settings.json`; `CORDATA_HOME` / `SIERRALAB_HOME` moves it) | your own defaults everywhere (written with mode `0600`) |
-| `project` | `<project>/.cordata/settings.json` (or `.sierralab/`) | shared with the team — commit it |
-| `local` | `<project>/.cordata/settings.local.json` (or `.sierralab/`) | this machine only; created with a `.gitignore` next to it |
+| `user` | `~/.cordata/settings.json` (or `~/.cordata/settings.json`; `CORDATA_HOME` moves it) | your own defaults everywhere (written with mode `0600`) |
+| `project` | `<project>/.cordata/settings.json` | shared with the team — commit it |
+| `local` | `<project>/.cordata/settings.local.json` | this machine only; created with a `.gitignore` next to it |
 
 Plain JSON, no comments. A file that isn't valid JSON is ignored and reported (the TUI shows a
 notice at connect; `/config path` lists the files) — and **never overwritten** by a write.
@@ -197,7 +197,7 @@ several lines, or for a pattern containing `)`.
 
 ## Trust
 
-A cloned repository can ship its own `.cordata/settings*.json` (or `.sierralab/`). Its `deny` and `ask` rules only
+A cloned repository can ship its own `.cordata/settings*.json`. Its `deny` and `ask` rules only
 restrict, so they always apply. But `allow` rules and a more permissive default mode would let a
 stranger's repo switch off the approval prompts, so **project and local `allow` rules, and
 `permissions.defaultMode: "auto"` from those files, are ignored until the folder is trusted**: listed in the
@@ -222,10 +222,10 @@ you which — but they can only advise the model; every gated tool call still ne
 Read into the system prompt when a session starts, broad to specific, capped at 16 000 characters
 in total:
 
-1. `~/.cordata/CORDATA.md` (or `~/.sierralab/SIERRALAB.md`) — yours, everywhere
-2. the project's: the first that exists of `CORDATA.md`, `.cordata/CORDATA.md`, `SIERRALAB.md`, `.sierralab/SIERRALAB.md`, `AGENTS.md`,
+1. `~/.cordata/CORDATA.md` — yours, everywhere
+2. the project's: the first that exists of `CORDATA.md`, `.cordata/CORDATA.md`, `CORDATA.md`, `.cordata/CORDATA.md`, `AGENTS.md`,
    `CLAUDE.md` — so a repo set up for another tool still works
-3. `CORDATA.local.md` (or `SIERRALAB.local.md`) — this machine only (gitignored by the `.gitignore` next to the local settings)
+3. `CORDATA.local.md` — this machine only (gitignored by the `.gitignore` next to the local settings)
 
 `/init` has the agent read the project and write `CORDATA.md` (it asks before writing, like any
 file write). `/memory` lists what's being read. Changes apply to the next session.
@@ -250,8 +250,8 @@ Off by default. Turned on, tool subprocesses do not hold real credentials —
 they hold placeholders (`OPENAI_API_KEY=__openai_api_key__`) and the process is
 pointed at the vault's local proxy, which substitutes the real value on the way
 out. The vault token lives in the Keychain (`cordata-agent-vault-token`,
-fallback `sierralab-agent-vault-token`), never in a settings file, and the vault's CA is named by
-`CORDATA_VAULT_CA` (or `SIERRALAB_VAULT_CA`) when one has been exported.
+fallback `cordata-agent-vault-token`), never in a settings file, and the vault's CA is named by
+`CORDATA_VAULT_CA` when one has been exported.
 
 With `vault.egressPolicy: "deny"` (the default), a vault that cannot be reached
 at `vault.addr` means `shell`, `python_repl` and `http_request` are *refused*
@@ -274,7 +274,7 @@ fifty times is one node.
 No prompts and no command lines are stored: those are `state.db`'s and
 `memory.traces`' job, and the graph is the structure over them (which tool
 touched which file, what failed where). Storage is `backend/memory.kg/`
-(gitignored, `SIERRALAB_KG_DIR` moves it): `graph.lance` for queries, plus
+(gitignored, `CORDATA_KG_DIR` moves it): `graph.lance` for queries, plus
 `nodes.jsonl` / `edges.jsonl` mirrors written even when `lancedb` is not
 installed — so a checkout without it still has a graph readable with `jq`.
 
@@ -306,7 +306,7 @@ the app and switches capture on, and **Add screenshot** switches `capture.screen
   The turn runs on it once, then the session's model is back and the image is removed from the history.
 - Accessibility (title, selection) and Screen Recording (screenshot) are macOS permissions you grant in
   System Settings; the deck's Grant buttons open the prompt. `make lab-menubar-app` builds a signed
-  `Sierralab.app` so the grant belongs to it.
+  `Cordata.app` so the grant belongs to it.
 
 See `THREAT_MODEL.md`, "OS context capture".
 
@@ -316,16 +316,16 @@ Off by default, and only meaningful under `make daemon`: it is the one part of
 the harness that runs with no user turn behind it. Turned on, the daemon reads
 each known project (the newest five in `backend/sessions/index.json`) with a
 fixed `git` command list — `status`, `diff --stat`, `log`, `diff` — plus the
-tails of any log files named by `SIERRALAB_OBSERVER_LOGS`, hands that to a
+tails of any log files named by `CORDATA_OBSERVER_LOGS`, hands that to a
 read-only agent, and writes `nightly_briefing.md` (override:
-`SIERRALAB_OBSERVER_BRIEFING`) in `~/.sierralab/`.
+`CORDATA_OBSERVER_BRIEFING`) in `~/.cordata/`.
 
 The observer holds `file_read`, and nothing else: the daemon runs
 the commands, not the model, and the briefing is written by the daemon from the
 text the child prints. A client attaching kills any cycle in flight, and no
 cycle starts while one is attached — a briefing written over a project someone
-is working in is the one thing this must not do. `SIERRALAB_OBSERVER_QUIET`
-(`22:00-07:00`) stops it running at night; `SIERRALAB_OBSERVER_TIER` picks the
+is working in is the one thing this must not do. `CORDATA_OBSERVER_QUIET`
+(`22:00-07:00`) stops it running at night; `CORDATA_OBSERVER_TIER` picks the
 model tier.
 
 Proposals are staged on the ledger with status `proposed`, not `staged` — they
@@ -348,7 +348,7 @@ every `context.*` and `claudeCode.*` key here is trust-gated (a cloned repo cann
 | --- | --- | --- |
 | `context.coldTools` | `true` | Hide rarely-used tools (`http_request`, the model/resource managers, `claude_code_engineer`, …) unless the turn mentions their subject, they were used in the last three turns, or Laya routes the turn to `web`. The prompt lists what is hidden; the agent loads one with `enable_tools` and has it on its next step. Measured through the real ACP server: 43.6 KB → 15.1 KB of tool schema per call (−65%). |
 | `context.toolOutputChars` | `6000` | The most characters of one tool result the model reads (Strands' own `context_manager="auto"` uses 1,500 tokens, the default its docs report as best on ContextBench). Over it, the result is **offloaded** (`context.offload`) — or, with offloading off, cut keeping its head *and* tail (an error or exit code is at one end) and saying how much was left out. |
-| `context.offload` | `true` | Set an over-limit tool result aside whole instead of cutting it — Strands' `ContextOffloader`. The full result is written to `~/.sierralab/offloaded/<session>/` (dir `0700`, files `0600`, registered credentials masked first, deleted after 7 days); the model reads a head+tail preview and a reference, and `retrieve_offloaded_content` returns only the slice it asks for (a regex with context lines, or a line range). Nothing is lost, and a command is never run twice just to see its middle. The read-back is fenced as untrusted data. A specialist's report, the Claude Code CLI's result and the swarm/graph tools are the answer itself and are never offloaded. `false` cuts instead. |
+| `context.offload` | `true` | Set an over-limit tool result aside whole instead of cutting it — Strands' `ContextOffloader`. The full result is written to `~/.cordata/offloaded/<session>/` (dir `0700`, files `0600`, registered credentials masked first, deleted after 7 days); the model reads a head+tail preview and a reference, and `retrieve_offloaded_content` returns only the slice it asks for (a regex with context lines, or a line range). Nothing is lost, and a command is never run twice just to see its middle. The read-back is fenced as untrusted data. A specialist's report, the Claude Code CLI's result and the swarm/graph tools are the answer itself and are never offloaded. `false` cuts instead. |
 | `context.summaryModel` | `fast` | Who writes the summary when a long chat is compacted (it is a model call you pay for): the **fast model tier** (`MODEL_TIER_FAST`) when one is configured, or `main` for the session's own model. With no fast tier set, both are the same model and nothing changes. |
 | `context.webFetch` | `agentic` | What `web_fetch` returns: `agentic` — an analyst model reads the page and answers your prompt about it, so the page never enters the conversation (the analyst runs on the fast model tier when one is configured) — or `markdown`, the page itself (a long one is set aside by the offloader). |
 | `context.maxSteps` | `50` | Model calls one turn may make before it pauses (Strands' per-invocation `limits`). The turn stops with ACP's `max_turn_requests`, says why, keeps its history valid, and carries on at "continue" with a fresh budget. A loop that will not converge cannot run on spending your tokens. `0` = no cap. |
@@ -367,6 +367,17 @@ reasoning effort `max`** (thinking tokens count); `OLLAMA_ROLE_DEBUGGER=kimi-k2.
 is the cheaper setting. Tests: `backend/_context_diet_smoke_test.py` (the hook through a real Strands loop) and
 `backend/_diet_acp_smoke_test.py` (through the real ACP server, with the byte measurement).
 
+## Terminal client switches (environment only)
+
+| Variable | Effect |
+|---|---|
+| `CORDATA_HOME` | Moves the user directory (`~/.cordata`: settings, sessions, run history, checkpoints, `state.db`). |
+| `CORDATA_THEME=terminal` | Keeps the terminal's own 16 colours instead of Cordata's palette. A light background (`COLORFGBG`) does the same; `NO_COLOR` strips colour. Truecolor terminals get the palette, 256-colour ones the nearest cube colours. |
+| `CORDATA_NOTIFY=off` | No terminal bell when an approval is waiting or a turn that took over 20 s finishes. |
+
+Custom slash commands are files, not settings: `~/.cordata/commands/*.md`, `~/.claude/commands/*.md` and, per project,
+`.claude/commands/*.md` and `.cordata/commands/*.md` (later wins). See [`../tui/README.md`](../tui/README.md).
+
 ## Discord remote control (environment only, not settings)
 
 There is deliberately no `discord.*` settings key. Enabling the daemon's Discord
@@ -377,11 +388,11 @@ follows the same Keychain path as the provider keys (see `.env.example` and
 
 | Variable | Meaning |
 | --- | --- |
-| `DISCORD_BOT_TOKEN` | The bot token. Prefer `make discord-key` (Keychain service `cordata-discord-bot-token`, fallback `sierralab-discord-bot-token`) or export it; **not** a file value. Read once at startup, then removed from the process environment and masked everywhere. |
+| `DISCORD_BOT_TOKEN` | The bot token. Prefer `make discord-key` (Keychain service `cordata-discord-bot-token`, fallback `cordata-discord-bot-token`) or export it; **not** a file value. Read once at startup, then removed from the process environment and masked everywhere. |
 | `ALLOWED_USER_ID` | The one Discord user id allowed to chat, approve, deny or steer (Developer Mode → Copy ID). Required — with no allowlist the bot stays off. |
 | `TELEMETRY_CHANNEL_ID` | The channel the bot announces in and takes new chats from; chats and task threads open under it. |
-| `CORDATA_DISCORD` | `0`/`off`/`false`/`no` disables the bot even when the three above are set (kill switch, checked before the token is read; fallback `SIERRALAB_DISCORD`). |
-| `CORDATA_DISCORD_CWD` | The folder a new chat works in. Unset: your newest terminal/GUI session's folder, else `~/.cordata/discord-workspace` (fallback `SIERRALAB_DISCORD_CWD`). `!new <folder>` picks one per chat. |
+| `CORDATA_DISCORD` | `0`/`off`/`false`/`no` disables the bot even when the three above are set (kill switch, checked before the token is read). |
+| `CORDATA_DISCORD_CWD` | The folder a new chat works in. Unset: your newest terminal/GUI session's folder, else `~/.cordata/discord-workspace`. `!new <folder>` picks one per chat. |
 
 All three of the first rows' names must be present and parse (the ids as
 integers) for the bot to start; otherwise it logs the reason and is a no-op.
@@ -393,7 +404,7 @@ is logged as the actionable message it is rather than crashing the daemon. The b
 the channel (without thread permission, the channel itself becomes the one chat).
 
 Commands (plain text, anywhere the bot listens): `!status` · `!stop` · `!mode auto|build|plan` ·
-`!new <folder>` · `!usage` · `!help`. Chats are persisted in `~/.cordata/discord_chats.json` (or `~/.sierralab/`, 0600, newest 40);
+`!new <folder>` · `!usage` · `!help`. Chats are persisted in `~/.cordata/discord_chats.json` (or `~/.cordata/`, 0600, newest 40);
 at most three agent processes run at once and an idle one is stopped after 20 minutes — the next reply in its
 thread starts a new process and `session/load`s the conversation.
 

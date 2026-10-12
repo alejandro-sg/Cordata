@@ -10,11 +10,11 @@ its working directory, so a test can assert what actually reached the child:
                                             ``delay_ms`` apart (default: back to back)
   bridge/permit   {tool,input,meta,id}      emits a ``session/request_permission`` request and
                                             then waits (logging whatever answers it)
-  bridge/diff     {id,lines}                emits a ``_sierralab/diff`` event
-  bridge/memory   {event}                   emits a ``_sierralab/memory`` event
-  _sierralab/lab/effort | dial | isolate    answers the request (an error for value "bogus")
-  _sierralab/lab/inject | release          answers (inject refuses empty text, and the pod 'stopped')
-  _sierralab/os-context                    answers {ok: true} — what the menu bar registers before a turn
+  bridge/diff     {id,lines}                emits a ``_cordata/diff`` event
+  bridge/memory   {event}                   emits a ``_cordata/memory`` event
+  _cordata/lab/effort | dial | isolate    answers the request (an error for value "bogus")
+  _cordata/lab/inject | release          answers (inject refuses empty text, and the pod 'stopped')
+  _cordata/os-context                    answers {ok: true} — what the menu bar registers before a turn
   session/set_mode {modeId}                 answers {} for plan | build | auto, an error otherwise
 
 Everything is also logged as received, including any response to its permission request.
@@ -35,7 +35,7 @@ def log(kind, payload):
     LOG.write(json.dumps({"kind": kind, **payload}) + "\n")
 
 
-emit({"jsonrpc": "2.0", "method": "_sierralab/hello"})
+emit({"jsonrpc": "2.0", "method": "_cordata/hello"})
 
 for line in sys.stdin:
     line = line.rstrip("\r\n")
@@ -48,7 +48,7 @@ for line in sys.stdin:
     if method is None and "id" in message:
         log("response", {"id": message["id"], "result": message.get("result")})
         outcome = ((message.get("result") or {}).get("outcome") or {})
-        emit({"jsonrpc": "2.0", "method": "_sierralab/answered", "params": {"id": message["id"], "optionId": outcome.get("optionId")}})
+        emit({"jsonrpc": "2.0", "method": "_cordata/answered", "params": {"id": message["id"], "optionId": outcome.get("optionId")}})
         continue
     log("received", {"method": method, "id": message.get("id"), "params": params})
     if method == "bridge/lab":
@@ -59,7 +59,7 @@ for line in sys.stdin:
             emit(
                 {
                     "jsonrpc": "2.0",
-                    "method": "_sierralab/lab",
+                    "method": "_cordata/lab",
                     "params": {
                         "event": "state",
                         "version": 1,
@@ -112,32 +112,32 @@ for line in sys.stdin:
                         {"optionId": "allow_always", "name": "Always allow", "kind": "allow_always"},
                         {"optionId": "reject", "name": "Reject", "kind": "reject_once"},
                     ],
-                    **({"_meta": {"sierralab": params["meta"]}} if params.get("meta") else {}),
+                    **({"_meta": {"cordata": params["meta"]}} if params.get("meta") else {}),
                 },
             }
         )
     elif method == "bridge/diff":
         body = "".join(f"+line {n}\n" for n in range(int(params.get("lines", 3))))
-        emit({"jsonrpc": "2.0", "method": "_sierralab/diff", "params": {"id": params.get("id", "d1"), "source": "claude_code_engineer", "files": ["a.py"], "unified": "--- /dev/null\n+++ b/a.py\n@@ -0,0 +1 @@\n" + body, "truncated": False, "stat": " a.py | 1 +", "lines": int(params.get("lines", 3)) + 3}})
+        emit({"jsonrpc": "2.0", "method": "_cordata/diff", "params": {"id": params.get("id", "d1"), "source": "claude_code_engineer", "files": ["a.py"], "unified": "--- /dev/null\n+++ b/a.py\n@@ -0,0 +1 @@\n" + body, "truncated": False, "stat": " a.py | 1 +", "lines": int(params.get("lines", 3)) + 3}})
     elif method == "bridge/memory":
-        emit({"jsonrpc": "2.0", "method": "_sierralab/memory", "params": {"event": params.get("event", "unload"), "runtime": "omlx", "model": "m"}})
+        emit({"jsonrpc": "2.0", "method": "_cordata/memory", "params": {"event": params.get("event", "unload"), "runtime": "omlx", "model": "m"}})
     elif method == "session/set_mode":
         if params.get("modeId") in ("plan", "build", "auto"):
             emit({"jsonrpc": "2.0", "id": message["id"], "result": {}})
         else:
             emit({"jsonrpc": "2.0", "id": message["id"], "error": {"code": -32602, "message": "Invalid params", "data": {"error": "unknown mode"}}})
-    elif method == "_sierralab/lab/inject":
+    elif method == "_cordata/lab/inject":
         if not (params.get("text") or "").strip():
             emit({"jsonrpc": "2.0", "id": message["id"], "error": {"code": -32602, "message": "Invalid params", "data": {"error": "guidance is empty"}}})
         elif params.get("pod") == "stopped":
             emit({"jsonrpc": "2.0", "id": message["id"], "error": {"code": -32602, "message": "Invalid params", "data": {"error": "stopped is isolated; release it first"}}})
         else:
             emit({"jsonrpc": "2.0", "id": message["id"], "result": {"pod": params.get("pod"), "queued": 1}})
-    elif method == "_sierralab/os-context":
+    elif method == "_cordata/os-context":
         emit({"jsonrpc": "2.0", "id": message["id"], "result": {"ok": True, "app": params.get("app_name", ""), "denied": False}})
-    elif method == "_sierralab/lab/release":
+    elif method == "_cordata/lab/release":
         emit({"jsonrpc": "2.0", "id": message["id"], "result": {"pod": params.get("pod"), "isolated": False}})
-    elif method in ("_sierralab/lab/effort", "_sierralab/lab/dial", "_sierralab/lab/isolate"):
+    elif method in ("_cordata/lab/effort", "_cordata/lab/dial", "_cordata/lab/isolate"):
         if params.get("value") == "bogus":
             emit({"jsonrpc": "2.0", "id": message["id"], "error": {"code": -32602, "message": "Invalid params", "data": {"error": "orchestrator has no reasoning_effort knob"}}})
         else:

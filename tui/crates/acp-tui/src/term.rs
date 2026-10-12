@@ -27,7 +27,7 @@ const END_SYNC: &str = "\x1b[?2026l";
 fn push_color(codes: &mut Vec<String>, color: Color, foreground: bool) {
     let (base, bright_base) = if foreground { (30, 90) } else { (40, 100) };
     let extended = if foreground { 38 } else { 48 };
-    match color {
+    match crate::theme::remap(color) {
         Color::Reset => {}
         Color::Black => codes.push(base.to_string()),
         Color::Red => codes.push((base + 1).to_string()),

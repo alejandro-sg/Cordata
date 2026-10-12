@@ -21,14 +21,14 @@ export default function Page() {
   // (<CopilotChat> does it internally; <CopilotChatView>, which this app
   // uses instead for the queueing input, is presentational only).
   const [isExplicit, setIsExplicit] = useState(false);
-  const [dark, toggleDark] = useLocalStorageToggle("sierralab-agents:dark", false);
-  const [enableInspector, toggleInspector] = useLocalStorageToggle("sierralab-agents:inspector", true);
+  const [dark, toggleDark] = useLocalStorageToggle("cordata-agents:dark", false);
+  const [enableInspector, toggleInspector] = useLocalStorageToggle("cordata-agents:inspector", true);
   const { sandboxFunctions, approvalUi } = useSandboxFunctionBridge();
 
   return (
     <CopilotKitProvider
       runtimeUrl="/api/copilotkit"
-      agentId="sierralab_agent"
+      agentId="cordata_agent"
       enableInspector={enableInspector}
       openGenerativeUI={{ sandboxFunctions }}
     >

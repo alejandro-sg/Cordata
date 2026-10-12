@@ -26,13 +26,13 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-_ROOT = Path(tempfile.mkdtemp(prefix="sierralab-hub-"))
-os.environ["SIERRALAB_HOME"] = str(_ROOT / "home")
-os.environ["SIERRALAB_DAEMON_CONFIG"] = str(_ROOT / "home" / "daemon.json")
-os.environ["SIERRALAB_STATE_DB"] = str(_ROOT / "home" / "state.db")
-os.environ["SIERRALAB_DISCORD"] = "off"
+_ROOT = Path(tempfile.mkdtemp(prefix="cordata-hub-"))
+os.environ["CORDATA_HOME"] = str(_ROOT / "home")
+os.environ["CORDATA_DAEMON_CONFIG"] = str(_ROOT / "home" / "daemon.json")
+os.environ["CORDATA_STATE_DB"] = str(_ROOT / "home" / "state.db")
+os.environ["CORDATA_DISCORD"] = "off"
 os.environ["FAKE_ACP_STATE"] = str(_ROOT / "fake-acp-state.json")
-os.environ["SIERRALAB_ACP_ENTRYPOINT"] = f"{sys.executable} {HERE / 'fixtures' / 'fake_acp_chat_child.py'}"
+os.environ["CORDATA_ACP_ENTRYPOINT"] = f"{sys.executable} {HERE / 'fixtures' / 'fake_acp_chat_child.py'}"
 
 from fastapi.testclient import TestClient  # noqa: E402
 from starlette.websockets import WebSocketDisconnect  # noqa: E402

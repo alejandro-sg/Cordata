@@ -26,7 +26,7 @@ pub struct ConfigPanel {
 
 const FLOAT_STEPS: [f64; 6] = [0.5, 0.6, 0.7, 0.85, 0.9, 0.95];
 
-const INIT_PROMPT: &str = "Look through this project (its README, manifests and layout) and write a SIERRALAB.md in the project root: concise guidance for a coding agent working here — how to build, test and run it, how the code is laid out, the conventions to follow, and any gotchas. Keep it under 60 lines and state only what you verified in the files; ask me about anything you can't tell.";
+const INIT_PROMPT: &str = "Look through this project (its README, manifests and layout) and write a CORDATA.md in the project root: concise guidance for a coding agent working here — how to build, test and run it, how the code is laid out, the conventions to follow, and any gotchas. Keep it under 60 lines and state only what you verified in the files; ask me about anything you can't tell.";
 
 /// `$HOME` → `~`, for messages.
 pub fn tidy(path: &Path) -> String {
@@ -132,6 +132,7 @@ fn split_scope(text: &str) -> (&str, Option<Scope>) {
 impl App {
     pub fn attach_store(&mut self, store: Store) {
         self.settings = store.load();
+        self.custom = crate::custom::load(&store.user_dir, &store.cwd);
         self.store = Some(store);
         let prefs = self.settings.prefs();
         self.apply_prefs(prefs);
@@ -266,7 +267,7 @@ impl App {
         }
         let guidance = instruction_files(&store);
         if guidance.is_empty() {
-            lines.push("instructions: none — add SIERRALAB.md (or AGENTS.md / CLAUDE.md) to the project, or run /init".to_owned());
+            lines.push("instructions: none — add CORDATA.md (or AGENTS.md / CLAUDE.md) to the project, or run /init".to_owned());
         } else {
             lines.push("instructions read into the system prompt:".to_owned());
             lines.extend(
@@ -580,7 +581,7 @@ impl App {
         let Some(store) = self.store() else { return };
         let found = instruction_files(&store);
         if found.is_empty() {
-            self.info_msg("no instruction files found. Create SIERRALAB.md in the project (or ~/.sierralab/SIERRALAB.md for everywhere), or let the agent draft one with /init. AGENTS.md and CLAUDE.md are read too.");
+            self.info_msg("no instruction files found. Create CORDATA.md in the project (or ~/.cordata/CORDATA.md for everywhere), or let the agent draft one with /init. AGENTS.md and CLAUDE.md are read too.");
             return;
         }
         let mut lines =
@@ -929,7 +930,7 @@ mod tests {
         assert!(last_info(&rig.app).contains("AGENTS.md"));
 
         let effect = run(&mut rig.app, "/init");
-        assert!(matches!(&effect, Some(Effect::SendPrompt(text)) if text.contains("SIERRALAB.md")));
+        assert!(matches!(&effect, Some(Effect::SendPrompt(text)) if text.contains("CORDATA.md")));
         assert!(matches!(rig.app.messages.last(), Some(Message::User(text)) if text == "/init"));
         assert!(rig.app.turn_active, "/init starts a turn like any prompt");
     }

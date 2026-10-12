@@ -1,0 +1,118 @@
+//! `!command`: run a shell command yourself, from the prompt box, in the project folder.
+//!
+//! It is the person's own command with the person's own rights — the same as typing it in their shell — so it is not
+//! an agent action and does not pass the agent's approval gate. What it prints is shown, and handed to the agent with
+//! the next prompt ("I ran this, it said that"), which is the point: no copy and paste, and no tool call to ask for it.
+
+use std::io::Read;
+use std::path::Path;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+/// How much of the output is kept (the end of it: that is where errors are).
+const KEEP_BYTES: usize = 24 * 1024;
+pub const TIMEOUT: Duration = Duration::from_secs(60);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Outcome {
+    pub output: String,
+    pub code: Option<i32>,
+    pub timed_out: bool,
+    /// The output was longer than what is kept.
+    pub cut: bool,
+}
+
+/// Run `command` through `sh -c` with stderr merged into stdout, no stdin, and a deadline.
+pub fn run(command: &str, cwd: &Path, timeout: Duration) -> Outcome {
+    let spawned = Command::new("sh")
+        .arg("-c")
+        .arg(format!("exec 2>&1\n{command}"))
+        .current_dir(cwd)
+        .env("TERM", "dumb")
+        .env("PAGER", "cat")
+        .env("GIT_PAGER", "cat")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn();
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(error) => return Outcome { output: format!("could not start sh: {error}"), code: None, timed_out: false, cut: false },
+    };
+    let mut pipe = child.stdout.take();
+    let reader = std::thread::spawn(move || {
+        let (mut kept, mut cut) = (Vec::<u8>::new(), false);
+        let mut buffer = [0u8; 8192];
+        while let Some(Ok(n)) = pipe.as_mut().map(|p| p.read(&mut buffer)) {
+            if n == 0 {
+                break;
+            }
+            kept.extend_from_slice(&buffer[..n]);
+            if kept.len() > KEEP_BYTES * 2 {
+                kept.drain(..kept.len() - KEEP_BYTES);
+                cut = true;
+            }
+        }
+        (kept, cut)
+    });
+
+    let started = Instant::now();
+    let (code, timed_out) = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break (status.code(), false),
+            Ok(None) if started.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break (None, true);
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(_) => break (None, false),
+        }
+    };
+    let (mut bytes, mut cut) = reader.join().unwrap_or_default();
+    if bytes.len() > KEEP_BYTES {
+        bytes.drain(..bytes.len() - KEEP_BYTES);
+        cut = true;
+    }
+    Outcome { output: String::from_utf8_lossy(&bytes).into_owned(), code, timed_out, cut }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_and_exit_code_come_back_with_stderr_merged() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = run("echo out; echo err 1>&2; exit 3", dir.path(), Duration::from_secs(5));
+        assert_eq!(out.code, Some(3));
+        assert!(out.output.contains("out") && out.output.contains("err"), "{out:?}");
+        assert!(!out.timed_out && !out.cut);
+    }
+
+    #[test]
+    fn it_runs_in_the_project_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("marker.txt"), "x").unwrap();
+        let out = run("ls", dir.path(), Duration::from_secs(5));
+        assert!(out.output.contains("marker.txt"), "{out:?}");
+    }
+
+    #[test]
+    fn a_runaway_command_is_stopped() {
+        let dir = tempfile::tempdir().unwrap();
+        let started = Instant::now();
+        let out = run("sleep 30", dir.path(), Duration::from_millis(200));
+        assert!(out.timed_out && out.code.is_none());
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_flood_keeps_the_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = run("i=0; while [ $i -lt 20000 ]; do echo line$i; i=$((i+1)); done", dir.path(), Duration::from_secs(20));
+        assert!(out.cut);
+        assert!(out.output.trim_end().ends_with("line19999"), "{}", &out.output[out.output.len().saturating_sub(40)..]);
+        assert!(out.output.len() <= KEEP_BYTES);
+    }
+}

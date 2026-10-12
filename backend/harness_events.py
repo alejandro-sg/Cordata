@@ -3,7 +3,7 @@ plugin lifecycle, LSP status, self-heal phases.
 
 Producers (plugin host, LSP manager, self-heal hooks, sub-agent teams) call
 ``emit``; the ACP server subscribes once per process and forwards each event to
-the client as an ACP extension notification (``_sierralab/<kind>``). A client
+the client as an ACP extension notification (``_cordata/<kind>``). A client
 that doesn't know an extension notification ignores it (ACP spec), so Zed is
 unaffected; acp-tui renders tasks as progress bars.
 

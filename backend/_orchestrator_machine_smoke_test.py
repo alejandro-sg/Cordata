@@ -28,15 +28,15 @@ from pathlib import Path
 from typing import Any
 
 _HOME = tempfile.mkdtemp(prefix="machine-home-")
-os.environ["SIERRALAB_HOME"] = _HOME
-os.environ["SIERRALAB_STATE_DB"] = str(Path(_HOME) / "state.db")
+os.environ["CORDATA_HOME"] = _HOME
+os.environ["CORDATA_STATE_DB"] = str(Path(_HOME) / "state.db")
 
 import provider_settings  # noqa: F401,E402
 import scrubbed_sandbox  # noqa: E402
 
 if not scrubbed_sandbox.seatbelt_works():
     # Off macOS (CI) the audit's commands cannot be confined; these are the test's own fixture commands.
-    os.environ["SIERRALAB_SANDBOX_SEATBELT"] = "off"
+    os.environ["CORDATA_SANDBOX_SEATBELT"] = "off"
     print("note: Seatbelt unavailable — audit commands run unconfined in this test")
 
 from harness_testing import check  # noqa: E402
@@ -253,6 +253,34 @@ async def test_bounded_failure(root: Path) -> None:
     after = {p.relative_to(project).as_posix(): p.read_bytes() for p in project.rglob("*") if p.is_file() and ".git" not in p.parts and "__pycache__" not in p.parts}
     check(after == before, f"the project is exactly as it started ({sorted(set(after) ^ set(before))})")
     check(record.history[-1].get("restored") is True, "the failure says it restored the checkpoint")
+    saved = sorted(machine.artifacts_dir(record.run_id).glob("discarded-*.patch"))
+    check(len(saved) == 2 and "calc/mul.py" in saved[-1].read_text() and oct(saved[-1].stat().st_mode & 0o777) == "0o600", f"the work each restore discarded was saved as a patch first ({[p.name for p in saved]})")
+    check(any("saved to" in w for w in record.warnings), "…and the record says where")
+
+
+async def test_a_stubborn_step_does_not_cost_the_work_before_it(root: Path) -> None:
+    print("\n=== a step that fails every attempt keeps the steps before it ===")
+    project = make_project(root, "recovery")
+    planner = ollama_fake(plan=draft(), audit=ACCEPT)
+    # s1..s3 are fine; s4 fails its three attempts (a worker that ran out of room), then a recovery pass gets it right.
+    scripts = steps_script()
+    scripts["s4"] = StepScript(writes={"calc/div.py": FILES["calc/div.py"]}, fail_attempts=3)
+    executor = claude_fake(steps=scripts)
+    record = await run(project, dispatcher(planner=planner, executor=executor, reviewer=planner), "recovery")
+    check(record.state == "done" and record.replans == 0 and record.recoveries == 1, f"it finished without a replan after one recovery ({record.state}, replans {record.replans}, recoveries {record.recoveries})")
+    check(len([c for c in planner.calls if c.role == "plan"]) == 1, "the planner was asked once: the plan was kept")
+    ran = [c.task_id.split(":")[1] for c in executor.calls if c.role == "execute"]
+    check(ran.count("s1") == 1 and ran.count("s2") == 1 and ran.count("s3") == 1, f"the steps before the stubborn one were not redone ({ran})")
+    recovery_call = [c for c in executor.calls if ":s4:" in c.task_id][-1]
+    check("SMALL edits" in recovery_call.prompt and "Earlier attempts at this step failed" in recovery_call.prompt, "the recovery attempt is told what happened and to work in pieces")
+    check(any(h.get("recovery") == 1 for h in record.history) and tests_pass(project), "the history records the recovery; the tests pass")
+
+    # Out of recoveries, the old behaviour: replan from the start (and here, fail).
+    project2 = make_project(root, "recovery-exhausted")
+    broken = steps_script()
+    broken["s4"] = StepScript(writes={"calc/div.py": FILES["calc/div.py"]}, fail=True)
+    record = await run(project2, dispatcher(planner=planner, executor=claude_fake(steps=broken), reviewer=planner), "recovery-exhausted")
+    check(record.state == "failed" and record.recoveries == 2 and record.replans == 1, f"a step that never works is bounded: 2 recoveries, then the replan, then failure ({record.state}, {record.recoveries}, {record.replans})")
 
 
 async def test_harden_family(root: Path) -> None:
@@ -294,6 +322,7 @@ async def main_async() -> None:
     await test_tier2_verdicts(root)
     await test_scope_escape(root)
     await test_bounded_failure(root)
+    await test_a_stubborn_step_does_not_cost_the_work_before_it(root)
     await test_harden_family(root)
     await test_pause_resume(root)
 

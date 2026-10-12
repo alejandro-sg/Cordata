@@ -21,7 +21,7 @@ import os
 import time
 from pathlib import Path
 
-os.environ["SIERRALAB_PRISM"] = "off"
+os.environ["CORDATA_PRISM"] = "off"
 
 import provider_settings  # noqa: F401  (before agent_common, which chdirs)
 
@@ -95,7 +95,7 @@ def test_capture_rules() -> None:
     check(len(live) == 1 and live[0]["count"] == 2, "the same rule twice is counted, not duplicated")
 
     noted = rm.capture(cwd, session_id="s", tool_name="shell", tool_input={"command": "npm install left-pad"}, decided_by="user", note="never add npm dependencies without asking first", reflect=False)
-    os.environ["SIERRALAB_REFLECT"] = "off"
+    os.environ["CORDATA_REFLECT"] = "off"
     rule = rm.reflect_rule(cwd, noted)  # no model available
     check(rule and rule["rule"].startswith("never add npm dependencies") and rule["basis"] == "stated", "with no model, the person's note is the rule")
     silent = rm.capture(cwd, session_id="s", tool_name="shell", tool_input={"command": "rm -rf build"}, decided_by="user", reflect=False)
@@ -126,7 +126,7 @@ def test_relevance_and_graph() -> None:
     from kg.lance_sink import LanceGraphSink  # noqa: PLC0415
 
     graph_dir = ROOT / "kg"
-    os.environ["SIERRALAB_KG_DIR"] = str(graph_dir)
+    os.environ["CORDATA_KG_DIR"] = str(graph_dir)
     sink = LanceGraphSink(graph_dir)
     import kg  # noqa: PLC0415
 
@@ -151,7 +151,7 @@ def test_relevance_and_graph() -> None:
 
 
 class RejectingConn(Conn):
-    """The GUI's containment modal, through the daemon: *Reject & Isolate* with a note (``_meta.sierralab``)."""
+    """The GUI's containment modal, through the daemon: *Reject & Isolate* with a note (``_meta.cordata``)."""
 
     def __init__(self, note: str) -> None:
         super().__init__()
@@ -162,7 +162,7 @@ class RejectingConn(Conn):
         self.asked.append(getattr(tool_call, "raw_input", None) or {})
         return acp.schema.RequestPermissionResponse(
             outcome=acp.schema.AllowedOutcome(outcome="selected", option_id="reject"),
-            field_meta={"sierralab": {"decidedBy": "gui", "note": self.note}},
+            field_meta={"cordata": {"decidedBy": "gui", "note": self.note}},
         )
 
 
@@ -177,7 +177,7 @@ class ApprovingConn(Conn):
 
 
 async def test_gate_rejection_learning() -> None:
-    os.environ["SIERRALAB_REFLECT"] = "on"
+    os.environ["CORDATA_REFLECT"] = "on"
     cwd = project("gate3")
     reflections: list[str] = []
     real = rm._model_draft
@@ -223,7 +223,7 @@ async def test_gate_rejection_learning() -> None:
         check("log.debug('order %s', order)" in (cwd / "app.py").read_text() and "print(" not in (cwd / "app.py").read_text(), "…and that is what landed")
     finally:
         rm._model_draft = real
-        os.environ["SIERRALAB_REFLECT"] = "off"
+        os.environ["CORDATA_REFLECT"] = "off"
 
 
 async def main() -> None:

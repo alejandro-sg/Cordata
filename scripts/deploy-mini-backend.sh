@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Usage: scripts/deploy-mini-backend.sh
 #
-# Syncs backend/ to the mini (ssh alias "sierralab-mini" — see
+# Syncs backend/ to the mini (ssh alias "mini" — see
 # ~/.ssh/config) and rebuilds its backend container. Also invoked by
 # deploy-mini.sh, which deploys both frontend and backend together.
 #
@@ -26,8 +26,8 @@
 # from here, never deleted.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-MINI_HOST="${MINI_HOST:-sierralab-mini}"
-MINI_DIR="${MINI_DIR:-~/docker/sierralab-agent-backend}"
+MINI_HOST="${MINI_HOST:-mini}"
+MINI_DIR="${MINI_DIR:-~/docker/cordata-agent-backend}"
 
 log "Syncing backend/ to $MINI_HOST:$MINI_DIR ..."
 ssh "$MINI_HOST" "mkdir -p $MINI_DIR/state/sessions $MINI_DIR/state/workspace $MINI_DIR/state/repl_state $MINI_DIR/state/skills_generated $MINI_DIR/state/hf-cache && [ -s $MINI_DIR/state/mcp_servers.json ] || echo '{\"mcpServers\": {}}' > $MINI_DIR/state/mcp_servers.json"
@@ -54,4 +54,4 @@ log "Building + restarting container on $MINI_HOST ..."
 ssh "$MINI_HOST" "cd $MINI_DIR && docker compose up -d --build"
 
 ok "Deployed. Status:"
-ssh "$MINI_HOST" "docker ps --filter name=sierralab-agent-backend --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'"
+ssh "$MINI_HOST" "docker ps --filter name=cordata-agent-backend --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'"

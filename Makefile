@@ -1,4 +1,4 @@
-.PHONY: phase12-test gate-live setup up down restart status logs daemon daemon-install daemon-uninstall daemon-status deploy-mini deploy-mini-frontend deploy-mini-backend tui tui-build tui-test lab lab-demo lab-build lab-test lab-live lab-menubar lab-menubar-selftest lab-menubar-deck-selftest lab-menubar-demo lab-menubar-app proto evals evals-validate learning-test laya-test laya-export laya-eval stress tui-cloud tui-lab stress-cloud key check-key discord-key laya-watch settings install-cli cli
+.PHONY: phase12-test gate-live setup up down restart status logs daemon daemon-install daemon-uninstall daemon-status deploy-mini deploy-mini-frontend deploy-mini-backend tui tui-build tui-test lab lab-demo lab-build lab-test lab-live lab-menubar lab-menubar-selftest lab-menubar-deck-selftest lab-menubar-demo lab-menubar-app proto evals evals-validate learning-test laya-test laya-export laya-eval stress tui-cloud tui-lab stress-cloud key check-key discord-key laya-watch settings install-cli cli secrets hooks
 
 setup:
 	@scripts/setup.sh
@@ -61,7 +61,7 @@ lab:
 
 # The same window against a scripted, self-contained daemon (backend/lab_demo.py): an approval
 # to answer, a 10,000-line diff, knobs that work, a fake oMLX to unload — no model, key or token
-# spent, and nothing touches ~/.sierralab or a daemon you already run.   make lab-demo WATCH=~/proj
+# spent, and nothing touches ~/.cordata or a daemon you already run.   make lab-demo WATCH=~/proj
 lab-demo:
 	@scripts/lab-demo.sh
 
@@ -90,7 +90,7 @@ lab-menubar-deck-selftest:
 lab-menubar-demo:
 	@scripts/lab-demo.sh --menubar
 
-# The deck as a real menu-bar app (lab/target/Sierralab.app, LSUIElement, signed), so the
+# The deck as a real menu-bar app (lab/target/Cordata.app, LSUIElement, signed), so the
 # Accessibility grant belongs to it rather than to your terminal. INSTALL=1 copies it to
 # ~/Applications; SIGN_IDENTITY="<cert>" keeps the grant across rebuilds (see the script).
 #   make lab-menubar-app INSTALL=1
@@ -139,14 +139,22 @@ phase12-test:
 	@backend/.venv/bin/python backend/_rejection_memory_smoke_test.py
 	@backend/.venv/bin/python backend/_environment_awareness_smoke_test.py
 
-# Every hermetic smoke suite, in parallel (backend/run_tests.py): each in its own throwaway SIERRALAB_HOME, longest
+# Fails if a credential is in a tracked or not-ignored file (scripts/check-secrets.py). `make secrets ARGS=--history`
+# also reads every commit. CI runs it on every push; `make hooks` runs the staged-change version before each commit.
+secrets:
+	@python3 scripts/check-secrets.py $(ARGS)
+
+hooks:
+	@git config core.hooksPath .githooks && echo "pre-commit secret check enabled (.githooks/pre-commit)"
+
+# Every hermetic smoke suite, in parallel (backend/run_tests.py): each in its own throwaway CORDATA_HOME, longest
 # first, Discord off.   make test ARGS="-k orchestr"   make test ARGS="-j 4"   make test ARGS="--live"
 test:
 	@backend/.venv/bin/python backend/run_tests.py $(ARGS)
 
 # The orchestrator (docs/orchestrator-plan.md): the Worker interface and its adapters, the quota ledger and safe-point
 # handoffs, the plan → execute → harden → audit machine, and the dispatch policy. Hermetic: fake CLIs under the real
-# Seatbelt sandbox, scripted models, a throwaway SIERRALAB_HOME.
+# Seatbelt sandbox, scripted models, a throwaway CORDATA_HOME.
 orchestrator-test:
 	@backend/.venv/bin/python backend/_worker_conformance_smoke_test.py
 	@backend/.venv/bin/python backend/_quota_ledger_smoke_test.py
@@ -162,9 +170,9 @@ evals-orchestration:
 	@cd backend && PYTHONPATH=. .venv/bin/python -m evals orchestrate $(ARGS)
 
 # The verification gate against the configured REAL model (spends cloud tokens; Discord off, Laya off, a throwaway
-# SIERRALAB_HOME). Prints what the model did.   make gate-live ARGS="1 3"
+# CORDATA_HOME). Prints what the model did.   make gate-live ARGS="1 3"
 gate-live:
-	@cd backend && SIERRALAB_DISCORD=off .venv/bin/python _phase12_gate_live_test.py $(ARGS)
+	@cd backend && CORDATA_DISCORD=off .venv/bin/python _phase12_gate_live_test.py $(ARGS)
 
 # The trajectory export and the checkpoint registry. Hermetic — no model, no network, so unlike learning-test
 # this one runs in CI.
@@ -221,7 +229,7 @@ laya-watch:
 settings:
 	@backend/.venv/bin/python backend/settings_store.py $(or $(DIR),.)
 
-# Install cordata, orchestrator and sierra CLI binaries to ~/.local/bin
+# Put `cordata` on your PATH (a symlink in ~/.local/bin)
 install-cli cli:
 	@scripts/install-cli.sh
 

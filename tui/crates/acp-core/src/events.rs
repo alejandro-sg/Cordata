@@ -219,7 +219,7 @@ pub struct SessionInfo {
 /// The extension notification method the backend sends Laya's live triage on.
 /// (ACP requires extension methods to start with `_`; a client that doesn't
 /// know it must ignore it, so other clients are unaffected.)
-pub const LAYA_METHOD: &str = "_sierralab/laya";
+pub const LAYA_METHOD: &str = "_cordata/laya";
 
 /// Laya's decision for the turn that just started (backend `laya_triage.py`,
 /// or the v2 router `laya_router.py`, which adds the policy fields below).
@@ -369,25 +369,32 @@ pub fn parse_laya(params: &Value) -> Option<LayaEvent> {
 }
 
 /// Harness extension notifications (backend `harness_events.py`).
-pub const TASK_METHOD: &str = "_sierralab/task";
-pub const HEAL_METHOD: &str = "_sierralab/heal";
-pub const PLUGINS_METHOD: &str = "_sierralab/plugins";
-pub const LSP_METHOD: &str = "_sierralab/lsp";
+pub const TASK_METHOD: &str = "_cordata/task";
+pub const HEAL_METHOD: &str = "_cordata/heal";
+pub const PLUGINS_METHOD: &str = "_cordata/plugins";
+pub const LSP_METHOD: &str = "_cordata/lsp";
 /// Project snapshots (backend `checkpoints.py`): said when a change could not be snapshotted, when a
 /// call writes outside the project, and when a restore ran. Taking one is not an event.
-pub const CHECKPOINT_METHOD: &str = "_sierralab/checkpoint";
+pub const CHECKPOINT_METHOD: &str = "_cordata/checkpoint";
 /// A loaded session has an interrupted turn: `auto` says the client may resume it on its own.
-pub const RESUME_METHOD: &str = "_sierralab/resume";
+pub const RESUME_METHOD: &str = "_cordata/resume";
 /// What a finished turn cost (backend `acp_server._announce_turn`): `seconds`, `calls`, `tokensIn`,
 /// `tokensOut`, `stop`. Sent once per turn, so a status line can show it without a model call of its own.
-pub const TURN_METHOD: &str = "_sierralab/turn";
+pub const TURN_METHOD: &str = "_cordata/turn";
 /// The orchestrator's run events (backend `orchestrate_tool.py`): `kind` is `state` | `step_dispatch` |
 /// `step_result` | `handoff` | `rollback` | `paused` | `budget_exhausted`, with `run_id` and the fields of that kind.
-pub const ORCHESTRATOR_METHOD: &str = "_sierralab/orchestrator";
+pub const ORCHESTRATOR_METHOD: &str = "_cordata/orchestrator";
+/// `/goal` progress (backend `goal.py`): `event` is `set` | `checking` | `continue` | `met` | `stopped` | `exhausted`,
+/// with `condition`, `turn`, `max`, `reason` and `how` (`check` | `judge`).
+pub const GOAL_METHOD: &str = "_cordata/goal";
+/// How full the conversation is (backend `session_extras.context_snapshot`): `used`, `window`, `pct`, `messages`.
+pub const CONTEXT_METHOD: &str = "_cordata/context";
+/// The agent's own checklist (backend `task_tool.todo_write`): `items` of `{content, status}`, `done`, `total`.
+pub const TASKLIST_METHOD: &str = "_cordata/tasklist";
 /// The Experimental Lab's live state (backend `lab.py`): pods, A2A links, the
 /// threat gauge, staged HITL rows, resources. Controls go back the other way as
-/// `_sierralab/lab/{select,isolate,release,dial,inject}` extension requests.
-pub const LAB_METHOD: &str = "_sierralab/lab";
+/// `_cordata/lab/{select,isolate,release,dial,inject}` extension requests.
+pub const LAB_METHOD: &str = "_cordata/lab";
 
 /// What an agent pod is doing right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -718,6 +725,12 @@ pub enum HarnessEvent {
     Lab(Box<LabState>),
     /// An orchestrator run event (state change, step, handoff), as JSON.
     Orchestrator(Value),
+    /// A `/goal` step, as JSON.
+    Goal(Value),
+    /// The context gauge, as JSON.
+    Context(Value),
+    /// The agent's checklist, as JSON.
+    TaskList(Value),
 }
 
 /// Parse a harness notification; `None` for unknown methods or malformed params.
@@ -757,6 +770,9 @@ pub fn parse_harness(method: &str, params: &Value) -> Option<HarnessEvent> {
         TURN_METHOD => Some(HarnessEvent::Turn(params.clone())),
         LAB_METHOD => parse_lab(params).map(|state| HarnessEvent::Lab(Box::new(state))),
         ORCHESTRATOR_METHOD => text("kind").map(|_| HarnessEvent::Orchestrator(params.clone())),
+        GOAL_METHOD => text("event").map(|_| HarnessEvent::Goal(params.clone())),
+        CONTEXT_METHOD => params.get("used").map(|_| HarnessEvent::Context(params.clone())),
+        TASKLIST_METHOD => params.get("items").filter(|items| items.is_array()).map(|_| HarnessEvent::TaskList(params.clone())),
         _ => None,
     }
 }
@@ -966,6 +982,25 @@ mod laya_tests {
     use super::*;
 
     #[test]
+    fn goal_context_and_checklist_events_parse_only_when_well_formed() {
+        assert!(matches!(
+            parse_harness(GOAL_METHOD, &serde_json::json!({"event": "continue", "turn": 1, "max": 8})),
+            Some(HarnessEvent::Goal(_))
+        ));
+        assert!(parse_harness(GOAL_METHOD, &serde_json::json!({"turn": 1})).is_none());
+        assert!(matches!(
+            parse_harness(CONTEXT_METHOD, &serde_json::json!({"used": 1200, "window": 128000, "pct": 0.009})),
+            Some(HarnessEvent::Context(_))
+        ));
+        assert!(parse_harness(CONTEXT_METHOD, &serde_json::json!({"window": 1})).is_none());
+        assert!(matches!(
+            parse_harness(TASKLIST_METHOD, &serde_json::json!({"items": [{"content": "a", "status": "pending"}]})),
+            Some(HarnessEvent::TaskList(_))
+        ));
+        assert!(parse_harness(TASKLIST_METHOD, &serde_json::json!({"items": "nope"})).is_none());
+    }
+
+    #[test]
     fn an_orchestrator_event_parses_when_it_has_a_kind() {
         let event = parse_harness(ORCHESTRATOR_METHOD, &serde_json::json!({"kind": "handoff", "run_id": "r"}));
         assert!(matches!(event, Some(HarnessEvent::Orchestrator(_))));
@@ -1075,7 +1110,7 @@ mod laya_tests {
             ("verified", Some(1), Some(3))
         );
         assert_eq!(parse_harness(TASK_METHOD, &json!({"title": "no id"})), None);
-        assert_eq!(parse_harness("_sierralab/unknown", &json!({})), None);
+        assert_eq!(parse_harness("_cordata/unknown", &json!({})), None);
         let Some(HarnessEvent::Turn(turn)) = parse_harness(
             TURN_METHOD,
             &json!({"stop": "end_turn", "seconds": 41.3, "calls": 3, "tokensIn": 12400, "tokensOut": 1100}),

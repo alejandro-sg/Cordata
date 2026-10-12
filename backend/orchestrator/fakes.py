@@ -33,6 +33,8 @@ class StepScript:
     tokens: tuple[int, int] = (1000, 300)
     cost_usd: float = 0.0
     fail: bool = False
+    #: Fail this many attempts at the step, then succeed (a worker that runs out of room, then a stronger one that does not).
+    fail_attempts: int = 0
 
 
 class FakeWorker(Worker):
@@ -75,6 +77,7 @@ class FakeWorker(Worker):
         self.cost_per_plan = cost_per_plan
         self.delay = delay
         self.spent_tokens = 0
+        self.attempts: dict[str, int] = {}
         self.calls: list[TaskPacket] = []
         self._cancelled: set[str] = set()
 
@@ -143,7 +146,8 @@ class FakeWorker(Worker):
                 self._write(root, self.partial_on_limit, scope)
                 status, error, rate_limited = "quota_limit", "429 rate limit reached (simulated)", True
                 self.rate_limit_on_steps.discard(step)
-            elif script.fail:
+            elif script.fail or self.attempts.get(step, 0) < script.fail_attempts:
+                self.attempts[step] = self.attempts.get(step, 0) + 1
                 status, error = "failed", f"simulated failure on {step or task.role}"
             else:
                 right = self.rng.random() < self.quality

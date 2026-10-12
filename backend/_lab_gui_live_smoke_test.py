@@ -27,7 +27,7 @@ from harness_testing import check  # noqa: E402
 
 
 def main() -> int:
-    home = Path(tempfile.mkdtemp(prefix="sierralab-live-"))
+    home = Path(tempfile.mkdtemp(prefix="cordata-live-"))
     workspace = home / "workspace"
     workspace.mkdir()
     demo = subprocess.Popen(
@@ -49,8 +49,8 @@ def main() -> int:
                 break
         check(ready, "the demo daemon came up")
 
-        env = {**os.environ, "SIERRALAB_HOME": str(home)}
-        env.pop("SIERRALAB_DAEMON_CONFIG", None)
+        env = {**os.environ, "CORDATA_HOME": str(home)}
+        env.pop("CORDATA_DAEMON_CONFIG", None)
         run = subprocess.run(
             ["cargo", "test", "-p", "harness-client", "--test", "live", "--", "--ignored", "--nocapture", "--test-threads=1"],
             cwd=LAB,
@@ -92,8 +92,8 @@ def main() -> int:
             demo.kill()
 
     # The ledger the run left behind (the daemon is gone, so the file is quiet).
-    os.environ["SIERRALAB_HOME"] = str(home)
-    os.environ["SIERRALAB_STATE_DB"] = str(home / "state.db")
+    os.environ["CORDATA_HOME"] = str(home)
+    os.environ["CORDATA_STATE_DB"] = str(home / "state.db")
     import state_store
 
     gui = {}

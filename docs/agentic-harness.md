@@ -94,7 +94,7 @@ score, remove a prompt, or waive a deny.** They can only add a hint, re-rank cho
 and change prose that a person can read in full.
 
 - **Reflection (`reflect.py`)** — a turn that failed or that the person reworked becomes a drafted lesson: a
-  tool-less model call writes a `SKILL.md` into `~/.sierralab/learned/<project>/staging/`, which is *not* live.
+  tool-less model call writes a `SKILL.md` into `~/.cordata/learned/<project>/staging/`, which is *not* live.
   The goal and error lines it is shown are wrapped as data and secret-masked first, and the drafting call has no
   tools at all. `learning.reflect` (default on) is the switch.
 - **Promotion (`promote.py`)** — a staged candidate is run through the eval suite and promoted only if it raises
@@ -104,7 +104,7 @@ and change prose that a person can read in full.
   `learning.promotion: off | shadow | live` — `shadow` writes the verdict and promotes nothing, so a person can
   read what the gate would have done. Trust-gated: a cloned repository cannot turn it on for itself.
 - **Prompt overlays (`prompts.py`)** — the same four places as a skill (staging / live / retired / rejected) at
-  `~/.sierralab/prompts/<project>/`, private, and in the ledger. A live overlay is appended to the system prompt
+  `~/.cordata/prompts/<project>/`, private, and in the ledger. A live overlay is appended to the system prompt
   as its own named block (`# How this project is worked on`), after the project prompt, the workspace context and
   the person's instructions, so the boundary is unambiguous to a person reading it. Because an overlay is in front
   of the model on every turn it is the more powerful lever, so it is filtered by exactly the same rules a skill is
@@ -124,7 +124,7 @@ and change prose that a person can read in full.
   on a call the Guard already scored at or above its gate). The reward is the turn's own `outcomes.score`
   re-weighted as `verifier success − λ·cost − μ·correction`, with cost counting tokens, time and Claude Code
   dollars (`learning.banditLambda`, `learning.banditMu`). The table is coarse and per-project, in
-  `~/.sierralab/bandit/`, keyed by mode × risk × tier × target kind so a person's few turns still fill a bucket;
+  `~/.cordata/bandit/`, keyed by mode × risk × tier × target kind so a person's few turns still fill a bucket;
   `learning.banditMinPulls` keeps a choice on its default until every arm has enough outcomes, and
   `learning.banditExplore` is ε. `learning.bandit: off | shadow | live` — `shadow` records what it *would* have
   chosen and acts on nothing.
@@ -145,7 +145,7 @@ and change prose that a person can read in full.
   the export. A row exists only for a turn whose reward is known, and the train / eval split is a hash of the
   request text, so adding turns never moves an existing one. `make laya-export`; row shapes in `docs/evals.md`.
 - **Checkpoints (`laya_checkpoints.py`)** — a fine-tuned Laya checkpoint is a **candidate like a skill**: a
-  registry (`~/.sierralab/laya/checkpoints.json`) maps an id to its directory and its measured numbers, the same
+  registry (`~/.cordata/laya/checkpoints.json`) maps an id to its directory and its measured numbers, the same
   A/B gate judges it on the same tasks, and only a pass may go live — `activate` refuses a checkpoint whose last
   verdict did not promote. `LAYA_MODEL` resolves through the registry (a live checkpoint wins over the stock repo;
   an explicit `LAYA_MODEL` still overrides both). This is the one artifact that changes a *model's weights*
@@ -171,7 +171,7 @@ read-only — the harness snapshots the project. It does so in every mode and fo
 decision and before the call: a call held for approval is snapshotted before the prompt appears, a call
 refused (plan mode, a deny rule, the vault) is not snapshotted at all.
 
-* **Where.** A *shadow* git repository under `~/.sierralab/checkpoints/<project hash>/` (0700), with the
+* **Where.** A *shadow* git repository under `~/.cordata/checkpoints/<project hash>/` (0700), with the
   project as its work tree. Your own `.git` is never read for this or written: no commits, branches, index
   changes or hooks of yours are involved, and it works in a folder that is not a repository. One commit per
   call, its message carrying the session, turn, agent, tool and a redacted one-line summary; one more after
@@ -189,7 +189,7 @@ refused (plan mode, a deny rule, the vault) is not snapshotted at all.
   any that were edited *after* the turn ended (their changes would be overwritten); `/undo apply` does it;
   `/undo <turn> [apply]` names an earlier one; `/checkpoints` lists turns. Restoring snapshots the present
   first, so an undo can itself be undone, and is refused while a turn is running (two writers, one tree). Every
-  applied restore is audited (`checkpoint_restore`). Over ACP: `_sierralab/checkpoints/{list,undo,restore}`.
+  applied restore is audited (`checkpoint_restore`). Over ACP: `_cordata/checkpoints/{list,undo,restore}`.
 * **Bounded.** History past 800 snapshots is rebuilt from the newest 400 and garbage-collected, off the turn's path.
 * **Not a permission.** A checkpoint approves nothing and lowers no gate; it only makes what got through
   recoverable. Laya Guard still asks first. `checkpoints.enabled` is trust-gated: a cloned repository cannot
@@ -218,7 +218,7 @@ propagate up to the parent (`_harness_loop_smoke_test.py`).
 An interrupt is in-memory state in Strands, which means the harness's own two-place report of a
 turn's interrupts (the `tool_interrupt_event` and `AgentResult.interrupts`) can put the *same*
 call in front of the user twice, and nothing outlives the process that was parked on a prompt.
-`_resolve_interrupts` therefore stages each prompt in `~/.sierralab/state.db` before showing it
+`_resolve_interrupts` therefore stages each prompt in `~/.cordata/state.db` before showing it
 and closes the row with the answer — plus Laya's risk score and band, where the turn was scored —
 and appends both transitions to the append-only `events` table under kind `intervention`. A row
 is looked up before a second prompt is raised, and an identical one is replayed rather than
@@ -245,7 +245,7 @@ remote control".
 Discord is also a way to *talk* to an agent. `daemon/chat.py` is a minimal ACP client: a conversation is one
 `acp_server.py` child the daemon owns (`Session.owner`), driven with `initialize` / `session/new` /
 `session/prompt`, its reply read off the `session/update` frames the supervisor taps, its cost off the
-`_sierralab/turn` receipt the child sends when a turn ends. An owned session has no subscriber (nothing is
+`_cordata/turn` receipt the child sends when a turn ends. An owned session has no subscriber (nothing is
 backlogged for a reader that will never come), is never returned by a terminal's directory lookup, and is
 refused by the socket — one writer per stdin. Idle children are reaped and the conversation resumes from disk.
 
@@ -259,7 +259,7 @@ session (`acp_server._build_session`, no plugins): 29 tools, ~43 KB of schema, �
    tool), they were used in the last three turns, or the Laya route is `web`; the prompt carries one line saying
    what is hidden, and `enable_tools` loads one for the agent's next step. A plain turn: 43.6 KB → 15.1 KB (−65%).
 2. **One result is set aside, not thrown away** (`context.toolOutputChars`). Strands' `ContextOffloader` writes the whole
-   result to `~/.sierralab/offloaded/<session>/` and the model reads a head+tail preview plus a reference;
+   result to `~/.cordata/offloaded/<session>/` and the model reads a head+tail preview plus a reference;
    `retrieve_offloaded_content` returns the slice it asks for. `context_offload.HarnessOffloader` adds what the SDK's
    plugin lacks: a preview that keeps the *tail* (exit codes live there), a private store (0700/0600, written on the
    host, never routed through the agent's sandbox), credentials masked before anything is written, a veto list
@@ -400,10 +400,10 @@ exchange) is persisted by capturing the agent (`session_store.record`), because 
 **Going back.** One immutable snapshot (the SDK's time-travel feature) is written when each turn *starts*, labelled with the
 prompt about to run; the turn count lives in the agent's own state, so restoring a checkpoint restores the count with it. Three
 surfaces: the TUI's `/back [n | list | to <number>]`, Discord's `!back` (the same arguments), and over ACP
-`_sierralab/conversation/{list,rewind}` (`turns`, `index` or `to`). Going back restores messages, agent state and the
+`_cordata/conversation/{list,rewind}` (`turns`, `index` or `to`). Going back restores messages, agent state and the
 conversation manager's state; the agent forgets the turns and **the files are not touched** (`/undo` is for files — they are two
 undos, deliberately). The state it leaves is saved as a checkpoint first, so `/back to <number>` undoes a `/back`. It is refused
-while a turn is running, audited (`conversation_rewind`), announced to clients (`_sierralab/conversation`, so a transcript can
+while a turn is running, audited (`conversation_rewind`), announced to clients (`_cordata/conversation`, so a transcript can
 rewind too — the TUI drops the forgotten turns from the screen), and a chat that is asleep in Discord is woken first. A session
 keeps its newest 50 checkpoints, and cannot go back past where checkpoints began (a session migrated with history starts
 at that history). "Forget" means *the agent* forgets: the turns are still on disk in the checkpoints.
@@ -423,7 +423,7 @@ intended pattern *progressive disclosure*; `skill_search.py` makes "a little" me
 using two engines for what each is good at:
 
 - **Semantic search finds candidates.** Every skill (name, description, the opening of its instructions) is embedded
-  once with the harness's own local `multi-qa-MiniLM-L6-cos-v1` (cached by content hash in `~/.sierralab/skill_index.json`,
+  once with the harness's own local `multi-qa-MiniLM-L6-cos-v1` (cached by content hash in `~/.cordata/skill_index.json`,
   0600); a request is embedded and the nearest skills — cosine plus a 0.3-weighted keyword overlap — form a shortlist.
   On 27 natural requests against the shipped skills the right skill was in the nearest four 25/27 times by embeddings alone
   and 27/27 with the keyword boost. With no sentence-transformer it falls back to keywords.
@@ -458,7 +458,7 @@ GUI's *Reject & Isolate* field travels from the daemon in ACP's `_meta`), and on
 as a prohibition ("Do not … / Never … / Avoid …", with what to do instead when the data says), scoped to the whole
 project unless the note limits it, or `NONE`. The note is the strongest evidence (with no usable model reply, the note itself is the
 rule); a model-written rule must pass the same `textfilter` a learned skill does. Rules live in
-`~/.sierralab/preferences/<project>/rules.jsonl` (0600) and are mirrored into the knowledge graph as `USER_PREFERENCE` nodes
+`~/.cordata/preferences/<project>/rules.jsonl` (0600) and are mirrored into the knowledge graph as `USER_PREFERENCE` nodes
 joined to the project and the files they are about (when `kg.enabled`; LanceDB or Cognee). The same rule twice is
 counted, not duplicated; at most 40 live per project.
 
@@ -515,7 +515,7 @@ Four additions turn the loop from "fixes this failure" into "gets better at fail
   Code CLI left failing inside its own session is reproduced in a throwaway copy; if it really fails it is
   healed like a shell failure, and if it passes in a clean copy the model is told so instead of reporting done.
 - **Auto-resume (`selfHeal.autoResume`).** When a session loads with a turn a crash interrupted, the backend says so
-  (`_sierralab/resume`) and the TUI continues it on its own once idle — at most twice from the same checkpoint
+  (`_cordata/resume`) and the TUI continues it on its own once idle — at most twice from the same checkpoint
   (a turn that got further has a new checkpoint and a fresh count), never for a checkpoint over thirty minutes
   old, and never past an approval: a resumed turn asks exactly as the original did. `/resume-turn` always works.
 
@@ -533,6 +533,28 @@ automatic run: it spends coding-CLI quota and edits files, so the call goes thro
 It replaced the in-process sub-agent teams (`local_swarm`, `local_graph`, and the Laya team pipeline that ran a
 Strands `GraphBuilder` of copies of the session's model). Those were never used in a measured week of real turns,
 had no file access by design and no audit; the work they were for is now done in the coding CLIs built for it.
+
+## Goals, aside questions, compaction and the plan checklist (goal.py, session_extras.py, task_tool.py)
+
+Four conveniences that work in every front door because the backend owns them:
+
+* **`/goal <condition> [--check <command>] [--turns N]`** is parsed in `acp_server.prompt`, not in a client. It keeps the
+  agent working turn after turn until the condition holds. With `--check`, the *harness* runs the command after each
+  turn and the goal is met when it exits 0 — nothing is asked of a model. Without, a tool-less model reads what the turn
+  did (the commands run and what they printed) and answers met / not met with a reason; it is told the agent's own claim
+  of success is not evidence. Bounded (default 8 follow-up turns, never above 30), stopped by a cancel, a failed turn or
+  two judge failures in a row, and every step is announced as `_cordata/goal`. Approvals gate the continued turns
+  exactly as the first.
+* **`/btw <question>`** (`_cordata/btw`) answers from a copy of the conversation by a model that has **no tools**, and
+  writes nothing back — so whatever the conversation holds, including untrusted tool output, the aside cannot act on it.
+  It works while a turn is running.
+* **`/compact [focus]`** and the context gauge. After each turn the backend pushes `_cordata/context` (tokens used from
+  the provider's own usage report, the model's window, a percentage). `/compact` runs the same summarising conversation
+  manager that compresses automatically near 70 % of the window, on demand, keeping the last four messages, with a focus
+  if you name one; it is refused while a turn runs.
+* **`todo_write`** is the agent's visible plan: the whole checklist, one item `in_progress` at a time, at most twelve
+  items. It touches no file and runs no command, so it needs no approval; the client draws it above the prompt
+  (`_cordata/tasklist`).
 
 ## Remote agents over A2A (a2a_client_tool.py)
 
@@ -604,12 +626,12 @@ returned as tool results. Deliberate limits:
   command lines go in: that is `state.db`'s and `memory.traces`' job, and the graph is the
   structure over them.
 - **Event bus (`harness_events.py`)** — the producers (plugins, LSP, self-heal, sub-agent tiers)
-  emit thread-safe events; the ACP server forwards them as `_sierralab/<kind>` extension
+  emit thread-safe events; the ACP server forwards them as `_cordata/<kind>` extension
   notifications. Unknown extensions are ignorable per the ACP spec, so Zed is unaffected; the
   TUI renders them as progress bars.
 - **Observer (`daemon/observer.py`)** — daemon-only, off by default (`observer.enabled`). While
   nobody is attached it reads each known project with a fixed `git` argv list plus the tails of
-  `SIERRALAB_OBSERVER_LOGS`, hands that to a read-only agent (`observer_runner.py`, in a child
+  `CORDATA_OBSERVER_LOGS`, hands that to a read-only agent (`observer_runner.py`, in a child
   process because `agent_common` chdirs at import), and writes `nightly_briefing.md`. The agent
   holds `file_read` and nothing else — the daemon runs the commands, the model never
   chooses one — and the briefing is written by the parent from the child's stdout, so there is no

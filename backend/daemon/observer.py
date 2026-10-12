@@ -51,7 +51,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-logger = logging.getLogger("sierralab.observer")
+logger = logging.getLogger("cordata.observer")
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 
@@ -137,19 +137,19 @@ def _fence(body: str, info: str = "text") -> list[str]:
 
 
 def user_briefing_path() -> Path:
-    """Where the briefing lands. `SIERRALAB_OBSERVER_BRIEFING` overrides it, which
+    """Where the briefing lands. `CORDATA_OBSERVER_BRIEFING` overrides it, which
     is what the smoke test uses — the default is the user's private harness
     directory, beside `state.db`."""
-    override = os.environ.get("SIERRALAB_OBSERVER_BRIEFING")
+    override = os.environ.get("CORDATA_OBSERVER_BRIEFING")
     if override:
         return Path(override).expanduser()
-    here = os.environ.get("SIERRALAB_HOME")
-    base = Path(here).expanduser() if here else Path.home() / ".sierralab"
+    here = os.environ.get("CORDATA_HOME")
+    base = Path(here).expanduser() if here else Path.home() / ".cordata"
     return base / "nightly_briefing.md"
 
 
 def runner_command() -> list[str]:
-    override = os.environ.get("SIERRALAB_OBSERVER_RUNNER")
+    override = os.environ.get("CORDATA_OBSERVER_RUNNER")
     if override:
         return override.split()
     return [sys.executable, str(BACKEND_DIR / "daemon" / "observer_runner.py")]
@@ -178,7 +178,7 @@ def parse_quiet(text: str | None) -> tuple[int, int] | None:
 
     start, end = minutes(start_text), minutes(end_text)
     if start is None or end is None:
-        logger.warning("observer: cannot read SIERRALAB_OBSERVER_QUIET=%r; running all hours", text)
+        logger.warning("observer: cannot read CORDATA_OBSERVER_QUIET=%r; running all hours", text)
         return None
     return start, end
 
@@ -255,7 +255,7 @@ def git_evidence(project: str, *, timeout: float = COMMAND_TIMEOUT) -> dict[str,
 
 
 def log_evidence(paths: Iterable[Path]) -> dict[str, str]:
-    """The tail of each configured log file. `SIERRALAB_OBSERVER_LOGS` names them,
+    """The tail of each configured log file. `CORDATA_OBSERVER_LOGS` names them,
     separator-separated (it is an env var rather than a settings key on purpose:
     a path list in a settings file the agent can read is a path list an injected
     agent can point somewhere else)."""
@@ -319,7 +319,7 @@ class Observer:
 
     @staticmethod
     def _default_logs() -> list[Path]:
-        raw = os.environ.get("SIERRALAB_OBSERVER_LOGS") or ""
+        raw = os.environ.get("CORDATA_OBSERVER_LOGS") or ""
         return [Path(item) for item in raw.split(os.pathsep) if item.strip()]
 
     def enabled(self) -> bool:
@@ -333,7 +333,7 @@ class Observer:
         return min(max(value, 1.0), 1440.0)
 
     def quiet(self):
-        return parse_quiet(os.environ.get("SIERRALAB_OBSERVER_QUIET"))
+        return parse_quiet(os.environ.get("CORDATA_OBSERVER_QUIET"))
 
     # ------------------------------------------------------------- sources
 

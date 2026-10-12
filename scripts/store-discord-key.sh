@@ -28,7 +28,7 @@ if [[ -n "${DISCORD_BOT_TOKEN:-}" ]]; then
   warn "DISCORD_BOT_TOKEN is exported in this shell and OVERRIDES the Keychain — unset it (fish: set -e DISCORD_BOT_TOKEN) or it will keep being used."
 fi
 
-token="$(security find-generic-password -s cordata-discord-bot-token -w 2>/dev/null || security find-generic-password -s sierralab-discord-bot-token -w 2>/dev/null || true)"
+token="$(security find-generic-password -s cordata-discord-bot-token -w 2>/dev/null || true)"
 if [[ -z "$token" ]]; then
   err "stored, but reading it back returned nothing."
   exit 1

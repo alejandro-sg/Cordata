@@ -2,7 +2,7 @@
 //!
 //! The backend (`backend/lab.py`) sends a full snapshot of every pod on each
 //! change; this module holds the newest one and turns keystrokes into extension
-//! requests (`_sierralab/lab/*`) — it never mutates a pod itself. A pod only
+//! requests (`_cordata/lab/*`) — it never mutates a pod itself. A pod only
 //! changes status when the backend says it did, so what the screen shows is what
 //! the daemon's agent loop is actually doing, not what the client hoped happened.
 //!
@@ -30,12 +30,12 @@ pub const DIAL_STEP: f64 = 0.05;
 /// The backend clamps to this floor; stopping here avoids sending a no-op.
 pub const DIAL_MIN: f64 = 0.30;
 
-const ISOLATE: &str = "_sierralab/lab/isolate";
-const RELEASE: &str = "_sierralab/lab/release";
-const DIAL: &str = "_sierralab/lab/dial";
-const INJECT: &str = "_sierralab/lab/inject";
-const SELECT: &str = "_sierralab/lab/select";
-const STATE: &str = "_sierralab/lab/state";
+const ISOLATE: &str = "_cordata/lab/isolate";
+const RELEASE: &str = "_cordata/lab/release";
+const DIAL: &str = "_cordata/lab/dial";
+const INJECT: &str = "_cordata/lab/inject";
+const SELECT: &str = "_cordata/lab/select";
+const STATE: &str = "_cordata/lab/state";
 
 #[derive(Default)]
 pub struct LabView {
@@ -407,7 +407,7 @@ mod tests {
         let mut view = view();
         view.on_key(key(KeyCode::Right));
         let (method, params, tag) = call(view.on_key(key(KeyCode::Char('K'))));
-        assert_eq!(method, "_sierralab/lab/isolate");
+        assert_eq!(method, "_cordata/lab/isolate");
         assert_eq!(params, json!({"pod": "architect"}));
         assert_eq!(tag, "lab/isolate");
         assert_eq!(
@@ -416,7 +416,7 @@ mod tests {
             "the view never flips a pod itself — the backend says when it is isolated"
         );
         let (method, ..) = call(view.on_key(key(KeyCode::Char('k'))));
-        assert_eq!(method, "_sierralab/lab/isolate", "lower-case k works too");
+        assert_eq!(method, "_cordata/lab/isolate", "lower-case k works too");
     }
 
     #[test]
@@ -429,7 +429,7 @@ mod tests {
             ..acp_core::LabHitl::default()
         }];
         let (method, params, _) = call(view.estop_for_pending());
-        assert_eq!(method, "_sierralab/lab/isolate");
+        assert_eq!(method, "_cordata/lab/isolate");
         assert_eq!(
             params,
             json!({"pod": "debugger"}),
@@ -452,7 +452,7 @@ mod tests {
         assert!(view.on_key(key(KeyCode::Char('K'))).is_none());
         assert!(view.notice.as_ref().unwrap().0.contains("already isolated"));
         let (method, params, _) = call(view.on_key(key(KeyCode::Char('R'))));
-        assert_eq!(method, "_sierralab/lab/release");
+        assert_eq!(method, "_cordata/lab/release");
         assert_eq!(params, json!({"pod": "orchestrator"}));
         view.state.pods[1].isolated = false;
         view.on_key(key(KeyCode::Right));
@@ -466,7 +466,7 @@ mod tests {
     fn the_dial_steps_by_a_twentieth_and_only_tightens() {
         let mut view = view();
         let (method, params, _) = call(view.on_key(key(KeyCode::Char('['))));
-        assert_eq!(method, "_sierralab/lab/dial");
+        assert_eq!(method, "_cordata/lab/dial");
         assert_eq!(params, json!({"pod": "orchestrator", "value": 0.75}));
         assert!(
             view.on_key(key(KeyCode::Char(']'))).is_none(),
@@ -493,7 +493,7 @@ mod tests {
             assert!(view.on_key(key(KeyCode::Char(c))).is_none());
         }
         let (method, params, tag) = call(view.on_key(key(KeyCode::Enter)));
-        assert_eq!(method, "_sierralab/lab/inject");
+        assert_eq!(method, "_cordata/lab/inject");
         assert_eq!(
             params,
             json!({"pod": "debugger", "text": "stop using sudo"})
@@ -525,7 +525,7 @@ mod tests {
     fn enter_inspects_and_esc_steps_back_out_before_closing() {
         let mut view = view();
         let (method, params, _) = call(view.on_key(key(KeyCode::Enter)));
-        assert_eq!(method, "_sierralab/lab/select");
+        assert_eq!(method, "_cordata/lab/select");
         assert_eq!(params, json!({"pod": "orchestrator"}));
         assert!(view.inspecting);
         let (_, params, _) = call(view.on_key(key(KeyCode::Right)));
@@ -577,7 +577,7 @@ mod tests {
         let (method, _, tag) = call(view.toggle());
         assert_eq!(
             (method.as_str(), tag.as_str()),
-            ("_sierralab/lab/state", "lab/state")
+            ("_cordata/lab/state", "lab/state")
         );
         assert!(view.open);
         let mut seen = LabView {

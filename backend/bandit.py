@@ -163,7 +163,7 @@ def target_kind(target: Any) -> str:
 
 
 def home() -> Path:
-    return Path(os.environ.get("SIERRALAB_HOME") or Path.home() / ".sierralab") / "bandit"
+    return Path(os.environ.get("CORDATA_HOME") or Path.home() / ".cordata") / "bandit"
 
 
 def project_key(project: str | os.PathLike | None) -> str:

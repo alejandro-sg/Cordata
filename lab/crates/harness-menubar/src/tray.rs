@@ -98,7 +98,7 @@ impl Tray {
         // time, and templating is what keeps it legible on a light menu bar and a dark one.
         let icon = TrayIconBuilder::new()
             .with_icon_templated(icon_for(TrayState::Idle)?)
-            .with_tooltip("sierralab")
+            .with_tooltip("cordata")
             .build()
             .map_err(|error| format!("the status item could not be created: {error}"))?;
         Ok(Self { icon, shown: Some(TrayState::Idle) })
@@ -108,9 +108,9 @@ impl Tray {
     /// the menu bar flicker for no reason, so the last state is remembered here.
     pub fn show(&mut self, state: TrayState, waiting: usize) -> Result<bool, String> {
         let tooltip = if waiting > 0 {
-            format!("sierralab — {} ({} waiting)", state.label(), waiting)
+            format!("cordata — {} ({} waiting)", state.label(), waiting)
         } else {
-            format!("sierralab — {}", state.label())
+            format!("cordata — {}", state.label())
         };
         let changed = self.shown != Some(state);
         if changed {

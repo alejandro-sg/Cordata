@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Build the menu-bar deck as a real macOS app: `Sierralab.app`, a menu-bar-only bundle (no Dock
+# Build the menu-bar deck as a real macOS app: `Cordata.app`, a menu-bar-only bundle (no Dock
 # icon) with its own identity, so the Accessibility and Screen Recording grants a person gives it
 # belong to *this app* rather than to whichever terminal launched a bare binary.
 #
-#   scripts/package-menubar.sh               # build + bundle + sign into lab/target/Sierralab.app
+#   scripts/package-menubar.sh               # build + bundle + sign into lab/target/Cordata.app
 #   scripts/package-menubar.sh --install     # …and copy it to ~/Applications
-#   SIGN_IDENTITY="Sierralab Local" scripts/package-menubar.sh --install
+#   SIGN_IDENTITY="Cordata Local" scripts/package-menubar.sh --install
 #
 # Signing decides whether a grant survives a rebuild, because macOS keys a grant to the app's
 # designated requirement:
@@ -17,8 +17,8 @@
 #     keychain, so this script never makes one for you.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-BUNDLE_ID="dev.sierralab.menubar"
-APP_NAME="Sierralab"
+BUNDLE_ID="dev.cordata.menubar"
+APP_NAME="Cordata"
 INSTALL=0
 for arg in "$@"; do
   case "$arg" in
@@ -56,8 +56,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
-  <key>NSScreenCaptureUsageDescription</key><string>Sierralab captures the frontmost window only when you click Screenshot in the deck, and only for apps you allowed.</string>
-  <key>NSAppleEventsUsageDescription</key><string>Sierralab does not send Apple Events.</string>
+  <key>NSScreenCaptureUsageDescription</key><string>Cordata captures the frontmost window only when you click Screenshot in the deck, and only for apps you allowed.</string>
+  <key>NSAppleEventsUsageDescription</key><string>Cordata does not send Apple Events.</string>
 </dict>
 </plist>
 PLIST

@@ -1,10 +1,16 @@
 mod app;
 mod commands;
 mod config_ui;
+mod custom;
+mod extras;
 mod input;
 mod lab;
+mod mentions;
+mod menu;
 mod settings;
+mod shell;
 mod term;
+mod theme;
 mod ui;
 
 use std::io;
@@ -23,7 +29,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use tokio::sync::mpsc;
 
-use crate::app::{App, Effect, Message, SwitchTarget, TabBadge};
+use crate::app::{App, Effect, LocalEvent, Message, SwitchTarget, TabBadge};
 use crate::term::InlineTerm;
 use crate::ui::transcript;
 
@@ -70,7 +76,7 @@ struct Args {
     #[arg(long, value_name = "HANDLE")]
     conversation: Option<String>,
 
-    /// Daemon URL, overriding the one built from ~/.sierralab/daemon.json
+    /// Daemon URL, overriding the one built from ~/.cordata/daemon.json
     /// (which supplies the port and the token). Only meaningful with
     /// `--transport ws`.
     #[arg(long, value_name = "URL")]
@@ -109,6 +115,8 @@ struct Workspace {
     transport: BackendTransport,
     debug_log: Option<PathBuf>,
     events: mpsc::UnboundedSender<(usize, AppEvent)>,
+    /// Results of work done on this side of the wire (`!commands`), tagged with the slot that asked.
+    local: mpsc::UnboundedSender<(usize, LocalEvent)>,
 }
 
 impl Workspace {
@@ -308,6 +316,7 @@ async fn main() -> Result<()> {
     };
 
     let (tx, rx) = mpsc::unbounded_channel();
+    let (local_tx, local_rx) = mpsc::unbounded_channel();
     let mut workspace = Workspace {
         slots: Vec::new(),
         active: 0,
@@ -317,21 +326,22 @@ async fn main() -> Result<()> {
         transport,
         debug_log: args.debug_log,
         events: tx,
+        local: local_tx,
     };
     workspace.spawn(args.resume, args.continue_latest, args.prompt);
 
     install_panic_hook();
     let guard = TerminalGuard::enter()?;
     let mut screen = InlineTerm::new(io::stdout());
-    let result = run(&mut workspace, &mut screen, rx).await;
+    let result = run(&mut workspace, &mut screen, rx, local_rx).await;
     let _ = screen.clear_live();
     drop(guard);
     for slot in &workspace.slots {
         if let Some(info) = &slot.app.session {
             match info.transport.strip_prefix("hub · ") {
                 // A hub conversation is continued by handle, from here or any other door.
-                Some(handle) => println!("continue this conversation anywhere:  acp-tui --conversation {handle}  (or /open {handle})"),
-                None => println!("resume this session:  acp-tui --resume {}", info.session_id),
+                Some(handle) => println!("continue this conversation anywhere:  cordata --conversation {handle}  (or /open {handle})"),
+                None => println!("resume this session:  cordata --resume {}", info.session_id),
             }
         }
     }
@@ -416,6 +426,7 @@ async fn run(
     workspace: &mut Workspace,
     screen: &mut InlineTerm<io::Stdout>,
     mut events: mpsc::UnboundedReceiver<(usize, AppEvent)>,
+    mut local: mpsc::UnboundedReceiver<(usize, LocalEvent)>,
 ) -> Result<()> {
     let mut keys = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_millis(100));
@@ -442,6 +453,11 @@ async fn run(
                     workspace.route(number, event);
                 }
             }
+            Some((number, event)) = local.recv() => {
+                if let Some(slot) = workspace.slots.iter_mut().find(|slot| slot.number == number) {
+                    slot.app.on_local(event);
+                }
+            }
             _ = tick.tick() => {
                 for slot in &mut workspace.slots {
                     slot.app.tick();
@@ -454,6 +470,15 @@ async fn run(
         }
         if let Some(effect) = workspace.app().take_initial_prompt() {
             effects.push(effect);
+        }
+        if let Some(effect) = workspace.app().take_queued() {
+            effects.push(effect);
+        }
+        if std::mem::take(&mut workspace.app().attention) && std::env::var_os("CORDATA_NOTIFY").is_none_or(|v| v != "off") {
+            // A terminal bell: the dock icon bounces / the tab lights up, in the terminals that do either.
+            let mut out = io::stdout();
+            let _ = io::Write::write_all(&mut out, b"\x07");
+            let _ = io::Write::flush(&mut out);
         }
         for effect in effects {
             let outcome = match effect {
@@ -546,6 +571,19 @@ async fn run(
                     }
                     Ok(())
                 }
+                Effect::Shell { command, share, as_diff } => {
+                    let slot = &workspace.slots[workspace.active];
+                    let (number, cwd, tx) = (slot.number, slot.app.project_dir(), workspace.local.clone());
+                    tokio::task::spawn_blocking(move || {
+                        let outcome = shell::run(&command, &cwd, shell::TIMEOUT);
+                        let _ = tx.send((number, LocalEvent::ShellDone { command, outcome, share, as_diff }));
+                    });
+                    Ok(())
+                }
+                Effect::Copy(text) => {
+                    copy_to_clipboard(&text);
+                    Ok(())
+                }
                 Effect::SendPrompt(text) => with_handle(workspace, |h| h.send_prompt(text)),
                 Effect::Cancel => with_handle(workspace, SessionHandle::cancel),
                 Effect::SetMode(mode) => with_handle(workspace, |h| h.set_mode(mode)),
@@ -575,5 +613,52 @@ fn with_handle(
     match workspace.handle() {
         Some(handle) => f(handle),
         None => Err(acp_core::Error::SessionClosed),
+    }
+}
+
+/// The system clipboard: `pbcopy` on macOS, `wl-copy` / `xclip` elsewhere, and the terminal's own OSC 52 when none of
+/// those exist (works over SSH in most modern terminals).
+fn copy_to_clipboard(text: &str) {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    for (program, args) in [("pbcopy", vec![]), ("wl-copy", vec![]), ("xclip", vec!["-selection", "clipboard"])] {
+        if let Ok(mut child) = Command::new(program).args(&args).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(text.as_bytes());
+            }
+            let _ = child.wait();
+            return;
+        }
+    }
+    let encoded = base64_encode(text.as_bytes());
+    let mut out = io::stdout();
+    let _ = write!(out, "\x1b]52;c;{encoded}\x07");
+    let _ = out.flush();
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = (u32::from(chunk[0]) << 16) | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8) | u32::from(*chunk.get(2).unwrap_or(&0));
+        out.push(TABLE[(n >> 18) as usize & 63] as char);
+        out.push(TABLE[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { TABLE[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { TABLE[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::base64_encode;
+
+    #[test]
+    fn base64_matches_the_standard_vectors() {
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
     }
 }

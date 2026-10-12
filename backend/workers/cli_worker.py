@@ -133,6 +133,8 @@ class CliWorker(Worker):
     binary_name = ""
     #: True when the CLI enforces a JSON Schema itself (``--json-schema``); otherwise the prompt asks for JSON.
     native_schema = True
+    #: False when the CLI refuses every shell command in headless mode (agy), so the prompt says so.
+    can_run_commands = True
 
     def __init__(
         self,
@@ -163,12 +165,6 @@ class CliWorker(Worker):
         import shutil
 
         env_val = (os.environ.get(self.binary_env) or "").strip()
-        if not env_val and self.binary_env.startswith("SIERRALAB_"):
-            alt = "CORDATA_" + self.binary_env.removeprefix("SIERRALAB_")
-            env_val = (os.environ.get(alt) or "").strip()
-        elif not env_val and self.binary_env.startswith("CORDATA_"):
-            alt = "SIERRALAB_" + self.binary_env.removeprefix("CORDATA_")
-            env_val = (os.environ.get(alt) or "").strip()
         candidate = self._binary or env_val or shutil.which(self.binary_name)
         if not candidate:
             fallback = Path.home() / ".local" / "bin" / self.binary_name
@@ -235,7 +231,7 @@ class CliWorker(Worker):
         return None
 
     def _egress(self) -> tuple[dict[str, str] | None, str]:
-        if (os.environ.get("CORDATA_VAULT_DIRECT") or os.environ.get("SIERRALAB_VAULT_DIRECT")) in ("1", "true", "yes"):
+        if (os.environ.get("CORDATA_VAULT_DIRECT")) in ("1", "true", "yes"):
             return {}, ""
         try:
             status = self._vault()
@@ -295,7 +291,7 @@ class CliWorker(Worker):
         root = os.path.realpath(task.cwd)
         writable = task.writable_scope()
         sandbox = scope_mod.ScopedSandbox(root, writable, seatbelt=self.seatbelt)
-        prompt = prompting.compose(task, native_schema=self.native_schema)
+        prompt = prompting.compose(task, native_schema=self.native_schema, can_run_commands=self.can_run_commands)
         argv = self.build_argv(binary, task, resume)
         stdin = self.build_stdin(task, prompt)
         parser = self.new_parser(task)
@@ -368,6 +364,11 @@ class CliWorker(Worker):
             problem = schema_problem(structured, task.json_schema)
             if problem:
                 status, error = "failed", f"the answer does not match the schema: {problem}"
+        if status == "completed" and task.writable_scope() and not changed and parser.denied:
+            # The CLI said "success", changed nothing, and was refused something it asked for: it gave up, not finished.
+            # (A step with nothing to change is fine — it just was not refused anything.)
+            status = "failed"
+            error = f"the worker made no change and was refused {', '.join(parser.denied[:3])}: it stopped instead of finishing the step"
         out_of_scope = scope_mod.out_of_scope(changed, task.writable_scope(), root)
         return WorkerResult(
             worker_id=self.worker_id,

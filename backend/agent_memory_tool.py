@@ -36,7 +36,7 @@ from settings import (
     QDRANT_PORT,
 )
 
-_COLLECTION = "sierralab_agent_memory"
+_COLLECTION = "cordata_agent_memory"
 _MODEL_NAME = "multi-qa-MiniLM-L6-cos-v1"  # 384-dim, local, no download server needed after first fetch
 _DEFAULT_KIND = "fact"
 _VALID_KINDS = {"fact", "lesson", "strategy", "preference"}
@@ -179,11 +179,11 @@ class MemoryStore:
     def _ensure(self) -> None:
         if self._ensured:
             return
-        if not _client.collection_exists(self._collection):
+        if not _get_client().collection_exists(self._collection):
             from qdrant_client.models import Distance, VectorParams
-            _client.create_collection(
+            _get_client().create_collection(
                 self._collection,
-                vectors_config=VectorParams(size=_embedder.get_embedding_dimension(), distance=Distance.COSINE),
+                vectors_config=VectorParams(size=_get_embedder().get_embedding_dimension(), distance=Distance.COSINE),
             )
         self._backfill_legacy_payloads()
         self._ensured = True
@@ -194,12 +194,12 @@ class MemoryStore:
         Without this, entries stored before this change would silently
         disappear from the new active-only default filters.
         """
-        records, _ = _client.scroll(self._collection, scroll_filter=_MISSING_STATUS_FILTER, limit=1000, with_payload=False)
+        records, _ = _get_client().scroll(self._collection, scroll_filter=_get_missing_status_filter(), limit=1000, with_payload=False)
         if not records:
             return
         now = time.time()
         for record in records:
-            _client.set_payload(
+            _get_client().set_payload(
                 self._collection,
                 payload={"kind": _DEFAULT_KIND, "status": "active", "created_at": now, "updated_at": now},
                 points=[record.id],
@@ -211,14 +211,14 @@ class MemoryStore:
     def store(self, content: str, kind: str = _DEFAULT_KIND) -> str:
         self._ensure()
         kind = kind if kind in _VALID_KINDS else _DEFAULT_KIND
-        vector = _embedder.encode(content).tolist()
+        vector = _get_embedder().encode(content).tolist()
 
-        nearest = _client.query_points(self._collection, query=vector, query_filter=_ACTIVE_FILTER, limit=1).points
+        nearest = _get_client().query_points(self._collection, query=vector, query_filter=_get_active_filter(), limit=1).points
         now = time.time()
 
         if nearest and nearest[0].score >= MEMORY_DUPLICATE_THRESHOLD:
             existing = nearest[0]
-            _client.set_payload(self._collection, payload={"updated_at": now}, points=[existing.id])
+            _get_client().set_payload(self._collection, payload={"updated_at": now}, points=[existing.id])
             return f"Already known — refreshed existing entry [{existing.id}]: {existing.payload.get('text', '')}"
 
         new_id = str(uuid.uuid4())
@@ -235,10 +235,10 @@ class MemoryStore:
             "supersedes": supersedes,
             "superseded_by": None,
         }
-        _client.upsert(self._collection, points=[{"id": new_id, "vector": vector, "payload": payload}])
+        _get_client().upsert(self._collection, points=[{"id": new_id, "vector": vector, "payload": payload}])
 
         if supersedes:
-            _client.set_payload(
+            _get_client().set_payload(
                 self._collection,
                 payload={"status": "deprecated", "superseded_by": new_id, "updated_at": now},
                 points=[supersedes],
@@ -253,12 +253,12 @@ class MemoryStore:
     @_memory_op(is_write=True)
     def update(self, memory_id: str, content: str) -> str:
         self._ensure()
-        records = _client.retrieve(self._collection, ids=[memory_id])
+        records = _get_client().retrieve(self._collection, ids=[memory_id])
         if not records:
             return f'Error: no memory found with id "{memory_id}".'
-        vector = _embedder.encode(content).tolist()
+        vector = _get_embedder().encode(content).tolist()
         now = time.time()
-        _client.upsert(
+        _get_client().upsert(
             self._collection,
             points=[{
                 "id": memory_id,
@@ -271,10 +271,10 @@ class MemoryStore:
     @_memory_op(is_write=True)
     def deprecate(self, memory_id: str) -> str:
         self._ensure()
-        records = _client.retrieve(self._collection, ids=[memory_id])
+        records = _get_client().retrieve(self._collection, ids=[memory_id])
         if not records:
             return f'Error: no memory found with id "{memory_id}".'
-        _client.set_payload(
+        _get_client().set_payload(
             self._collection, payload={"status": "deprecated", "updated_at": time.time()}, points=[memory_id]
         )
         return f"Deprecated memory [{memory_id}]"
@@ -282,7 +282,7 @@ class MemoryStore:
     @_memory_op(is_write=True)
     def delete(self, memory_id: str) -> str:
         self._ensure()
-        _client.delete(self._collection, points_selector=[memory_id])
+        _get_client().delete(self._collection, points_selector=[memory_id])
         return f"Deleted memory [{memory_id}]"
 
     # -- reads ------------------------------------------------------------
@@ -290,9 +290,9 @@ class MemoryStore:
     @_memory_op(is_write=False)
     def retrieve(self, query: str, limit: int = 5, include_deprecated: bool = False) -> str:
         self._ensure()
-        vector = _embedder.encode(query).tolist()
-        query_filter = None if include_deprecated else _ACTIVE_FILTER
-        result = _client.query_points(self._collection, query=vector, query_filter=query_filter, limit=limit)
+        vector = _get_embedder().encode(query).tolist()
+        query_filter = None if include_deprecated else _get_active_filter()
+        result = _get_client().query_points(self._collection, query=vector, query_filter=query_filter, limit=limit)
         try:
             import lab
 
@@ -310,8 +310,8 @@ class MemoryStore:
     @_memory_op(is_write=False)
     def list(self, limit: int = 5, include_deprecated: bool = False) -> str:
         self._ensure()
-        scroll_filter = None if include_deprecated else _ACTIVE_FILTER
-        records, _ = _client.scroll(self._collection, scroll_filter=scroll_filter, limit=limit)
+        scroll_filter = None if include_deprecated else _get_active_filter()
+        records, _ = _get_client().scroll(self._collection, scroll_filter=scroll_filter, limit=limit)
         if not records:
             return "No memories stored yet."
         return "\n".join(_format(str(r.id), r.payload) for r in records)
@@ -327,7 +327,7 @@ class MemoryStore:
         invoked explicitly (by the agent or a human) as periodic maintenance.
         """
         self._ensure()
-        records, _ = _client.scroll(self._collection, scroll_filter=_ACTIVE_FILTER, limit=10000, with_vectors=True)
+        records, _ = _get_client().scroll(self._collection, scroll_filter=_get_active_filter(), limit=10000, with_vectors=True)
         records.sort(key=lambda r: r.payload.get("created_at", 0))
 
         kept: list = []
@@ -343,7 +343,7 @@ class MemoryStore:
                     duplicate_of = keeper
                     break
             if duplicate_of is not None:
-                _client.set_payload(
+                _get_client().set_payload(
                     self._collection,
                     payload={"status": "deprecated", "superseded_by": str(duplicate_of.id), "updated_at": now},
                     points=[record.id],
@@ -357,41 +357,41 @@ class MemoryStore:
         return f"Curated memory: merged {merged} duplicate(s), {len(kept)} active entries remain."
 
     def _enforce_capacity(self) -> None:
-        active_count = _client.count(self._collection, count_filter=_ACTIVE_FILTER).count
+        active_count = _get_client().count(self._collection, count_filter=_get_active_filter()).count
         overflow = active_count - MEMORY_MAX_ACTIVE_ENTRIES
         if overflow <= 0:
             return
         from qdrant_client.models import Direction, OrderBy
-        records, _ = _client.scroll(
+        records, _ = _get_client().scroll(
             self._collection,
-            scroll_filter=_ACTIVE_FILTER,
+            scroll_filter=_get_active_filter(),
             limit=overflow,
             order_by=OrderBy(key="updated_at", direction=Direction.ASC),
             with_payload=False,
         )
         if records:
             now = time.time()
-            _client.set_payload(
+            _get_client().set_payload(
                 self._collection,
                 payload={"status": "deprecated", "updated_at": now},
                 points=[r.id for r in records],
             )
 
     def _purge_stale_deprecated(self) -> None:
-        deprecated_count = _client.count(self._collection, count_filter=_DEPRECATED_FILTER).count
+        deprecated_count = _get_client().count(self._collection, count_filter=_get_deprecated_filter()).count
         overflow = deprecated_count - (MEMORY_MAX_ACTIVE_ENTRIES * 2)
         if overflow <= 0:
             return
         from qdrant_client.models import Direction, OrderBy
-        records, _ = _client.scroll(
+        records, _ = _get_client().scroll(
             self._collection,
-            scroll_filter=_DEPRECATED_FILTER,
+            scroll_filter=_get_deprecated_filter(),
             limit=overflow,
             order_by=OrderBy(key="updated_at", direction=Direction.ASC),
             with_payload=False,
         )
         if records:
-            _client.delete(self._collection, points_selector=[r.id for r in records])
+            _get_client().delete(self._collection, points_selector=[r.id for r in records])
 
 
 _store = MemoryStore(_COLLECTION)

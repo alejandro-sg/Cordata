@@ -364,7 +364,7 @@ def test_acp_forwards_events_as_extension_notifications() -> None:
             sent.append((method, params))
 
     async def main() -> None:
-        server = acp_server.SierraLabAcpAgent()
+        server = acp_server.CordataAcpAgent()
         server._conn = Conn()
         notify = server._laya_notifier("sess-1")
         # from a worker thread, as the classifier's done-callback does
@@ -377,7 +377,7 @@ def test_acp_forwards_events_as_extension_notifications() -> None:
             await asyncio.sleep(0.01)
 
     asyncio.run(main())
-    check(sent == [("sierralab/laya", {"sessionId": "sess-1", "event": "decision", "route": "chat"})], "events become `_sierralab/laya` extension notifications carrying the session id, even from another thread")
+    check(sent == [("cordata/laya", {"sessionId": "sess-1", "event": "decision", "route": "chat"})], "events become `_cordata/laya` extension notifications carrying the session id, even from another thread")
 
 
 def test_tier_suggestion() -> None:

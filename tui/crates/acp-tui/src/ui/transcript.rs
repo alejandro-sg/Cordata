@@ -34,6 +34,7 @@ pub enum Kind {
     Tool,
     Divider,
     Info,
+    Diff,
     Error,
     Help,
     Welcome,
@@ -51,6 +52,7 @@ impl Message {
             Message::Tool(_) => Kind::Tool,
             Message::Divider(_) => Kind::Divider,
             Message::Info(_) => Kind::Info,
+            Message::Diff(_) => Kind::Diff,
             Message::Error(_) => Kind::Error,
             Message::Help => Kind::Help,
             Message::Heal(_) => Kind::Heal,
@@ -124,6 +126,28 @@ fn thought_lines(text: &str, width: usize, expanded: bool, streaming: bool) -> V
     vec![Line::styled(format!("· reasoned ({words} words)"), dim)]
 }
 
+/// A unified diff with the usual colours: additions green, removals red, hunk headers cyan, file headers bold.
+fn diff_lines(text: &str, width: usize) -> Vec<Line<'static>> {
+    text.lines()
+        .map(|line| {
+            let style = if line.starts_with("+++") || line.starts_with("---") || line.starts_with("diff --git") {
+                Style::new().add_modifier(Modifier::BOLD)
+            } else if line.starts_with('+') {
+                Style::new().fg(Color::Green)
+            } else if line.starts_with('-') {
+                Style::new().fg(Color::Red)
+            } else if line.starts_with("@@") {
+                Style::new().fg(Color::Cyan)
+            } else if line.starts_with(' ') {
+                Style::new().fg(Color::Gray)
+            } else {
+                Style::new().fg(Color::DarkGray)
+            };
+            Line::styled(super::text::truncate(&format!("  {line}"), width), style)
+        })
+        .collect()
+}
+
 /// One message as lines, exactly as it would be written (no spacing).
 fn message_lines(app: &App, index: usize, width: u16) -> Vec<Line<'static>> {
     let w = width as usize;
@@ -133,13 +157,15 @@ fn message_lines(app: &App, index: usize, width: u16) -> Vec<Line<'static>> {
         Message::User(text) => prefixed(
             text,
             w,
-            "› ",
+            "❯ ",
             "  ",
             Style::new().add_modifier(Modifier::BOLD),
             Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
         ),
         Message::Agent(text) => markdown::render(text, w),
         Message::Thought(text) => thought_lines(text, w, app.thoughts_expanded, streaming),
+        // The checklist panel above the prompt is how this tool is shown.
+        Message::Tool(card) if card.name == "todo_write" => Vec::new(),
         Message::Tool(card) => tool_card::render_in(
             card,
             width,
@@ -165,6 +191,7 @@ fn message_lines(app: &App, index: usize, width: u16) -> Vec<Line<'static>> {
             Style::new().fg(Color::Gray),
             Style::new().fg(Color::Cyan),
         ),
+        Message::Diff(text) => diff_lines(text, w),
         Message::Error(text) => prefixed(
             text,
             w,

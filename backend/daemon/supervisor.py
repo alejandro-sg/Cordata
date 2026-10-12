@@ -38,7 +38,7 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent
 
 def default_entrypoint() -> list[str]:
     """How to start a session process. Overridable for tests."""
-    override = os.environ.get("SIERRALAB_ACP_ENTRYPOINT")
+    override = os.environ.get("CORDATA_ACP_ENTRYPOINT")
     if override:
         return override.split()
     return [sys.executable, str(BACKEND_DIR / "acp_server.py")]
@@ -51,7 +51,7 @@ class PendingPermission:
     Held so a second front door — the GUI's containment modal, over gRPC — can answer it.
     The daemon still parses nothing it does not need: the JSON-RPC id (to answer with),
     the options the child *offered* (the only ids an answer may name), the tool call, and
-    the ``_meta.sierralab`` view the child attached (pod, risk, the exact command or diff)."""
+    the ``_meta.cordata`` view the child attached (pod, risk, the exact command or diff)."""
 
     session_id: str
     request_id: Any
@@ -89,7 +89,7 @@ class Session:
     #: already dealt with.
     backlog: list[str] = field(default_factory=list)
     exited: bool = False
-    #: The newest `_sierralab/lab` state the child sent (the Experimental Lab's
+    #: The newest `_cordata/lab` state the child sent (the Experimental Lab's
     #: pods, links, threat and HITL rows), kept so a remote canvas that attaches
     #: late is drawn from the current state rather than waiting for the next change.
     lab: dict[str, Any] | None = None
@@ -186,7 +186,7 @@ class Supervisor:
 
     #: A frame is only parsed for the Lab when it carries this method name — the
     #: other 99.9% of lines (token deltas, tool updates) cost one substring test.
-    LAB_MARK = '"_sierralab/lab"'
+    LAB_MARK = '"_cordata/lab"'
     LAB_QUEUE_LIMIT = 64
 
     def watch_lab(self) -> asyncio.Queue[dict[str, Any]]:
@@ -211,7 +211,7 @@ class Supervisor:
         try:
             message = json.loads(line)
             params = message.get("params") if isinstance(message, dict) else None
-            if not isinstance(params, dict) or message.get("method") != "_sierralab/lab":
+            if not isinstance(params, dict) or message.get("method") != "_cordata/lab":
                 return
             session = self._sessions.get(session_id)
             if session is None:
@@ -234,12 +234,12 @@ class Supervisor:
     # ------------------------------------------------------- listeners / taps
 
     PERMISSION_MARK = '"session/request_permission"'
-    DIFF_MARK = '"_sierralab/diff"'
-    MEMORY_MARK = '"_sierralab/memory"'
-    TASK_MARK = '"_sierralab/task"'
-    LAYA_MARK = '"_sierralab/laya"'
+    DIFF_MARK = '"_cordata/diff"'
+    MEMORY_MARK = '"_cordata/memory"'
+    TASK_MARK = '"_cordata/task"'
+    LAYA_MARK = '"_cordata/laya"'
     UPDATE_MARK = '"session/update"'
-    TURN_MARK = '"_sierralab/turn"'
+    TURN_MARK = '"_cordata/turn"'
     DAEMON_ID_PREFIX = "daemon-"
     MAX_DIFFS = 8
     MAX_ANSWERED = 256
@@ -272,7 +272,7 @@ class Supervisor:
             if session is None or not isinstance(params, dict):
                 return
             tool_call = params.get("toolCall") or {}
-            meta = (params.get("_meta") or {}).get("sierralab") or {}
+            meta = (params.get("_meta") or {}).get("cordata") or {}
             pending = PendingPermission(
                 session_id=session_id,
                 request_id=message["id"],
@@ -292,7 +292,7 @@ class Supervisor:
         try:
             message = json.loads(line)
             params = message.get("params") if isinstance(message, dict) else None
-            if not isinstance(params, dict) or message.get("method") != "_sierralab/diff" or not params.get("id"):
+            if not isinstance(params, dict) or message.get("method") != "_cordata/diff" or not params.get("id"):
                 return
             entry = {**params, "session_id": session_id, "ts": time.time()}
             self.diffs[str(params["id"])] = entry
@@ -310,7 +310,7 @@ class Supervisor:
         try:
             message = json.loads(line)
             params = message.get("params") if isinstance(message, dict) else None
-            if isinstance(params, dict) and message.get("method") == "_sierralab/task":
+            if isinstance(params, dict) and message.get("method") == "_cordata/task":
                 self._notify("task", {**params, "session_id": session_id})
         except Exception:
             logger.debug("daemon: task tap failed for %s", session_id, exc_info=True)
@@ -321,7 +321,7 @@ class Supervisor:
         try:
             message = json.loads(line)
             params = message.get("params") if isinstance(message, dict) else None
-            if isinstance(params, dict) and message.get("method") == "_sierralab/laya":
+            if isinstance(params, dict) and message.get("method") == "_cordata/laya":
                 self._notify("laya", {**params, "session_id": session_id})
         except Exception:
             logger.debug("daemon: laya tap failed for %s", session_id, exc_info=True)
@@ -339,11 +339,11 @@ class Supervisor:
             logger.debug("daemon: update tap failed for %s", session_id, exc_info=True)
 
     def _tap_turn(self, session_id: str, line: str) -> None:
-        """What a finished turn cost (``_sierralab/turn``: seconds, tool calls, tokens in and out)."""
+        """What a finished turn cost (``_cordata/turn``: seconds, tool calls, tokens in and out)."""
         try:
             message = json.loads(line)
             params = message.get("params") if isinstance(message, dict) else None
-            if isinstance(params, dict) and message.get("method") == "_sierralab/turn":
+            if isinstance(params, dict) and message.get("method") == "_cordata/turn":
                 self._notify("turn", {**params, "session_id": session_id})
         except Exception:
             logger.debug("daemon: turn tap failed for %s", session_id, exc_info=True)
@@ -352,7 +352,7 @@ class Supervisor:
         try:
             message = json.loads(line)
             params = message.get("params") if isinstance(message, dict) else None
-            if isinstance(params, dict) and message.get("method") == "_sierralab/memory":
+            if isinstance(params, dict) and message.get("method") == "_cordata/memory":
                 self._notify("memory", {**params, "session_id": session_id})
         except Exception:
             logger.debug("daemon: memory tap failed for %s", session_id, exc_info=True)
@@ -454,7 +454,7 @@ class Supervisor:
                 # same JSON-RPC response — so the door is named here, in ACP's `_meta` slot, and
                 # the child puts it on the intervention ledger. Without this a decision made on a
                 # phone reads as a person at the GUI, which is an audit trail nobody can trust.
-                "_meta": {"sierralab": {"decidedBy": decided_by, **({"note": note.strip()[:500]} if note and note.strip() else {})}},
+                "_meta": {"cordata": {"decidedBy": decided_by, **({"note": note.strip()[:500]} if note and note.strip() else {})}},
             },
         }
         if not await self.write_raw(session_id, json.dumps(response)):
@@ -467,7 +467,7 @@ class Supervisor:
             json.dumps(
                 {
                     "jsonrpc": "2.0",
-                    "method": "_sierralab/resolved",
+                    "method": "_cordata/resolved",
                     "params": {"sessionId": session_id, "requestId": pending.request_id, "toolCallId": pending.tool_call_id, "outcome": "approved" if approve else "rejected", "decidedBy": decided_by},
                 }
             ),
@@ -478,9 +478,9 @@ class Supervisor:
         self, session_id: str, method: str, params: dict[str, Any] | None = None, *, timeout: float = 5.0, qualify: bool = True
     ) -> dict[str, Any]:
         """Send the child a request of the daemon's own and wait for its answer (the Lab's
-        ``_sierralab/lab/*`` controls). The answer is returned; it never reaches a client.
+        ``_cordata/lab/*`` controls). The answer is returned; it never reaches a client.
 
-        ``qualify`` adds the daemon's session id to the params, which the ``_sierralab/*``
+        ``qualify`` adds the daemon's session id to the params, which the ``_cordata/*``
         extension methods read. The core ACP methods (``initialize``, ``session/new``,
         ``session/prompt``) are typed and take exactly their own fields, so a caller driving
         a session — the Discord conversation — passes ``qualify=False`` and its own ids."""
@@ -591,7 +591,7 @@ class Supervisor:
             self._notify("session", {"event": "exited", "session_id": session_id, "returncode": session.process.returncode, "owner": session.owner})
             self._deliver(session_id, json.dumps({
                 "jsonrpc": "2.0",
-                "method": "_sierralab/daemon",
+                "method": "_cordata/daemon",
                 "params": {"sessionId": session_id, "state": "exited", "returncode": session.process.returncode},
             }))
 

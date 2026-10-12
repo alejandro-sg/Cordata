@@ -44,7 +44,7 @@ const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:8001";
 const runtime = new CopilotRuntime({
   agents: {
     // Must match agui_agent.name in backend/main.py and the `agent` prop in app/layout.tsx
-    sierralab_agent: new HttpAgent({
+    cordata_agent: new HttpAgent({
       url: BACKEND_URL,
       // Hub mode (backend/hub_client.py): the backend's agent endpoint drives agents on the laptop and
       // requires this token. Harmless when the backend runs its own agent.

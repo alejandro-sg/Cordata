@@ -3,7 +3,7 @@
 Through the real ACP server, with a scripted model (no provider):
 
 * a session that loads with an interrupted turn says it is **resuming automatically** and tells the client
-  (``_sierralab/resume``, ``auto: true``); the client's auto-resume prompt then runs the pending tool and
+  (``_cordata/resume``, ``auto: true``); the client's auto-resume prompt then runs the pending tool and
   completes the turn, and the checkpoint and its counter are cleared;
 * it **stops trying**: a turn that dies at the same checkpoint every time is resumed twice and then left for a
   person — the load says so, the auto-resume prompt is refused, and the manual ``/resume-turn`` still works;
@@ -31,7 +31,7 @@ ROUTE = laya_answer("code", {"code": 0.5, "answer": 0.5})
 
 
 def resume_events(conn) -> list[dict]:
-    return [p for m, p in conn.ext if m == "sierralab/resume"]
+    return [p for m, p in conn.ext if m == "cordata/resume"]
 
 
 async def interrupted(cwd, ran):

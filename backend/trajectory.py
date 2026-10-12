@@ -2,7 +2,7 @@
 
 The ledger already holds every turn (`outcomes.py`) and every choice the contextual bandit made
 (`bandit.py`). Nothing trains on it, because a row a trainer cannot parse is not data. This module is the
-join, in four shapes, each written as JSONL under ``~/.sierralab/trajectories/<project>/``:
+join, in four shapes, each written as JSONL under ``~/.cordata/trajectories/<project>/``:
 
     bandit   (context, arm, propensity, reward) — the off-policy rows a model that replaces the tabular
              scorer behind `bandit.choose` would be fit to. Only choices the bandit actually recorded a
@@ -59,7 +59,7 @@ DEFAULT_LIMIT = 500
 
 
 def home() -> Path:
-    return Path(os.environ.get("SIERRALAB_HOME") or Path.home() / ".sierralab") / "trajectories"
+    return Path(os.environ.get("CORDATA_HOME") or Path.home() / ".cordata") / "trajectories"
 
 
 def project_dir(project: str | os.PathLike | None, out_dir: str | os.PathLike | None = None) -> Path:

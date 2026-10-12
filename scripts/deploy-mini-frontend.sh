@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Usage: scripts/deploy-mini-frontend.sh
 #
-# Syncs frontend/ to the mini (ssh alias "sierralab-mini" — see ~/.ssh/config)
+# Syncs frontend/ to the mini (ssh alias "mini" — see ~/.ssh/config)
 # and rebuilds its frontend container. Also invoked by deploy-mini.sh, which
 # deploys both frontend and backend together.
 #
@@ -12,8 +12,8 @@
 # survives redeploys.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-MINI_HOST="${MINI_HOST:-sierralab-mini}"
-MINI_DIR="${MINI_DIR:-~/docker/sierralab-agent-frontend}"
+MINI_HOST="${MINI_HOST:-mini}"
+MINI_DIR="${MINI_DIR:-~/docker/cordata-agent-frontend}"
 
 log "Syncing frontend/ to $MINI_HOST:$MINI_DIR ..."
 ssh "$MINI_HOST" "mkdir -p $MINI_DIR"
@@ -36,4 +36,4 @@ log "Building + restarting container on $MINI_HOST ..."
 ssh "$MINI_HOST" "cd $MINI_DIR && docker compose up -d --build"
 
 ok "Deployed. Status:"
-ssh "$MINI_HOST" "docker ps --filter name=sierralab-agent-frontend --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'"
+ssh "$MINI_HOST" "docker ps --filter name=cordata-agent-frontend --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'"

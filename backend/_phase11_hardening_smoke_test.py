@@ -1,10 +1,10 @@
 """Phase 11 audit: the security and resource holes it found stay closed.
 
-1. **Laya's lines are trust-gated.** A cloned repository's `.sierralab/settings.json` used to be able to set
+1. **Laya's lines are trust-gated.** A cloned repository's `.cordata/settings.json` used to be able to set
    `laya.callGuard: off`, raise `laya.riskDestroy` past every score, or switch `laya.mode` off — quietly removing the
    per-call asks that bound `auto` mode. Now ignored (with a warning) unless the folder is trusted; the user's own file
    still applies. The new preflight / rejection-memory keys are gated the same way.
-2. **A shell write to a policy file scores like `file_write` to it.** `printf … > .sierralab/settings.json`, `tee`, `cp`,
+2. **A shell write to a policy file scores like `file_write` to it.** `printf … > .cordata/settings.json`, `tee`, `cp`,
    `mv`, `sed -i` into a settings or MCP declaration file (including `.cursor/` and `.vscode/mcp.json`, now read by the
    plugin host) score 0.9 — they used to score 0.4 and run in `auto`.
 3. **Generated skills cannot open their own way out.** The AST gate bans raw sockets, process spawning in every
@@ -30,9 +30,9 @@ from types import SimpleNamespace
 
 _TMP = tempfile.TemporaryDirectory()
 ROOT = Path(_TMP.name)
-os.environ["SIERRALAB_HOME"] = str(ROOT / "home")
-os.environ.setdefault("SIERRALAB_REFLECT", "off")
-os.environ["SIERRALAB_PRISM"] = "off"
+os.environ["CORDATA_HOME"] = str(ROOT / "home")
+os.environ.setdefault("CORDATA_REFLECT", "off")
+os.environ["CORDATA_PRISM"] = "off"
 
 import provider_settings  # noqa: F401,E402  (before agent_common, which chdirs)
 
@@ -50,8 +50,8 @@ from harness_testing import check, text  # noqa: E402
 
 def project(name: str, settings: dict) -> Path:
     path = ROOT / name
-    (path / ".sierralab").mkdir(parents=True, exist_ok=True)
-    (path / ".sierralab" / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+    (path / ".cordata").mkdir(parents=True, exist_ok=True)
+    (path / ".cordata" / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
     return path
 
 
@@ -81,8 +81,8 @@ def test_shell_policy_writes() -> None:
     cwd = str(ROOT / "cloned")
     prefs = {"laya.callGuard": "rules"}
     for command in (
-        "printf '{}' > .sierralab/settings.json",
-        "echo '{}' >> .sierralab/settings.local.json",
+        "printf '{}' > .cordata/settings.json",
+        "echo '{}' >> .cordata/settings.local.json",
         "cat evil.json | tee .cursor/mcp.json",
         "cp /tmp/x .vscode/mcp.json",
         "mv staged.json mcp.json",

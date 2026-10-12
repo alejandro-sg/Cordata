@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Diagnoses "401 Unauthorized" from the cloud model: finds the Ollama key exactly the
 # way the backend does (exported variable first, then the macOS Keychain item
-# "sierralab-ollama-api-key"), checks it for the usual mistakes, and asks Ollama
+# "cordata-ollama-api-key"), checks it for the usual mistakes, and asks Ollama
 # whether it is accepted. NEVER prints the key — only its source, length and a short
 # fingerprint (first 8 hex of its SHA-256) to compare against another copy.
 #
@@ -15,8 +15,6 @@ elif [[ -n "${CLOUD_OPENAI_API_KEY:-}" ]]; then
   key="$CLOUD_OPENAI_API_KEY"; source_name="exported CLOUD_OPENAI_API_KEY (beats the Keychain)"
 elif command -v security >/dev/null 2>&1 && key="$(security find-generic-password -s cordata-ollama-api-key -w 2>/dev/null)" && [[ -n "$key" ]]; then
   source_name="macOS Keychain item cordata-ollama-api-key"
-elif command -v security >/dev/null 2>&1 && key="$(security find-generic-password -s sierralab-ollama-api-key -w 2>/dev/null)" && [[ -n "$key" ]]; then
-  source_name="macOS Keychain item sierralab-ollama-api-key"
 else
   err "no key found: nothing exported and no Keychain item. Store it once:"
   err '    security add-generic-password -a "$USER" -s cordata-ollama-api-key -w'
@@ -41,7 +39,7 @@ case "$code" in
   400|200) ok "Ollama accepted the key (HTTP $code)";;
   401|403) err "Ollama REJECTED the key (HTTP $code)"; problems=1
            log "  → a stale exported variable? run:  env | grep -i -E 'OLLAMA|CLOUD_OPENAI'   (fish: set -x | grep -i -E 'ollama|cloud_openai')"
-           log "  → otherwise re-store the right key:  security add-generic-password -U -a \"\$USER\" -s sierralab-ollama-api-key -w";;
+           log "  → otherwise re-store the right key:  security add-generic-password -U -a \"\$USER\" -s cordata-ollama-api-key -w";;
   000) warn "could not reach ollama.com (network?) — key not verified";;
   *)   warn "unexpected HTTP $code from ollama.com";;
 esac

@@ -161,7 +161,7 @@ def main() -> None:
         "MODEL_PROVIDER": "ollama_cloud",
         "LAYA_TRIAGE_MODE": "off",
         "LAYA_GUARD_ENABLED": "false",
-        "SIERRALAB_HOME": str(work / "home"),
+        "CORDATA_HOME": str(work / "home"),
     }
     with FakeOllama(scripts) as fake:
         env["OLLAMA_BASE_URL"] = fake.base_url
@@ -180,7 +180,7 @@ def main() -> None:
 
 def run(term: Terminal, fake: FakeOllama, project: Path) -> None:
     # ------------------------------------------------------------ connect
-    term.wait_for("sierralab-agents", "BUILD", timeout=90)
+    term.wait_for("CORDATA", "BUILD", timeout=90)
     check(True, "the TUI connected to a real backend child (provider ollama_cloud)")
 
     # ------------------------------------------------ 1. park at the station, look, reject

@@ -18,14 +18,14 @@ import tempfile
 from pathlib import Path
 
 _HOME = tempfile.mkdtemp(prefix="orch-eval-home-")
-os.environ["SIERRALAB_HOME"] = _HOME
-os.environ["SIERRALAB_STATE_DB"] = str(Path(_HOME) / "state.db")
+os.environ["CORDATA_HOME"] = _HOME
+os.environ["CORDATA_STATE_DB"] = str(Path(_HOME) / "state.db")
 
 import provider_settings  # noqa: F401,E402
 import scrubbed_sandbox  # noqa: E402
 
 if not scrubbed_sandbox.seatbelt_works():
-    os.environ["SIERRALAB_SANDBOX_SEATBELT"] = "off"
+    os.environ["CORDATA_SANDBOX_SEATBELT"] = "off"
     print("note: Seatbelt unavailable — audit commands run unconfined in this test")
 
 import promote  # noqa: E402
@@ -95,7 +95,17 @@ def test_gate() -> None:
     from orchestrator.sim import coding_tasks
 
     hard = [t.id for t in coding_tasks() if t.category in ("multifile", "feature")]
-    bad = promote.evaluate_dispatch(candidate="cheapest", world="steep", task_ids=hard)
+    # The gate is shown refusing a bad policy on a roster with ONE cheap arm per role. With two independent cheap Ollama
+    # arms (deepseek and glm) the simulated naive cost-minimiser retries across them and passes hard work — a real
+    # property of redundancy that the sim reports honestly (cheapest: 0.91-1.0 with, 0.73-0.91 without), not a bug.
+    from orchestrator import config
+
+    full = config.ROSTER
+    config.ROSTER = tuple(row for row in full if row[1] != "deepseek-v4.1-flash")
+    try:
+        bad = promote.evaluate_dispatch(candidate="cheapest", world="steep", task_ids=hard)
+    finally:
+        config.ROSTER = full
     check(not bad.promote and bad.reason, f"always-cheapest on hard work, where cheap is not as good: held — {bad.reason}")
 
 

@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 
 _TMP = tempfile.TemporaryDirectory()
-os.environ["SIERRALAB_TRACE_DIR"] = str(Path(_TMP.name) / "memory.lance")
+os.environ["CORDATA_TRACE_DIR"] = str(Path(_TMP.name) / "memory.lance")
 
 import lab as lab_module  # noqa: E402
 import trace_store  # noqa: E402

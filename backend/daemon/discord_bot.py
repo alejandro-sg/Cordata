@@ -28,7 +28,7 @@ Properties this module is built to hold.
   is noise, and it earns an ephemeral refusal and no state change. With no `ALLOWED_USER_ID` parsed the
   bot does not start at all: a front door with no allowlist is an unauthenticated one.
 - **The token is never a setting.** `DISCORD_BOT_TOKEN` is read through `secret_guard.take_secret`
-  (environment first, then the macOS Keychain item `sierralab-discord-bot-token`), which also takes it
+  (environment first, then the macOS Keychain item `cordata-discord-bot-token`), which also takes it
   out of `os.environ` so no tool subprocess can read it, and registers it for output masking.
 - **An agent's words cannot ping anyone.** Everything a model wrote is posted with mentions disabled
   and secret-masked: `@everyone` in a reply is text, not a notification.
@@ -70,17 +70,16 @@ TOKEN_ENV = "DISCORD_BOT_TOKEN"
 ALLOWED_ENV = "ALLOWED_USER_ID"
 CHANNEL_ENV = "TELEMETRY_CHANNEL_ID"
 
-#: An escape hatch that needs no edit to the environment it was launched with: `SIERRALAB_DISCORD=off`
+#: An escape hatch that needs no edit to the environment it was launched with: `CORDATA_DISCORD=off`
 #: keeps the token in place and the bot down (a person debugging the daemon should not have to delete a
 #: credential to stop it talking).
 KILL_ENV = "CORDATA_DISCORD"
-LEGACY_KILL_ENV = "SIERRALAB_DISCORD"
 OFF = ("0", "off", "false", "no")
 
 #: The Keychain item holding the bot token, if it is not in the environment:
 #: `security add-generic-password -a "$USER" -s cordata-discord-bot-token -w` (or `make discord-key`).
 KEYCHAIN_ITEM = "cordata-discord-bot-token"
-KEYCHAIN_ITEMS = ("cordata-discord-bot-token", "sierralab-discord-bot-token")
+KEYCHAIN_ITEMS = (KEYCHAIN_ITEM,)
 
 #: The directive's destructive line, and `laya.riskDestroy`'s default. Read per project so a session
 #: that raised or lowered its own line is asked about at the line it actually set.
@@ -158,7 +157,7 @@ def _orchestrator_status() -> dict[str, Any] | None:
 @dataclass
 class RemoteConfig:
     """What `from_env` decided, and why. `enabled` is false for every reason this module refuses to
-    run: no token, no allowlist, an id that is not an id, or an explicit `SIERRALAB_DISCORD=off`."""
+    run: no token, no allowlist, an id that is not an id, or an explicit `CORDATA_DISCORD=off`."""
 
     enabled: bool = False
     reason: str = ""
@@ -176,7 +175,7 @@ class RemoteConfig:
         exposure `secret_guard` exists to prevent.
         """
         env = os.environ if environ is None else environ
-        if str(env.get(KILL_ENV, "") or env.get(LEGACY_KILL_ENV, "")).strip().lower() in OFF:
+        if str(env.get(KILL_ENV, "")).strip().lower() in OFF:
             return cls(reason=f"{KILL_ENV} is off")
         if token is None:
             # `environ` is the smoke test's seam (and any caller that already read one). The real
@@ -986,7 +985,7 @@ class DiscordRemote:
         self._mirror(conv, int(getattr(thread, "id", 0) or 0))
         await self._send(
             thread,
-            content=f"-# 📁 `{cwd}` · mode **{conv.mode or default_mode(cwd)}** · conversation `{conv.handle}` (continue it in a terminal: `acp-tui --conversation {conv.handle}`) · reply here to continue · `!stop` cancels · `!mode auto` stops routine approval prompts · `!status` · `!help`",
+            content=f"-# 📁 `{cwd}` · mode **{conv.mode or default_mode(cwd)}** · conversation `{conv.handle}` (continue it in a terminal: `cordata --conversation {conv.handle}`) · reply here to continue · `!stop` cancels · `!mode auto` stops routine approval prompts · `!status` · `!help`",
         )
         return thread, conv
 
@@ -1073,7 +1072,7 @@ class DiscordRemote:
             return
         thread = await self._thread_under(message, cards.thread_title(f"↪ {conv.title or conv.handle}"))
         if thread is None:
-            await self._send(channel, content="I can't open a thread here, so I can't continue it in Discord. It is still there in the terminal: `acp-tui --conversation " + conv.handle + "`.")
+            await self._send(channel, content="I can't open a thread here, so I can't continue it in Discord. It is still there in the terminal: `cordata --conversation " + conv.handle + "`.")
             return
         thread_id = int(getattr(thread, "id", 0) or 0)
         self.chats.bind(str(thread_id), conv.key)
@@ -1105,7 +1104,7 @@ class DiscordRemote:
 
     async def _steer_watched(self, message: Any, session_id: str, content: str) -> None:
         """A note for a session a terminal or the GUI is driving: the Lab's own guidance path
-        (`_sierralab/lab/inject`), which is length-capped, queued and audited by length rather than
+        (`_cordata/lab/inject`), which is length-capped, queued and audited by length rather than
         content. It cannot start a turn — only the driver can — so it lands at the agent's next call."""
         channel = message.channel
         if cards.is_status_question(content):
@@ -1116,7 +1115,7 @@ class DiscordRemote:
             return
         directive = text[:MAX_STEER_CHARS]
         try:
-            reply = await self.supervisor.call(session_id, "_sierralab/lab/inject", {"pod": "orchestrator", "text": directive})
+            reply = await self.supervisor.call(session_id, "_cordata/lab/inject", {"pod": "orchestrator", "text": directive})
         except (LookupError, asyncio.TimeoutError) as error:
             await self._send(channel, content=f"Could not reach that session: {error or 'timed out'}")
             return

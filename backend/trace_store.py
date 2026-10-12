@@ -41,10 +41,10 @@ import settings_store
 
 logger = logging.getLogger(__name__)
 
-#: The LanceDB directory. Repo-local rather than under `~/.sierralab`: unlike
+#: The LanceDB directory. Repo-local rather than under `~/.cordata`: unlike
 #: `state.db`, this corpus is *about one checkout's* work — its traces are most
 #: useful beside the code they describe, and it is regenerable by running the
-#: harness again. `SIERRALAB_TRACE_DIR` overrides it, which is how the smoke
+#: harness again. `CORDATA_TRACE_DIR` overrides it, which is how the smoke
 #: test stays off a developer's real corpus.
 DEFAULT_DIR = "memory.lance"
 
@@ -66,7 +66,7 @@ _unavailable_logged = False
 
 
 def path() -> Path:
-    override = os.environ.get("SIERRALAB_TRACE_DIR")
+    override = os.environ.get("CORDATA_TRACE_DIR")
     if override:
         return Path(override)
     return Path(__file__).resolve().parent / DEFAULT_DIR

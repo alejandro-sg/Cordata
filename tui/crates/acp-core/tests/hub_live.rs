@@ -1,10 +1,10 @@
 //! The terminal's half of the conversation hub, against a **real daemon** (with a scripted agent).
 //!
 //! Run by `backend/_hub_live_smoke_test.py`, which starts a throwaway daemon, points
-//! `SIERRALAB_DAEMON_CONFIG` at it and `HUB_LIVE_CWD` at a project folder, then checks what this left
+//! `CORDATA_DAEMON_CONFIG` at it and `HUB_LIVE_CWD` at a project folder, then checks what this left
 //! behind. `#[ignore]`d so a plain `cargo test` never needs Python.
 //!
-//!   SIERRALAB_DAEMON_CONFIG=<file> HUB_LIVE_CWD=<dir> cargo test -p acp-core --test hub_live -- --ignored --nocapture
+//!   CORDATA_DAEMON_CONFIG=<file> HUB_LIVE_CWD=<dir> cargo test -p acp-core --test hub_live -- --ignored --nocapture
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -40,7 +40,7 @@ async fn until(events: &mut UnboundedReceiver<AppEvent>, mut done: impl FnMut(&A
 #[tokio::test]
 #[ignore = "needs a daemon: run backend/_hub_live_smoke_test.py"]
 async fn a_terminal_opens_a_shared_conversation_and_takes_a_turn() {
-    let daemon = DaemonConfig::discover().expect("SIERRALAB_DAEMON_CONFIG must point at a running daemon");
+    let daemon = DaemonConfig::discover().expect("CORDATA_DAEMON_CONFIG must point at a running daemon");
     let cwd = PathBuf::from(std::env::var("HUB_LIVE_CWD").expect("HUB_LIVE_CWD"));
     assert!(hub::reachable(&daemon).await, "the daemon answers on its port");
 

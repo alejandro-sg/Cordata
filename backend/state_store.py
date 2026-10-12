@@ -227,17 +227,17 @@ CREATE INDEX IF NOT EXISTS orch_runs_updated ON orch_runs(updated_ts);
 def path() -> Path:
     """Where the ledger lives.
 
-    `~/.sierralab/state.db` — beside settings and the Laya calibration, not in
+    `~/.cordata/state.db` — beside settings and the Laya calibration, not in
     the checkout. The daemon is a per-machine service serving many project
     working directories, so a per-checkout ledger would fragment the same
     harness's history across clones; and this file records prompts and tool
     inputs, which belong in the user's private harness directory (`user_dir()`
     is created 0700-on-write by settings_store) rather than beside the source.
 
-    `SIERRALAB_STATE_DB` overrides the whole path, which is how the smoke tests
+    `CORDATA_STATE_DB` overrides the whole path, which is how the smoke tests
     stay off a developer's real ledger.
     """
-    override = os.environ.get("CORDATA_STATE_DB") or os.environ.get("SIERRALAB_STATE_DB")
+    override = os.environ.get("CORDATA_STATE_DB")
     return Path(override) if override else settings_store.user_dir() / DEFAULT_NAME
 
 
@@ -249,7 +249,7 @@ def _make_private(target: Path) -> None:
     `mkdir` and `sqlite3.connect` both create with the umask's mode, which on a
     default macOS account is world-readable (the directory 0755, the database
     0644). The directory is tightened only when it is the harness's own
-    (`user_dir()`); a `SIERRALAB_STATE_DB` pointing somewhere shared is the
+    (`user_dir()`); a `CORDATA_STATE_DB` pointing somewhere shared is the
     caller's business, but the database file is ours either way. SQLite gives
     the -wal and -shm files the database's mode, so fixing the file fixes them.
     """

@@ -1,13 +1,13 @@
 """Prompt overlays and optimization: prose the harness wrote for itself, in front of the model every turn.
 
 * **the store** — the same four places as a skill (staging / live / retired / rejected) at
-  ``~/.sierralab/prompts/<project>/``, private, auditable, in the ledger;
+  ``~/.cordata/prompts/<project>/``, private, auditable, in the ledger;
 * **the filter** — the exact rules a skill gets, from the shared ``textfilter``: a URL, a download piped into a
   shell, a destructive or privileged command, "ignore your instructions", "skip the approval", a credential, a
   prompt delimiter, a control character. A prompt that says "skip the approval" is refused, and kept in
   ``rejected/`` with the reason;
 * **what a session actually sees** — a live overlay is appended to the system prompt as its own named block; an
-  arm's candidate (``SIERRALAB_PROMPT_OVERLAY``, carried by a run's ``config``) is what is in force during an eval
+  arm's candidate (``CORDATA_PROMPT_OVERLAY``, carried by a run's ``config``) is what is in force during an eval
   run, and is gone afterwards (this is the ``config`` → ``run_task`` → ``sandbox`` path);
 * **the gate** — a prompt that helps the dev tasks and breaks none promotes under ``learning.promotion: live``;
   one that breaks a held-out task does not; ``shadow`` records and promotes nothing;
@@ -23,9 +23,9 @@ import tempfile
 import time
 
 HOME = tempfile.mkdtemp(prefix="opt-home-")
-os.environ["SIERRALAB_HOME"] = HOME
-os.environ["SIERRALAB_STATE_DB"] = os.path.join(HOME, "state.db")
-os.environ.pop("SIERRALAB_PROMPT_OVERLAY", None)
+os.environ["CORDATA_HOME"] = HOME
+os.environ["CORDATA_STATE_DB"] = os.path.join(HOME, "state.db")
+os.environ.pop("CORDATA_PROMPT_OVERLAY", None)
 
 import learned  # noqa: E402
 import optimize  # noqa: E402
@@ -37,7 +37,7 @@ from evals import runner  # noqa: E402
 from evals.catalog import CATALOG  # noqa: E402
 from harness_testing import ScriptedModel, check, text  # noqa: E402
 
-os.environ.pop("SIERRALAB_REFLECT", None)
+os.environ.pop("CORDATA_REFLECT", None)
 
 PROJECT = tempfile.mkdtemp(prefix="opt-proj-")
 OTHER = tempfile.mkdtemp(prefix="opt-other-")
@@ -155,7 +155,7 @@ def test_the_arm_is_in_force() -> None:
             handle.write(body + "\n")
         driver = OverlayAware(marker)
         run = runner.run_suite([task], driver, config={"arm": "candidate", "prompt_overlay": overlay})
-        check(os.environ.get("SIERRALAB_PROMPT_OVERLAY") is None, "the arm's candidate is gone from the environment after the run")
+        check(os.environ.get("CORDATA_PROMPT_OVERLAY") is None, "the arm's candidate is gone from the environment after the run")
     check(any(marker in prompt for prompt in driver.seen), "the candidate overlay was in front of the model for the run")
     check(all(r.arm == "candidate" for r in run.results), "…and the run says which arm produced it")
 

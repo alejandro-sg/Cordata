@@ -43,7 +43,7 @@ def summary(root: str | os.PathLike, plugins: list[str] | None = None, specialis
         entries = sorted(os.listdir(root))
     except OSError:
         entries = []
-    shown = [e + ("/" if os.path.isdir(os.path.join(root, e)) else "") for e in entries if not e.startswith(".") or e in (".mcp.json", ".sierralab")]
+    shown = [e + ("/" if os.path.isdir(os.path.join(root, e)) else "") for e in entries if not e.startswith(".") or e in (".mcp.json", ".cordata")]
     if shown:
         more = f" … (+{len(shown) - _MAX_ENTRIES})" if len(shown) > _MAX_ENTRIES else ""
         lines.append("Top level: " + " ".join(shown[:_MAX_ENTRIES]) + more)

@@ -27,8 +27,8 @@ from types import SimpleNamespace
 
 _TMP = tempfile.TemporaryDirectory()
 ROOT = Path(_TMP.name).resolve()
-os.environ["SIERRALAB_HOME"] = str(ROOT / "home")
-os.environ["SIERRALAB_STATE_DB"] = str(ROOT / "state.db")
+os.environ["CORDATA_HOME"] = str(ROOT / "home")
+os.environ["CORDATA_STATE_DB"] = str(ROOT / "state.db")
 
 import laya_guard as g  # noqa: E402
 import state_store  # noqa: E402
@@ -93,7 +93,7 @@ def test_file_rules() -> None:
     check(score("file_write", path="src/a.py", content="x")[0] == 0.35, "a project source file is an ordinary edit")
     check(score("file_write", path="tests/test_a.py", content="x")[0] < 0.3, "a test is a lighter edit")
     check(score("file_write", path=".github/workflows/ci.yml", content="x")[0] >= 0.6, "CI configuration matters more")
-    for path in [".env", "app/.env.local", "~/.ssh/config", "/etc/hosts", "~/.zshrc", "../outside.txt", "/tmp/elsewhere", ".sierralab/settings.local.json", ".git/hooks/pre-commit"]:
+    for path in [".env", "app/.env.local", "~/.ssh/config", "/etc/hosts", "~/.zshrc", "../outside.txt", "/tmp/elsewhere", ".cordata/settings.local.json", ".git/hooks/pre-commit"]:
         check(score("file_write", path=path, content="x")[0] >= 0.8, f"destructive path: {path}")
     check(score("file_write", path=".env.example", content="x")[0] < 0.5, "an env template is just a file")
     (PROJECT / "keep.txt").write_text("precious")
@@ -247,7 +247,7 @@ def test_handler() -> None:
 
     check(isinstance(call(handler, debugger, "apply_patch", patch="--- a/src/a.py\n+++ b/src/a.py\n@@ -1 +1 @@\n-o\n+n\n"), Proceed), "auto: an ordinary patch runs")
     check(isinstance(call(handler, debugger, "apply_patch", patch="--- a/.env\n+++ b/.env\n@@ -1 +1 @@\n-A\n+B\n"), Confirm), "auto: a patch to .env asks")
-    check(isinstance(call(handler, debugger, "apply_patch", patch="--- a/.sierralab/settings.json\n+++ b/.sierralab/settings.json\n@@ -1 +1 @@\n-a\n+b\n"), Confirm), "auto: a patch to the harness's own policy asks")
+    check(isinstance(call(handler, debugger, "apply_patch", patch="--- a/.cordata/settings.json\n+++ b/.cordata/settings.json\n@@ -1 +1 @@\n-a\n+b\n"), Confirm), "auto: a patch to the harness's own policy asks")
     check(isinstance(call(handler, orchestrator, "file_write", path="/tmp/outside.txt", content="x"), Confirm), "auto: a write outside the project asks")
     check(isinstance(call(handler, orchestrator, "claude_code_engineer", task="refactor the supervisor"), Proceed), "auto: an ordinary Claude Code task runs")
     check(isinstance(call(handler, orchestrator, "claude_code_engineer", task="wipe the repo and force push"), Confirm), "auto: a destructive Claude Code task asks")
@@ -272,8 +272,8 @@ def test_handler() -> None:
 
     # Guard off restores the old behaviour exactly.
     root = ROOT / "off-project"
-    (root / ".sierralab").mkdir(parents=True)
-    (root / ".sierralab" / "settings.local.json").write_text(json.dumps({"laya": {"callGuard": "off"}}))
+    (root / ".cordata").mkdir(parents=True)
+    (root / ".cordata" / "settings.local.json").write_text(json.dumps({"laya": {"callGuard": "off"}}))
     (ROOT / "home").mkdir(exist_ok=True)
     (ROOT / "home" / "settings.json").write_text(json.dumps({"laya": {"callGuard": "off"}}))
     off_handler, _off_lab, off_agents = build_rig("auto")

@@ -1,7 +1,7 @@
 """Where the orchestrator stands, for the front doors — read from ``state.db``, no model call, no tokens.
 
 ``status_data()`` is the one payload every front door renders: the TUI's ``/status`` (ACP ext method
-``_sierralab/orchestrator/status``), Discord's ``!status`` card, and ``python -m orchestrator status``. Each pool's
+``_cordata/orchestrator/status``), Discord's ``!status`` card, and ``python -m orchestrator status``. Each pool's
 headroom (with the provider's own reading when it gave one), the recent runs and the recent handoffs.
 """
 

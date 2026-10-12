@@ -20,7 +20,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-os.environ["SIERRALAB_PRISM"] = "off"
+os.environ["CORDATA_PRISM"] = "off"
 
 import provider_settings  # noqa: F401  (before agent_common, which chdirs)
 
@@ -72,7 +72,7 @@ def test_search(repo: Path) -> None:
     engines = ["python"] + (["ripgrep"] if shutil.which("rg") else [])
     answers = {}
     for engine in engines:
-        os.environ["SIERRALAB_RG"] = "on" if engine == "ripgrep" else "off"
+        os.environ["CORDATA_RG"] = "on" if engine == "ripgrep" else "off"
         found = code_search.search(r"\bbuild_widget\b", root=repo)
         answers[engine] = [(m.path, m.line) for m in found.matches]
         check(found.engine == engine, f"{engine}: the engine says which it is")
@@ -101,7 +101,7 @@ def test_search(repo: Path) -> None:
         check(answers["python"] == answers["ripgrep"], "both engines give the same answer")
     else:
         print("   (ripgrep not installed: the Python engine was tested; `brew install ripgrep` for the fast path)")
-    os.environ["SIERRALAB_RG"] = "off"
+    os.environ["CORDATA_RG"] = "off"
     outside = code_search.search("x", "/etc", root=repo)
     check(outside.error and "outside the project" in outside.error, "a path outside the project is refused")
     check("not a valid regular expression" in (code_search.search("(", root=repo).error or ""), "a broken regex says so")

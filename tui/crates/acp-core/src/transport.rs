@@ -217,7 +217,7 @@ fn describe_connect_error(url: &str, error: &tokio_tungstenite::tungstenite::Err
     if matches!(error, tokio_tungstenite::tungstenite::Error::Http(_)) {
         return format!(
             "{url} refused the connection — the daemon may not be running \
-             (make daemon), the token in ~/.sierralab/daemon.json may be stale, \
+             (make daemon), the token in ~/.cordata/daemon.json may be stale, \
              or another client is already attached to this directory's session"
         );
     }
@@ -241,7 +241,7 @@ mod tests {
         let text =
             describe_connect_error("ws://127.0.0.1:8765/ws", &WsError::Http(Box::new(response)));
         assert!(text.contains("make daemon"), "{text}");
-        assert!(text.contains("~/.sierralab/daemon.json"), "{text}");
+        assert!(text.contains("~/.cordata/daemon.json"), "{text}");
     }
 
     #[test]

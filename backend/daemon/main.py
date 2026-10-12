@@ -30,7 +30,7 @@ import uvicorn
 from .grpc_bridge import GrpcBridge, grpc_port_from_env
 from .server import DAEMON_HOST, DEFAULT_PORT, create_app, load_or_create_token, token_path
 
-logger = logging.getLogger("sierralab.daemon")
+logger = logging.getLogger("cordata.daemon")
 
 _TOKEN_IN_URL = re.compile(r"([?&]token=)[^&\s\"']+")
 
@@ -65,7 +65,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 def pid_path() -> Path:
-    override = os.environ.get("SIERRALAB_DAEMON_PID")
+    override = os.environ.get("CORDATA_DAEMON_PID")
     if override:
         return Path(override)
     return REPO_ROOT / ".dev" / "daemon.pid"
@@ -85,7 +85,7 @@ def _is_daemon(pid: int) -> bool:
 
 
 def read_port() -> int:
-    override = os.environ.get("SIERRALAB_DAEMON_PORT")
+    override = os.environ.get("CORDATA_DAEMON_PORT")
     if override:
         return int(override)
     try:
@@ -99,11 +99,11 @@ def read_port() -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="sierralab-daemon", description="always-on orchestrator daemon")
+    parser = argparse.ArgumentParser(prog="cordata-daemon", description="always-on orchestrator daemon")
     parser.add_argument("--port", type=int, default=None)
-    parser.add_argument("--grpc-port", type=int, default=None, help="the gRPC telemetry bridge's port (default 8766; 0 = any free port; SIERRALAB_GRPC_PORT)")
+    parser.add_argument("--grpc-port", type=int, default=None, help="the gRPC telemetry bridge's port (default 8766; 0 = any free port; CORDATA_GRPC_PORT)")
     parser.add_argument("--no-grpc", action="store_true", help="do not start the gRPC telemetry bridge")
-    parser.add_argument("--log-level", default=os.environ.get("SIERRALAB_DAEMON_LOG", "info"))
+    parser.add_argument("--log-level", default=os.environ.get("CORDATA_DAEMON_LOG", "info"))
     parser.add_argument("--check", action="store_true", help="report whether a daemon is already running, and exit")
     args = parser.parse_args(argv)
 

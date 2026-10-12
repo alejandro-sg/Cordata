@@ -6,8 +6,8 @@
     run_tests.py --live          also the suites that call a real model (_acp_smoke_test.py)
     run_tests.py --list          what would run, longest first
 
-Each suite runs in its own process with its own throwaway ``SIERRALAB_HOME`` and ``state.db`` (so ledgers, checkpoint
-stores and settings never collide), ``SIERRALAB_DISCORD=off`` (a test turn never pages the operator), and a timeout.
+Each suite runs in its own process with its own throwaway ``CORDATA_HOME`` and ``state.db`` (so ledgers, checkpoint
+stores and settings never collide), ``CORDATA_DISCORD=off`` (a test turn never pages the operator), and a timeout.
 Suites are started longest-first from the durations recorded by the last run (``.test-durations.json``), which keeps
 the slow ACP/eval suites from all landing at the end. Output goes to one log per suite; a failure prints its tail.
 Exit status is non-zero when any suite failed.
@@ -63,10 +63,13 @@ def run_one(name: str, logs: Path, timeout: float) -> tuple[str, int, float, Pat
     home = Path(tempfile.mkdtemp(prefix=f"suite-{name.strip('_').split('_smoke')[0]}-"))
     env = {
         **os.environ,
-        "SIERRALAB_HOME": str(home),
-        "SIERRALAB_STATE_DB": str(home / "state.db"),
-        "SIERRALAB_DISCORD": "off",
+        "CORDATA_HOME": str(home),
+        "CORDATA_STATE_DB": str(home / "state.db"),
+        "CORDATA_DISCORD": "off",
         "PYTHONUNBUFFERED": "1",
+        # Hermetic means no network: Laya's loader asks the Hugging Face hub whether its cached weights are current,
+        # and a suite that points HTTPS_PROXY at a fake vault would wait on that request forever.
+        "HF_HUB_OFFLINE": os.environ.get("HF_HUB_OFFLINE", "1"),
     }
     log = logs / f"{name}.log"
     started = time.monotonic()

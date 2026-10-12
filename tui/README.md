@@ -14,7 +14,7 @@ crate (pinned `=2.2.0`, default features only).
 
 ## Run
 
-Using the global `cordata` / `sierra` / `orchestrator` CLI (installed via `make cli` to `~/.local/bin`):
+Using the global `cordata` command (`make cli` links it into `~/.local/bin`):
 
 ```sh
 cordata                              # new interactive session in current directory
@@ -76,7 +76,7 @@ carries it.
 **It prints into your terminal like any command-line program — there is no alternate screen.**
 Finished messages are written once and become ordinary scrollback, so the mouse wheel, trackpad,
 Shift+PageUp, text selection and copy/paste all work, a long reply flows into scrollback as it
-streams, and what you saw is still there after you quit (`acp-tui --resume <id>` is printed on exit).
+streams, and what you saw is still there after you quit (`cordata --resume <id>` is printed on exit).
 Only the bottom of the screen is live: the unfinished part of the reply, running tool cards, then
 the prompt box (or the approval box / `/config` panel in its place) and a one-line footer
 (connection dot, mode, model · temperature, directory — and, while the agent works,
@@ -99,10 +99,32 @@ narrow terminal. Multi-line paste goes into the box as one paste; it doesn't sub
   route`, `no decision — timed out…`). When the turn ends a second line says what the LLM then
   actually did and whether it agreed (`↳ LLM used files_and_code (file_read) ✓ agreed`, plus the
   tiers any sub-agents used). `/laya off` hides it. It is pushed by the backend as an ACP extension
-  notification (`_sierralab/laya`), which other clients (Zed) ignore.
+  notification (`_cordata/laya`), which other clients (Zed) ignore.
 - **Untrusted content** (web pages, memory recalls, MCP tools, sub-agent output) gets a magenta
   double border, `⚠ UNTRUSTED CONTENT`, and its source — the backend's guard boilerplate is
   stripped for display; a classifier flag, if any, is shown.
+
+### Typing, and what the prompt box understands
+
+| you type | what happens |
+|---|---|
+| `/` | a menu of commands with their arguments and descriptions — ↑↓ choose, Tab completes, Enter runs a command that needs no argument |
+| `@` | a menu of the project's files (fuzzy: `@appr` finds `src/app.rs`; a folder keeps the menu open so you can walk in). On send, the files' contents go with the prompt, so the agent need not spend a turn reading them. Keys, `.env*` and credentials are never attached |
+| `!git status` | runs in the project, on your authority, and shows the output; the next prompt carries it to the agent |
+| anything, **while the agent works** | it queues (`⏵ next …` above the box) and goes out as a turn of its own when the agent is done. Esc stops the turn and puts the queue back in the box |
+| nothing, after a turn | a grey suggestion of what usually comes next ("run the tests") — Tab takes it, typing replaces it |
+
+`/goal <condition> [--check <command>] [--turns N]` keeps the agent working until the condition holds. With `--check`
+the *harness* runs your command after each turn and the goal is met when it exits 0; without, a model with no tools
+judges from what the turn did. `/btw <question>` is answered from the conversation without touching it, even mid-turn.
+`/compact [focus]` summarises older turns; the footer's `ctx ▰▰▱▱▱▱ 31%` shows how full the window is. `/diff`, `/copy`,
+`/export [file]`, `/cost` do what they say. Your own commands: any `*.md` in `.cordata/commands/` (or Claude's
+`.claude/commands/`) is `/name`, with `$ARGUMENTS`. When the agent keeps a checklist (`todo_write`), it is drawn above the
+prompt.
+
+Colour: Cordata's palette on truecolor and 256-colour terminals; `CORDATA_THEME=terminal` (or a light background, or
+`NO_COLOR`) keeps your terminal's own. `CORDATA_NOTIFY=off` silences the bell rung when an approval is waiting or a long
+turn finishes.
 
 | key | action |
 |---|---|
@@ -146,9 +168,9 @@ Scrolling is your terminal's: wheel, trackpad, Shift+PageUp/PageDown, or its scr
 `/tools`, `/laya [on|off]`, `/config`, `/permissions`, `/trust`, `/memory`, `/init`, `/status`,
 `/clear`, `/quit`. A path like `/usr/bin/env is missing` is still a normal prompt.
 
-**Preferences and permissions** are layered JSON files — `~/.cordata/settings.json` (or `~/.sierralab/settings.json`),
-`<project>/.cordata/settings.json` (or `.sierralab/`, commit it), `<project>/.cordata/settings.local.json`
-(this machine) — plus instruction files (`CORDATA.md`, `SIERRALAB.md`, or `AGENTS.md` / `CLAUDE.md`), the way
+**Preferences and permissions** are layered JSON files — `~/.cordata/settings.json`,
+`<project>/.cordata/settings.json` (or `.cordata/`, commit it), `<project>/.cordata/settings.local.json`
+(this machine) — plus instruction files (`CORDATA.md`, `CORDATA.md`, or `AGENTS.md` / `CLAUDE.md`), the way
 Claude Code and Kilo do it:
 
 ```text
@@ -208,7 +230,7 @@ per session: a second terminal on the same directory is refused, and `/new` is
 unavailable over `ws` for the same reason. The banner's `link` row says which
 transport you are on.
 
-The token and port come from `~/.cordata/daemon.json` (or `~/.sierralab/daemon.json`, 0600); `--daemon-url`
+The token and port come from `~/.cordata/daemon.json` (or `~/.cordata/daemon.json`, 0600); `--daemon-url`
 overrides the URL, for a daemon whose config you don't have on disk. Nothing
 else changes: the daemon proxies ACP frames verbatim, so `--resume`,
 `--continue`, permissions and Laya behave identically either way.

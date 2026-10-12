@@ -59,7 +59,7 @@ pub(crate) async fn run(
                     format!(" · “{}”", row.title)
                 };
                 let _ = events.send(AppEvent::Notice(format!(
-                    "conversation {}{title}",
+                    "conversation {}{title} — shared with Discord, the menu bar and the web app",
                     row.handle
                 )));
                 options.hub_handle = Some(row.handle);

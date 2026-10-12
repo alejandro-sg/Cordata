@@ -233,7 +233,7 @@ class Client:
 
     def __init__(self, *, intents: Intents | None = None) -> None:
         self.intents = intents or Intents.default()
-        self.user = SimpleNamespace(id=1, name="sierralab-daemon", bot=True)
+        self.user = SimpleNamespace(id=1, name="cordata-daemon", bot=True)
         self.handlers: dict[str, Any] = {}
         self.channels: dict[int, Channel] = {}
         self.token = ""

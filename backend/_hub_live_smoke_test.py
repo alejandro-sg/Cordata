@@ -31,19 +31,19 @@ def free_port() -> int:
 
 
 def main() -> int:
-    home = Path(tempfile.mkdtemp(prefix="sierralab-hub-live-"))
+    home = Path(tempfile.mkdtemp(prefix="cordata-hub-live-"))
     project = home / "project"
     project.mkdir()
     config = home / "daemon.json"
     env = {
         **os.environ,
-        "SIERRALAB_HOME": str(home),
-        "SIERRALAB_DAEMON_CONFIG": str(config),
-        "SIERRALAB_DAEMON_PID": str(home / "daemon.pid"),
-        "SIERRALAB_STATE_DB": str(home / "state.db"),
-        "SIERRALAB_DISCORD": "off",
+        "CORDATA_HOME": str(home),
+        "CORDATA_DAEMON_CONFIG": str(config),
+        "CORDATA_DAEMON_PID": str(home / "daemon.pid"),
+        "CORDATA_STATE_DB": str(home / "state.db"),
+        "CORDATA_DISCORD": "off",
         "FAKE_ACP_STATE": str(home / "fake-acp-state.json"),
-        "SIERRALAB_ACP_ENTRYPOINT": f"{sys.executable} {HERE / 'fixtures' / 'fake_acp_chat_child.py'}",
+        "CORDATA_ACP_ENTRYPOINT": f"{sys.executable} {HERE / 'fixtures' / 'fake_acp_chat_child.py'}",
     }
     port = free_port()
     daemon = subprocess.Popen([sys.executable, "-m", "daemon.main", "--port", str(port), "--no-grpc", "--log-level", "warning"], cwd=HERE, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)

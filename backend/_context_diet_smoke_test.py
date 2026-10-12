@@ -19,7 +19,7 @@ Nothing here talks to a model: `harness_testing.ScriptedModel` plays back fixed 
 
 import os
 
-os.environ.setdefault("SIERRALAB_REFLECT", "off")
+os.environ.setdefault("CORDATA_REFLECT", "off")
 
 from strands import Agent, tool
 

@@ -37,7 +37,7 @@ export default function ChatPane({ threadId, hasExplicitThreadId }: { threadId: 
   const skillNames = useMemo(() => new Set(skills.map((skill) => skill.name)), [skills]);
 
   const { messages, isRunning, inputValue, onInputChange, onSubmitMessage, onStop, queuedMessage, clearQueuedMessage } =
-    useQueueingAgentInput("sierralab_agent", threadId, hasExplicitThreadId, skillNames);
+    useQueueingAgentInput("cordata_agent", threadId, hasExplicitThreadId, skillNames);
 
   // ToolsMenuItem's `action` takes no arguments and returns void: it just
   // prefills the box (like Claude Code inserting a picked slash command for

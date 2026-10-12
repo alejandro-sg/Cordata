@@ -7,7 +7,7 @@ slipped past the single-nearest-neighbor check in store().
 Needs a real Qdrant instance (there's no meaningful way to test embedding
 similarity/dedup without one) — runs against an isolated collection created
 fresh and torn down in a finally block, so it never touches the real
-"sierralab_agent_memory" collection. If Qdrant is unreachable the test prints
+"cordata_agent_memory" collection. If Qdrant is unreachable the test prints
 SKIP and exits 0 (nothing about the code is being verified in that case —
 Qdrant lives on another machine; see the memory index note) rather than
 hanging into a connection timeout, which would also make
@@ -18,7 +18,7 @@ proposer_tool._run_test_gate refuse good drafts spuriously. Run directly:
 
 import agent_memory_tool as amt
 
-_TEST_COLLECTION = "sierralab_agent_memory_test"
+_TEST_COLLECTION = "cordata_agent_memory_test"
 
 
 def _qdrant_reachable() -> bool:

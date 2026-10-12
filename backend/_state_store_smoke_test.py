@@ -1,7 +1,7 @@
 """Regression check for state_store.py — the ledger's schema, its append-only
 guarantee, and the intervention lifecycle.
 
-Hermetic: points SIERRALAB_STATE_DB at a temp file before importing, so a run
+Hermetic: points CORDATA_STATE_DB at a temp file before importing, so a run
 never touches the developer's real backend/state.db. Run directly:
 
     backend/.venv/bin/python _state_store_smoke_test.py
@@ -13,7 +13,7 @@ import tempfile
 from pathlib import Path
 
 _TMP = tempfile.TemporaryDirectory()
-os.environ["SIERRALAB_STATE_DB"] = str(Path(_TMP.name) / "state.db")
+os.environ["CORDATA_STATE_DB"] = str(Path(_TMP.name) / "state.db")
 
 import state_store  # noqa: E402  (must follow the env var above)
 
@@ -126,8 +126,8 @@ def main() -> None:
     home = Path(_TMP.name) / "home"
     home.mkdir(mode=0o755)
     os.chmod(home, 0o755)
-    saved = {key: os.environ.pop(key, None) for key in ("SIERRALAB_STATE_DB", "SIERRALAB_HOME")}
-    os.environ["SIERRALAB_HOME"] = str(home)
+    saved = {key: os.environ.pop(key, None) for key in ("CORDATA_STATE_DB", "CORDATA_HOME")}
+    os.environ["CORDATA_HOME"] = str(home)
     try:
         # A database a previous build left at the default mode is tightened too.
         old = home / "state.db"
@@ -149,14 +149,14 @@ def main() -> None:
     # An unreadable ledger must read as "nothing there", never as an exception:
     # the approval path asks it whether a call was already answered, and a
     # resume lists what was left pending.
-    os.environ["SIERRALAB_STATE_DB"] = str(Path(_TMP.name) / "no-such-dir" / "x" / "state.db")
+    os.environ["CORDATA_STATE_DB"] = str(Path(_TMP.name) / "no-such-dir" / "x" / "state.db")
     os.chmod(_TMP.name, 0o500)
     try:
         check(state_store.get_intervention("anything") is None, "an unreadable ledger answers None to a lookup")
         check(state_store.pending_interventions("s1") == [], "and an empty list to a pending query")
     finally:
         os.chmod(_TMP.name, 0o700)
-        os.environ["SIERRALAB_STATE_DB"] = str(Path(_TMP.name) / "state.db")
+        os.environ["CORDATA_STATE_DB"] = str(Path(_TMP.name) / "state.db")
 
 
 if __name__ == "__main__":

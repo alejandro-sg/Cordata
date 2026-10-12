@@ -1,8 +1,7 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
-use ratatui::text::Line;
-use ratatui::widgets::{Block, BorderType, Paragraph, Widget};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthChar;
 
 use crate::app::{App, ConnState};
@@ -44,69 +43,111 @@ pub fn layout(text: &str, cursor: usize, width: usize) -> (Vec<String>, (usize, 
     (rows, cursor_pos)
 }
 
+/// Messages typed while the agent was busy, waiting their turn, shown right above the prompt box.
+pub fn queue_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    let dim = Style::new().fg(Color::DarkGray);
+    let room = (width as usize).saturating_sub(12).max(8);
+    app.queue
+        .iter()
+        .take(3)
+        .map(|text| {
+            let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            Line::from(vec![
+                ratatui::text::Span::styled(" ⏵ next  ", Style::new().fg(Color::Cyan)),
+                ratatui::text::Span::styled(super::text::truncate(&one_line, room), dim),
+            ])
+        })
+        .chain((app.queue.len() > 3).then(|| Line::styled(format!("   … and {} more", app.queue.len() - 3), dim)))
+        .collect()
+}
+
+/// Columns before the text: a space, the `❯`, a space.
+const LEAD: usize = 3;
+
 pub fn height_for(app: &App, width: u16) -> u16 {
-    let inner = width.saturating_sub(4) as usize; // borders + the "› " lead
+    let inner = (width as usize).saturating_sub(LEAD + 1);
     let (rows, _) = layout(app.input.text(), app.input.cursor(), inner);
     rows.len().clamp(1, MAX_INPUT_ROWS) as u16 + 2
 }
 
-/// The prompt box. Returns where the text cursor belongs (column, row within
-/// `buffer`) when the box accepts input, else `None`.
+/// The prompt: a rule above and a rule below, the text between them.
+///
+/// ```text
+///  ━━ working — enter queues your next message ──────────────────────
+///  ❯ then run the tests
+///  ───────────────────────────────────────────────────────────────────
+/// ```
+///
+/// The short heavy stroke on the top rule takes the mode's colour (plan green, build yellow, auto red), so the one
+/// place the eyes are while typing says how much the agent may do on its own. Returns where the text cursor belongs
+/// (column, row within `buffer`) when the box accepts input, else `None`.
 pub fn render(buffer: &mut Buffer, area: Rect, app: &App) -> Option<(u16, u16)> {
-    let enabled = app.input_enabled();
-    let (title, border) = if enabled {
-        ("", Color::Cyan)
+    let enabled = app.can_type();
+    let width = area.width as usize;
+    let rule_style = Style::new().fg(Color::DarkGray);
+    let accent = if enabled { super::footer::mode_color(&app.mode) } else { Color::DarkGray };
+    let accent = if app.mode.is_empty() && enabled { Color::Cyan } else { accent };
+    let (title, title_style) = if enabled && app.turn_active {
+        // The agent is working; what is typed now waits its turn.
+        ("working — enter queues your next message", rule_style)
+    } else if enabled {
+        ("", rule_style)
     } else {
         match &app.conn {
-            ConnState::Closed { .. } => (" disconnected — Ctrl+Q to quit ", Color::Red),
-            ConnState::Connecting => (" connecting… ", Color::DarkGray),
-            ConnState::Connected => (" working… ", Color::DarkGray),
+            ConnState::Closed { .. } => ("disconnected — Ctrl+Q to quit", Style::new().fg(Color::Red)),
+            ConnState::Connecting => ("connecting…", rule_style),
+            ConnState::Connected => ("working…", rule_style),
         }
     };
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .title(title)
-        .border_style(Style::new().fg(border));
-    let inner = block.inner(area);
 
-    let (rows, (cursor_row, cursor_col)) = layout(
-        app.input.text(),
-        app.input.cursor(),
-        inner.width.saturating_sub(2) as usize,
-    );
-    let visible = inner.height as usize;
-    let first = (cursor_row + 1).saturating_sub(visible);
+    // Top rule: ` ━━ title ───────…`
+    let mut top = vec![Span::raw(" "), Span::styled("━━", Style::new().fg(accent).add_modifier(Modifier::BOLD))];
+    let mut used = 3;
+    if !title.is_empty() {
+        let shown = super::text::truncate(title, width.saturating_sub(used + 6));
+        used += 2 + super::text::display_width(&shown);
+        top.push(Span::styled(format!(" {shown} "), title_style));
+    }
+    top.push(Span::styled("─".repeat(width.saturating_sub(used + usize::from(title.is_empty()))), rule_style));
+    buffer.set_line(area.x, area.y, &Line::from(top), area.width);
+
+    let body_rows = (area.height as usize).saturating_sub(2).max(1);
+    let (rows, (cursor_row, cursor_col)) = layout(app.input.text(), app.input.cursor(), width.saturating_sub(LEAD + 1));
+    let first = (cursor_row + 1).saturating_sub(body_rows);
+    let lead_style = Style::new().fg(accent).add_modifier(Modifier::BOLD);
     let lines: Vec<Line> = if app.input.is_empty() && enabled {
-        vec![Line::from(vec![
-            ratatui::text::Span::styled("› ", Style::new().fg(border)),
-            ratatui::text::Span::styled(
-                "Ask a question, request code edits, or type / for commands...",
-                Style::new().fg(Color::DarkGray),
-            ),
-        ])]
+        match (&app.suggestion, app.turn_active) {
+            (Some(suggestion), false) => vec![Line::from(vec![
+                Span::styled(" ❯ ", lead_style),
+                Span::styled(super::text::truncate(suggestion, width.saturating_sub(LEAD + 12)), Style::new().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)),
+                Span::styled("  tab ⇥", Style::new().fg(Color::DarkGray)),
+            ])],
+            (_, busy) => {
+                let hint = if busy { "type ahead — it is sent when the agent is done" } else { "Ask anything — / commands · @ files · ! shell" };
+                vec![Line::from(vec![Span::styled(" ❯ ", lead_style), Span::styled(hint, Style::new().fg(Color::DarkGray))])]
+            }
+        }
     } else {
         rows.iter()
             .skip(first)
-            .take(visible)
+            .take(body_rows)
             .enumerate()
             .map(|(i, row)| {
-                // `› ` marks the first row of the prompt; wrapped rows indent under it.
-                let lead = if first + i == 0 { "› " } else { "  " };
-                Line::from(vec![
-                    ratatui::text::Span::styled(lead, Style::new().fg(border)),
-                    ratatui::text::Span::raw(row.clone()),
-                ])
+                // `❯` marks the first row of the prompt; wrapped rows indent under it.
+                let lead = if first + i == 0 { " ❯ " } else { "   " };
+                Line::from(vec![Span::styled(lead, lead_style), Span::raw(row.clone())])
             })
             .collect()
     };
+    for (offset, line) in lines.iter().enumerate() {
+        buffer.set_line(area.x, area.y + 1 + offset as u16, line, area.width);
+    }
+    let bottom = area.y + area.height.saturating_sub(1);
+    buffer.set_line(area.x, bottom, &Line::styled("─".repeat(width.saturating_sub(1)), rule_style).patch_style(Style::new()), area.width);
+    // A leading space keeps the rules aligned with the text above them.
+    buffer.set_string(area.x, bottom, " ", rule_style);
 
-    Paragraph::new(lines).block(block).render(area, buffer);
-    enabled.then(|| {
-        (
-            inner.x + 2 + cursor_col as u16,
-            inner.y + (cursor_row - first) as u16,
-        )
-    })
+    enabled.then(|| (area.x + (LEAD + cursor_col) as u16, area.y + 1 + (cursor_row - first) as u16))
 }
 
 #[cfg(test)]

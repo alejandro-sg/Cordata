@@ -18,7 +18,7 @@ import asyncio
 import json
 import os
 
-os.environ["SIERRALAB_PRISM"] = "off"
+os.environ["CORDATA_PRISM"] = "off"
 
 import provider_settings  # noqa: F401  (imported before agent_common, which chdirs — see main.py)
 
@@ -44,7 +44,7 @@ def events(kind: str) -> list[dict]:
 
 
 async def ext(server, method: str, sid: str, **params) -> dict:
-    return await server.ext_method(f"_sierralab/{method}", {"sessionId": sid, **params})
+    return await server.ext_method(f"_cordata/{method}", {"sessionId": sid, **params})
 
 
 async def test_an_auto_turn_can_be_undone() -> None:
@@ -157,8 +157,8 @@ async def test_off_and_unprotected() -> None:
     settings_store.set_value("user", "checkpoints.enabled", True, cwd)
 
     cwd = project("project-cannot-disable")
-    (cwd / ".sierralab").mkdir()
-    (cwd / ".sierralab" / "settings.json").write_text(json.dumps({"checkpoints": {"enabled": False}}))
+    (cwd / ".cordata").mkdir()
+    (cwd / ".cordata" / "settings.json").write_text(json.dumps({"checkpoints": {"enabled": False}}))
     orchestrator_model([call("shell", {"command": "echo a > a.txt"}), text("done")])
     server, _ = fresh_server(ROUTE)
     sid = (await server.new_session(cwd=str(cwd))).session_id

@@ -15,7 +15,7 @@ Three properties, in the order they can fail:
    raises, a preferences object that raises — each returns 0 with the turn
    intact.
 
-Hermetic: `SIERRALAB_KG_DIR` is a temp directory, so the developer's real graph
+Hermetic: `CORDATA_KG_DIR` is a temp directory, so the developer's real graph
 (and any LanceDB store) is untouched.
 
     backend/.venv/bin/python _kg_smoke_test.py
@@ -31,7 +31,7 @@ from pathlib import Path
 
 _TMP = tempfile.TemporaryDirectory()
 _TMPDIR = Path(_TMP.name)
-os.environ["SIERRALAB_KG_DIR"] = str(_TMPDIR / "graph")
+os.environ["CORDATA_KG_DIR"] = str(_TMPDIR / "graph")
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import kg  # noqa: E402
@@ -95,7 +95,7 @@ def test_the_gate_holds() -> None:
     check(kg.sink_for(COGNEE).stats()["cognee"] is False, "its stats agree without raising")
 
     check(kg.ingest_turn(session_id="s", cwd=CWD, tool_calls=TURN, preferences=OFF) == 0, "an off graph ingests nothing")
-    check(not (Path(os.environ["SIERRALAB_KG_DIR"]) / "nodes.jsonl").exists(), "and writes no file")
+    check(not (Path(os.environ["CORDATA_KG_DIR"]) / "nodes.jsonl").exists(), "and writes no file")
 
 
 # ----------------------------------------------------------------- extraction
@@ -149,7 +149,7 @@ def test_ingest_writes_the_mirror() -> None:
     written = kg.ingest_turn(session_id="s2", cwd=CWD, tool_calls=TURN, preferences=ON, ts=1000.0)
     check(written > 0, f"an on graph writes rows (got {written})")
 
-    directory = Path(os.environ["SIERRALAB_KG_DIR"])
+    directory = Path(os.environ["CORDATA_KG_DIR"])
     nodes = [json.loads(line) for line in (directory / "nodes.jsonl").read_text().splitlines()]
     edges = [json.loads(line) for line in (directory / "edges.jsonl").read_text().splitlines()]
     check(len(nodes) + len(edges) == written, "the count matches the mirror")
