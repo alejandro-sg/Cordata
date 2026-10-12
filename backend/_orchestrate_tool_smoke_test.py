@@ -68,7 +68,7 @@ async def test_tool(root: Path) -> None:
     final = values[-1]
     data = next(block["json"] for block in final["content"] if "json" in block)
     text = final["content"][0]["text"]
-    check(progress and "[plan]" in progress[0] and any("[done]" in p for p in progress), f"progress streams the run's phases ({len(progress)} updates)")
+    check(progress and ("[research]" in progress[0] or "[plan]" in progress[0]) and any("[plan]" in p for p in progress) and any("[done]" in p for p in progress), f"progress streams the run's phases ({len(progress)} updates)")
     check(final["status"] == "success" and data["state"] == "done" and data["ok"], f"the run finishes done ({data['state']}: {data['reason']})")
     check(sorted(data["changed"]) == sorted(FILES) and "Changed 5 file(s)" in text, "the result names every changed file")
     check(data["audit"]["tier1_ok"] and data["plan"]["steps"][0]["status"] == "completed", "…and carries the audit and the plan")

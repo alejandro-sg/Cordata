@@ -7,6 +7,10 @@ which is how a test shows the audit catching a scope escape the kernel missed). 
 for the eval suite: a cost and token price per step, a quality (the chance a step is done right, seeded so a run is
 reproducible), and a rate limit that fires after N tokens.
 
+``plan`` tasks whose step is ``research`` or ``conformance`` get the ``research``/``conformance`` answer instead of the
+plan; a fake with no such answer fails the call, as a worker that cannot do the role would. Every call's start and end
+(``time.monotonic``) is kept in ``call_times`` so a test can see which calls overlapped.
+
 The step a task belongs to is read from its id (``<run>:<step_id>:<attempt>``), the convention the executor uses.
 """
 
@@ -15,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import os
 import random
+import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -47,6 +52,8 @@ class FakeWorker(Worker):
         model_family: str = "fake",
         plan: dict[str, Any] | Callable[[TaskPacket], dict[str, Any]] | None = None,
         audit: dict[str, Any] | Callable[[TaskPacket], dict[str, Any]] | None = None,
+        research: dict[str, Any] | Callable[[TaskPacket], dict[str, Any]] | None = None,
+        conformance: dict[str, Any] | Callable[[TaskPacket], dict[str, Any]] | None = None,
         steps: dict[str, StepScript] | None = None,
         harden: StepScript | None = None,
         quality: float = 1.0,
@@ -65,6 +72,8 @@ class FakeWorker(Worker):
         self.model = model
         self.plan_answer = plan
         self.audit_answer = audit if audit is not None else {"verdict": "accept", "items": []}
+        self.research_answer = research
+        self.conformance_answer = conformance
         self.steps = steps or {}
         self.harden_script = harden
         self.quality = quality
@@ -79,6 +88,7 @@ class FakeWorker(Worker):
         self.spent_tokens = 0
         self.attempts: dict[str, int] = {}
         self.calls: list[TaskPacket] = []
+        self.call_times: list[tuple[str, float, float]] = []
         self._cancelled: set[str] = set()
 
     @property
@@ -114,6 +124,7 @@ class FakeWorker(Worker):
 
     async def run(self, task: TaskPacket) -> AsyncIterator[WorkerEvent]:
         self.calls.append(task)
+        started = time.monotonic()
         root = os.path.realpath(task.cwd)
         before = tree.snapshot(root)
         yield WorkerEvent("init", {"worker_id": self.worker_id, "role": task.role, "model": task.model or self.model})
@@ -125,6 +136,18 @@ class FakeWorker(Worker):
         scope = task.writable_scope()
         if task.task_id in self._cancelled:
             status, error = "cancelled", "cancelled"
+        elif task.role == "plan" and self.step_of(task) in ("research", "conformance"):
+            kind = self.step_of(task)
+            answer = self.research_answer if kind == "research" else self.conformance_answer
+            if answer is None:
+                status, error = "failed", f"no {kind} answer"
+            else:
+                structured = answer(task) if callable(answer) else answer
+                tin, tout = self.tokens_per_plan
+                cost = self.cost_per_plan
+                text = "researched" if kind == "research" else "checked conformance"
+                if structured is None:
+                    status, error = "failed", "the answer does not match the schema: no JSON object in the answer"
         elif task.role in ("plan", "audit"):
             answer = self.plan_answer if task.role == "plan" else self.audit_answer
             structured = answer(task) if callable(answer) else answer
@@ -168,6 +191,7 @@ class FakeWorker(Worker):
             error_message=error, session_handle=f"{self.worker_id}-{task.task_id}", model=task.model or self.model, structured=structured,
             rate_limited=rate_limited, out_of_scope=scope_mod.out_of_scope(changed, scope, root),
         )
+        self.call_times.append((task.task_id, started, time.monotonic()))
         if status != "completed":
             yield WorkerEvent("error", {"message": error})
         yield WorkerEvent("done", result.to_json(), result=result)

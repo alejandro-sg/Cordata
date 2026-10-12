@@ -143,6 +143,8 @@ class UsageRow:
     is_error_limit: bool = False
     reset_ts: float | None = None
     ts: float = field(default_factory=time.time)
+    role: str | None = None
+    worker: str | None = None
 
 
 def pools_from_settings(preferences: Any) -> tuple[Pool, ...]:
@@ -170,6 +172,36 @@ def pools_from_settings(preferences: Any) -> tuple[Pool, ...]:
     return tuple(pools) or DEFAULT_POOLS
 
 
+_migrated_paths: set[str] = set()
+
+
+def migrate(conn: sqlite3.Connection | None = None) -> None:
+    """Guarded migration for quota_usage: add role and worker columns, ignoring sqlite3.OperationalError."""
+    if conn is None:
+        conn = state_store.connect()
+    try:
+        conn.execute("ALTER TABLE quota_usage ADD COLUMN role TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE quota_usage ADD COLUMN worker TEXT")
+    except sqlite3.OperationalError:
+        pass
+
+
+def _ensure_columns(conn: sqlite3.Connection) -> None:
+    target = ""
+    try:
+        target = str(state_store.path())
+    except Exception:
+        pass
+    if target and target in _migrated_paths:
+        return
+    migrate(conn)
+    if target:
+        _migrated_paths.add(target)
+
+
 class QuotaLedger:
     """See the module docstring. ``clock`` is injectable so a test can roll a window forward."""
 
@@ -181,7 +213,9 @@ class QuotaLedger:
     # --------------------------------------------------------------- pools
 
     def _conn(self) -> sqlite3.Connection:
-        return state_store.connect()
+        conn = state_store.connect()
+        _ensure_columns(conn)
+        return conn
 
     def _sync_pools(self) -> None:
         try:
@@ -207,8 +241,8 @@ class QuotaLedger:
     def record(self, row: UsageRow) -> None:
         try:
             self._conn().execute(
-                "INSERT INTO quota_usage (ts, session_id, step_id, pool_id, model, tokens_in, tokens_out, cost_usd, is_error_limit, requests, reset_ts) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (row.ts, row.session_id, row.step_id, row.pool_id, row.model, int(row.tokens_in), int(row.tokens_out), float(row.cost_usd), 1 if row.is_error_limit else 0, int(row.requests), row.reset_ts),
+                "INSERT INTO quota_usage (ts, session_id, step_id, pool_id, model, tokens_in, tokens_out, cost_usd, is_error_limit, requests, reset_ts, role, worker) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (row.ts, row.session_id, row.step_id, row.pool_id, row.model, int(row.tokens_in), int(row.tokens_out), float(row.cost_usd), 1 if row.is_error_limit else 0, int(row.requests), row.reset_ts, row.role, row.worker),
             )
         except sqlite3.Error:
             logger.warning("quota ledger: could not record usage", exc_info=True)
@@ -249,7 +283,17 @@ class QuotaLedger:
                 latest[row["window"]] = float(row["utilization"])
         return max(latest.values()) if latest else None
 
-    def record_result(self, *, session_id: str, step_id: str | None, family: str, model: str | None, result: Any) -> UsageRow:
+    def record_result(
+        self,
+        *,
+        session_id: str,
+        step_id: str | None,
+        family: str,
+        model: str | None,
+        result: Any,
+        role: str | None = None,
+        worker: str | None = None,
+    ) -> UsageRow:
         """One worker result → one usage row in the pool it belongs to (and the provider's window readings, if any)."""
         pool = self.pool_for(family, model or getattr(result, "model", None))
         quota = getattr(result, "provider_quota", None) or {}
@@ -267,6 +311,8 @@ class QuotaLedger:
             is_error_limit=bool(getattr(result, "rate_limited", False)),
             reset_ts=_float(quota.get("resets_at")) if getattr(result, "rate_limited", False) else None,
             ts=self.clock(),
+            role=role,
+            worker=worker,
         )
         self.record(row)
         return row
@@ -369,6 +415,47 @@ class QuotaLedger:
             return [dict(r) for r in self._conn().execute("SELECT * FROM quota_usage WHERE session_id = ? ORDER BY id", (session_id,)).fetchall()]
         except sqlite3.Error:
             return []
+
+    def run_usage(self, run_id: str) -> list[dict[str, Any]]:
+        try:
+            rows = self._conn().execute("SELECT * FROM quota_usage WHERE session_id = ? ORDER BY id", (run_id,)).fetchall()
+        except sqlite3.Error:
+            return []
+        groups: dict[tuple[str, str], dict[str, Any]] = {}
+        for r in rows:
+            role = r["role"] if "role" in r.keys() else None
+            if not role:
+                step_id = r["step_id"] or ""
+                if step_id in ("plan", "research", "conformance", "harden", "audit"):
+                    role = step_id
+                else:
+                    role = "execute"
+            worker = r["worker"] if "worker" in r.keys() else None
+            if not worker:
+                worker = f"{r['pool_id'] or ''}:{r['model'] or ''}"
+            key = (role, worker)
+            if key not in groups:
+                groups[key] = {
+                    "role": role,
+                    "worker": worker,
+                    "calls": 0,
+                    "tokens_in": 0,
+                    "tokens_out": 0,
+                    "cost_usd": 0.0,
+                }
+            entry = groups[key]
+            calls = r["requests"] if r["requests"] is not None else 1
+            entry["calls"] += int(calls)
+            entry["tokens_in"] += int(r["tokens_in"] or 0)
+            entry["tokens_out"] += int(r["tokens_out"] or 0)
+            entry["cost_usd"] += float(r["cost_usd"] or 0.0)
+
+        out = []
+        for key in sorted(groups.keys()):
+            entry = groups[key]
+            entry["cost_usd"] = round(entry["cost_usd"], 6)
+            out.append(entry)
+        return out
 
 
 def _float(value: Any) -> float | None:

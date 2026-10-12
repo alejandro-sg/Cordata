@@ -98,6 +98,7 @@ def run_config(preferences: Any) -> RunConfig:
         max_tokens=int(max_tokens) if max_tokens > 0 else None,
         harden=bool(setting(preferences, "orchestrator.harden", True)),
         tier2=bool(setting(preferences, "orchestrator.tier2", True)),
+        research=True,  # a code default, not a setting: ``run --no-research`` turns it off for one run
     )
 
 

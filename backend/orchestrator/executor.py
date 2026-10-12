@@ -22,11 +22,21 @@ For each pending step:
    step goes to an ``ok`` pool with a packet (``quota_soft_limit_reached``) so the new worker knows what was done.
 
 No candidate left → ``paused``, with the packet saved: the run resumes from it when a window rolls over.
+
+**Complexity routing.** With a ``profile`` (candidate key → ``(tier_rank, unit_price)``) a ``high`` step goes to the
+strongest usable tier and a ``low`` one to the cheapest; ties go to the pool with the most headroom, then list order.
+``medium`` (and any step without a profile) keeps the first-usable order.
+
+**Parallel waves.** A plan with no ``depends_on`` runs strictly in order, as above. Otherwise the executor runs waves:
+pending steps whose dependencies are done, taken greedily in plan order while their scopes are pairwise disjoint, at
+most ``max_parallel`` at a time. A step in a wave of several rolls back only its own scope, never the whole project.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -107,6 +117,22 @@ def step_prompt(plan: Plan, index: int, extra: str = "") -> str:
     return "\n\n".join(p for p in parts if p)
 
 
+@dataclass
+class _StepContext:
+    """The mutable state one step's attempts share: who ran last, the note it carries, and the retry rotation."""
+
+    candidates: list[Candidate]
+    current: Candidate | None = None
+    packet: handoff.HandoffPacket | None = None
+    scoped: bool = False
+    #: Every other step's scope in the same wave. A worker's changed-files list comes from a before/after snapshot of
+    #: the whole project, so in a wave it also lists what its siblings wrote at the same time; those files are theirs,
+    #: not stray writes of this step (the kernel scope, or the in-process tool set, is what keeps a step in its own).
+    sibling_scope: list[str] = field(default_factory=list)
+    reason: str = ""
+    last_packet: handoff.HandoffPacket | None = None
+
+
 class StepExecutor:
     def __init__(
         self,
@@ -121,6 +147,9 @@ class StepExecutor:
         extra_prompt: str = "",
         start_packet: handoff.HandoffPacket | None = None,
         max_attempts: int = MAX_ATTEMPTS,
+        profile: dict[str, tuple[int, float]] | None = None,
+        max_parallel: int = 3,
+        on_usage: Callable[[dict[str, Any]], None] | None = None,
         strongest_first: bool = False,
     ) -> None:
         self.run_id = run_id
@@ -138,21 +167,45 @@ class StepExecutor:
         #: already defeated them needs the best one still allowed to run, not the one with the most quota left.
         self.strongest_first = strongest_first
         self.current: Candidate | None = None
+        #: candidate key → (tier_rank, unit_price); routes high/low-complexity steps.
+        self.profile = dict(profile or {})
+        self.max_parallel = max(1, int(max_parallel))
+        self.on_usage = on_usage
 
     # ------------------------------------------------------------------ choosing
 
     def _level(self, candidate: Candidate) -> str:
         return self.ledger.level(candidate.family, candidate.model)
 
-    def pick(self, exclude_pools: set[str] | None = None) -> Candidate | None:
+    def _headroom_key(self, candidate: Candidate) -> float:
+        try:
+            return float(self.ledger.state(self.ledger.pool_for(candidate.family, candidate.model)).pct)
+        except Exception:
+            return 1.0
+
+    def pick(self, exclude_pools: set[str] | None = None, complexity: str = "medium", candidates: list[Candidate] | None = None) -> Candidate | None:
+        """The worker for the next attempt: ``ok`` pools before ``soft`` ones; within a level, ``high`` complexity takes
+        the highest tier, ``low`` the lowest unit price (ties: most pool headroom, then list order), and ``medium`` the
+        first in list order. A candidate missing from the profile ranks as a standard tier with an unknown price."""
         exclude_pools = exclude_pools or set()
-        usable = [c for c in self.candidates if self.ledger.pool_for(c.family, c.model).pool_id not in exclude_pools]
+        pool = candidates if candidates is not None else self.candidates
+        usable = [c for c in pool if self.ledger.pool_for(c.family, c.model).pool_id not in exclude_pools]
         if self.strongest_first:
             return next((c for c in usable if self._level(c) in ("ok", "soft")), None)
         for wanted in ("ok", "soft"):
-            for candidate in usable:
-                if self._level(candidate) == wanted:
-                    return candidate
+            level_ok = [c for c in usable if self._level(c) == wanted]
+            if not level_ok:
+                continue
+            if complexity not in ("high", "low") or not self.profile:
+                return level_ok[0]
+
+            def rank(item: tuple[int, Candidate]) -> tuple[float, float, int]:
+                position, candidate = item
+                tier, price = self.profile.get(candidate.key, (1, math.inf))
+                primary = -float(tier) if complexity == "high" else float(price)
+                return (primary, self._headroom_key(candidate), position)
+
+            return min(enumerate(level_ok), key=rank)[1]
         return None
 
     def _emit(self, kind: str, **payload: Any) -> None:
@@ -164,21 +217,76 @@ class StepExecutor:
     # ------------------------------------------------------------------ the loop
 
     async def run(self) -> ExecResult:
+        if any(step.depends_on for step in self.plan.steps):
+            return await self._run_waves()
         out = ExecResult(status="completed")
+        # Sequential: one context carries the worker, its note and the retry rotation from step to step.
+        ctx = _StepContext(candidates=self.candidates, current=self.current, packet=self.packet)
         for index, step in enumerate(self.plan.steps):
             if step.status in ("completed", "skipped"):
                 continue
-            verdict = await self._run_step(index, step, out)
+            verdict = await self._run_step(index, step, out, ctx)
+            self.candidates, self.current, self.packet = ctx.candidates, ctx.current, ctx.packet
             if verdict != "completed":
                 out.status = verdict
                 return out
         return out
 
+    async def _run_waves(self) -> ExecResult:
+        out = ExecResult(status="completed")
+        index_of = {step.step_id: i for i, step in enumerate(self.plan.steps)}
+        start_packet = self.packet
+        while True:
+            done = {s.step_id for s in self.plan.steps if s.status in ("completed", "skipped")}
+            pending = [s for s in self.plan.steps if s.status not in ("completed", "skipped")]
+            if not pending:
+                return out
+            wave = form_wave(pending, done, self.max_parallel)
+            if not wave:
+                out.status = "failed"
+                out.reason = "dependency deadlock: no pending step has all of its depends_on completed (" + ", ".join(s.step_id for s in pending) + ")"
+                self._emit("deadlock", pending=[s.step_id for s in pending])
+                return out
+            self._emit("wave_start", steps=[s.step_id for s in wave])
+            contexts = []
+            for step in wave:
+                siblings = [entry for other in wave if other is not step for entry in other.file_scope]
+                ctx = _StepContext(candidates=list(self.candidates), current=self.current, packet=start_packet, scoped=len(wave) > 1, sibling_scope=siblings)
+                start_packet = None  # the resume note belongs to the first step that runs
+                contexts.append(ctx)
+            verdicts = await asyncio.gather(*(self._run_step(index_of[s.step_id], s, out, c) for s, c in zip(wave, contexts)), return_exceptions=True)
+            for verdict in verdicts:
+                if isinstance(verdict, BaseException):
+                    raise verdict
+            last = next((c.current for c in reversed(contexts) if c.current is not None), None)
+            if last is not None:
+                self.current = last
+            self.packet = None
+            for step, ctx, verdict in zip(wave, contexts, verdicts):
+                if verdict != "completed":
+                    out.status = verdict
+                    out.reason = ctx.reason or out.reason
+                    out.last_packet = ctx.last_packet or out.last_packet
+                    self.packet = ctx.packet
+                    return out
+
     def _envelope(self):
         budget = self.plan.budget_envelope or {}
         return self.ledger.envelope(self.run_id, max_usd=budget.get("max_usd"), max_tokens=budget.get("max_tokens"))
 
-    async def _run_step(self, index: int, step: Step, out: ExecResult) -> str:
+    def _fail(self, ctx: _StepContext, out: ExecResult, reason: str) -> None:
+        ctx.reason = out.reason = reason
+
+    def _record(self, step: Step, candidate: Candidate, result: WorkerResult) -> None:
+        row = self.ledger.record_result(session_id=self.run_id, step_id=step.step_id, family=candidate.family, model=candidate.model or result.model, result=result, role="execute", worker=candidate.key)
+        if self.on_usage is None:
+            return
+        try:
+            self.on_usage({"run_id": self.run_id, "role": "execute", "worker": candidate.key, "step_id": step.step_id, "pool_id": getattr(row, "pool_id", None), "tokens_in": result.tokens_in, "tokens_out": result.tokens_out, "cost_usd": result.cost_usd})
+        except Exception:
+            logger.debug("executor: usage listener failed", exc_info=True)
+
+    async def _run_step(self, index: int, step: Step, out: ExecResult, ctx: _StepContext) -> str:
         snap = checkpoints.take(self.project, kind="pre", tool="orchestrator", agent="executor", session_id=self.run_id, turn=step.step_id, call=f"step {index + 1}")
         step.checkpoint_hash = snap.id if snap.ok else None
         if not snap.ok:
@@ -191,22 +299,22 @@ class StepExecutor:
             envelope = self._envelope()
             if envelope.exhausted:
                 step.status = "failed" if step.status == "running" else step.status
-                out.reason = f"the plan's budget envelope is spent (${envelope.spent_usd:.4f}, {envelope.spent_tokens} tokens)"
+                self._fail(ctx, out, f"the plan's budget envelope is spent (${envelope.spent_usd:.4f}, {envelope.spent_tokens} tokens)")
                 self._emit("budget_exhausted", step_id=step.step_id, envelope=envelope.to_json())
                 return "budget_exhausted"
-            candidate = self.pick(excluded)
+            candidate = self.pick(excluded, step.complexity, ctx.candidates)
             if candidate is None:
-                packet = self._packet(index, step, "worker_unavailable" if not out.handoffs else out.handoffs[-1].reason, self.current, None, failures, keep=False)
-                out.last_packet = packet
-                out.reason = "no worker has quota left; the run is paused at a safe point"
+                packet = self._packet(index, step, "worker_unavailable" if not out.handoffs else out.handoffs[-1].reason, ctx.current, None, failures, keep=False)
+                ctx.last_packet = out.last_packet = packet
+                self._fail(ctx, out, "no worker has quota left; the run is paused at a safe point")
                 self._emit("paused", step_id=step.step_id, handoff_id=packet.handoff_id)
                 return "paused"
-            if self.current is not None and candidate is not self.current and self.packet is None and out.workers_used:
+            if ctx.current is not None and candidate is not ctx.current and ctx.packet is None and out.workers_used:
                 # A switch at a step boundary (soft line, or the previous worker's pool went away): leave a note.
-                reason = "quota_soft_limit_reached" if self._level(self.current) == "soft" else "worker_unavailable"
-                self.packet = self._packet(index, step, reason, self.current, candidate, failures, keep=False)
-                out.handoffs.append(self.packet)
-            self.current = candidate
+                reason = "quota_soft_limit_reached" if self._level(ctx.current) == "soft" else "worker_unavailable"
+                ctx.packet = self._packet(index, step, reason, ctx.current, candidate, failures, keep=False)
+                out.handoffs.append(ctx.packet)
+            ctx.current = candidate
             if candidate.key not in out.workers_used:
                 out.workers_used.append(candidate.key)
             allowance = self.ledger.step_allowance(candidate.family, candidate.model)
@@ -226,41 +334,44 @@ class StepExecutor:
                 model=candidate.model,
                 effort=candidate.effort,
                 checkpoint_hash=step.checkpoint_hash,
-                handoff_context=self.packet.context() if self.packet else None,
+                handoff_context=ctx.packet.context() if ctx.packet else None,
             )
-            self._emit("step_dispatch", step_id=step.step_id, worker=candidate.key, budget_usd=budget_usd, budget_tokens=task.budget_tokens, handoff=self.packet.handoff_id if self.packet else None)
+            self._emit("step_dispatch", step_id=step.step_id, worker=candidate.key, complexity=step.complexity, budget_usd=budget_usd, budget_tokens=task.budget_tokens, handoff=ctx.packet.handoff_id if ctx.packet else None)
             _, result = await collect(candidate.worker.run(task))
-            self.ledger.record_result(session_id=self.run_id, step_id=step.step_id, family=candidate.family, model=candidate.model or result.model, result=result)
+            self._record(step, candidate, result)
+            if ctx.sibling_scope:
+                result.out_of_scope = [p for p in result.out_of_scope if not scope_mod.matches(p, ctx.sibling_scope, self.project)]
+                result.files_changed = [p for p in result.files_changed if not scope_mod.matches(p, ctx.sibling_scope, self.project)]
             out.results.setdefault(step.step_id, []).append({"worker": candidate.key, **{k: getattr(result, k) for k in ("status", "error_message", "tokens_in", "tokens_out", "cost_usd", "files_changed", "out_of_scope", "rate_limited")}})
             self._emit("step_result", step_id=step.step_id, worker=candidate.key, status=result.status, error=result.error_message, files=result.files_changed[:50])
 
             if result.status == "completed" and not result.out_of_scope:
                 step.status = "completed"
-                self.packet = None
+                ctx.packet = None
                 return "completed"
             if result.status == "cancelled":
-                self._rollback(step)
+                self._rollback(step, ctx.scoped)
                 step.status = "failed"
-                out.reason = "cancelled"
+                self._fail(ctx, out, "cancelled")
                 return "cancelled"
             if result.status == "quota_limit":
                 reason = "provider_rate_limit" if result.rate_limited else "quota_hard_limit_reached"
                 keep = step.rollback_policy == "keep_partial"
                 if not keep:
-                    self._rollback(step)
+                    self._rollback(step, ctx.scoped)
                 envelope = self._envelope()
                 if envelope.exhausted and not result.rate_limited:
                     # The cut-off was the plan's own envelope, not the pool: no other worker may spend more on it.
                     step.status = "partial" if keep else "pending"
-                    out.reason = f"the plan's budget envelope is spent (${envelope.spent_usd:.4f}, {envelope.spent_tokens} tokens)"
+                    self._fail(ctx, out, f"the plan's budget envelope is spent (${envelope.spent_usd:.4f}, {envelope.spent_tokens} tokens)")
                     self._emit("budget_exhausted", step_id=step.step_id, envelope=envelope.to_json())
                     return "budget_exhausted"
                 failures.append(f"{candidate.key} stopped: {result.error_message or reason}")
                 excluded.add(self.ledger.pool_for(candidate.family, candidate.model).pool_id)
-                nxt = self.pick(excluded)
-                self.packet = self._packet(index, step, reason, candidate, nxt, failures, keep=keep, result=result)
-                out.handoffs.append(self.packet)
-                self._emit("handoff", step_id=step.step_id, handoff_id=self.packet.handoff_id, reason=reason, from_worker=candidate.key, to_worker=nxt.key if nxt else None)
+                nxt = self.pick(excluded, step.complexity, ctx.candidates)
+                ctx.packet = self._packet(index, step, reason, candidate, nxt, failures, keep=keep, result=result)
+                out.handoffs.append(ctx.packet)
+                self._emit("handoff", step_id=step.step_id, handoff_id=ctx.packet.handoff_id, reason=reason, from_worker=candidate.key, to_worker=nxt.key if nxt else None)
                 step.status = "partial" if keep else "pending"
                 continue
             # failed, or completed with writes outside the step's scope
@@ -268,24 +379,34 @@ class StepExecutor:
             if result.out_of_scope:
                 why = f"wrote outside the step's scope: {', '.join(result.out_of_scope[:10])}"
             failures.append(f"{candidate.key}: {why}")
-            self._rollback(step)
+            self._rollback(step, ctx.scoped)
             if len(failures) >= self.max_attempts:
                 step.status = "failed"
-                out.reason = f"step {step.step_id} failed {len(failures)} times: {failures[-1]}"
+                self._fail(ctx, out, f"step {step.step_id} failed {len(failures)} times: {failures[-1]}")
                 return "failed"
             # try another candidate: prefer a different worker for the retry
-            others = [c for c in self.candidates if c is not candidate]
+            others = [c for c in ctx.candidates if c is not candidate]
             if others:
-                self.candidates = others + [candidate]
-            self.packet = self._packet(index, step, "worker_failed", candidate, None, failures, keep=False, result=result)
-            out.handoffs.append(self.packet)
+                ctx.candidates = others + [candidate]
+            ctx.packet = self._packet(index, step, "worker_failed", candidate, None, failures, keep=False, result=result)
+            out.handoffs.append(ctx.packet)
 
     # ------------------------------------------------------------------ helpers
 
-    def _rollback(self, step: Step) -> None:
+    def _rollback(self, step: Step, scoped: bool = False) -> None:
+        """Restore the step's checkpoint. In a wave of several steps (``scoped``) only the step's own scope goes back —
+        the other steps are writing the rest of the project — and a scope that cannot be narrowed is not restored."""
         if not step.checkpoint_hash:
             return
-        report = checkpoints.restore(self.project, step.checkpoint_hash, session_id=self.run_id)
+        if scoped:
+            paths = diff_paths(step.file_scope)
+            if not paths:
+                logger.warning("executor: step %s ran in parallel with a scope that cannot be narrowed; not rolled back", step.step_id)
+                self._emit("rollback", step_id=step.step_id, checkpoint=step.checkpoint_hash, ok=False, files=[], skipped=True)
+                return
+            report = checkpoints.restore(self.project, step.checkpoint_hash, paths=paths, session_id=self.run_id)
+        else:
+            report = checkpoints.restore(self.project, step.checkpoint_hash, session_id=self.run_id)
         if not report.get("ok"):
             logger.warning("executor: rollback of %s failed: %s", step.step_id, report.get("reason") or report.get("failed"))
         self._emit("rollback", step_id=step.step_id, checkpoint=step.checkpoint_hash, ok=bool(report.get("ok")), files=[f["path"] for f in report.get("files", [])][:50])
@@ -329,6 +450,42 @@ def diff_paths(file_scope: list[str]) -> list[str] | None:
         if clean:
             out.append(clean)
     return out or None
+
+
+def scope_prefixes(file_scope: list[str]) -> list[str] | None:
+    """The literal prefixes a step may write under; ``None`` when a glob at the root opens the whole project. An empty
+    scope (a read-only step) writes nowhere."""
+    out: list[str] = []
+    for entry in file_scope:
+        clean = scope_mod.normalize(entry).rstrip("/")
+        if set("*?[") & set(clean):
+            clean = scope_mod._literal_prefix(clean).rstrip("/")
+            if not clean:
+                return None
+        if clean:
+            out.append(clean)
+    return out
+
+
+def scopes_overlap(a: list[str], b: list[str]) -> bool:
+    pa, pb = scope_prefixes(a), scope_prefixes(b)
+    if pa is None or pb is None:
+        return True  # a root-wide glob overlaps everything
+    return any(x == y or x.startswith(y + "/") or y.startswith(x + "/") for x in pa for y in pb)
+
+
+def form_wave(pending: list[Step], done: set[str], max_parallel: int) -> list[Step]:
+    """Pending steps whose dependencies are all done, taken in plan order while their scopes stay pairwise disjoint."""
+    wave: list[Step] = []
+    for step in pending:
+        if len(wave) >= max_parallel:
+            break
+        if not all(dep in done for dep in step.depends_on):
+            continue
+        if any(scopes_overlap(step.file_scope, other.file_scope) for other in wave):
+            continue
+        wave.append(step)
+    return wave
 
 
 def _min(*values: Any) -> Any:

@@ -18,8 +18,9 @@
    Cost is the candidate's observed mean, normalised by the role's budget, with its tier's list price as the prior;
    scarcity is how far its pool is into its window.
 4. **Shadow first.** ``mode="shadow"`` computes and logs the learned ranking (``bandit`` ``decide`` events) and returns
-   the default — *strongest first* — so a policy is judged on the ledger (``replay``) before it ever acts.
-   ``live`` returns the learned order, with ε-exploration on the top slot.
+   the role's default order (``role_order``: standard tier first for plan, research, conformance; strong first for
+   execute, harden; standard then strong for audit) — so a policy is judged on the ledger (``replay``) before it ever
+   acts. ``live`` returns the learned order, with ε-exploration on the top slot.
 
 ``replay`` is the offline judge: the rejection-sampling estimator over logged, uniformly explored decisions — for each
 logged (context, arm, outcome) it counts the outcome only when the policy under test would have picked that arm.
@@ -49,7 +50,22 @@ TIER_RANK = {"fast": 0, "standard": 1, "strong": 2}
 #: Prior quality and list price by tier, before anything is learned. Price is relative (strong = 1).
 TIER_PRIOR_Q = {"fast": 0.55, "standard": 0.7, "strong": 0.8}
 TIER_PRICE = {"fast": 0.08, "standard": 0.3, "strong": 1.0}
-POINT_FOR_ROLE = {"plan": "planner_pool", "execute": "executor_pool", "harden": "reviewer_pool", "audit": "reviewer_pool"}
+ROLE_PRIOR: dict[str, tuple[str, ...]] = {
+    "plan": ("standard", "fast", "strong"),
+    "research": ("standard", "fast", "strong"),
+    "conformance": ("standard", "fast", "strong"),
+    "execute": ("strong", "standard", "fast"),
+    "harden": ("strong", "standard", "fast"),
+    "audit": ("standard", "strong", "fast"),
+}
+POINT_FOR_ROLE = {
+    "plan": "planner_pool",
+    "research": "planner_pool",
+    "conformance": "planner_pool",
+    "execute": "executor_pool",
+    "harden": "reviewer_pool",
+    "audit": "reviewer_pool",
+}
 POINTS = ("planner_pool", "executor_pool", "reviewer_pool", "tier", "effort")
 #: The smallest quality gap the policy treats as "as good": two arms within it are interchangeable on quality.
 MIN_TOLERANCE = 0.01
@@ -141,9 +157,10 @@ class LearnedDispatcher:
 
     def eligible(self, role: str, exclude_model_families: set[str] | None = None) -> list[Spec]:
         exclude = exclude_model_families or set()
+        gate_role = "plan" if role in ("research", "conformance") else role
         out = []
         for spec in self.specs:
-            if role not in spec.roles or spec.candidate.model_family in exclude or not self.available(spec):
+            if (gate_role not in spec.roles and role not in spec.roles) or spec.candidate.model_family in exclude or not self.available(spec):
                 continue
             if self.ledger is not None and self.ledger.level(spec.candidate.family, spec.candidate.model) in ("hard", "exhausted"):
                 continue
@@ -154,6 +171,20 @@ class LearnedDispatcher:
     def default_order(specs: list[Spec]) -> list[Spec]:
         """Strongest first; among equals, the cheaper one."""
         return sorted(specs, key=lambda s: (-TIER_RANK.get(s.tier, 1), s.unit_price))
+
+    @staticmethod
+    def role_order(specs: list[Spec], role: str) -> list[Spec]:
+        """Role-prior default order: cheapest competent tier by role, ties broken by unit_price then key."""
+        prior = ROLE_PRIOR.get(role, ("strong", "standard", "fast"))
+        rank_map = {tier: i for i, tier in enumerate(prior)}
+        return sorted(
+            specs,
+            key=lambda s: (
+                rank_map.get(s.tier, len(prior)),
+                s.unit_price,
+                s.key,
+            ),
+        )
 
     # ------------------------------------------------------------------ scoring
 
@@ -254,7 +285,7 @@ class LearnedDispatcher:
 
     def rank(self, role: str, task_class: str, *, exclude_model_families: set[str] | None = None) -> list[Candidate]:
         specs = self.eligible(role, exclude_model_families)
-        default = self.default_order(specs)
+        default = self.role_order(specs, role)
         if self.mode not in ("shadow", "live") or not specs:
             return [s.candidate for s in default]
         scored = {s.key: round(self.score(s, role, task_class), 4) for s in specs}

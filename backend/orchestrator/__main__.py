@@ -1,9 +1,10 @@
 """``python -m orchestrator`` — run, inspect and resume orchestrated coding tasks.
 
     run "<goal>" [--cwd DIR] [--workers claude_code,antigravity,ollama] [--dispatch off|shadow|live]
-                 [--max-usd N] [--no-harden] [--no-tier2] [--json]
-    status [--json]               pool headroom, recent runs and handoffs — reads state.db, spends nothing
-    show RUN_ID [--json]          one run: its plan, history, audit
+                 [--max-usd N] [--max-rounds N] [--max-parallel N] [--no-research] [--no-harden]
+                 [--no-conformance] [--no-tier2] [--json]
+    status [--json]               pool headroom, recent runs (with their spend) and handoffs — reads state.db, spends nothing
+    show RUN_ID [--json]          one run: its research, plan, history, audit, rounds and usage by role and worker
     resume RUN_ID                 continue a paused run
     replay [--world steep|ceiling] [--logs N] [--ledger]
                                   judge the learned dispatch policy against always-strongest by replay
@@ -29,12 +30,34 @@ def _prefs(cwd: str) -> Any:
     return settings_store.current(cwd)
 
 
+def _usage_summary(rows: list[dict[str, Any]]) -> str:
+    """``usage 4 call(s) · 12k tokens · $0.0310 — plan 1, execute 2, audit 1`` — one line for a ``usage`` event."""
+    from .status import _compact, usage_totals
+
+    totals = usage_totals(rows)
+    by_role: dict[str, int] = {}
+    for row in rows:
+        by_role[str(row.get("role"))] = by_role.get(str(row.get("role")), 0) + int(row.get("calls") or 0)
+    roles = ", ".join(f"{role} {calls}" for role, calls in by_role.items())
+    return f"usage {totals['calls']} call(s) · {_compact(totals['tokens'])} tokens · ${totals['cost_usd']:.4f}" + (f" — {roles}" if roles else "")
+
+
+def _usage_table(rows: list[dict[str, Any]]) -> list[str]:
+    header = ("role", "worker", "calls", "tokens in", "tokens out", "cost")
+    body = [(str(r.get("role")), str(r.get("worker")), str(int(r.get("calls") or 0)), str(int(r.get("tokens_in") or 0)), str(int(r.get("tokens_out") or 0)), f"${float(r.get('cost_usd') or 0.0):.4f}") for r in rows]
+    widths = [max(len(row[i]) for row in [header, *body]) for i in range(len(header))]
+    fmt = lambda row: "  " + "  ".join(cell.ljust(w) if i < 2 else cell.rjust(w) for i, (cell, w) in enumerate(zip(row, widths)))  # noqa: E731
+    return [fmt(header)] + [fmt(row) for row in body]
+
+
 def _printer(as_json: bool):
     """The event listener for a run on a terminal: one line per state change or worker dispatch, or NDJSON."""
 
     def show(event: dict[str, Any]) -> None:
         if as_json:
             print(json.dumps(event, default=str), flush=True)
+        elif event["kind"] == "usage":
+            print("  " + _usage_summary(event.get("totals") or []), flush=True)
         elif event["kind"] == "state":
             print(f"[{event['state']}]" + "".join(f" {k}={v}" for k, v in event.items() if k not in ("kind", "run_id", "state", "ts")), flush=True)
         elif event["kind"] in ("step_dispatch", "step_result", "handoff", "rollback", "paused", "budget_exhausted"):
@@ -61,6 +84,14 @@ async def _run(args: argparse.Namespace) -> int:
         run_config.harden = False
     if args.no_tier2:
         run_config.tier2 = False
+    if args.max_rounds is not None:
+        run_config.max_rounds = max(0, args.max_rounds)
+    if args.max_parallel is not None:
+        run_config.max_parallel = max(1, args.max_parallel)
+    if args.no_conformance:
+        run_config.conformance = False
+    if args.no_research:
+        run_config.research = False
 
     show = _printer(args.json)
 
@@ -85,7 +116,11 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--dispatch", choices=("off", "shadow", "live"), help="worker dispatch policy mode")
     run.add_argument("--allow-direct", action="store_true", help="allow direct network access without an active vault proxy")
     run.add_argument("--max-usd", type=float, help="budget cap envelope in USD")
+    run.add_argument("--max-rounds", type=int, help="most conformance fix rounds before replanning (default 3)")
+    run.add_argument("--max-parallel", type=int, help="most independent steps run at once in a wave (default 3)")
+    run.add_argument("--no-research", action="store_true", help="skip the research brief before planning")
     run.add_argument("--no-harden", action="store_true", help="skip the cross-family hardening review pass")
+    run.add_argument("--no-conformance", action="store_true", help="skip the conformance check against the goal after audit")
     run.add_argument("--no-tier2", action="store_true", help="skip the residual LLM review in audit")
     run.add_argument("--json", action="store_true", help="stream NDJSON events instead of terminal formatting")
     status = sub.add_parser("status", help="pool headroom, recent runs and handoffs")
@@ -145,6 +180,8 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(record.to_json(), indent=1, default=str))
         else:
             print(f"{record.run_id}  {record.state}  {record.goal}\n")
+            if record.research:
+                print(f"Research: {len(record.research.get('findings') or [])} verified finding(s)\n")
             if record.plan:
                 print(Plan.from_json(record.plan).render())
             for entry in record.history:
@@ -153,6 +190,11 @@ def main(argv: list[str] | None = None) -> int:
                 print("\nAudit: " + ("passed" if record.audit.get("tier1_ok") else "failed") + (f", verdict {record.audit.get('verdict')}" if record.audit.get("verdict") else ""))
                 for failure in record.audit.get("failures", []):
                     print(f"  - {failure.splitlines()[0]}")
+            print(f"\nConformance rounds: {record.rounds}")
+            if record.usage:
+                print("\nUsage:")
+                for line in _usage_table(record.usage):
+                    print(line)
         return 0
     if args.cmd == "resume":
         from . import config

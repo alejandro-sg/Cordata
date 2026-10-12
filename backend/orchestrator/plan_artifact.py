@@ -13,7 +13,11 @@ What the checks refuse, and why it matters later:
 * duplicate step ids, an unknown criterion type, a ``file_not_changed`` criterion on a file a step is allowed to change
   (the plan contradicts itself), a ``regex_match`` whose pattern does not compile;
 * **no checkable criterion at all** — a plan whose only acceptance is the model's say-so cannot be audited
-  deterministically, which is the whole point of Tier 1.
+  deterministically, which is the whole point of Tier 1;
+* a bad ``complexity``, a ``depends_on`` naming an unknown step or the step itself, or a dependency cycle — the
+  executor runs independent steps in parallel waves ordered by these edges;
+* when a verified research brief exists (``findings`` is given): a ``grounded_in`` id that is not one of its
+  findings, or a plan in which no step cites any finding at all.
 
 Persisted as JSON in ``orch_runs.plan_json`` (``state.db``) and rendered on disk for a person to read.
 """
@@ -33,6 +37,7 @@ from workers import scope as scope_mod
 CRITERION_TYPES = ("command", "test", "file_exists", "file_not_changed", "regex_match")
 RISKS = ("read_only", "edits_files", "destructive")
 ROLLBACK = ("rollback_checkpoint", "keep_partial")
+COMPLEXITIES = ("low", "medium", "high")
 STEP_STATUSES = ("pending", "running", "completed", "failed", "partial", "skipped")
 MAX_STEPS = 12
 MAX_CRITERIA = 20
@@ -75,6 +80,9 @@ DRAFT_SCHEMA: dict[str, Any] = {
                     "file_scope": {"type": "array", "items": {"type": "string"}},
                     "risk": {"enum": list(RISKS)},
                     "rollback_policy": {"enum": list(ROLLBACK)},
+                    "grounded_in": {"type": "array", "items": {"type": "string"}},
+                    "complexity": {"enum": list(COMPLEXITIES)},
+                    "depends_on": {"type": "array", "items": {"type": "string"}},
                 },
             },
         },
@@ -136,6 +144,10 @@ class Step:
     #: Which worker/model ran it last, and how many handoffs it took — filled by the executor.
     worker: str | None = None
     attempts: int = 0
+    #: Research finding ids the step rests on, how hard it is (routes the worker), and the steps it waits for.
+    grounded_in: list[str] = field(default_factory=list)
+    complexity: str = "medium"
+    depends_on: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -200,8 +212,12 @@ class Plan:
 
         lines += ["", "## Steps"]
         for i, step in enumerate(self.steps, 1):
-            lines.append(f"{i}. [{step.status}] **{step.name}** (`{step.step_id}`, {step.risk}) — {step.description}")
+            lines.append(f"{i}. [{step.status}] **{step.name}** (`{step.step_id}`, {step.risk}, {step.complexity}) — {step.description}")
             lines.append(f"   scope: {', '.join(step.file_scope) or '(read only)'}")
+            if step.depends_on:
+                lines.append(f"   depends on: {', '.join(step.depends_on)}")
+            if step.grounded_in:
+                lines.append(f"   grounded in: {', '.join(step.grounded_in)}")
         lines += ["", "## Acceptance criteria"]
         lines += [f"- `{c.id}` {c.type}{(' ' + c.target) if c.target else ''} — {c.description}" for c in self.acceptance_criteria]
         if self.verifier_commands:
@@ -219,8 +235,38 @@ class PlanError(ValueError):
         self.problems = problems
 
 
-def problems(draft: Any, root: str) -> list[str]:
-    """Every reason ``draft`` is not an acceptable plan for the project at ``root``. Empty means acceptable."""
+def _cycle(edges: dict[str, list[str]]) -> list[str] | None:
+    """A dependency cycle among ``edges`` (step id → the ids it depends on), as the ids along it, or None."""
+    state: dict[str, int] = {}  # 1 = on the DFS path, 2 = done
+    path: list[str] = []
+
+    def visit(node: str) -> list[str] | None:
+        state[node] = 1
+        path.append(node)
+        for dep in edges.get(node, []):
+            if state.get(dep) == 1:
+                return path[path.index(dep):] + [dep]
+            if dep not in state:
+                found = visit(dep)
+                if found:
+                    return found
+        path.pop()
+        state[node] = 2
+        return None
+
+    for node in edges:
+        if node not in state:
+            found = visit(node)
+            if found:
+                return found
+    return None
+
+
+def problems(draft: Any, root: str, findings: set[str] | None = None) -> list[str]:
+    """Every reason ``draft`` is not an acceptable plan for the project at ``root``. Empty means acceptable.
+
+    ``findings`` is the set of verified research finding ids: when given, steps may cite only those in
+    ``grounded_in`` and at least one step must cite one. ``None`` (no verified brief) leaves citations unchecked."""
     if not isinstance(draft, dict):
         return ["the plan is not a JSON object"]
     out: list[str] = []
@@ -246,6 +292,31 @@ def problems(draft: Any, root: str) -> list[str]:
                 out.append(f"step {sid!r}: {reason}")
         if risk != "read_only":
             writable.extend(step["file_scope"])
+        complexity = step.get("complexity", "medium")
+        if complexity not in COMPLEXITIES:
+            out.append(f"step {sid!r}: complexity {complexity!r} is not one of {', '.join(COMPLEXITIES)}")
+    edges: dict[str, list[str]] = {}
+    cited = 0
+    for step in draft["steps"]:
+        sid = str(step["step_id"])
+        deps = [str(d) for d in step.get("depends_on") or []]
+        for dep in deps:
+            if dep == sid:
+                out.append(f"step {sid!r} depends on itself")
+            elif dep not in step_ids:
+                out.append(f"step {sid!r} depends on unknown step {dep!r}")
+        edges.setdefault(sid, []).extend(d for d in deps if d != sid and d in step_ids)
+        if findings is not None:
+            for ref in step.get("grounded_in") or []:
+                if str(ref) in findings:
+                    cited += 1
+                else:
+                    out.append(f"step {sid!r} cites {str(ref)!r}, which is not a verified finding")
+    cycle = _cycle(edges)
+    if cycle:
+        out.append(f"the steps' depends_on form a cycle: {' -> '.join(cycle)}")
+    if findings is not None and not cited:
+        out.append("no step cites a verified research finding in grounded_in")
     checkable = 0
     ids: set[str] = set()
     for criterion in draft["acceptance_criteria"]:
@@ -289,8 +360,11 @@ def problems(draft: Any, root: str) -> list[str]:
     return out
 
 
-def from_draft(draft: Any, root: str, *, max_usd: float = 2.0, max_tokens: int | None = None, plan_id: str | None = None, version: int = 1) -> Plan:
-    found = problems(draft, root)
+def from_draft(
+    draft: Any, root: str, *, max_usd: float = 2.0, max_tokens: int | None = None, plan_id: str | None = None, version: int = 1,
+    findings: set[str] | None = None,
+) -> Plan:
+    found = problems(draft, root, findings)
     if found:
         raise PlanError(found)
     steps = [
@@ -301,6 +375,9 @@ def from_draft(draft: Any, root: str, *, max_usd: float = 2.0, max_tokens: int |
             file_scope=[scope_mod.normalize(e) for e in s["file_scope"]] if s.get("risk", "edits_files") != "read_only" else [],
             risk=s.get("risk", "edits_files"),
             rollback_policy=s.get("rollback_policy", "rollback_checkpoint"),
+            grounded_in=[str(g) for g in s.get("grounded_in") or []],
+            complexity=s.get("complexity", "medium"),
+            depends_on=[str(d) for d in s.get("depends_on") or []],
         )
         for s in draft["steps"]
     ]

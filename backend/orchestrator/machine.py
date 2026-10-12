@@ -1,10 +1,18 @@
-"""The durable PLAN → EXECUTE → HARDEN → AUDIT state machine.
+"""The durable RESEARCH → PLAN → EXECUTE → HARDEN → AUDIT state machine.
 
-    PLAN ─► EXECUTE ─► HARDEN ─► AUDIT ─┬─► DONE
-      ▲        │                        ├─► drift: a fix pass (≤ 2), then AUDIT again
-      │        ▼ (quota)                └─► replan (≤ 1): back to the plan-start checkpoint, PLAN with the reasons
-      │     safe-point handoff (executor.py)
-      └──────────── replan (≤ 1) ───────────────
+    (RESEARCH) ─► PLAN ─► EXECUTE ─► HARDEN ─► AUDIT ─┬─► DONE
+       │           ▲        │                        ├─► drift: a fix pass (≤ 2), then AUDIT again
+       │ refused   │        ▼ (quota)                └─► replan (≤ 1): back to the plan-start checkpoint, PLAN with the reasons
+       ▼ twice     │     safe-point handoff (executor.py)
+     FAILED        └──────────── replan (≤ 1) ───────────────
+
+RESEARCH runs only with ``RunConfig.research``: one planner-tier worker writes a brief whose findings cite the code,
+``research.verify`` drops what it cannot check, and the plan must then ground its steps in the surviving finding ids.
+With a brief (and ``RunConfig.conformance``) AUDIT runs Tier 1 only and hands a pass to CONFORMANCE: the planner
+checks the change against its plan and the brief — ``accept`` → DONE; ``gaps`` → a fix round, then HARDEN → AUDIT →
+CONFORMANCE again (≤ ``max_rounds``); ``replan`` or too many rounds → replan (or FAILED).
+After every worker call the machine emits a ``usage`` event (the run's spend by role and worker, and every pool's
+level); the record keeps the final totals.
 
 Every transition is written to ``state.db`` (``orch_runs`` + an ``orchestrator`` event), so a run outlives the
 process that started it: ``resume(run_id)`` picks a *paused* run up where it stopped (every pool was spent; the
@@ -38,13 +46,14 @@ from workers import TaskPacket, collect
 
 from . import audit as audit_mod
 from . import handoff
+from . import research as research_mod
 from .executor import Candidate, ExecResult, StepExecutor
 from .plan_artifact import DRAFT_SCHEMA, Plan, PlanError, Step, from_draft
 from .quota_ledger import QuotaLedger
 
 logger = logging.getLogger(__name__)
 
-STATES = ("plan", "execute", "harden", "audit", "done", "failed", "paused", "budget_exhausted", "cancelled")
+STATES = ("research", "plan", "execute", "harden", "audit", "conformance", "done", "failed", "paused", "budget_exhausted", "cancelled")
 TERMINAL = frozenset({"done", "failed", "budget_exhausted", "cancelled"})
 
 
@@ -68,6 +77,10 @@ class RunConfig:
     tier2: bool = True
     step_timeout_s: float = 1800.0
     plan_timeout_s: float = 600.0
+    research: bool = False
+    conformance: bool = True
+    max_rounds: int = 3
+    max_parallel: int = 3
 
 
 @dataclass
@@ -84,7 +97,11 @@ class RunRecord:
     recoveries: int = 0
     reason: str = ""
     audit: dict[str, Any] | None = None
-    workers: dict[str, list[str]] = field(default_factory=lambda: {"plan": [], "execute": [], "harden": [], "audit": []})
+    workers: dict[str, list[str]] = field(default_factory=lambda: {"research": [], "plan": [], "execute": [], "harden": [], "audit": [], "conformance": []})
+    research: dict[str, Any] | None = None
+    planner: str | None = None
+    rounds: int = 0
+    usage: list[dict[str, Any]] = field(default_factory=list)
     handoffs: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     history: list[dict[str, Any]] = field(default_factory=list)
@@ -96,7 +113,10 @@ class RunRecord:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> "RunRecord":
-        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+        record = cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+        for role in ("research", "plan", "execute", "harden", "audit", "conformance"):
+            record.workers.setdefault(role, [])  # a record from before a role existed
+        return record
 
 
 def save(record: RunRecord) -> None:
@@ -126,7 +146,12 @@ def walkthrough(record: RunRecord) -> str:
     plan_worker = record.workers.get("plan", [""])[0] if record.workers.get("plan") else "planner"
     harden_worker = record.workers.get("harden", [""])[0] if record.workers.get("harden") else "reviewer"
     audit_worker = record.workers.get("audit", [""])[0] if record.workers.get("audit") else "auditor"
-    lines += ["", "```mermaid", "flowchart TD", f'    Start(["Start"]) --> Plan["Plan ({plan_worker})"]']
+    lines += ["", "```mermaid", "flowchart TD"]
+    if record.research:
+        research_worker = record.planner or (record.workers.get("research") or ["researcher"])[0]
+        lines += [f'    Start(["Start"]) --> Research["Research ({research_worker})"]', f'    Research --> Plan["Plan ({plan_worker})"]']
+    else:
+        lines.append(f'    Start(["Start"]) --> Plan["Plan ({plan_worker})"]')
     prev_node = "Plan"
     if record.plan and record.plan.get("steps"):
         for i, step in enumerate(record.plan.get("steps", [])):
@@ -158,24 +183,33 @@ def walkthrough(record: RunRecord) -> str:
             "> [!NOTE]",
             f"> Autonomous self-correction invoked: {len(record.handoffs)} handoff(s), {record.drift_retries} drift fix pass(es), {record.replans} replan(s).",
         ]
+    if record.usage:
+        lines += ["", "## Usage", "| role | worker | calls | tokens in | tokens out | cost |", "| --- | --- | ---: | ---: | ---: | ---: |"]
+        for row in record.usage:
+            lines.append(f"| {row.get('role')} | `{row.get('worker')}` | {int(row.get('calls') or 0)} | {int(row.get('tokens_in') or 0)} | {int(row.get('tokens_out') or 0)} | ${float(row.get('cost_usd') or 0.0):.4f} |")
     if record.warnings:
         lines += ["", "## Warnings", "> [!WARNING]"] + [f"> - {w}" for w in record.warnings]
+    artifacts = (["research.md"] if record.research else []) + (["plan.md"] if record.plan else []) + ["walkthrough.md"]
+    lines += ["", "## Artifacts"] + [f"- `{name}`" for name in artifacts]
     return "\n".join(lines) + "\n"
 
 
 def write_artifacts(record: RunRecord) -> None:
-    """``plan.md`` once there is a plan, ``walkthrough.md`` on every transition (it says where the run stands). Private
-    (0700/0600): the plan quotes the goal, which is the person's own words. Never raises."""
+    """``research.md`` once there is a verified brief, ``plan.md`` once there is a plan, ``walkthrough.md`` on every
+    transition (it says where the run stands). Private (0700/0600): the plan quotes the goal, which is the person's own
+    words. Never raises."""
     import os
 
     try:
         target = artifacts_dir(record.run_id)
         target.mkdir(parents=True, exist_ok=True)
         os.chmod(target, 0o700)
+        if record.research:
+            (target / "research.md").write_text(research_mod.render(record.research), encoding="utf-8")
         if record.plan:
             (target / "plan.md").write_text(Plan.from_json(record.plan).render(), encoding="utf-8")
         (target / "walkthrough.md").write_text(walkthrough(record), encoding="utf-8")
-        for name in ("plan.md", "walkthrough.md"):
+        for name in ("research.md", "plan.md", "walkthrough.md"):
             if (target / name).exists():
                 os.chmod(target / name, 0o600)
     except OSError:
@@ -235,6 +269,7 @@ class OrchestratorMachine:
         self.plan: Plan | None = Plan.from_json(record.plan) if record.plan else None
         self._exec_families: set[str] = set()
         self._resume_packet: handoff.HandoffPacket | None = None
+        self._last_report: audit_mod.AuditReport | None = None
         self._recovery_note = ""
 
     # ------------------------------------------------------------------ bookkeeping
@@ -245,6 +280,8 @@ class OrchestratorMachine:
         self.record.history.append(entry)
         if self.plan is not None:
             self.record.plan = self.plan.to_json()
+        if state in TERMINAL or state == "paused":
+            self.record.usage = self.ledger.run_usage(self.record.run_id)
         save(self.record)
         state_store.append_event("orchestrator", {"run_id": self.record.run_id, **entry}, session_id=self.record.run_id, source="orchestrator")
         self._emit("state", **entry)
@@ -255,8 +292,12 @@ class OrchestratorMachine:
     def _credit(self, ok: bool) -> None:
         """The run's outcome is every role's reward: a step that "completed" but failed the audit was not a success,
         and a planner whose plan could not be executed was not either. Paused and budget stops credit no one."""
-        for role in ("plan", "execute", "harden", "audit"):
-            used = list(dict.fromkeys(self.record.workers.get(role, [])))
+        by_role: dict[str, list[str]] = {}
+        for role in ("research", "plan", "execute", "harden", "audit", "conformance"):
+            observed = "plan" if role in ("research", "conformance") else role  # the planner researches and checks conformance
+            by_role.setdefault(observed, []).extend(self.record.workers.get(role, []))
+        for role, keys in by_role.items():
+            used = list(dict.fromkeys(keys))
             if not used:
                 continue
             for candidate in self.dispatcher.rank(role, self.record.task_class):
@@ -268,6 +309,16 @@ class OrchestratorMachine:
             self.on_event({"kind": kind, "run_id": self.record.run_id, **payload})
         except Exception:
             logger.debug("orchestrator: event listener failed", exc_info=True)
+
+    def _emit_usage(self, _detail: dict[str, Any] | None = None) -> None:
+        """A ``usage`` event after a worker call: the run's spend by role and worker, and where every pool stands."""
+        try:
+            pools = [{"pool_id": s.pool_id, "pct": s.pct, "used": s.used, "limit": s.limit} for s in self.ledger.states()]
+            totals = self.ledger.run_usage(self.record.run_id)
+        except Exception:
+            logger.debug("orchestrator: could not read usage", exc_info=True)
+            return
+        self._emit("usage", totals=totals, pools=pools)
 
     def _observe(self, role: str, candidate: Candidate, **outcome: Any) -> None:
         try:
@@ -282,11 +333,14 @@ class OrchestratorMachine:
     def _usable(self, ranked: list[Candidate]) -> list[Candidate]:
         return [c for c in ranked if self.ledger.level(c.family, c.model) in ("ok", "soft")]
 
-    async def _one_shot(self, role: str, candidate: Candidate, prompt: str, *, schema: dict[str, Any] | None, scope: list[str] | None = None, timeout: float) -> Any:
+    async def _one_shot(self, role: str, candidate: Candidate, prompt: str, *, schema: dict[str, Any] | None, scope: list[str] | None = None, timeout: float, label: str | None = None) -> Any:
+        """One worker call. ``role`` is the worker's role (what its sandbox allows); ``label`` is the machine's phase —
+        the task id's middle part, the ledger's role and the record's ``workers`` key (default: ``role``)."""
+        label = label or role
         usd, tokens, _ = self._envelope_left()
         allowance = self.ledger.step_allowance(candidate.family, candidate.model)
         task = TaskPacket(
-            task_id=f"{self.record.run_id}:{role}:{len(self.record.history)}",
+            task_id=f"{self.record.run_id}:{label}:{len(self.record.history)}",
             role=role,
             prompt=prompt,
             cwd=self.project,
@@ -298,27 +352,67 @@ class OrchestratorMachine:
             effort=candidate.effort,
             json_schema=schema,
         )
-        self._emit("dispatch", role=role, worker=candidate.key)
+        self._emit("dispatch", role=label, worker=candidate.key)
         _, result = await collect(candidate.worker.run(task))
-        self.ledger.record_result(session_id=self.record.run_id, step_id=role, family=candidate.family, model=candidate.model or result.model, result=result)
-        self.record.workers.setdefault(role, []).append(candidate.key)
+        self.ledger.record_result(session_id=self.record.run_id, step_id=label, family=candidate.family, model=candidate.model or result.model, result=result, role=label, worker=candidate.key)
+        self.record.workers.setdefault(label, []).append(candidate.key)
+        self._emit_usage()
         return result
 
     # ------------------------------------------------------------------ phases
 
+    async def _research(self) -> None:
+        """The brief the plan is grounded in, from the cheapest usable planner-tier worker (read-only: a ``plan`` task).
+        A brief ``research.verify`` refuses is asked for once more with the reasons; refused twice fails the run. A
+        worker that gives no brief at all hands over to the next planner; when none does, the run plans without one."""
+        problems: list[str] = []
+        for candidate in self._usable(self.dispatcher.rank("plan", self.record.task_class)):
+            feedback: list[str] = []
+            for attempt in (1, 2):
+                result = await self._one_shot("plan", candidate, research_mod.prompt(self.record.goal, feedback), schema=research_mod.RESEARCH_SCHEMA, timeout=self.config.plan_timeout_s, label="research")
+                if result.status != "completed":
+                    problems.append(f"{candidate.key}: {result.error_message or result.status}")
+                    break
+                verified = research_mod.verify(result.structured, self.project)
+                if not verified.refused:
+                    self.record.research = verified.brief
+                    self.record.planner = candidate.key
+                    if verified.dropped:
+                        self.record.warnings.append(f"research: {len(verified.dropped)} finding(s) without verifiable evidence dropped ({', '.join(d or '?' for d in verified.dropped[:10])})")
+                    self._transition("plan", researcher=candidate.key, findings=len(verified.brief.get("findings") or []), dropped=len(verified.dropped) or None)
+                    return
+                if attempt == 2:
+                    self._observe("plan", candidate, ok=False)
+                    self._fail(f"the research brief by {candidate.key} was refused twice: " + "; ".join(verified.reasons[:5]))
+                    return
+                feedback = verified.reasons[:20]
+            self._observe("plan", candidate, ok=False)  # only a failed call gets here: try the next planner
+        self.record.warnings.append("research skipped: no usable planner produced a brief" + (f" ({'; '.join(problems[:3])})" if problems else "") + "; planning without one")
+        self._transition("plan", research="skipped")
+
     async def _plan(self, feedback: list[str]) -> bool:
         prompt = f"{PLAN_BRIEF}\n\nThe work:\n{self.record.goal}"
+        findings: set[str] | None = None
+        if self.record.research:
+            findings = {str(f.get("id")) for f in self.record.research.get("findings") or [] if isinstance(f, dict) and f.get("id")}
+            prompt += (
+                "\n\nA verified research brief of this project follows. Ground every step in it: list the ids of the "
+                "findings each step relies on in its grounded_in field, and cite only these ids.\n\n" + research_mod.render(self.record.research)
+            )
         if feedback:
             prompt += "\n\nA previous plan did not work out. Plan again, taking this into account:\n- " + "\n- ".join(feedback[:30])
         problems: list[str] = []
-        for candidate in self._usable(self.dispatcher.rank("plan", self.record.task_class))[:2]:
+        planners = self._usable(self.dispatcher.rank("plan", self.record.task_class))
+        if self.record.planner:  # the worker that researched the project plans it, when it still can
+            planners.sort(key=lambda c: c.key != self.record.planner)
+        for candidate in planners[:2]:
             result = await self._one_shot("plan", candidate, prompt, schema=DRAFT_SCHEMA, timeout=self.config.plan_timeout_s)
             if result.status != "completed":
                 problems.append(f"{candidate.key}: {result.error_message or result.status}")
                 self._observe("plan", candidate, ok=False)
                 continue
             try:
-                self.plan = from_draft(result.structured, self.project, max_usd=self.config.max_usd, max_tokens=self.config.max_tokens, version=self.record.replans + 1)
+                self.plan = from_draft(result.structured, self.project, max_usd=self.config.max_usd, max_tokens=self.config.max_tokens, version=self.record.replans + 1, findings=findings)
             except PlanError as error:
                 problems.append(f"{candidate.key}: the plan was refused: {error}")
                 self._observe("plan", candidate, ok=False)
@@ -346,6 +440,9 @@ class OrchestratorMachine:
             timeout_s=self.config.step_timeout_s,
             extra_prompt=extra_prompt or (self._recovery_note if recovering else ""),
             start_packet=start,
+            profile=self._profile(),
+            max_parallel=self.config.max_parallel,
+            on_usage=self._emit_usage,
             # A drift fix is the hard case — the plan was done and was not good enough — so it goes to the strongest
             # worker still allowed, not to whichever pool has the most room.
             strongest_first=recovering or steps is not None,
@@ -362,6 +459,19 @@ class OrchestratorMachine:
             if candidate.key in result.workers_used:
                 self._exec_families.add(candidate.model_family)
         return result
+
+    def _profile(self) -> dict[str, tuple[int, float]]:
+        """Candidate key → (tier rank, unit price), from the dispatcher's specs when it has any — what routes a step by
+        its complexity. A dispatcher without specs (a fixed order) gives none, and every step keeps the list order."""
+        from .dispatch import TIER_RANK
+
+        profile: dict[str, tuple[int, float]] = {}
+        for spec in getattr(self.dispatcher, "specs", None) or []:
+            try:
+                profile[spec.key] = (TIER_RANK.get(spec.tier, 1), float(spec.unit_price))
+            except (AttributeError, TypeError, ValueError):
+                continue
+        return profile
 
     def _executor_families(self) -> set[str]:
         """The model families that wrote this change — this process's, plus a resumed run's from its record."""
@@ -383,12 +493,22 @@ class OrchestratorMachine:
         candidate = ranked[0]
         snap = checkpoints.take(self.project, kind="pre", tool="orchestrator", agent="harden", session_id=self.record.run_id, turn="harden")
         diff, stat = checkpoints.diff_since(self.project, self.record.start_checkpoint) if self.record.start_checkpoint else ("", "")
+        scope = self.plan.scope_union()
+        commands = [c.target for c in self.plan.acceptance_criteria if c.type in ("command", "test") and c.target] + list(self.plan.verifier_commands)
+        findings = [f for f in (self.record.research or {}).get("findings") or [] if isinstance(f, dict)]
         prompt = (
             f"Goal: {self.plan.goal}\n\nThe change so far ({stat}):\n<<<UNTRUSTED_DIFF>>>\n{audit_mod.secret_patterns.scrub(diff[:24000])[0]}\n<<<END_UNTRUSTED_DIFF>>>\n\n"
             "Review it for bugs, unhandled edge cases and security problems against the goal and these criteria:\n"
             + "\n".join(f"- {c.id}: {c.description}" for c in self.plan.acceptance_criteria)
+            + "\n\nYour mandate:\n"
+            + "1. Run the plan's acceptance commands:\n"
+            + ("\n".join(f"   - `{command}`" for command in commands) if commands else "   (the plan lists none)")
+            + "\n2. Fix real failures only, and only inside the step scope: " + (", ".join(scope) or "(none)") + "\n"
+            + "3. Close gaps against the research brief"
+            + ((":\n" + "\n".join(f"   - [{f.get('id')}] {f.get('claim')}" for f in findings)) if findings else " (there is none: close gaps against the goal and criteria)")
+            + "\n4. Do not widen the scope: no new files or edits outside it, no unrelated refactors."
         )
-        result = await self._one_shot("harden", candidate, prompt, schema=None, scope=self.plan.scope_union(), timeout=self.config.step_timeout_s)
+        result = await self._one_shot("harden", candidate, prompt, schema=None, scope=scope, timeout=self.config.step_timeout_s)
         bad = result.status != "completed" or result.out_of_scope
         if bad and snap.ok:
             checkpoints.restore(self.project, snap.id, session_id=self.record.run_id)
@@ -398,16 +518,82 @@ class OrchestratorMachine:
     async def _audit(self) -> audit_mod.AuditReport:
         assert self.plan is not None
         reviewer = None
-        if self.config.tier2:
+        if self.config.tier2 and not self._conformance_loop():  # in the loop, conformance replaces the Tier-2 reviewer
             ranked = self._usable(self.dispatcher.rank("audit", self.record.task_class))
             reviewer = ranked[0] if ranked else None
         report = await audit_mod.audit(self.plan, self.project, self.record.start_checkpoint, reviewer, run_id=self.record.run_id)
+        self._last_report = report
         if report.tier2_result is not None and reviewer is not None:
             r = report.tier2_result
-            self.ledger.record_result(session_id=self.record.run_id, step_id="audit", family=reviewer.family, model=reviewer.model or r.model, result=r)
+            self.ledger.record_result(session_id=self.record.run_id, step_id="audit", family=reviewer.family, model=reviewer.model or r.model, result=r, role="audit", worker=reviewer.key)
             self.record.workers.setdefault("audit", []).append(reviewer.key)
+            self._emit_usage()
         self.record.audit = report.to_json()
         return report
+
+    def _conformance_loop(self) -> bool:
+        """The research loop's audit: Tier 1, then the planner's conformance check instead of a Tier-2 reviewer."""
+        return bool(self.config.conformance and self.record.research)
+
+    def _conformance_candidate(self) -> Candidate | None:
+        """The planner that researched and planned the run checks it. When it is gone or out of quota, the cheapest
+        usable standard-tier planner does (with a warning naming both)."""
+        from .dispatch import TIER_RANK
+
+        ranked = self.dispatcher.rank("plan", self.record.task_class)
+        planner = next((c for c in ranked if c.key == self.record.planner), None) if self.record.planner else None
+        if planner is not None and self.ledger.level(planner.family, planner.model) in ("ok", "soft"):
+            return planner
+        profile = self._profile()
+        standard = TIER_RANK["standard"]
+        usable = [c for c in self._usable(ranked) if c.key != self.record.planner and profile.get(c.key, (standard, 0.0))[0] == standard]
+        usable.sort(key=lambda c: profile.get(c.key, (standard, float("inf")))[1])  # stable: list order breaks ties
+        why = "is not ranked for planning" if planner is None else f"is at pool level {self.ledger.level(planner.family, planner.model)}"
+        if not usable:
+            self.record.warnings.append(f"conformance: planner {self.record.planner or '(none)'} {why} and no usable standard-tier planner can stand in")
+            return None
+        self.record.warnings.append(f"conformance: planner {self.record.planner or '(none)'} {why}; {usable[0].key} checks conformance instead")
+        return usable[0]
+
+    async def _conformance(self) -> list[str] | None:
+        """Does the change conform to the plan and the brief? ``accept`` ends the run; ``gaps`` buys a fix round (then
+        HARDEN → AUDIT → CONFORMANCE again) up to ``max_rounds``; ``replan`` or too many rounds goes back to PLAN. An
+        unavailable or unusable check is a warning, and the run is accepted on Tier 1. Returns the replan feedback, if any."""
+        assert self.plan is not None
+        report = self._last_report or await audit_mod.tier1(self.plan, self.project, self.record.start_checkpoint)  # a resumed run has no report in memory
+        candidate = self._conformance_candidate()
+        if candidate is None:
+            self._transition("done", verdict="accept(tier1)")
+            return None
+
+        async def runner(prompt: str) -> Any:
+            return await self._one_shot("plan", candidate, prompt, schema=audit_mod.CONFORMANCE_SCHEMA, timeout=self.config.plan_timeout_s, label="conformance")
+
+        verdict, gaps, result = await audit_mod.conformance(
+            self.plan, self.record.research, report, self.project, self.record.start_checkpoint, candidate, run_id=self.record.run_id, timeout_s=self.config.plan_timeout_s, runner=runner
+        )
+        items = [f"{g['ref']}: {g['missing']} ({g['severity']})" for g in gaps]
+        if self.record.audit is not None:
+            self.record.audit.update(conformance=verdict or None, conformance_worker=candidate.key, gaps=gaps)
+        if not verdict:
+            problem = (result.error_message or result.status) if result.status != "completed" else "no usable verdict in the answer"
+            self.record.warnings.append(f"conformance check by {candidate.key} unavailable ({problem}); accepted on the deterministic checks")
+            self._transition("done", verdict="accept(tier1)")
+            return None
+        if verdict == "accept":
+            self._transition("done", verdict="accept", conformance=candidate.key)
+            return None
+        if verdict == "replan":
+            reasons = items or ["the conformance check asked for a new plan"]
+            self._replan_or_fail(reasons, "the conformance check asked for a new plan")
+            return reasons
+        self.record.rounds += 1
+        if self.record.rounds <= self.config.max_rounds:
+            self._transition("execute", round=self.record.rounds, gaps=items[:20])
+            await self._fix(items, from_conformance=True)
+            return None
+        self._replan_or_fail(items, f"conformance gaps remained after {self.config.max_rounds} round(s)")
+        return items
 
     # ------------------------------------------------------------------ the loop
 
@@ -417,7 +603,13 @@ class OrchestratorMachine:
             self.record.start_checkpoint = snap.id if snap.ok else None
             if not snap.ok:
                 self.record.warnings.append(f"no plan-start checkpoint ({snap.reason}); a failed run cannot be rolled back")
-            self._transition("plan" if self.plan is None else self.record.state)
+            if self.plan is not None:
+                first = self.record.state
+            elif (not self.record.history and self.config.research) or self.record.state == "research":
+                first = "research"  # a fresh run researches first when asked to; an interrupted one picks it back up
+            else:
+                first = "plan"
+            self._transition(first)
         if self.record.state == "paused":
             packets = handoff.for_session(self.record.run_id)
             self._resume_packet = packets[-1] if packets else None
@@ -430,7 +622,9 @@ class OrchestratorMachine:
                 self.record.reason = "the plan's budget envelope is spent"
                 self._transition("budget_exhausted")
                 break
-            if state == "plan":
+            if state == "research":
+                await self._research()
+            elif state == "plan":
                 if not await self._plan(feedback):
                     self._fail(self.record.reason)
             elif state == "execute":
@@ -460,6 +654,9 @@ class OrchestratorMachine:
                 self._transition("audit")
             elif state == "audit":
                 report = await self._audit()
+                if report.tier1_ok and self._conformance_loop():
+                    self._transition("conformance", checks=len(report.checks))
+                    continue
                 accepted = report.tier1_ok and (report.verdict == "accept" or (not report.tier2_used or report.tier2_error) and not report.ambiguous)
                 if report.tier1_ok and report.tier2_used and report.tier2_error:
                     self.record.warnings.append(f"tier 2 audit unavailable ({report.tier2_error}); accepted on the deterministic checks")
@@ -480,25 +677,50 @@ class OrchestratorMachine:
                         feedback = items
                     else:
                         self._fail(f"the audit gave no usable verdict ({report.verdict!r})")
+            elif state == "conformance":
+                reasons = await self._conformance()
+                if reasons is not None:
+                    feedback = reasons
         return self.record
 
-    async def _fix(self, items: list[str]) -> None:
-        """One drift retry: a single extra step over the whole plan scope, told exactly what the audit found."""
+    async def _fix(self, items: list[str], *, from_conformance: bool = False) -> None:
+        """One drift retry (or conformance round): a single extra step over the whole plan scope, told exactly what the
+        audit found. A conformance round goes through HARDEN again (when on) before the audit."""
         assert self.plan is not None
-        step = Step(
-            step_id=f"fix-{self.record.drift_retries}",
-            name="Fix what the audit found",
-            description="The audit of the completed plan found these problems. Fix them without undoing the rest:\n- " + "\n- ".join(items[:30]),
-            file_scope=self.plan.scope_union(),
-        )
+        if from_conformance:
+            step_id, name, found = f"gap-{self.record.rounds}", "Close the conformance gaps", "The conformance check of the completed plan found these gaps. Close them without undoing the rest:\n- "
+            after = "harden" if self.config.harden else "audit"
+        else:
+            step_id, name, found = f"fix-{self.record.drift_retries}", "Fix what the audit found", "The audit of the completed plan found these problems. Fix them without undoing the rest:\n- "
+            after = "audit"
+        step = Step(step_id=step_id, name=name, description=found + "\n- ".join(items[:30]), file_scope=self.plan.scope_union())
         result = await self._execute(steps=[step])
         if result.status == "completed":
-            self._transition("audit", fix=step.step_id)
+            self._transition(after, fix=step.step_id)
         elif result.status in ("paused", "budget_exhausted", "cancelled"):
             self.record.reason = result.reason
             self._transition(result.status, reason=result.reason)
         else:
-            self._transition("audit", fix=step.step_id, fix_failed=result.reason)
+            self._transition(after, fix=step.step_id, fix_failed=result.reason)
+
+    def _keep_discarded(self, why: str) -> None:
+        """Before the project goes back to the start of the run, write what is about to be thrown away to the run's
+        artifacts folder as a patch. A restore is the right answer to a plan that cannot be made to work, but it is
+        irreversible by design — and the first real multi-step run lost nine good steps to one bad one. Never raises."""
+        if not self.record.start_checkpoint:
+            return
+        try:
+            patch, stat = checkpoints.diff_since(self.project, self.record.start_checkpoint)
+            if not patch.strip():
+                return
+            target = artifacts_dir(self.record.run_id)
+            target.mkdir(parents=True, exist_ok=True)
+            name = f"discarded-{len(self.record.history):03d}.patch"
+            (target / name).write_text(f"# discarded by the orchestrator: {why}\n# {stat.strip().splitlines()[-1] if stat.strip() else ''}\n{patch}", encoding="utf-8")
+            (target / name).chmod(0o600)
+            self.record.warnings.append(f"work discarded by a restore ({why}) was saved to {target / name}")
+        except Exception:
+            logger.debug("orchestrator: could not save the work a restore discards", exc_info=True)
 
     def _keep_discarded(self, why: str) -> None:
         """Before the project goes back to the start of the run, write what is about to be thrown away to the run's
@@ -520,6 +742,7 @@ class OrchestratorMachine:
             logger.debug("orchestrator: could not save the work a restore discards", exc_info=True)
 
     def _replan_or_fail(self, reasons: list[str], why: str) -> None:
+        self.record.rounds = 0
         if self.record.replans < self.config.max_replans:
             self.record.replans += 1
             self.record.drift_retries = 0
