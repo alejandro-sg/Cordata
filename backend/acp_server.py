@@ -64,6 +64,9 @@ import goal as goal_module
 import session_extras
 import session_store
 import task_tool
+import ask_user
+import plan_mode
+import mode_advisor
 import skill_search
 import fix_memory
 import context_digest_tool
@@ -526,7 +529,7 @@ class CordataAcpAgent:
         reserved = {
             "shell", "editor", "file_read", "file_write", "python_repl", "http_request", "web_fetch", "apply_patch", "architect", "debugger",
             claude_code_tool.TOOL_NAME, orchestrate_tool.TOOL_NAME, "omlx_resource_manager", "ollama_resource_manager", "context_digest", "enable_tools", "search_skills",
-            context_offload.RETRIEVE_TOOL, "code_search", "code_outline", "environment_profile", plugin_host.RESOURCE_TOOL,
+            context_offload.RETRIEVE_TOOL, "code_search", "code_outline", "environment_profile", plugin_host.RESOURCE_TOOL, plan_mode.TOOL_NAME, ask_user.TOOL_NAME,
         }
         plugins = _plugin_host(cwd, reserved, trace_store.enabled(preferences))
         heal = SelfHealHooks(config=lambda: _heal_config(settings_store.current(cwd)), session_id=session_id, root=cwd)
@@ -574,6 +577,8 @@ class CordataAcpAgent:
                 env_profile.environment_profile,
                 plugin_host.resources_tool(plugins),
                 task_tool.todo_write,
+                plan_mode.present_plan,
+                ask_user.ask_user,
             ],
             # A result over the limit is set aside whole — written to ~/.cordata/offloaded/<session>/, a head+tail preview and
             # a reference in context, `retrieve_offloaded_content` for the slice the agent wants (Strands' ContextOffloader).
@@ -810,6 +815,8 @@ class CordataAcpAgent:
         session_id = next((sid for sid, s in self._sessions.items() if s is state), session_id)
         if state is None or mode_id not in _MODE_IDS:
             return None
+        if mode_id != state.handler.mode:
+            state.adaptive_hold = mode_advisor.HOLD_TURNS  # the person chose: adaptive mode keeps out of the way for a while
         state.handler.mode = mode_id
         # ACP has no push for a client-initiated change, so another front end watching this
         # session (the Lab) would never learn of it: publish a snapshot, which carries the mode.
@@ -1240,14 +1247,21 @@ class CordataAcpAgent:
             approved = False
             option_id = None
             note = ""
+            plan_tool = tool_name == plan_mode.TOOL_NAME
+            ask_tool = tool_name == ask_user.TOOL_NAME
             answered_by = "user" if self._conn is not None else "no-client"
             if self._conn is not None:
-                options = [acp.schema.PermissionOption(option_id="allow", name="Allow", kind="allow_once")]
-                if always_rule:
-                    options.append(
-                        acp.schema.PermissionOption(option_id="allow_always", name=f"Always allow {always_rule}", kind="allow_always")
-                    )
-                options.append(acp.schema.PermissionOption(option_id="reject", name="Reject", kind="reject_once"))
+                if plan_tool:
+                    options = plan_mode.options()
+                elif ask_tool:
+                    options = ask_user.options(tool_input)
+                else:
+                    options = [acp.schema.PermissionOption(option_id="allow", name="Allow", kind="allow_once")]
+                    if always_rule:
+                        options.append(
+                            acp.schema.PermissionOption(option_id="allow_always", name=f"Always allow {always_rule}", kind="allow_always")
+                        )
+                    options.append(acp.schema.PermissionOption(option_id="reject", name="Reject", kind="reject_once"))
                 result = await self._conn.request_permission(
                     session_id=session_id,
                     tool_call=acp.schema.ToolCallUpdate(
@@ -1284,9 +1298,16 @@ class CordataAcpAgent:
                 # account for who decided what.
                 answered_by = _answered_by(result) or answered_by
                 note = _answer_note(result)
-                if approved and always_rule and option_id == "allow_always":
+                if plan_tool:
+                    self._settle_plan(session_id, state, option_id, note)
+                elif ask_tool:
+                    if state is not None:
+                        ask_user.record(state.agent, tool_input, option_id, note)
+                    # An answered question is not a refusal on the ledger, whatever kind the option carried.
+                    approved = option_id is not None and option_id != ask_user.OPTION_DECLINE
+                elif approved and always_rule and option_id == "allow_always":
                     self._remember_always(session_id, always_rule)
-            if not approved and state is not None:
+            if not approved and state is not None and not plan_tool and not ask_tool:  # feedback on a plan, or "decide for me", is not a lesson to remember
                 state.router_hooks.note_rejection(state.agent)
                 # A person said no: keep the change and their reason, and let the ReflectionAgent turn it into a rule
                 # later turns are held to (rejection_memory.py). A fail-closed "no client" rejection teaches nothing.
@@ -1329,8 +1350,56 @@ class CordataAcpAgent:
                 source="approval",
             )
 
-            responses.append({"interruptResponse": {"interruptId": interrupt.id, "response": approved}})
+            # The plan tool always runs once answered: it reports the answer (approved, or what to change) to the
+            # model as its result, which reads better than the generic confirmation failure a refusal would give.
+            responses.append({"interruptResponse": {"interruptId": interrupt.id, "response": approved or ((plan_tool or ask_tool) and self._conn is not None)}})
         return responses
+
+    def _adapt_mode(self, session_id: str, state, text: str, decision) -> None:
+        """Adaptive mode (mode_advisor.py): a request that wants a plan first starts the turn in plan mode. Only ever tightens —
+        leaving plan is the person's answer to the plan card — and stays out of the way after a mode the person picked."""
+        if state.adaptive_hold > 0:
+            state.adaptive_hold -= 1
+            return
+        if settings_store.current(state.cwd).get("modes.adaptive", True) is False:
+            return
+        route = decision.target.id if decision is not None and getattr(decision, "target", None) else None
+        advice = mode_advisor.advise(text, mode=state.handler.mode, route=route)
+        if not mode_advisor.should_apply(advice, mode=state.handler.mode, held=state.adaptive_hold):
+            return
+        previous = state.handler.mode
+        state.handler.mode = "plan"
+        self._announce_mode(session_id, "plan", previous, "adaptive", advice.reason)
+
+    def _settle_plan(self, session_id: str, state, option_id: str | None, note: str) -> None:
+        """The person answered the plan card: record it for the tool, and — if they approved — move the session to the mode
+        they chose. This is the only way out of plan mode that is not the person's own mode switch."""
+        if state is None:
+            return
+        mode = plan_mode.record(state.agent, option_id, note)
+        if mode is None:
+            return
+        previous = state.handler.mode
+        state.handler.mode = mode
+        state.adaptive_hold = mode_advisor.HOLD_TURNS
+        self._announce_mode(session_id, mode, previous, "plan_approved", "plan approved")
+
+    def _announce_mode(self, session_id: str, mode: str, previous: str, kind: str, reason: str) -> None:
+        """Tell the client the session's mode changed under it: ACP's own update (a client that only knows ACP redraws its
+        mode picker) and a `cordata/mode` extension with why (the TUI shows it as a line and flashes the mode pill)."""
+        loop, conn = self._loop, self._conn
+        if conn is not None and loop is not None and not loop.is_closed():
+            async def push() -> None:
+                try:
+                    await conn.session_update(session_id=session_id, update=acp.schema.CurrentModeUpdate(session_update="current_mode_update", current_mode_id=mode))
+                except Exception:
+                    logging.getLogger(__name__).debug("current_mode_update not delivered", exc_info=True)
+
+            loop.call_soon_threadsafe(lambda: loop.create_task(push()))
+        self._send_ext("cordata/mode", {"sessionId": session_id, "mode": mode, "from": previous, "kind": kind, "reason": reason})
+        lab = lab_module.get()
+        if lab.session_id == session_id:
+            lab.emit(force=True)
 
     def _remember_always(self, session_id: str, rule: str) -> None:
         """"Always allow": save the rule for this project (settings.local.json,
@@ -1956,6 +2025,7 @@ class CordataAcpAgent:
                 else:
                     agent_input = [{"text": text}, os_context.image_block(vision)]
             decision = None if vision is not None else await self._decide(state, text)
+            self._adapt_mode(session_id, state, text, decision)
             if decision is not None:
                 extra = self._apply_bandit(state, decision, text)
                 recorder = outcomes.active(session_id)

@@ -51,6 +51,7 @@ def main() -> None:
         "LAYA_GUARD_ENABLED": "false",
         "CORDATA_HOME": str(work / "home"),
         "CORDATA_NOTIFY": "off",
+        "OLLAMA_ROLE_ORCHESTRATOR": "glm-5.3-flash:low",  # the fake model script is keyed by GLM; the product default is Kimi
     }
     with FakeOllama(scripts) as fake:
         env["OLLAMA_BASE_URL"] = fake.base_url

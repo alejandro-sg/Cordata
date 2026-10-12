@@ -168,6 +168,16 @@ pub fn lines(info: &HealInfo, width: u16, expanded: bool) -> Vec<Line<'static>> 
                 out.push(Line::from(vec![lead, Span::styled(row, dim)]));
             }
         }
+        "missing_file" => out.push(head(
+            "⟲",
+            accent,
+            format!("{} targeted a file that doesn't exist (a denied create writes nothing) — told the agent to send it whole", info.tool.as_deref().unwrap_or("the edit")),
+        )),
+        "bad_patch" => out.push(head(
+            "⟲",
+            accent,
+            format!("{} wasn't a patch it could read — told the agent the format", info.tool.as_deref().unwrap_or("the edit")),
+        )),
         "state_mismatch" => out.push(head(
             "⟲",
             accent,
@@ -230,6 +240,18 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_edit_says_which_kind_of_failure_it_was() {
+        let mut edit = info("missing_file");
+        edit.tool = Some("apply_patch".into());
+        let missing = plain(&lines(&edit, 140, false)).join(" ");
+        assert!(missing.contains("apply_patch targeted a file that doesn't exist") && missing.contains("denied create writes nothing"), "{missing}");
+        edit.phase = "bad_patch".into();
+        assert!(plain(&lines(&edit, 140, false)).join(" ").contains("wasn't a patch it could read"));
+        edit.phase = "state_mismatch".into();
+        assert!(plain(&lines(&edit, 140, false)).join(" ").contains("(file changed)"), "only a real mismatch says the file changed");
+    }
+
+    #[test]
     fn heal_rows_fit_the_width() {
         for phase in [
             "detected",
@@ -239,6 +261,8 @@ mod tests {
             "healed",
             "escalated",
             "no_patch",
+            "missing_file",
+            "bad_patch",
             "continuing",
             "recalled",
             "recall_failed",

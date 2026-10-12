@@ -65,12 +65,34 @@ pub fn tool_may_return_untrusted(tool_name: &str) -> bool {
     UNTRUSTED_SOURCE_TOOLS.contains(&tool_name)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApprovalDecision {
     Allow,
     /// Allow, and save the rule the server offered so it never asks again for this call.
     AllowAlways,
     Reject,
+    /// Pick one of the options the server offered, by its id (a plan card's "approve → edit", a question's answer).
+    Choose(String),
+    /// Refuse, in the person's own words: the backend hands the text to the agent (and to the rejection memory) as the
+    /// reason, or — for a question — takes it as the answer.
+    Say(String),
+}
+
+/// What an option offers: the four kinds ACP defines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChoiceKind {
+    AllowOnce,
+    AllowAlways,
+    RejectOnce,
+    RejectAlways,
+}
+
+/// One option of a permission request, as the server offered it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionChoice {
+    pub id: String,
+    pub name: String,
+    pub kind: ChoiceKind,
 }
 
 #[derive(Debug, Clone)]
@@ -84,6 +106,15 @@ pub struct PermissionInfo {
     pub untrusted_source: bool,
     /// The server's "Always allow <rule>" option, if it offered one.
     pub always_label: Option<String>,
+    /// Every option the server offered, in its order. A plan card and a question are drawn from these.
+    pub options: Vec<PermissionChoice>,
+}
+
+impl PermissionInfo {
+    /// The option with this id, if the server offered it.
+    pub fn option(&self, id: &str) -> Option<&PermissionChoice> {
+        self.options.iter().find(|option| option.id == id)
+    }
 }
 
 pub(crate) fn tool_name_from_title(title: &str) -> &str {

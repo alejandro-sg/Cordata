@@ -398,7 +398,7 @@ class RoleProfile:
 DEFAULT_ROLES: dict[str, RoleProfile] = {
     profile.role: profile
     for profile in (
-        RoleProfile("orchestrator", "glm-5.3-flash", "low"),
+        RoleProfile("orchestrator", "kimi-k2.7-code", "medium"),
         RoleProfile("architect", "glm-5.3-flash", "high"),
         RoleProfile("debugger", "kimi-k2.7-code", "max"),
         RoleProfile("observer", "glm-5.3-flash", "low"),

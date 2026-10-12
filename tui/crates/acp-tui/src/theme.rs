@@ -1,15 +1,20 @@
-//! The Cordata palette.
+//! The Cordata palette — a Blade Runner 2049 night: sodium-vapour amber against cold teal on near-black, the light of
+//! K's apartment and the Wallace atrium, with the thin cyan line-work of a HUD.
 //!
-//! The renderers keep using the semantic ANSI colours (`Cyan` is "accent", `DarkGray` is "dim", `Red` is "danger"…);
-//! this module decides what those names look like on the terminal in front of the person, and `term.rs` applies it at
-//! the one place a colour becomes an escape sequence. So the whole UI changes together, a test that reads the screen
-//! never sees a colour, and a terminal that cannot show the palette falls back to its own.
+//! The renderers keep using the semantic ANSI colours (`Cyan` is "accent", `Magenta` is "the second voice", `DarkGray` is
+//! "dim", `Red` is "danger"…); this module decides what those names look like on the terminal in front of the person,
+//! and `term.rs` applies it at the one place a colour becomes an escape sequence. So the whole UI changes together, a test
+//! that reads the screen never sees a colour, and a terminal that cannot show the palette falls back to its own.
 //!
 //! * truecolor terminals (`COLORTERM=truecolor|24bit`) get the full palette;
 //! * 256-colour terminals (`TERM=*256color`, Terminal.app) get the nearest cube colours;
 //! * `CORDATA_THEME=terminal`, a light terminal (`COLORFGBG`) or anything else keep the terminal's own 16 colours —
-//!   a pastel palette tuned for a dark background would be unreadable on a light one;
+//!   a palette tuned for a dark background would be unreadable on a light one;
 //! * `NO_COLOR` strips colour and keeps bold/dim/reverse.
+//!
+//! The roles, so a new widget picks the right name: **Cyan = sodium amber** (Cordata, the live thing, the prompt),
+//! **Magenta = electric teal** (agents, the orchestrator, untrusted content: the other voice), **Green = cold mint**
+//! (done, safe, plan), **Yellow = pale gold** (needs a look), **Red = vermilion** (danger, auto), **Blue = steel**.
 
 use std::sync::OnceLock;
 
@@ -63,18 +68,18 @@ fn detect(env: impl Fn(&str) -> Option<String>) -> Level {
 /// The palette: what each semantic colour is, as RGB. `None` for colours the theme leaves alone.
 fn palette(color: Color) -> Option<(u8, u8, u8)> {
     Some(match color {
-        // accent — the one colour that means "Cordata"
-        Color::Cyan | Color::LightCyan => (92, 225, 230),
-        // the second voice: agents, the orchestrator, untrusted content
-        Color::Magenta | Color::LightMagenta => (183, 148, 244),
-        Color::Yellow | Color::LightYellow => (246, 196, 83),
-        Color::Green | Color::LightGreen => (104, 211, 145),
-        Color::Red | Color::LightRed => (252, 129, 129),
-        Color::Blue | Color::LightBlue => (99, 179, 237),
+        // accent — the one colour that means "Cordata": sodium-vapour amber
+        Color::Cyan | Color::LightCyan => (255, 158, 61),
+        // the second voice: agents, the orchestrator, untrusted content — electric teal
+        Color::Magenta | Color::LightMagenta => (72, 214, 224),
+        Color::Yellow | Color::LightYellow => (255, 214, 130),
+        Color::Green | Color::LightGreen => (118, 222, 186),
+        Color::Red | Color::LightRed => (255, 96, 74),
+        Color::Blue | Color::LightBlue => (116, 160, 214),
         // secondary text, and the dimmest text that is still readable
-        Color::Gray => (160, 174, 192),
-        Color::DarkGray => (104, 117, 135),
-        Color::White => (237, 242, 247),
+        Color::Gray => (170, 180, 190),
+        Color::DarkGray => (96, 108, 122),
+        Color::White => (238, 241, 245),
         _ => return None,
     })
 }
@@ -155,7 +160,7 @@ mod tests {
 
     #[test]
     fn semantic_colours_become_the_palette_and_everything_else_passes_through() {
-        assert_eq!(remap_for(Level::TrueColor, Color::Cyan), Color::Rgb(92, 225, 230));
+        assert_eq!(remap_for(Level::TrueColor, Color::Cyan), Color::Rgb(255, 158, 61));
         assert_eq!(remap_for(Level::TrueColor, Color::Rgb(1, 2, 3)), Color::Rgb(1, 2, 3));
         assert_eq!(remap_for(Level::TrueColor, Color::Black), Color::Black);
         assert_eq!(remap_for(Level::TrueColor, Color::Reset), Color::Reset);

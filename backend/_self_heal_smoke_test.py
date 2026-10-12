@@ -39,7 +39,7 @@ import specialists  # noqa: E402
 from harness_testing import ScriptedModel, check, last_text, text, tool as call  # noqa: E402
 from self_heal import HealConfig, SelfHealHooks, current_excerpt  # noqa: E402
 
-CHECK = f"{sys.executable} check.py"
+CHECK = f"{sys.executable} -B check.py"
 BUGGY = "def add(a, b):\n    return a - b\n"
 GOOD_PATCH = "--- a/calc.py\n+++ b/calc.py\n@@ -1,2 +1,2 @@\n def add(a, b):\n-    return a - b\n+    return a + b\n"
 WRONG_PATCH = "--- a/calc.py\n+++ b/calc.py\n@@ -1,2 +1,2 @@\n def add(a, b):\n-    return a - b\n+    return a * b\n"
@@ -210,11 +210,14 @@ def test_state_mismatch() -> None:
             call("apply_patch", {"patch": "--- a/calc.py\n+++ b/calc.py\n@@ -1 +1 @@\n-nothing like this\n+x\n"}),
             call("apply_patch", {"patch": "just some prose, not a diff"}),
             call("editor", {"command": "view_range", "path": "calc.py"}),
+            call("apply_patch", {"patch": "--- a/ghost.py\n+++ b/ghost.py\n@@ -1 +1 @@\n-a\n+b\n"}),
             text("ok"),
         ],
         FakeDiagnose([GOOD_PATCH]),
     )
     texts = tool_texts(agent)
+    check("missing_file" in phases(events) and "bad_patch" in phases(events), f"the client is told which kind of failure it was ({phases(events)})")
+    check("ghost.py does not exist" in texts[3] and "nothing was written" in texts[3] and "State mismatch" not in texts[3], "an edit of a file that is not there says so (a denied create wrote nothing) instead of 'state mismatch'")
     check("State mismatch" in texts[0] and "state_mismatch" in phases(events), "a hunk that doesn't match the file → a state-mismatch note")
     check("Current calc.py, lines 1" in texts[0] and "def add(a, b):" in texts[0] and "return a - b" in texts[0], "…carrying the file's current lines, so the next patch is written against what is there")
     check("Use a unified diff" in texts[1] and "State mismatch" not in texts[1], "a patch in an unreadable format → a format note, not 'state mismatch'")

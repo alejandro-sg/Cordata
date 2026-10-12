@@ -462,6 +462,20 @@ fn permission_info(request: &RequestPermissionRequest) -> PermissionInfo {
             .iter()
             .find(|option| matches!(option.kind, PermissionOptionKind::AllowAlways))
             .map(|option| option.name.clone()),
+        options: request
+            .options
+            .iter()
+            .map(|option| permission::PermissionChoice {
+                id: option.option_id.to_string(),
+                name: option.name.clone(),
+                kind: match option.kind {
+                    PermissionOptionKind::AllowOnce => permission::ChoiceKind::AllowOnce,
+                    PermissionOptionKind::AllowAlways => permission::ChoiceKind::AllowAlways,
+                    PermissionOptionKind::RejectAlways => permission::ChoiceKind::RejectAlways,
+                    _ => permission::ChoiceKind::RejectOnce,
+                },
+            })
+            .collect(),
         tool_name,
         title,
     }
@@ -483,18 +497,31 @@ fn permission_response(
 ) -> RequestPermissionResponse {
     let find =
         |wanted: PermissionOptionKind| request.options.iter().find(|option| option.kind == wanted);
-    let allow = match decision {
+    let allow = match &decision {
         Some(ApprovalDecision::Allow) => find(PermissionOptionKind::AllowOnce),
         Some(ApprovalDecision::AllowAlways) => find(PermissionOptionKind::AllowAlways)
             .or_else(|| find(PermissionOptionKind::AllowOnce)),
+        Some(ApprovalDecision::Choose(id)) => {
+            request.options.iter().find(|option| option.option_id.to_string() == *id)
+        }
         _ => None,
     };
-    RequestPermissionResponse::new(match allow {
+    let mut response = RequestPermissionResponse::new(match allow {
         Some(option) => RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
             option.option_id.clone(),
         )),
         None => RequestPermissionOutcome::Cancelled,
-    })
+    });
+    // The person's own words ride in ACP's `_meta` slot (`cordata.note`), which the backend reads as the reason for a
+    // refusal or the answer to a question; a client that does not know it ignores it.
+    if let Some(ApprovalDecision::Say(text)) = decision {
+        let mut cordata = serde_json::Map::new();
+        cordata.insert("note".into(), serde_json::Value::String(text));
+        let mut meta = serde_json::Map::new();
+        meta.insert("cordata".into(), serde_json::Value::Object(cordata));
+        response.meta = Some(meta);
+    }
+    response
 }
 
 /// The banner's word for how this session is reached — with the conversation's handle for the hub,

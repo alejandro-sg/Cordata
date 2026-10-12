@@ -51,15 +51,15 @@ OLLAMA_MODEL_ID = os.getenv("OLLAMA_MODEL_ID", "")
 # CLOUD_OPENAI_BASE_URL=https://ollama.com/v1 unchanged.
 ANTHROPIC_API_KEY = take_secret(
     "ANTHROPIC_API_KEY",
-    keychain="cordata-anthropic-api-key" if MODEL_PROVIDER == "anthropic" else None
+    keychain=("cordata-anthropic-api-key", "sierralab-anthropic-api-key") if MODEL_PROVIDER == "anthropic" else None
 )
 ANTHROPIC_MODEL_ID = os.getenv("ANTHROPIC_MODEL_ID", "claude-sonnet-5")
 CLOUD_OPENAI_BASE_URL = os.getenv("CLOUD_OPENAI_BASE_URL", "")
-# With nothing exported, the macOS Keychain item "cordata-ollama-api-key" is used — but only when the cloud
+# With nothing exported, the macOS Keychain item "cordata-ollama-api-key" (or the pre-rename "sierralab-ollama-api-key") is used — but only when the cloud
 # provider is the active one, so a local-model run never touches the keychain.
 CLOUD_OPENAI_API_KEY = take_secret(
     "CLOUD_OPENAI_API_KEY", "OLLAMA_API_KEY",
-    keychain="cordata-ollama-api-key" if MODEL_PROVIDER == "openai_compatible" else None
+    keychain=("cordata-ollama-api-key", "sierralab-ollama-api-key") if MODEL_PROVIDER == "openai_compatible" else None
 )
 # Any other credential-looking variable (HF_TOKEN, ...) stays in the
 # environment — libraries read some lazily — but its value is masked in tool

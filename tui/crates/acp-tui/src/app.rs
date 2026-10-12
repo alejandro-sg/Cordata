@@ -134,12 +134,16 @@ pub enum Effect {
     },
     /// Put text on the clipboard.
     Copy(String),
+    /// Read the working tree's diff for the review overlay; it comes back as `LocalEvent::ReviewDone`.
+    Review,
     Quit,
 }
 
 /// Something that happened outside the session's own event stream (`main` delivers it).
 #[derive(Debug)]
 pub enum LocalEvent {
+    /// The review overlay's `git diff`.
+    ReviewDone(crate::shell::Outcome),
     ShellDone {
         command: String,
         outcome: crate::shell::Outcome,
@@ -258,6 +262,15 @@ pub struct App {
     last_turn_secs: f64,
     /// Something wants the person (an approval, a long turn finished): the terminal is rung once, then this clears.
     pub attention: bool,
+    /// When the mode last changed, so the footer's pill can flash for a moment (see `footer::pill_flash`).
+    pub mode_changed_at: Option<Instant>,
+    /// The full-screen overlay in front of the conversation (command deck, HUD, diff review), if one is open.
+    pub overlay: Option<crate::overlay::Overlay>,
+    /// The orchestrator's current (or last) run, folded from its events, for the HUD.
+    pub run: Option<crate::run_board::RunBoard>,
+    /// The person's own words for the approval card in front of them (`w`): a reason for refusing, what a plan should
+    /// change, or an answer to a question the offered options did not cover.
+    pub note: Option<Input>,
 }
 
 impl App {
@@ -315,6 +328,10 @@ impl App {
             suggestion: None,
             last_turn_secs: 0.0,
             attention: false,
+            mode_changed_at: None,
+            overlay: None,
+            note: None,
+            run: None,
         }
     }
 
@@ -343,6 +360,7 @@ impl App {
             && self.picker.is_none()
             && self.config.is_none()
             && !self.lab.open
+            && self.overlay.is_none()
     }
 
     /// Can a prompt be sent right now?
@@ -510,6 +528,9 @@ impl App {
                 if mode == "auto" && self.mode != "auto" {
                     self.info("AUTO mode: tools run WITHOUT asking for approval — Tab (or /mode build) goes back");
                 }
+                if self.mode != mode {
+                    self.mode_changed_at = Some(Instant::now());
+                }
                 self.mode = mode;
             }
             AppEvent::ConfigOptionsChanged(options) => self.config_options = options,
@@ -608,6 +629,11 @@ impl App {
                         format!("↻ resuming the interrupted turn automatically (attempt {}/{max})", attempts + 1)
                     });
             }
+            HarnessEvent::Mode(event) => {
+                if let Some(line) = crate::commands::format_mode_event(&event) {
+                    self.messages.push(Message::Info(sanitize(&line)));
+                }
+            }
             HarnessEvent::Goal(event) => self.on_goal(&event),
             HarnessEvent::Context(event) => self.on_context(&event),
             HarnessEvent::TaskList(event) => self.on_checklist(&event),
@@ -622,6 +648,7 @@ impl App {
                 }
             }
             HarnessEvent::Orchestrator(event) => {
+                self.run.get_or_insert_with(Default::default).apply(&event);
                 if let Some(line) = crate::commands::format_orchestrator_event(&event) {
                     self.messages.push(Message::Info(sanitize(&line)));
                 }
@@ -799,6 +826,21 @@ impl App {
             return None;
         }
 
+        // An open overlay owns the keyboard (session tabs and the approval below still work from inside it).
+        if self.overlay.is_some() && !(ctrl && matches!(key.code, KeyCode::Char('n' | 'N'))) && !(alt || ctrl && matches!(key.code, KeyCode::Right | KeyCode::Left)) {
+            return self.on_key_overlay(key);
+        }
+        if self.pending.is_empty() && self.picker.is_none() && self.config.is_none() && !self.lab.open {
+            if ctrl && key.code == KeyCode::Char('k') {
+                return self.open_overlay(crate::overlay::Kind::Palette);
+            }
+            match key.code {
+                KeyCode::F(3) => return self.toggle_panes(),
+                KeyCode::F(4) => return self.open_overlay(crate::overlay::Kind::Review),
+                _ => {}
+            }
+        }
+
         // Session tabs work from anywhere — even with an approval open, so a
         // waiting session never traps you.
         if ctrl && key.code == KeyCode::Char('n') {
@@ -874,6 +916,11 @@ impl App {
             };
         }
 
+        self.handle_input_key(key)
+    }
+
+    pub(crate) fn handle_input_key(&mut self, key: KeyEvent) -> Option<Effect> {
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
         // While the completion menu is open it owns the keys that would otherwise walk history, cycle the mode or
         // send the prompt.
         if self.menu.is_some() && self.can_type() {
@@ -945,6 +992,50 @@ impl App {
         }
         self.refresh_menu();
         None
+    }
+
+    /// Toggle the Blade Runner 2049 interactive split-pane workspace (F3 / /panes).
+    pub fn toggle_panes(&mut self) -> Option<Effect> {
+        if self.overlay.as_ref().map(crate::overlay::Overlay::kind) == Some(crate::overlay::Kind::Panes) {
+            self.overlay = None;
+            None
+        } else {
+            self.open_overlay(crate::overlay::Kind::Panes)
+        }
+    }
+
+    /// Open an overlay (closing any other). The review needs the diff, which the event loop fetches.
+    pub fn open_overlay(&mut self, kind: crate::overlay::Kind) -> Option<Effect> {
+        self.overlay = Some(crate::overlay::Overlay::new(kind, self));
+        (kind == crate::overlay::Kind::Review).then_some(Effect::Review)
+    }
+
+    /// Run what an overlay asked for: close it, open the next one, hand the effect on.
+    fn apply_outcome(&mut self, overlay: crate::overlay::Overlay, outcome: crate::overlay::Outcome) -> Option<Effect> {
+        let mut effect = outcome.effect;
+        if outcome.close {
+            self.overlay = None;
+            if let Some(kind) = outcome.open {
+                let fetch = self.open_overlay(kind);
+                effect = effect.or(fetch);
+            }
+        } else {
+            self.overlay = Some(overlay);
+        }
+        effect
+    }
+
+    fn on_key_overlay(&mut self, key: KeyEvent) -> Option<Effect> {
+        let mut overlay = self.overlay.take()?;
+        let outcome = overlay.on_key(self, key);
+        self.apply_outcome(overlay, outcome)
+    }
+
+    /// A mouse event, delivered only while an overlay is open (the terminal's own mouse handling is untouched otherwise).
+    pub fn on_mouse(&mut self, mouse: crossterm::event::MouseEvent) -> Option<Effect> {
+        let mut overlay = self.overlay.take()?;
+        let outcome = overlay.on_mouse(self, mouse);
+        self.apply_outcome(overlay, outcome)
     }
 
     /// Enter: send what is in the box (or queue it, or run it as a command).
@@ -1022,7 +1113,15 @@ impl App {
 
     /// The result of a `!command`, shown to the person and kept for the agent's next turn.
     pub fn on_local(&mut self, event: LocalEvent) {
-        let LocalEvent::ShellDone { command, outcome, share, as_diff } = event;
+        let (command, outcome, share, as_diff) = match event {
+            LocalEvent::ReviewDone(outcome) => {
+                if let Some(crate::overlay::Overlay::Review(review)) = self.overlay.as_mut() {
+                    review.load(&outcome);
+                }
+                return;
+            }
+            LocalEvent::ShellDone { command, outcome, share, as_diff } => (command, outcome, share, as_diff),
+        };
         let status = match (outcome.timed_out, outcome.code) {
             (true, _) => "timed out after 60s".to_owned(),
             (_, Some(0)) => "exit 0".to_owned(),
@@ -1206,6 +1305,10 @@ impl App {
                  /lab (F2) shows them live",
             ),
             Command::Lab => return self.lab.toggle(),
+            Command::Palette => return self.open_overlay(crate::overlay::Kind::Palette),
+            Command::Hud => return self.toggle_panes(),
+            Command::Panes => return self.toggle_panes(),
+            Command::Review => return self.open_overlay(crate::overlay::Kind::Review),
             Command::New => return Some(Effect::NewSession),
             Command::Sessions => return Some(Effect::ListSessions),
             Command::Conversations => return Some(Effect::ListConversations),
@@ -1347,16 +1450,46 @@ impl App {
         }
     }
 
-    fn on_key_permission(&mut self, key: KeyEvent) -> Option<Effect> {
+    pub(crate) fn on_key_permission(&mut self, key: KeyEvent) -> Option<Effect> {
         let offers_always = self
             .pending
             .front()
             .is_some_and(|pending| pending.info.always_label.is_some());
+        if self.note.is_some() {
+            return self.on_key_note(key);
+        }
+        // The plan card (`present_plan`) has its own answers (build, edit, auto, keep planning); a question
+        // (`ask_user`) is answered by its option's number.
+        let is_plan = self.pending.front().is_some_and(|pending| pending.info.tool_name == "present_plan");
+        let ask_choices = self.pending.front().filter(|pending| pending.info.tool_name == "ask_user").map(|pending| crate::ui::panels::ask_choices(&pending.info));
+        let is_ask = ask_choices.is_some();
+        let offered = |id: &str| self.pending.front().is_some_and(|pending| pending.info.option(id).is_some());
         let decision = match key.code {
             KeyCode::Char('d' | 'D') => {
                 self.diff_expanded = !self.diff_expanded;
                 return None;
             }
+            // The person's own words: a reason for refusing, a change to the plan, or an answer of their own.
+            KeyCode::Char('w' | 'W') => {
+                self.note = Some(Input::default());
+                return None;
+            }
+            KeyCode::Char('b' | 'B') | KeyCode::Enter if is_plan => {
+                if offered("approve_build") { ApprovalDecision::Choose("approve_build".into()) } else { ApprovalDecision::Allow }
+            }
+            KeyCode::Char('e' | 'E') if is_plan && offered("approve_edit") => ApprovalDecision::Choose("approve_edit".into()),
+            KeyCode::Char('a' | 'A') if is_plan => {
+                if offered("approve_auto") { ApprovalDecision::Choose("approve_auto".into()) } else { ApprovalDecision::AllowAlways }
+            }
+            KeyCode::Char('k' | 'K') if is_plan => ApprovalDecision::Reject,
+            KeyCode::Char(digit @ '1'..='9') if is_ask => {
+                let index = digit as usize - '1' as usize;
+                match ask_choices.as_ref().and_then(|choices| choices.get(index)) {
+                    Some(choice) => ApprovalDecision::Choose(choice.id.clone()),
+                    None => return None,
+                }
+            }
+            KeyCode::Char('s' | 'S') if is_ask => ApprovalDecision::Reject,
             // The HITL station's own keys, alongside the prompt's: Y approves and
             // executes, N rejects and discards.
             KeyCode::Char('a' | 'A' | 'y' | 'Y') => ApprovalDecision::Allow,
@@ -1388,6 +1521,7 @@ impl App {
         self.diff_expanded = false;
         if let Some(mut pending) = self.pending.pop_front() {
             if decision == ApprovalDecision::AllowAlways
+                && !is_plan
                 && let Some(label) = &pending.info.always_label
             {
                 self.messages.push(Message::Info(format!(
@@ -1401,6 +1535,35 @@ impl App {
         None
     }
 
+    /// Typing in the note box under an approval card: Enter sends it as the answer (or the reason), Esc goes back to the card.
+    fn on_key_note(&mut self, key: KeyEvent) -> Option<Effect> {
+        let note = self.note.as_mut()?;
+        match key.code {
+            KeyCode::Esc => self.note = None,
+            KeyCode::Enter => {
+                let text = note.take().trim().to_owned();
+                self.note = None;
+                if !text.is_empty()
+                    && let Some(mut pending) = self.pending.pop_front()
+                {
+                    self.diff_expanded = false;
+                    pending.answer(ApprovalDecision::Say(text));
+                    self.hint = None;
+                }
+            }
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => self.note = None,
+            KeyCode::Char(c) => note.insert(c),
+            KeyCode::Backspace => note.backspace(),
+            KeyCode::Delete => note.delete(),
+            KeyCode::Left => note.left(),
+            KeyCode::Right => note.right(),
+            KeyCode::Home => note.home(),
+            KeyCode::End => note.end(),
+            _ => {}
+        }
+        None
+    }
+
     fn on_key_lab(&mut self, key: KeyEvent) -> Option<Effect> {
         // Ctrl+C still cancels a running turn from inside the Lab.
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
@@ -1409,7 +1572,7 @@ impl App {
         self.lab.on_key(key)
     }
 
-    fn on_key_picker(&mut self, key: KeyEvent) -> Option<Effect> {
+    pub(crate) fn on_key_picker(&mut self, key: KeyEvent) -> Option<Effect> {
         let picker = self.picker.as_mut()?;
         match key.code {
             KeyCode::Esc => self.picker = None,
@@ -1805,6 +1968,7 @@ mod tests {
                 raw_input: None,
                 untrusted_source: false,
                 always_label: None,
+                options: vec![],
             },
             decision: tx,
         });
@@ -1825,6 +1989,7 @@ mod tests {
                 raw_input: None,
                 untrusted_source: false,
                 always_label: None,
+                options: vec![],
             },
             decision: tx,
         });
@@ -1853,6 +2018,7 @@ mod tests {
                 raw_input: None,
                 untrusted_source: false,
                 always_label: None,
+                options: vec![],
             },
             decision: tx,
         });
@@ -2082,6 +2248,7 @@ mod tests {
                 raw_input: None,
                 untrusted_source: false,
                 always_label: None,
+                options: vec![],
             },
             decision: tx,
         });
@@ -2412,6 +2579,7 @@ mod tests {
                 raw_input: None,
                 untrusted_source: false,
                 always_label: None,
+                options: vec![],
             },
             decision: tx,
         });

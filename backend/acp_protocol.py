@@ -29,6 +29,8 @@ _TOOL_KIND: dict[str, str] = {
     "ollama_resource_manager": "other",
     "omlx_resource_manager": "other",
     context_offload.RETRIEVE_TOOL: "read",
+    "present_plan": "switch_mode",
+    "ask_user": "other",
     **{t.tool_name: "search" for t in lsp_bridge.LSP_TOOLS},
 }
 

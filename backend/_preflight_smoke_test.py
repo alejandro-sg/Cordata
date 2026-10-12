@@ -136,6 +136,8 @@ def test_lsp_logic() -> None:
             out.append({"severity": 1, "code": "reportAttributeAccessIssue", "message": '"order_total" is unknown import symbol', "range": {"start": {"line": 0}}})
         if "int = 'a'" in text:
             out.append({"severity": 1, "code": "reportAssignmentType", "message": "str is not int", "range": {"start": {"line": 0}}})
+        if "Dict" in text and "[" not in text.split("Dict", 1)[1][:1]:
+            out.append({"severity": 1, "code": "reportMissingTypeArgument", "message": 'Expected type arguments for generic class "Dict"', "range": {"start": {"line": 0}}})
         if "return None + 1" in text:
             out.append({"severity": 1, "code": "reportOperatorIssue", "message": "Operator + not supported", "range": {"start": {"line": 1}}})
         return out
@@ -154,6 +156,8 @@ def test_lsp_logic() -> None:
     check(not new_error.ok and new_error.problems[0].render() == "lib.py:2: [lsp] [reportOperatorIssue] Operator + not supported", "a new type error in the edited file is refused")
     old_error = preflight.check(str(root), "apply_patch", {"patch": "--- a/bad.py\n+++ b/bad.py\n@@ -1 +1,2 @@\n x: int = 'a'\n+y = 2\n"}, manager=manager)
     check(old_error.ok, "an error the file already had is not this edit's")
+    strict = preflight.check(str(root), "editor", {"command": "create", "path": str(root / "fresh.py"), "file_text": "from typing import Dict\n\ndef f() -> Dict:\n    return {}\n"}, manager=manager)
+    check(strict.ok and strict.notes and "reportMissingTypeArgument" in strict.notes[0].message, "a strictness-only complaint about a brand-new file is a note, not a refusal")
     cached = len(client.calls)
     preflight.check(str(root), "apply_patch", {"patch": "--- a/bad.py\n+++ b/bad.py\n@@ -1 +1,2 @@\n x: int = 'a'\n+y = 2\n"}, manager=manager)
     check(len(client.calls) == cached, "the same call on the same files is answered from the cache (an approval resume does not re-check)")

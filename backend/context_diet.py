@@ -45,6 +45,7 @@ from strands.hooks import (
     AfterToolCallEvent,
     BeforeInvocationEvent,
     BeforeModelCallEvent,
+    BeforeToolCallEvent,
     HookProvider,
     HookRegistry,
 )
@@ -302,6 +303,7 @@ class ContextDiet(HookProvider):
     def register_hooks(self, registry: HookRegistry, **kwargs: Any) -> None:
         registry.add_callback(AfterToolCallEvent, self._after_tool)
         registry.add_callback(BeforeModelCallEvent, self._before_model)
+        registry.add_callback(BeforeToolCallEvent, self._before_tool)
         if self.scope_tools:
             registry.add_callback(BeforeInvocationEvent, self._start_turn)
             registry.add_callback(AfterInvocationEvent, self._end_turn)
@@ -324,6 +326,19 @@ class ContextDiet(HookProvider):
         if saved:
             event.result = capped
             self.saved["results"] += saved
+
+    def _before_tool(self, event: BeforeToolCallEvent) -> None:
+        """A model that calls a tool this turn hid — without going through `enable_tools` — gets it, not "Unknown tool".
+        Models do this constantly (the tool was in their context from an earlier turn, or they simply know the name), and a
+        wasted step plus an error result is exactly what the diet exists to avoid."""
+        if event.selected_tool is not None:
+            return
+        name = str(event.tool_use.get("name") or "")
+        if name not in self._hidden:
+            return
+        loaded, _ = self.enable(event.agent, [name])
+        if loaded:
+            event.selected_tool = event.agent.tool_registry.registry.get(name)
 
     # -- lever 3: age the history ------------------------------------------------
 

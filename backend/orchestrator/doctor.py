@@ -130,7 +130,7 @@ def check_model_key() -> Check:
     if any(os.environ.get(name) for name in ("OLLAMA_API_KEY", "CLOUD_OPENAI_API_KEY", "ANTHROPIC_API_KEY")):
         return Check("model API key", OK, "found in the environment")
     if shutil.which("security"):
-        for service in ("cordata-ollama-api-key", "cordata-anthropic-api-key"):
+        for service in ("cordata-ollama-api-key", "cordata-anthropic-api-key", "sierralab-ollama-api-key", "sierralab-anthropic-api-key"):
             # Only whether an entry exists: no -w / -g, so the secret itself is never read.
             if subprocess.run(["security", "find-generic-password", "-s", service], capture_output=True).returncode == 0:
                 return Check("model API key", OK, f"in the macOS Keychain ({service})")

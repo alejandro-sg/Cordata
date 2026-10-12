@@ -157,6 +157,7 @@ def test_adaptive_effort() -> None:
     hook = adaptive_effort.AdaptiveEffort(str(cwd), complexity=lambda a: tier["value"], enabled=lambda: True, notify=announced.append)
     real_size = env_profile.size_class
     env_profile.size_class = lambda root: "large"
+    ollama_cloud.ROLES.set("orchestrator", effort="low")  # the role table is the floor; the product default is medium now
     try:
         hook._before_model(SimpleNamespace(agent=agent))
         check(control.level == "high" and announced[-1]["effort"] == "high", "the hook sets the request's reasoning_effort before the call")

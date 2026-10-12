@@ -56,6 +56,14 @@ pub enum Command {
     Agents,
     /// The Experimental Lab: live pods, A2A links, threat gauge, controls (F2).
     Lab,
+    /// The command deck: every mode, model, view and command, searchable (Ctrl+K).
+    Palette,
+    /// The session HUD: context, usage, tasks, agents and activity on one screen (F3).
+    Hud,
+    /// The Blade Runner 2049 interactive split-pane workspace (F3).
+    Panes,
+    /// The interactive diff review of the working tree (F4).
+    Review,
     /// Another session in this project (Ctrl+N).
     New,
     /// The open sessions, and saved ones for this folder.
@@ -110,6 +118,9 @@ pub const HELP: &[(&str, &str)] = &[
         "/lab",
         "Experimental Lab: live pods, E-Stop, Laya dial, guidance (F2)",
     ),
+    ("/palette", "the command deck: every mode, model, view and command, searchable (Ctrl+K)"),
+    ("/hud", "session HUD: context, usage, tasks, agents, activity (F3)"),
+    ("/diffview", "review the working tree's changes: files, hunks, mouse (F4)"),
     ("/new", "another session in this project (Ctrl+N) — a new shared conversation on the hub"),
     ("/sessions", "open and saved sessions"),
     ("/conversations", "the hub's conversations — shared with Discord, the menu bar and the web app"),
@@ -137,6 +148,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("/diff", "what is changed in the working tree"),
     ("/copy", "copy the last reply to the clipboard"),
     ("/export [file]", "save this conversation as markdown"),
+    ("/panes", "toggle Blade Runner split-pane workspace (F3)"),
     ("/clear", "clear the screen (the session continues)"),
     ("/quit", "quit"),
 ];
@@ -184,6 +196,10 @@ pub fn parse(input: &str) -> Option<Command> {
         "checkpoints" | "checkpoint" | "history" => Command::Checkpoints,
         "agents" | "specialists" => Command::Agents,
         "lab" | "pods" => Command::Lab,
+        "palette" | "deck" => Command::Palette,
+        "hud" | "dashboard" => Command::Hud,
+        "panes" | "workspace" => Command::Panes,
+        "diffview" | "dv" => Command::Review,
         "new" => Command::New,
         "sessions" => Command::Sessions,
         "conversations" | "convs" | "chats" => Command::Conversations,
@@ -643,6 +659,21 @@ pub fn format_ext(tag: &str, value: &serde_json::Value) -> String {
             out.join("\n")
         }
         _ => format!("{tag}: {value}"),
+    }
+}
+
+/// The one-line notice for a `_cordata/mode` event: why the session's mode changed under the person.
+pub fn format_mode_event(event: &serde_json::Value) -> Option<String> {
+    use serde_json::Value;
+    let text = |key: &str| event.get(key).and_then(Value::as_str).unwrap_or_default();
+    let (mode, from, reason) = (text("mode"), text("from"), text("reason"));
+    if mode.is_empty() {
+        return None;
+    }
+    match text("kind") {
+        "adaptive" => Some(format!("⇣ {from} → {mode} · {reason} — Tab or /mode {from} to override")),
+        "plan_approved" => Some(format!("✓ plan approved · {from} → {mode}")),
+        _ => Some(format!("↹ {from} → {mode}{}", if reason.is_empty() { String::new() } else { format!(" · {reason}") })),
     }
 }
 

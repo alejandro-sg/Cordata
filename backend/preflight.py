@@ -263,6 +263,18 @@ CROSS_FILE = re.compile(
 )
 
 
+#: Strictness and completeness rules (pyright's "strict" family and rust-analyzer's style lints): the code runs, the type
+#: checker just wants it annotated more thoroughly. Reported with the result so the agent can tidy them, but never a
+#: reason to refuse an edit — a brand-new file would otherwise be bounced for a missing ``Dict[str, Any]`` argument.
+ADVISORY = re.compile(
+    r"reportMissingTypeArgument|reportMissingParameterType|reportMissingTypeStubs|reportUnknown\w+|reportUntyped\w+"
+    r"|reportUnused\w+|reportPrivateUsage|reportConstantRedefinition|reportMissingSuperCall|reportImplicitOverride"
+    r"|reportUnnecessary\w+|reportTypeCommentUsage|reportShadowedImports|reportImportCycles|reportDeprecated"
+    r"|Expected type arguments for generic class|Type annotation is missing|Return type is unknown|Type of parameter .* is (unknown|partially unknown)",
+    re.IGNORECASE,
+)
+
+
 def _diagnostic_key(diagnostic: dict) -> tuple[str, str]:
     return str(diagnostic.get("code") or ""), " ".join(str(diagnostic.get("message", "")).split())
 
@@ -303,7 +315,7 @@ def check_lsp(changes: list[tuple[str, str | None, str]], root: str, manager: An
                     continue
                 line = (diagnostic.get("range") or {}).get("start", {}).get("line")
                 problem = Problem("lsp", _rel(path, root), (line + 1) if isinstance(line, int) else None, (f"[{code}] " if code else "") + message[:300])
-                (notes if CROSS_FILE.search(f"{code} {message}") else problems).append(problem)
+                (notes if CROSS_FILE.search(f"{code} {message}") or ADVISORY.search(f"{code} {message}") else problems).append(problem)
     return problems, notes, skipped
 
 

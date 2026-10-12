@@ -295,3 +295,22 @@ pub fn live_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     }
     out
 }
+
+/// All conversation messages formatted for display in the workspace (history + live).
+pub fn all_conversation_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    let mut previous = None;
+    for index in 0..app.messages.len() {
+        let kind = app.messages[index].kind();
+        let lines = message_lines(app, index, width);
+        if lines.is_empty() {
+            continue;
+        }
+        if blank_between(previous, kind) {
+            out.push(Line::raw(""));
+        }
+        out.extend(lines);
+        previous = Some(kind);
+    }
+    out
+}

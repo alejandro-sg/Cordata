@@ -841,7 +841,8 @@ mod tests {
         run(&mut rig.app, "/config");
         assert!(rig.app.config.is_some() && !rig.app.input_enabled());
 
-        // Row 0 is permissions.defaultMode: build → auto → plan → build …
+        // Row 0 is permissions.defaultMode: build → edit → auto → plan → build …
+        press(&mut rig.app, KeyCode::Enter);
         press(&mut rig.app, KeyCode::Enter);
         let loaded = rig.store.load();
         assert_eq!(

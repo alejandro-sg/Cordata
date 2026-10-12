@@ -148,7 +148,7 @@ async def main() -> None:
     link = next((l for l in final["links"] if l["to"] == "debugger"), None)
     check(link is not None and link["count"] >= 1, "the orchestrator→debugger delegation was recorded")
     seen_models = {(p["name"], p["model"], p["effort"]) for state in conn.states() for p in state["pods"] if p["model"]}
-    check(("orchestrator", "glm-5.3-flash", "low") in seen_models and ("debugger", "kimi-k2.7-code", "max") in seen_models, f"the Lab showed both models and efforts ({sorted(seen_models)})")
+    check(("orchestrator", "kimi-k2.7-code", "medium") in seen_models and ("debugger", "kimi-k2.7-code", "max") in seen_models, f"the Lab showed both models and efforts ({sorted(seen_models)})")
     check(ollama_list() == before, "`ollama list` unchanged — no weights pulled")
     print("\nLIVE OK")
 

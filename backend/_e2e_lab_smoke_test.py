@@ -25,6 +25,8 @@ os.environ["CORDATA_HOME"] = str(ROOT / "home")
 os.environ["LAYA_TRIAGE_MODE"] = "route"
 os.environ["LAYA_TRIAGE_LOG"] = str(ROOT / "laya.jsonl")
 os.environ.setdefault("BYPASS_TOOL_CONSENT", "true")
+# The scenario scripts a GLM orchestrator delegating to a Kimi debugger; the product default orchestrator is Kimi.
+os.environ["OLLAMA_ROLE_ORCHESTRATOR"] = "glm-5.3-flash:low"
 
 import acp  # noqa: E402
 

@@ -7,6 +7,8 @@ mod input;
 mod lab;
 mod mentions;
 mod menu;
+mod overlay;
+mod run_board;
 mod settings;
 mod shell;
 mod term;
@@ -21,8 +23,11 @@ use std::time::Duration;
 use acp_core::{AppEvent, BackendConfig, BackendTransport, DaemonConfig, SessionHandle, SessionOptions, hub};
 use anyhow::{Context, Result};
 use clap::Parser;
-use crossterm::cursor::Show;
-use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste, Event, EventStream};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use crossterm::cursor::{Hide, Show};
+use crossterm::event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event, EventStream};
+use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{execute, terminal};
 use futures::StreamExt;
 use ratatui::style::{Color, Modifier, Style};
@@ -85,6 +90,10 @@ struct Args {
     /// Initial prompt to send once connected (like Claude Code / agy "prompt").
     #[arg(value_name = "PROMPT")]
     prompt: Option<String>,
+
+    /// Start in full-screen split-pane workspace mode.
+    #[arg(long)]
+    panes: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -329,6 +338,9 @@ async fn main() -> Result<()> {
         local: local_tx,
     };
     workspace.spawn(args.resume, args.continue_latest, args.prompt);
+    if args.panes || workspace.app().settings.get("ui.panes").and_then(serde_json::Value::as_bool).unwrap_or(false) {
+        workspace.app().open_overlay(crate::overlay::Kind::Panes);
+    }
 
     install_panic_hook();
     let guard = TerminalGuard::enter()?;
@@ -372,7 +384,25 @@ impl Drop for TerminalGuard {
     }
 }
 
+/// Whether an overlay currently has the alternate screen and the mouse (so a crash can give them back).
+static OVERLAY_SCREEN: AtomicBool = AtomicBool::new(false);
+
+/// Take the alternate screen and the mouse for an overlay. The inline conversation is untouched underneath: leaving
+/// puts the terminal back exactly as it was, scrollback and live region included.
+fn enter_overlay_screen() -> io::Result<()> {
+    execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture, Hide)?;
+    OVERLAY_SCREEN.store(true, Ordering::SeqCst);
+    Ok(())
+}
+
+fn leave_overlay_screen() {
+    if OVERLAY_SCREEN.swap(false, Ordering::SeqCst) {
+        let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen, Show);
+    }
+}
+
 fn restore_terminal() {
+    leave_overlay_screen();
     let _ = execute!(io::stdout(), DisableBracketedPaste, Show);
     let _ = terminal::disable_raw_mode();
 }
@@ -422,6 +452,44 @@ fn draw(
     Ok(())
 }
 
+/// One full-screen frame of the open overlay, written in place (no scrolling, no trailing newline).
+fn draw_overlay(app: &mut App, last: &mut Option<Frame>) -> io::Result<()> {
+    use std::io::Write;
+    let (width, height) = terminal::size()?;
+    let Some(mut overlay) = app.overlay.take() else {
+        return Ok(());
+    };
+    let buffer = overlay.render(app, width, height);
+    let cursor = overlay.cursor();
+    app.overlay = Some(overlay);
+    let rows = term::buffer_to_ansi_rows(&buffer);
+    let frame = Frame {
+        rows,
+        cursor,
+    };
+    if last.as_ref() == Some(&frame) {
+        return Ok(());
+    }
+    let mut out = String::from("\x1b[?2026h");
+    for (y, row) in frame.rows.iter().enumerate() {
+        out.push_str(&format!("\x1b[{};1H\x1b[2K{row}", y + 1));
+    }
+    match frame.cursor {
+        Some((cx, cy)) => {
+            out.push_str(&format!("\x1b[{};{}H\x1b[?25h", cy + 1, cx + 1));
+        }
+        None => {
+            out.push_str("\x1b[?25l");
+        }
+    }
+    out.push_str("\x1b[?2026l");
+    let mut stdout = io::stdout();
+    stdout.write_all(out.as_bytes())?;
+    stdout.flush()?;
+    *last = Some(frame);
+    Ok(())
+}
+
 async fn run(
     workspace: &mut Workspace,
     screen: &mut InlineTerm<io::Stdout>,
@@ -432,18 +500,39 @@ async fn run(
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     let mut last = None;
     let mut banner: Option<Line<'static>> = None;
+    let mut overlay_on = false;
+    let mut last_overlay: Option<Frame> = None;
 
     loop {
         workspace.update_tabs();
-        draw(workspace.app(), screen, &mut last, &mut banner)?;
+        let want_overlay = workspace.app().overlay.is_some();
+        if want_overlay != overlay_on {
+            if want_overlay {
+                enter_overlay_screen()?;
+            } else {
+                leave_overlay_screen();
+                last = None; // the inline region is redrawn over what the terminal gave back
+            }
+            overlay_on = want_overlay;
+            last_overlay = None;
+        }
+        if overlay_on {
+            draw_overlay(workspace.app(), &mut last_overlay)?;
+        } else {
+            draw(workspace.app(), screen, &mut last, &mut banner)?;
+        }
 
         let mut effects = Vec::new();
         tokio::select! {
             Some(event) = keys.next() => match event? {
                 Event::Key(key) => effects.extend(workspace.app().on_key(key)),
                 Event::Paste(text) => workspace.app().on_paste(&text),
+                Event::Mouse(mouse) => effects.extend(workspace.app().on_mouse(mouse)),
                 // The terminal re-wrapped what was on screen; draw the region afresh.
-                Event::Resize(..) => last = None,
+                Event::Resize(..) => {
+                    last = None;
+                    last_overlay = None;
+                }
                 _ => {}
             },
             Some((number, event)) = events.recv() => {
@@ -577,6 +666,16 @@ async fn run(
                     tokio::task::spawn_blocking(move || {
                         let outcome = shell::run(&command, &cwd, shell::TIMEOUT);
                         let _ = tx.send((number, LocalEvent::ShellDone { command, outcome, share, as_diff }));
+                    });
+                    Ok(())
+                }
+                Effect::Review => {
+                    let slot = &workspace.slots[workspace.active];
+                    let (number, cwd, tx) = (slot.number, slot.app.project_dir(), workspace.local.clone());
+                    tokio::task::spawn_blocking(move || {
+                        let diff = "(git --no-pager diff HEAD --unified=3 --no-color || git --no-pager diff --unified=3 --no-color); git ls-files --others --exclude-standard -z | while IFS= read -r -d '' f; do [ -f \"$f\" ] && git --no-pager diff --no-index --unified=3 --no-color -- /dev/null \"$f\" || true; done; true";
+                        let outcome = shell::run_keeping(diff, &cwd, shell::TIMEOUT, 400 * 1024);
+                        let _ = tx.send((number, LocalEvent::ReviewDone(outcome)));
                     });
                     Ok(())
                 }

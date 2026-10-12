@@ -99,7 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .map(ToString::to_string)
                         .unwrap_or_default()
                 );
-                let answer = match policy {
+                let answer = match policy.clone() {
                     Some(answer) => answer,
                     None => {
                         eprint!("Allow? [y/N] ");

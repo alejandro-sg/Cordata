@@ -983,6 +983,7 @@ mod tests {
                 raw_input: Some(serde_json::json!({"patch": "--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n-old line\n+new line\n"})),
                 untrusted_source: false,
                 always_label: None,
+                options: vec![],
             },
             decision: tx,
         });

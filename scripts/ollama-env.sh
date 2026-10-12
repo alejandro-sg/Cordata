@@ -28,6 +28,6 @@ if ! curl -fsS -m 3 "${OLLAMA_BASE_URL%/v1}/api/version" >/dev/null 2>&1; then
   exit 1
 fi
 
-dim "ollama_cloud profile: $OLLAMA_BASE_URL (orchestrator glm-5.3-flash @ low, debugger kimi-k2.7-code @ max; override with OLLAMA_ROLE_<ROLE>=<model>[:low|medium|high|max])"
+dim "ollama_cloud profile: $OLLAMA_BASE_URL (orchestrator kimi-k2.7-code @ medium, debugger kimi-k2.7-code @ max; override with OLLAMA_ROLE_<ROLE>=<model>[:low|medium|high|max])"
 dim "F2 or /lab opens the Experimental Lab"
 exec "$@"

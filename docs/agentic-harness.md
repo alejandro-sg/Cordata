@@ -162,6 +162,28 @@ optimize test proves a staged candidate really is in force for the eval run it i
 gets. The trajectories test proves the Laya rows are byte-for-byte the exporter's, that no request lands in both
 splits, and that the registry refuses to make a regressing checkpoint live.
 
+## Modes, plans and questions (mode_advisor.py, plan_mode.py, ask_user.py)
+
+Four session modes (`acp_approval._MODES`): **plan** (nothing runs), **build** (the default: the approval rules decide), **edit**
+(file edits — `apply_patch`, `file_write`, an `editor` write — run once preflight passes; commands and everything else ask as in
+build; Antigravity calls it accept-edits) and **auto** (routine calls run). `edit` and `auto` from a project's own settings
+file are ignored until the folder is trusted.
+
+**Adaptive mode** (`modes.adaptive`, default on) is a pure function of the message and Laya's route
+(`mode_advisor.advise`, no model call): an explicit "plan this" / "don't change anything yet", a design question, a large change
+across the project, or Laya's `architect`/`team` route on a long message → the turn starts in **plan**, announced by
+`_cordata/mode` (and ACP's own `current_mode_update`) with the reason. It **only tightens**; a mode the person picked by hand
+holds it off for `HOLD_TURNS` (8) turns; short messages, continuations ("yes", "go ahead") and slash commands are never advised.
+
+**The plan card.** Plan mode's way out is the `present_plan` tool, not the agent's say-so: the gate puts the call to the client
+as a permission request whose options are *approve → build*, *approve → edit*, *approve → auto* and *keep planning*; the
+**person's answer** switches the mode (`acp_server._settle_plan`), and the tool returns what they chose. *Keep planning* returns
+the person's note (`_meta.cordata.note`) and a request to revise and present again. Outside plan mode the call is refused, so it
+can never change a mode.
+
+**Questions.** `ask_user(question, options)` works in every mode: the options become the permission request's options, the
+answer (a pick, the person's own words, or "decide for me") is the tool's result. It changes nothing and runs nothing.
+
 ## Checkpoints: `auto` you can undo (checkpoints.py)
 
 `auto` removes the pause before a change; a checkpoint puts back the ability to take the change back.

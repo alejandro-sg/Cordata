@@ -120,6 +120,8 @@ _MISMATCH = re.compile(
 )
 
 
+_MISSING_FILE = re.compile(r"(?P<path>[^\s:][^:\n]*): no such file", re.IGNORECASE)
+
 _HUNK = re.compile(r"(?P<path>[^\s:][^:\n]*): hunk (?P<n>\d+) does not match the file \(expected near line (?P<line>\d+)\)")
 
 
@@ -148,6 +150,14 @@ def edit_failure_note(tool: str, text: str, root: str | os.PathLike | None = Non
     thought (re-read it), or the patch wasn't in a format apply_patch reads.
     Other errors (an unknown editor command, say) speak for themselves. For a hunk that did not match,
     ``root`` lets the note carry the file's current lines around that spot."""
+    missing = _MISSING_FILE.search(text)
+    if missing:
+        where = missing.group("path").strip()
+        return (
+            f"{_HEAL_TAG} {where} does not exist, so there is nothing to edit. If your previous edit created it and was "
+            "denied, nothing was written — send the whole file again as a new file (apply_patch `*** Add File:` / "
+            "file_write), fixing what that denial reported. Otherwise check the path with code_search or file_read."
+        )
     if _MISMATCH.search(text):
         excerpt = None
         found = _HUNK.search(text) if root is not None else None
@@ -163,6 +173,17 @@ def edit_failure_note(tool: str, text: str, root: str | os.PathLike | None = Non
             "`+++ b/path`, then `@@` hunks whose context lines start with a space — or edit with editor str_replace."
         )
     return None
+
+
+def edit_failure_phase(tool: str, text: str) -> str:
+    """Which kind of failed edit this was, for the client's one-line notice: ``missing_file`` (there is nothing to edit — often
+    a denied create), ``bad_patch`` (not a diff apply_patch reads) or ``state_mismatch`` (the file is not what the model
+    expected). Mirrors the branches of ``edit_failure_note``."""
+    if _MISSING_FILE.search(text):
+        return "missing_file"
+    if not _MISMATCH.search(text) and tool == "apply_patch" and "no file changes found" in text:
+        return "bad_patch"
+    return "state_mismatch"
 
 
 def command_missing(result: Any) -> bool:
@@ -326,7 +347,7 @@ class SelfHealHooks(HookProvider):
             note = edit_failure_note(name, result_text(event.result), self.root or os.getcwd())
             if note:
                 self._append(event, note)
-                self._emit("state_mismatch", None, tool=name)
+                self._emit(edit_failure_phase(name, result_text(event.result)), None, tool=name)
             return
         if name == claude_code_tool.TOOL_NAME:
             await self._after_claude_code(event)

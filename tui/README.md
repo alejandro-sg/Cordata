@@ -133,13 +133,46 @@ turn finishes.
 | `s` | allow and **save the rule** ("Always allow shell(git status)"), when the box offers it |
 | Esc / Ctrl+C | cancel the running turn (not while the approval box is open) · Esc/Ctrl+C clears the box when idle |
 | Up / Down | earlier / later prompts (on the first / last line of the box) |
-| Tab / Shift+Tab | cycle mode: plan → build → auto (or autocomplete slash commands when typing `/...`) |
+| Tab / Shift+Tab | cycle mode: plan → build → edit → auto (or autocomplete slash commands when typing `/...`) |
+| Ctrl+K or `/palette` | the **command deck**: every mode, model, view, session and command in one searchable list — see below |
+| F3 or `/hud` | the **session HUD**: context, usage, tasks, agents, the orchestrator's run and recent activity on one screen |
+| F4 or `/diffview` | the **diff review**: changed files, hunks, line numbers; mouse and keys |
+| `w` (any approval card) | reject **and say why**, or — on a plan or a question — answer in your own words |
 | Ctrl+O (also Ctrl+M where the terminal distinguishes it) | model picker |
 | Ctrl+T | temperature picker |
 | Ctrl+R / Ctrl+E | expand reasoning / tool results |
 | `?` (empty box) or F1 | print the help (all keys and commands) |
 | F2 or `/lab` | the **Experimental Lab**: live agent pods, A2A links, Laya threat gauge, E-Stop, dial, guidance — see below |
 | Ctrl+Q | quit |
+
+### Modes, plans and questions
+
+| mode | what runs without asking |
+|---|---|
+| **plan** | nothing runs; the agent investigates with read-only tools and hands you a plan |
+| **build** | reads and edits ask only where the approval rules say (the default) |
+| **edit** | file edits run (after preflight); commands and everything else still ask |
+| **auto** | routine calls run; anything Laya rates destructive, deny rules and model pulls still ask |
+
+**Adaptive mode** (`modes.adaptive`, on by default) starts a request that wants a plan — "make a plan…", a design question,
+a large change across the project — in **plan**, says why in one line, and ends with a **plan card**: `b` approve → build,
+`e` approve → edit, `a` approve → auto, `k`/Esc keep planning, `w` say what to change (the agent revises and presents again).
+It only ever *tightens*: nothing moves a session toward `auto` except your answer to a card or your own Tab, and after you
+pick a mode yourself it stays out of the way for 8 turns.
+
+When the work turns on a decision only you can make the agent calls `ask_user`: a **question card** with numbered options —
+press the number, `w` to type your own answer, `s` to leave it to the agent.
+
+### Full-screen views (hybrid)
+
+The conversation stays inline in your terminal's scrollback. The views below take the screen while they are open — with the
+mouse on (hover highlights, click chooses, the wheel scrolls) — and hand it back exactly as it was when you close them.
+
+| view | open | keys |
+|---|---|---|
+| command deck | Ctrl+K · `/palette` | type to filter · ↑/↓ or wheel · Enter or click runs · a command that needs an argument is left in the prompt · Esc |
+| session HUD | F3 · `/hud` | Tab or click focus a panel · ↑/↓ or wheel scroll it · `r` diff review · Ctrl+K deck · Esc |
+| diff review | F4 · `/diffview` | ↑/↓ · ←/→ pane · `[` `]` file · `n` `N` hunk · wheel/click · `r` reload · Esc |
 
 ### The Experimental Lab (F2 / `/lab`)
 
@@ -164,7 +197,7 @@ Run it on the signed-in local Ollama daemon (no API key): `make tui-lab`.
 Scrolling is your terminal's: wheel, trackpad, Shift+PageUp/PageDown, or its scrollback search.
 
 **Slash commands** (type in the prompt box; they never reach the model, except `/init`): `/help`,
-`/mode [plan|build|auto]`, `/model [name]`, `/temp [focused|balanced|creative]`, `/thinking`,
+`/mode [plan|build|edit|auto]`, `/model [name]`, `/temp [focused|balanced|creative]`, `/thinking`,
 `/tools`, `/laya [on|off]`, `/config`, `/permissions`, `/trust`, `/memory`, `/init`, `/status`,
 `/clear`, `/quit`. A path like `/usr/bin/env is missing` is still a normal prompt.
 

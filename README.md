@@ -43,7 +43,7 @@ CLI that is not installed is left out; `cordata doctor` says which are found.
 
 ```bash
 cd ~/your/project
-cordata                              # chat; Tab cycles plan → build → auto
+cordata                              # chat; Tab cycles plan → build → edit → auto; Ctrl+K opens the command deck
 cordata "why does the build fail?"   # …starting with a prompt
 cordata -c                           # continue the newest session in this folder
 ```

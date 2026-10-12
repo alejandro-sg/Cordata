@@ -55,7 +55,7 @@ OWNER = "discord"
 #: door is talking to it. Owned children are invisible to a terminal's directory lookup; a terminal
 #: reaches one only by naming its conversation (`/ws?conversation=…`).
 HUB = "hub"
-MODES = ("plan", "build", "auto")
+MODES = ("plan", "build", "edit", "auto")
 #: How many turns of each conversation the hub remembers for a door that starts watching, and how much
 #: of each reply.
 RECENT_TURNS = 6

@@ -9,7 +9,7 @@
 //   InterventionStream  bidirectional      HITL requests down, explicit approve/reject back
 //   ProactiveIngest     client streaming   AST snippets up, never blocking the UI thread
 //   SetKnob             unary              reasoning_effort / Laya dial, mid-execution
-//   SetMode             unary              the session's permission mode: plan | build | auto
+//   SetMode             unary              the session's permission mode: plan | build | edit | auto
 //   ControlPod          unary              stop (E-Stop), release or steer one agent
 //   UnloadMemory        unary              the emergency [Unload Memory] — oMLX/Ollama weights out
 //   GetDiff             unary              the body of a diff a frame only referenced
@@ -157,7 +157,7 @@ message LabState {
   Threat threat = 5;
   Resources resources = 6;
   double default_dial = 7;  // the router's own destructive gate (0.8); a dial can only tighten it
-  string mode = 8;          // the session's permission mode (plan | build | auto); "" from a child that predates it
+  string mode = 8;          // the session's permission mode (plan | build | edit | auto); "" from a child that predates it
   string mission = 9;       // what the team is working on: the person's latest request, redacted and shortened
   int64 mission_ms = 10;    // when it was given
   // Every agent's recent store reads, so the canvas can show a retrieval reaching a pod. This is
@@ -374,7 +374,7 @@ message KnobReply {
 // egress, a call Laya rates destructive, and pulling/deleting model weights still ask.
 message ModeRequest {
   string session_id = 1;   // empty = the session the daemon last spoke to
-  string mode = 2;         // plan | build | auto
+  string mode = 2;         // plan | build | edit | auto
 }
 
 message ModeReply {

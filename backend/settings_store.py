@@ -52,7 +52,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 SCOPES = ("user", "project", "local")  # lowest precedence first
-MODES = ("plan", "build", "auto")
+MODES = ("plan", "build", "edit", "auto")
 TEMPERATURES = ("focused", "balanced", "creative")
 LAYA_MODES = ("off", "shadow", "route")
 COLLAPSE = ("collapsed", "expanded")
@@ -61,6 +61,10 @@ RULE_KINDS = ("allow", "ask", "deny")
 # dotted key -> ("enum", choices) | ("bool",) | ("str",) | ("float", lo, hi)
 SCHEMA: dict[str, tuple] = {
     "permissions.defaultMode": ("enum", MODES),
+    # Adaptive mode (mode_advisor.py): a request that wants a plan first (a design question, "plan this", a large
+    # cross-cutting change) starts the turn in plan mode and ends with a plan card. It only ever tightens; leaving plan is
+    # the person's answer to the card. Not trust-gated for that reason: a repository cannot loosen anything with it.
+    "modes.adaptive": ("bool",),
     "model": ("str",),
     "temperature": ("enum", TEMPERATURES),
     "laya.mode": ("enum", LAYA_MODES),
@@ -424,8 +428,8 @@ def load(cwd: str | os.PathLike) -> Settings:
             if not ok:
                 result.warnings.append(warning)
                 continue
-            if key == "permissions.defaultMode" and value == "auto" and scope != "user" and not result.trusted:
-                result.warnings.append(f"{where}: defaultMode 'auto' ignored — folder not trusted (run /trust to enable)")
+            if key == "permissions.defaultMode" and value in ("auto", "edit") and scope != "user" and not result.trusted:
+                result.warnings.append(f"{where}: defaultMode '{value}' ignored — folder not trusted (run /trust to enable)")
                 continue
             # Pre-approving the self-heal loop's patches loosens the approval gate,
             # so like 'auto' a repository can't switch it on for itself.

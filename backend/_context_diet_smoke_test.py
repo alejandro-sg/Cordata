@@ -155,6 +155,12 @@ def test_cold_tools_through_the_loop() -> None:
     check("context_usage" not in first["tools"] and "context_usage" in second["tools"] and "context_usage" in third["tools"], "enable_tools loads a tool for the very next step")
     check("42" in model.calls[2]["last_text"], "…and the agent used it")
 
+    agent, model, _ = agent_with([call("context_usage", {"question": "how much?"}), text("done")])
+    agent("list the files in the repo")
+    result = model.calls[1]["last_text"]
+    check("Unknown tool" not in result, "calling a hidden tool without enable_tools runs it instead of failing with 'Unknown tool'")
+    check("context_usage" in model.calls[1]["tools"], "…and it stays loaded for the rest of the turn")
+
     agent, model, _ = agent_with([call("enable_tools", {"names": ["nope"]}), text("x")])
     agent("hello")
     check("Not a hidden tool: nope" in model.calls[1]["last_text"], "asking for a tool that is not hidden is told so, not a crash")

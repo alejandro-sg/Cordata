@@ -48,7 +48,7 @@ impl Menu {
 
 /// Usage text marks a required argument `<like this>` and an optional one `[like this]`; `[a | to <n>]` is optional
 /// even though it holds an angle bracket.
-fn requires_argument(hint: &str) -> bool {
+pub(crate) fn requires_argument(hint: &str) -> bool {
     let mut optional_depth = 0;
     for c in hint.chars() {
         match c {
@@ -139,7 +139,10 @@ impl App {
                 .filter(|old| old.kind == kind)
                 .and_then(|old| old.current())
                 .and_then(|old| items.iter().position(|i| i.label == old.label));
-            Menu { kind, selected: kept.unwrap_or(0), items, range, query }
+            // …except that a command typed in full is that command: `/diff` must not stay on `/diffview` because that
+            // was the highlight while only `/d` was typed.
+            let exact = (kind == Kind::Command).then(|| items.iter().position(|i| i.label.trim_start_matches('/').eq_ignore_ascii_case(&query))).flatten();
+            Menu { kind, selected: exact.or(kept).unwrap_or(0), items, range, query }
         });
     }
 
@@ -167,6 +170,11 @@ impl App {
             } else if (query.len() >= 2 && n.contains(&query)) || (query.len() >= 4 && item.detail.to_ascii_lowercase().contains(&query)) {
                 inside.push(item);
             }
+        }
+        // A name typed in full is that command — `/diff` must not run `/diffview` because it is listed first.
+        if let Some(at) = prefix.iter().position(|item| name(item) == query) {
+            let exact = prefix.remove(at);
+            prefix.insert(0, exact);
         }
         prefix.extend(inside);
         prefix
@@ -290,6 +298,19 @@ mod tests {
         app.refresh_menu();
         app.menu_accept(false);
         assert_eq!(app.input.text(), "/help ");
+    }
+
+    #[test]
+    fn a_command_typed_in_full_ranks_above_longer_names_that_start_with_it() {
+        let mut app = app_with("");
+        // Typed one key at a time, as a person does: the highlight must not stay on whatever `/d` started on.
+        for c in "/diff".chars() {
+            app.input.insert(c);
+            app.refresh_menu();
+        }
+        let menu = app.menu.as_ref().expect("a menu");
+        assert_eq!(menu.current().map(|i| i.label.as_str()), Some("/diff"), "{:?}", menu.items.iter().map(|i| &i.label).collect::<Vec<_>>());
+        assert!(menu.items.iter().any(|i| i.label == "/diffview"), "…the longer one is still offered");
     }
 
     #[test]

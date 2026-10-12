@@ -122,7 +122,7 @@ pub struct Entry {
 pub const SCHEMA: &[Entry] = &[
     Entry {
         key: "permissions.defaultMode",
-        kind: Kind::Enum(&["plan", "build", "auto"]),
+        kind: Kind::Enum(&["plan", "build", "edit", "auto"]),
         applies: Applies::NextSession,
         help: "mode new sessions start in (auto needs a trusted folder)",
     },
@@ -143,6 +143,12 @@ pub const SCHEMA: &[Entry] = &[
         kind: Kind::Enum(&["collapsed", "expanded"]),
         applies: Applies::Now,
         help: "show reasoning as one line or in full",
+    },
+    Entry {
+        key: "modes.adaptive",
+        kind: Kind::Bool,
+        applies: Applies::Now,
+        help: "let the harness start plan-worthy requests in plan mode (it only tightens; a plan card hands over to build/auto)",
     },
     Entry {
         key: "tui.toolOutput",
@@ -1009,12 +1015,13 @@ impl Store {
                     continue;
                 }
                 if key == "permissions.defaultMode"
-                    && value == "auto"
+                    && (value == "auto" || value == "edit")
                     && scope != Scope::User
                     && !result.trusted
                 {
                     result.warnings.push(format!(
-                        "{location}: defaultMode 'auto' ignored — folder not trusted (run /trust to enable)"
+                        "{location}: defaultMode '{}' ignored — folder not trusted (run /trust to enable)",
+                        value.as_str().unwrap_or("auto")
                     ));
                     continue;
                 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Diagnoses "401 Unauthorized" from the cloud model: finds the Ollama key exactly the
 # way the backend does (exported variable first, then the macOS Keychain item
-# "cordata-ollama-api-key"), checks it for the usual mistakes, and asks Ollama
+# "cordata-ollama-api-key", else the pre-rename "sierralab-ollama-api-key"), checks it for the usual mistakes, and asks Ollama
 # whether it is accepted. NEVER prints the key — only its source, length and a short
 # fingerprint (first 8 hex of its SHA-256) to compare against another copy.
 #
@@ -15,6 +15,8 @@ elif [[ -n "${CLOUD_OPENAI_API_KEY:-}" ]]; then
   key="$CLOUD_OPENAI_API_KEY"; source_name="exported CLOUD_OPENAI_API_KEY (beats the Keychain)"
 elif command -v security >/dev/null 2>&1 && key="$(security find-generic-password -s cordata-ollama-api-key -w 2>/dev/null)" && [[ -n "$key" ]]; then
   source_name="macOS Keychain item cordata-ollama-api-key"
+elif command -v security >/dev/null 2>&1 && key="$(security find-generic-password -s sierralab-ollama-api-key -w 2>/dev/null)" && [[ -n "$key" ]]; then
+  source_name="macOS Keychain item sierralab-ollama-api-key (pre-rename name — re-run \`make key\` to store it under the new one)"
 else
   err "no key found: nothing exported and no Keychain item. Store it once:"
   err '    security add-generic-password -a "$USER" -s cordata-ollama-api-key -w'

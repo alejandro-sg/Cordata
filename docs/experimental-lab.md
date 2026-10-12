@@ -59,7 +59,7 @@ Roles carry a default budget and model (`ollama_cloud.ROLES`, overridable with
 
 | role | model | effort |
 |---|---|---|
-| orchestrator | glm-5.3-flash | low |
+| orchestrator | kimi-k2.7-code | medium |
 | architect | glm-5.3-flash | high |
 | debugger | kimi-k2.7-code | max |
 | observer | glm-5.3-flash | low |

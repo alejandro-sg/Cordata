@@ -74,7 +74,7 @@ async fn run_turn(events: &mut UnboundedReceiver<AppEvent>, policy: ApprovalDeci
             AppEvent::PermissionRequested { info, decision } => {
                 turn.permission_titles.push(info.title);
                 turn.always_labels.extend(info.always_label);
-                decision.send(policy).unwrap();
+                decision.send(policy.clone()).unwrap();
             }
             AppEvent::TurnComplete(reason) => {
                 turn.stop = Some(reason);

@@ -151,7 +151,8 @@ def listener():
 def set_vault(addr: str | None, policy: str = "deny") -> None:
     home = ROOT / "home"
     home.mkdir(exist_ok=True)
-    settings = {"vault": {"enabled": addr is not None, "addr": addr or "", "egressPolicy": policy}}
+    # Adaptive mode would start "refactor … across every file" in plan; this test is about the gate in build mode.
+    settings = {"vault": {"enabled": addr is not None, "addr": addr or "", "egressPolicy": policy}, "modes": {"adaptive": False}}
     (home / "settings.json").write_text(json.dumps(settings))
 
 

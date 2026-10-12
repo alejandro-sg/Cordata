@@ -21,6 +21,7 @@ os.environ["CORDATA_STATE_DB"] = os.path.join(tempfile.mkdtemp(prefix="fixmem-le
 
 import fix_memory  # noqa: E402
 import state_store  # noqa: E402
+from patch_tool import _invalidate_pyc  # noqa: E402
 from _self_heal_smoke_test import BUGGY, CHECK, GOOD_PATCH, FakeDiagnose, patch_from_note, phases, project, run, tool_texts  # noqa: E402
 from harness_testing import check, text, tool as call  # noqa: E402
 from self_heal import HealConfig  # noqa: E402
@@ -88,6 +89,7 @@ def test_remember_then_recall() -> None:
 
     # The bug comes back (a revert, a merge, a fresh checkout).
     (root / "calc.py").write_text(BUGGY)
+    _invalidate_pyc(root / "calc.py")
     diagnose2 = FakeDiagnose([None])
     agent, hooks, events, _ = heal([call("shell", {"command": CHECK}), patch_from_note, call("shell", {"command": CHECK}), text("fixed again")], diagnose2)
     got = phases(events)
@@ -110,6 +112,7 @@ def test_a_stale_fix_retires() -> None:
     for round_ in (1, 2):
         # The code moved on: the same assertion fails, but the line the patch changes is gone.
         (root / "calc.py").write_text("def add(a, b):\n    total = a - b\n    return total\n")
+        _invalidate_pyc(root / "calc.py")
         diagnose = FakeDiagnose([GOOD_PATCH.replace("return a - b", "return total")])
         _agent, _hooks, events, _ = heal([call("shell", {"command": CHECK}), text("looking")], diagnose, HealConfig(max_attempts=2))
         got = phases(events)
@@ -117,6 +120,7 @@ def test_a_stale_fix_retires() -> None:
         check(len(diagnose.calls) >= 1 and any(a.startswith("memory:") and "no longer applies" in a for a in diagnose.calls[0][1]), f"round {round_}: the Debugger is told what memory tried")
     check(uses()[base:base + 2] == ["stale", "stale"], f"each miss is recorded against the fix ({uses()[base:]})")
     (root / "calc.py").write_text(BUGGY)
+    _invalidate_pyc(root / "calc.py")
     diagnose = FakeDiagnose([GOOD_PATCH])
     _agent, _hooks, events, _ = heal([call("shell", {"command": CHECK}), text("looking")], diagnose)
     check("recalled" not in phases(events) and len(diagnose.calls) == 1, f"after two misses the fix has retired and is not offered ({phases(events)})")
@@ -140,6 +144,7 @@ def test_boundaries() -> None:
     _agent, _hooks, events, _ = heal([call("shell", {"command": CHECK}), patch_from_note, call("shell", {"command": CHECK}), text("fixed")], diagnose, HealConfig(memory=False))
     check(len(fixes()) == n_fixes and len(uses()) == n_uses, "selfHeal.memory off: nothing is recorded")
     (off / "calc.py").write_text(BUGGY)
+    _invalidate_pyc(off / "calc.py")
     diagnose = FakeDiagnose([GOOD_PATCH])
     _agent, _hooks, events, _ = heal([call("shell", {"command": CHECK}), text("x")], diagnose, HealConfig(memory=False, max_attempts=1))
     check("recalled" not in phases(events) and len(diagnose.calls) == 1, "…and nothing is recalled")

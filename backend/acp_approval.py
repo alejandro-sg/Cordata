@@ -30,6 +30,8 @@ import state_store
 import orchestrate_tool
 import vault_proxy
 import plugin_host
+import ask_user
+import plan_mode
 import preflight
 from laya_router import RouteDecision
 from agent_common import GENERATED_TOOL_NAMES, MCP_TOOL_NAMES, current_generated_tool_names  # noqa: E402
@@ -171,12 +173,15 @@ def _settled_intervention(
 #           telling the model to describe its plan instead.
 #   build — today's default: only APPROVAL_REQUIRED_TOOLS pause for a real
 #           permission prompt, everything else runs immediately.
+#   edit  — file edits (apply_patch / file_write / editor writes) run without asking, once preflight passes;
+#           commands and everything else still ask exactly as in build. Antigravity calls it accept-edits.
 #   auto  — routine calls never pause. Opt-in only; never the default. It does not
 #           lift the floor in before_tool_call: deny rules, the vault's fail-closed
 #           egress, a call Laya rates destructive, and model pulls/deletes still ask.
 _MODES = [
     acp.schema.SessionMode(id="plan", name="Plan", description="Discuss and plan only — no tool actually runs."),
     acp.schema.SessionMode(id="build", name="Build", description="Tools run after your approval (default)."),
+    acp.schema.SessionMode(id="edit", name="Edit", description="File edits run without asking; commands and everything else still ask."),
     acp.schema.SessionMode(
         id="auto",
         name="Auto",
@@ -412,10 +417,34 @@ class _ApprovalHandler(InterventionHandler):
                 )
             )
         read_only = _read_only_call(tool_name, tool_input)
+        if tool_name == ask_user.TOOL_NAME:
+            # A question changes nothing, so it is asked in every mode (plan included) — always of the person.
+            if ask_user.answered(event.agent):
+                return Proceed()  # the resumed call, after the answer
+            if not ask_user.clean_options(tool_input):
+                return Deny(reason="ask_user needs two to six options; to ask something open-ended, ask it in your reply.")
+            return Confirm(
+                prompt=json.dumps({"name": tool_name, "pod": None, "input": tool_input, "tool_use_id": event.tool_use.get("toolUseId"), "always_rule": None})
+            )
+        if tool_name == plan_mode.TOOL_NAME:
+            # Plan mode's way out. Only there, and always put to the person: what the session becomes is their answer
+            # (acp_server records it), so the agent can never use this to change a mode on its own say-so.
+            if plan_mode.answered(event.agent):
+                return Proceed()  # the resumed call, after the person's answer (an approval has changed the mode by now)
+            if self.mode != "plan":
+                return Deny(reason=f"present_plan is for plan mode; this session is in {self.mode} mode. Just do the work.")
+            return Confirm(
+                prompt=json.dumps(
+                    {"name": tool_name, "pod": None, "input": tool_input, "tool_use_id": event.tool_use.get("toolUseId"), "always_rule": None}
+                )
+            )
         if self.mode == "plan":
             if tool_name in PLAN_MODE_TOOLS or read_only:
                 return Proceed()
-            return Deny(reason=f"Plan mode is active — {tool_name} was not run. Describe the change instead of making it.")
+            return Deny(
+                reason=f"Plan mode is active — {tool_name} was not run. Investigate with read-only tools, then call present_plan with the plan; "
+                "the person approves it there and the session leaves plan mode."
+            )
         forced = _forced_ask(tool_name, tool_input)
         # Laya Guard: this call, by this agent, scored on its own — not the turn's one reading, and
         # not the orchestrator's standing in for a specialist's. A call at or above the calling
@@ -433,6 +462,11 @@ class _ApprovalHandler(InterventionHandler):
         )
         armed = forced is not None or turn_armed or call_armed or self._bandit_ask(call_risk, gate, preferences)
         if self.mode == "auto" and not armed:
+            self._note_call(event, call_risk, "auto")
+            return Proceed()
+        if self.mode == "edit" and not armed and preflight.is_edit(tool_name, tool_input):
+            # An edit that got here has passed preflight (or preflight does not apply). It is still on the trail as an
+            # auto-approval: "who approved that?" answers "edit mode".
             self._note_call(event, call_risk, "auto")
             return Proceed()
         if not armed and verdict is not None and verdict.action == "allow":

@@ -79,7 +79,7 @@ def test_delegation_link() -> None:
     link = lab.links[("orchestrator", "debugger")]
     check(link["kind"] == "delegation" and link["count"] == 1 and link["active"] is False, "orchestrator→debugger link was drawn and closed")
     check(any(any(l["from"] == "orchestrator" and l["to"] == "debugger" and l["active"] for l in e["links"]) for e in events), "an emitted snapshot showed the link active mid-flight")
-    check(lab.pods["orchestrator"].model == "glm-5.3-flash" and lab.pods["orchestrator"].effort == "low", "orchestrator pod = glm @ low")
+    check(lab.pods["orchestrator"].model == "kimi-k2.7-code" and lab.pods["orchestrator"].effort == "medium", "orchestrator pod = kimi @ medium")
     check(lab.pods["debugger"].model == "kimi-k2.7-code" and lab.pods["debugger"].effort == "max", "debugger pod = kimi @ max (own model, own budget)")
 
 

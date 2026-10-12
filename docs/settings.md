@@ -29,7 +29,8 @@ other value is replaced by the higher scope.
 
 | key | values | applies | what |
 |---|---|---|---|
-| `permissions.defaultMode` | `plan` · `build` · `auto` | next session | mode a session starts in (default `build`) |
+| `permissions.defaultMode` | `plan` · `build` · `edit` · `auto` | next session | mode a session starts in (default `build`) |
+| `modes.adaptive` | `true` · `false` | immediately | adaptive mode (default on): a design question, "plan this" or a large cross-cutting change starts the turn in **plan** and ends with a plan card (approve → build, approve → auto, keep planning). It only ever tightens — never moves toward `auto` on its own — and stays out of the way for 8 turns after you pick a mode yourself |
 | `permissions.allow` / `ask` / `deny` | list of rules | live | see [Permission rules](#permission-rules) |
 | `model` | model id | now | model on the active provider; ignored (with a log line) if the provider doesn't offer it |
 | `temperature` | `focused` · `balanced` · `creative` | now | sampling preset |

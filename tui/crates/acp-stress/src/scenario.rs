@@ -80,7 +80,7 @@ pub struct Scenario {
     #[serde(default)]
     pub cwd: Option<PathBuf>,
     pub prompts: Vec<String>,
-    /// `plan` | `build` | `auto` (default: whatever the backend starts in: build).
+    /// `plan` | `build` | `edit` | `auto` (default: whatever the backend starts in: build).
     #[serde(default)]
     pub mode: Option<String>,
     /// Model id; must be one the backend advertises.
@@ -130,10 +130,10 @@ pub fn parse(text: &str) -> Result<Vec<Scenario>> {
             bail!("scenario {:?}: repeat must be >= 1", scenario.name);
         }
         if let Some(mode) = &scenario.mode
-            && !["plan", "build", "auto"].contains(&mode.as_str())
+            && !["plan", "build", "edit", "auto"].contains(&mode.as_str())
         {
             bail!(
-                "scenario {:?}: unknown mode {mode:?} (plan|build|auto)",
+                "scenario {:?}: unknown mode {mode:?} (plan|build|edit|auto)",
                 scenario.name
             );
         }

@@ -343,7 +343,18 @@ class StepExecutor:
                 result.out_of_scope = [p for p in result.out_of_scope if not scope_mod.matches(p, ctx.sibling_scope, self.project)]
                 result.files_changed = [p for p in result.files_changed if not scope_mod.matches(p, ctx.sibling_scope, self.project)]
             out.results.setdefault(step.step_id, []).append({"worker": candidate.key, **{k: getattr(result, k) for k in ("status", "error_message", "tokens_in", "tokens_out", "cost_usd", "files_changed", "out_of_scope", "rate_limited")}})
-            self._emit("step_result", step_id=step.step_id, worker=candidate.key, status=result.status, error=result.error_message, files=result.files_changed[:50])
+            self._emit(
+                "step_result",
+                step_id=step.step_id,
+                worker=candidate.key,
+                status=result.status,
+                cost_usd=round(result.cost_usd, 4),
+                tokens_in=result.tokens_in,
+                tokens_out=result.tokens_out,
+                duration_s=round(result.duration_s, 1),
+                error=result.error_message,
+                files=result.files_changed[:50],
+            )
 
             if result.status == "completed" and not result.out_of_scope:
                 step.status = "completed"

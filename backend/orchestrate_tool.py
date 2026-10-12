@@ -155,7 +155,7 @@ async def run_orchestration(goal: str, *, workers: str | None = None, max_usd: f
             line = _line(event)
             if line:
                 queue.put_nowait(line)
-        harness_events.emit("orchestrator", {k: v for k, v in event.items() if k in ("kind", "run_id", "state", "step_id", "worker", "status", "reason", "from_worker", "to_worker", "handoff_id")})
+        harness_events.emit("orchestrator", {k: v for k, v in event.items() if k in ("kind", "run_id", "state", "step_id", "worker", "status", "reason", "from_worker", "to_worker", "handoff_id", "plan_id", "steps", "verdict", "planner", "role", "cost_usd", "tokens_in", "tokens_out", "duration_s")})
 
     machine = OrchestratorMachine(goal=goal, project=rt.cwd(), dispatcher=dispatcher, ledger=ledger, config=run_config, on_event=on_event)
     task = asyncio.ensure_future(machine.run())

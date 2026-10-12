@@ -164,6 +164,20 @@ hostile one can still steer the model toward a request you then have to refuse, 
 banner names the files being read and `/memory` lists them. Trust is per-folder-path, not
 per-content: a trusted folder whose settings later change (a `git pull`) keeps its trust.
 
+## Modes, plans and questions
+
+- **Adaptive mode only tightens.** `mode_advisor` can move a session to `plan`; it has no path to `edit` or `auto`. Leaving plan is
+  the *person's* answer to the plan card (`plan_mode`), and the card is raised by the gate itself, in plan mode only — the agent
+  cannot use `present_plan` to change a mode (refused elsewhere), nor can a prompt-injected tool result: the answer is read from
+  the client's response, never from model text.
+- **`edit` mode is a loosening** (file edits no longer ask), so like `auto` it is ignored from a project's own settings file until
+  the folder is trusted. It does not lift preflight, deny rules, Laya's per-call gate, the secret guard or checkpoints; a call
+  Laya rates destructive still asks. Residual: an edit that is not destructive to the project but is wrong (a subtly broken
+  function) lands without a prompt — checkpoints (`/undo`) are the net.
+- **`ask_user` carries text from the model to the person and back.** The question and options are rendered as plain text
+  (control characters stripped); the answer is returned to the model as a tool result, so a person's typed answer can steer the
+  agent — which is the point.
+
 ## Harness autonomy: the new surfaces
 
 The agentic harness layer (`docs/agentic-harness.md`) added code that runs without a new user

@@ -20,6 +20,6 @@ pub use events::{
     PodStatus, SessionInfo, StopReason, TASKLIST_METHOD, TASK_METHOD, TaskInfo, TaskState, ToolCallInfo,
     ToolCallPatch, ToolKind, ToolStatus, parse_harness, parse_laya,
 };
-pub use permission::{ApprovalDecision, PermissionInfo, Unwrapped, unwrap_untrusted};
+pub use permission::{ApprovalDecision, ChoiceKind, PermissionChoice, PermissionInfo, Unwrapped, unwrap_untrusted};
 pub use session::{SessionHandle, SessionOptions};
 pub use transport::{BackendTransport, WsTransport};

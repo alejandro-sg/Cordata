@@ -69,7 +69,7 @@ _EFFORT = ("low", "medium", "high", "max")
 #: The permission modes, mirrored from `acp_server._MODE_IDS` (the daemon never imports the agent
 #: stack); `_grpc_bridge_smoke_test` asserts the copy is equal. A mode the child does not know is
 #: refused here and by the child alike.
-MODES = ("plan", "build", "auto")
+MODES = ("plan", "build", "edit", "auto")
 #: A directive longer than this is cut (lab.Lab.inject cuts at 2000 as well).
 MAX_DIRECTIVE = 1500
 
@@ -317,7 +317,7 @@ class HarnessService(rpc.HarnessServicer):
         return pb.KnobReply(ok=True, applied=json.dumps(result))
 
     async def SetMode(self, request: pb.ModeRequest, context: grpc.aio.ServicerContext) -> pb.ModeReply:
-        """Switch the session's permission mode (`plan` | `build` | `auto`) by calling the child's own
+        """Switch the session's permission mode (`plan` | `build` | `edit` | `auto`) by calling the child's own
         ``session/set_mode`` — the same request the TUI's Tab sends. This relays a person's choice and
         nothing more: *what* `auto` waves through is decided in the child's approval handler, where
         deny rules, the vault's fail-closed egress, Laya's destructive gate and the forced asks live,

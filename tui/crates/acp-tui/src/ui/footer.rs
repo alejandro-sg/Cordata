@@ -8,17 +8,30 @@ use ratatui::text::{Line, Span};
 use super::text::{display_width, truncate};
 use crate::app::{App, ConnState, TabState};
 
-const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-
-/// Risk-ordered, not menu-ordered: plan runs nothing (green), build gates
-/// dangerous tools behind approval (yellow), auto gates nothing (red).
+/// Risk-ordered, not menu-ordered: plan runs nothing (mint), build gates dangerous tools behind approval (sodium
+/// amber, the colour of the product itself), edit lets file edits through (pale gold), auto gates nothing (vermilion).
 pub fn mode_color(mode: &str) -> Color {
     match mode {
         "plan" => Color::Green,
-        "build" => Color::Yellow,
+        "build" => Color::Cyan,
+        "edit" => Color::Yellow,
         "auto" => Color::Red,
         _ => Color::Gray,
     }
+}
+
+/// The mode's colour, except for a moment after it changes: then the pill blinks white, so a switch the harness made
+/// (or a Tab pressed while looking elsewhere) is seen rather than inferred.
+fn pill_color(app: &App) -> Color {
+    let base = mode_color(&app.mode);
+    match app.mode_changed_at {
+        Some(at) if at.elapsed().as_millis() < 1500 && (at.elapsed().as_millis() / 250) % 2 == 0 => Color::White,
+        _ => base,
+    }
+}
+
+fn spans_width(spans: &[Span<'_>]) -> usize {
+    spans.iter().map(|s| display_width(&s.content)).sum()
 }
 
 /// `/Users/me/proj` → `~/proj`.
@@ -32,13 +45,12 @@ pub fn short_path(path: &str) -> String {
 }
 
 /// The right-hand text, longest first; the footer uses the longest that still
-/// leaves room for the model.
-fn right_variants(app: &App) -> (Vec<String>, Style) {
+/// leaves room for the model. The working variants lead with the scanning light.
+fn right_variants(app: &App) -> Vec<Vec<Span<'static>>> {
     if let Some(hint) = &app.hint {
-        return (vec![hint.clone()], Style::new().fg(Color::Yellow));
+        return vec![vec![Span::styled(hint.clone(), Style::new().fg(Color::Yellow))]];
     }
     if app.turn_active {
-        let spinner = SPINNER[app.spinner % SPINNER.len()];
         let elapsed = app
             .turn_started
             .map_or(0, |started| started.elapsed().as_secs());
@@ -48,24 +60,25 @@ fn right_variants(app: &App) -> (Vec<String>, Style) {
             n => format!(" · {n} tool calls"),
         };
         let doing = activity(app).unwrap_or_else(|| "working".to_owned());
-        return (
-            vec![
-                format!("{spinner} {doing} {elapsed}s{tools} · Esc cancels"),
-                format!("{spinner} working {elapsed}s{tools} · Esc cancels"),
-                format!("{spinner} {elapsed}s · Esc cancels"),
-                format!("{spinner} {elapsed}s"),
-            ],
-            Style::new().fg(Color::Yellow),
-        );
+        let working = |rail: usize, text: String| {
+            let mut spans = super::hud::scanner(app.spinner, rail);
+            spans.push(Span::styled(text, Style::new().fg(Color::Cyan)));
+            spans
+        };
+        return vec![
+            working(12, format!(" {doing} {elapsed}s{tools} · Esc cancels")),
+            working(10, format!(" working {elapsed}s{tools} · Esc cancels")),
+            working(8, format!(" {elapsed}s · Esc cancels")),
+            working(6, format!(" {elapsed}s")),
+        ];
     }
-    (
-        vec![
-            "? help · Tab mode · Ctrl+O model · Ctrl+Q quit".to_owned(),
-            "? help · Ctrl+Q quit".to_owned(),
-            "? help".to_owned(),
-        ],
-        Style::new().fg(Color::DarkGray),
-    )
+    let hint = |text: &str| vec![Span::styled(text.to_owned(), Style::new().fg(Color::DarkGray))];
+    vec![
+        hint("? help · Tab mode · Ctrl+K palette · Ctrl+O model · Ctrl+Q quit"),
+        hint("? help · Tab mode · Ctrl+K palette · Ctrl+Q quit"),
+        hint("? help · Ctrl+Q quit"),
+        hint("? help"),
+    ]
 }
 
 /// What the agent is doing right now, in a word, from the newest tool call still running.
@@ -133,13 +146,7 @@ pub fn line(app: &App, width: u16) -> Line<'static> {
     }
     if !app.mode.is_empty() {
         head.push(Span::raw(" "));
-        head.push(Span::styled(
-            format!(" {} ", app.mode.to_uppercase()),
-            Style::new()
-                .fg(Color::Black)
-                .bg(mode_color(&app.mode))
-                .add_modifier(Modifier::BOLD),
-        ));
+        head.extend(super::hud::pill(&app.mode.to_uppercase(), pill_color(app)));
         if let Some(pending) = app
             .pending_mode
             .as_deref()
@@ -172,7 +179,7 @@ pub fn line(app: &App, width: u16) -> Line<'static> {
         match gauge.pct {
             Some(pct) => add(vec![
                 Span::styled("ctx ", dim),
-                Span::styled(crate::extras::meter(pct, 6), Style::new().fg(context_color(pct))),
+                Span::styled(super::hud::segbar(pct, 6), Style::new().fg(context_color(pct))),
                 Span::styled(format!(" {approx}{:.0}%", pct * 100.0), Style::new().fg(context_color(pct))),
             ]),
             None => add(vec![Span::styled(format!("ctx {approx}{}", crate::extras::short_count(gauge.used)), dim)]),
@@ -200,19 +207,19 @@ pub fn line(app: &App, width: u16) -> Line<'static> {
         add(spans);
     }
 
-    let (variants, right_style) = right_variants(app);
+    let variants = right_variants(app);
     let head_width: usize = head.iter().map(|s| display_width(&s.content)).sum();
     // The fullest arrangement that fits: all segments with the longest hint, then fewer segments, then shorter hints.
     let fits = |count: usize, variant: usize| {
         let used: usize = segments.iter().take(count).map(|(_, w)| w + 3).sum();
-        head_width + used + display_width(&variants[variant]) + 2 <= width
+        head_width + used + spans_width(&variants[variant]) + 2 <= width
     };
     let (count, variant) = (0..=segments.len())
         .rev()
         .find_map(|count| (0..variants.len()).find(|&v| fits(count, v)).map(|v| (count, v)))
         .unwrap_or((0, variants.len() - 1));
     let right = variants[variant].clone();
-    let right_width = display_width(&right);
+    let right_width = spans_width(&right);
 
     let mut spans = head;
     let mut used = head_width;
@@ -223,13 +230,13 @@ pub fn line(app: &App, width: u16) -> Line<'static> {
     }
     if used + right_width < width {
         spans.push(Span::raw(" ".repeat(width - used - right_width)));
-        spans.push(Span::styled(right, right_style));
+        spans.extend(right);
     } else if used + 2 < width {
         spans.push(Span::raw("  "));
-        spans.push(Span::styled(
-            truncate(&right, width.saturating_sub(used + 2)),
-            right_style,
-        ));
+        let room = width.saturating_sub(used + 2);
+        let flat: String = right.iter().map(|s| s.content.as_ref()).collect();
+        let style = right.last().map_or_else(Style::new, |s| s.style);
+        spans.push(Span::styled(truncate(&flat, room), style));
     }
     Line::from(spans)
 }

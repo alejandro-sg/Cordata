@@ -67,6 +67,11 @@ def _project_system_prompt(cwd: str) -> str:
         "(it runs the Claude Code CLI headless in this project and reports back); for multi-step work where a plan, "
         "an independent review and a check against the plan matter, use orchestrate. Judge either's result before "
         "you tell the user it is done. For planning, ask the architect; to condense bulk text, use context_digest. "
+        "In plan mode nothing changes: investigate with the read-only tools, then call present_plan with the plan "
+        "(goal, steps with the files each touches, how each is checked, risks) — the person approves it there and the "
+        "session leaves plan mode; do not just describe the plan in chat. If the person's change of mind comes back "
+        "as a revision request, revise and present again. When the work turns on a decision only the person can make, "
+        "call ask_user with two to six short options instead of asking in prose; never ask_user for something you can read in the code. "
         + ollama_resource_tool.MEMORY_GUIDANCE
     )
 
@@ -202,6 +207,8 @@ class _Session:
     #: re-reading the files, which would pick up an edit made mid-session and
     #: disagree with every other decision this session already made from these.
     preferences: object = None
+    #: Turns left in which adaptive mode stays out of the way because the person chose a mode by hand (mode_advisor.HOLD_TURNS).
+    adaptive_hold: int = 0
 
 
 def _settle_cancelled_turn(agent) -> None:

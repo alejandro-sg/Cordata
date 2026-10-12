@@ -997,7 +997,7 @@ async def test_commands() -> None:
     await rig.send("!mode auto", channel=thread)
     check("**auto**" in thread.messages[-1].content and rig.remote.chats.get(str(thread.id)).mode == "auto", "`!mode auto` sets it")
     await rig.send("!mode chaos", channel=thread)
-    check("one of plan, build, auto" in thread.messages[-1].content, "a mode that does not exist is refused")
+    check("one of plan, build, edit, auto" in thread.messages[-1].content, "a mode that does not exist is refused")
     await rig.send("!mode auto")
     check("inside that chat's thread" in rig.channel.messages[-1].content, "`!mode` outside a chat says where it applies")
 

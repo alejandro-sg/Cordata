@@ -213,7 +213,7 @@ def test_dynamic_effort_between_loop_iterations() -> None:
 
 
 def test_role_budgets() -> None:
-    expected = {"architect": "high", "debugger": "max", "observer": "low", "orchestrator": "low"}
+    expected = {"architect": "high", "debugger": "max", "observer": "low", "orchestrator": "medium"}
     for role, level in expected.items():
         daemon = FakeDaemon()
         bundle = oc.build_models(role, transport=daemon.transport, availability=lambda s: None if s.hosting == "cloud" else "no")
@@ -235,7 +235,7 @@ CLOUD_ONLY = lambda spec: None if spec.hosting == "cloud" else "no"  # noqa: E73
 
 
 def test_router_picks_by_role() -> None:
-    for name, wire, effort in (("debugger", "kimi-k2.7-code:cloud", "max"), ("architect", "glm-5.3-flash:cloud", "high"), ("orchestrator", "glm-5.3-flash:cloud", "low")):
+    for name, wire, effort in (("debugger", "kimi-k2.7-code:cloud", "max"), ("architect", "glm-5.3-flash:cloud", "high"), ("orchestrator", "kimi-k2.7-code:cloud", "medium")):
         daemon = FakeDaemon()
         bundle = oc.build_models(name, transport=daemon.transport, availability=CLOUD_ONLY)
         run(Agent(name=name, model=bundle.router, callback_handler=None))
@@ -248,9 +248,9 @@ def test_router_per_invocation_swap() -> None:
     bundle = oc.build_models("orchestrator", transport=daemon.transport, availability=CLOUD_ONLY)
     agent = Agent(name="orchestrator", model=bundle.router, callback_handler=None)
     run(agent, "a")
-    run(agent, "b", ollama_model="kimi-k2.7-code")
+    run(agent, "b", ollama_model="glm-5.3-flash")
     run(agent, "c")
-    check([daemon.body(i)["model"] for i in range(3)] == ["glm-5.3-flash:cloud", "kimi-k2.7-code:cloud", "glm-5.3-flash:cloud"], "invocation_state['ollama_model'] swaps the model for that call only")
+    check([daemon.body(i)["model"] for i in range(3)] == ["kimi-k2.7-code:cloud", "glm-5.3-flash:cloud", "kimi-k2.7-code:cloud"], "invocation_state['ollama_model'] swaps the model for that call only")
 
 
 def test_router_delegation_override() -> None:
@@ -327,8 +327,8 @@ def test_provider_integration() -> None:
         settings.MODEL_TIER_STRONG = settings.MODEL_TIER_FAST = ""
 
         orchestrator = agent_common.build_model()
-        check(isinstance(orchestrator, oc.OllamaCloudModel) and orchestrator.spec.alias == "glm-5.3-flash", "build_model(): orchestrator is glm-5.3-flash")
-        check(orchestrator.reasoning_effort == "low", "orchestrator runs at low effort")
+        check(isinstance(orchestrator, oc.OllamaCloudModel) and orchestrator.spec.alias == "kimi-k2.7-code", "build_model(): orchestrator is kimi-k2.7-code")
+        check(orchestrator.reasoning_effort == "medium", "orchestrator runs at medium effort")
         check(orchestrator.get_config()["params"]["max_tokens"] == agent_common._DEFAULT_MAX_TOKENS, "agent_common's max_tokens carried over")
         check(agent_common.build_model(model_id="kimi-k2.7-code").spec.alias == "kimi-k2.7-code", "build_model(model_id=alias) picks that registry model")
 

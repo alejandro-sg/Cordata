@@ -387,6 +387,10 @@ pub const ORCHESTRATOR_METHOD: &str = "_cordata/orchestrator";
 /// `/goal` progress (backend `goal.py`): `event` is `set` | `checking` | `continue` | `met` | `stopped` | `exhausted`,
 /// with `condition`, `turn`, `max`, `reason` and `how` (`check` | `judge`).
 pub const GOAL_METHOD: &str = "_cordata/goal";
+/// The session's mode changed under the client (backend `acp_server._announce_mode`): `mode`, `from`, `kind`
+/// (`adaptive` — the harness tightened it for a plan-worthy request; `plan_approved` — the person answered a plan
+/// card) and `reason`. ACP's own `current_mode_update` says *that* it changed; this says why.
+pub const MODE_METHOD: &str = "_cordata/mode";
 /// How full the conversation is (backend `session_extras.context_snapshot`): `used`, `window`, `pct`, `messages`.
 pub const CONTEXT_METHOD: &str = "_cordata/context";
 /// The agent's own checklist (backend `task_tool.todo_write`): `items` of `{content, status}`, `done`, `total`.
@@ -693,7 +697,7 @@ impl TaskInfo {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct HealInfo {
     /// detected | diagnosing | proposed | verifying | verified | verify_failed |
-    /// no_patch | healed | escalated | continuing | state_mismatch | auto_approved
+    /// no_patch | healed | escalated | continuing | state_mismatch | missing_file | bad_patch | auto_approved
     pub phase: String,
     pub attempt: Option<u64>,
     pub max: Option<u64>,
@@ -731,6 +735,8 @@ pub enum HarnessEvent {
     Context(Value),
     /// The agent's checklist, as JSON.
     TaskList(Value),
+    /// Why the mode changed (`mode`, `from`, `kind`, `reason`), as JSON.
+    Mode(Value),
 }
 
 /// Parse a harness notification; `None` for unknown methods or malformed params.
@@ -773,6 +779,7 @@ pub fn parse_harness(method: &str, params: &Value) -> Option<HarnessEvent> {
         GOAL_METHOD => text("event").map(|_| HarnessEvent::Goal(params.clone())),
         CONTEXT_METHOD => params.get("used").map(|_| HarnessEvent::Context(params.clone())),
         TASKLIST_METHOD => params.get("items").filter(|items| items.is_array()).map(|_| HarnessEvent::TaskList(params.clone())),
+        MODE_METHOD => text("mode").map(|_| HarnessEvent::Mode(params.clone())),
         _ => None,
     }
 }
@@ -1110,6 +1117,11 @@ mod laya_tests {
             ("verified", Some(1), Some(3))
         );
         assert_eq!(parse_harness(TASK_METHOD, &json!({"title": "no id"})), None);
+        assert!(matches!(
+            parse_harness(MODE_METHOD, &json!({"mode": "plan", "from": "build", "kind": "adaptive", "reason": "why"})),
+            Some(HarnessEvent::Mode(_))
+        ));
+        assert!(parse_harness(MODE_METHOD, &json!({"from": "build"})).is_none());
         assert_eq!(parse_harness("_cordata/unknown", &json!({})), None);
         let Some(HarnessEvent::Turn(turn)) = parse_harness(
             TURN_METHOD,

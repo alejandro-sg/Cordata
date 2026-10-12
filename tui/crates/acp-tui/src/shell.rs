@@ -24,6 +24,11 @@ pub struct Outcome {
 
 /// Run `command` through `sh -c` with stderr merged into stdout, no stdin, and a deadline.
 pub fn run(command: &str, cwd: &Path, timeout: Duration) -> Outcome {
+    run_keeping(command, cwd, timeout, KEEP_BYTES)
+}
+
+/// `run`, keeping the end of up to `keep` bytes of output (a diff review wants far more than a `!command` echo).
+pub fn run_keeping(command: &str, cwd: &Path, timeout: Duration, keep: usize) -> Outcome {
     let spawned = Command::new("sh")
         .arg("-c")
         .arg(format!("exec 2>&1\n{command}"))
@@ -48,8 +53,8 @@ pub fn run(command: &str, cwd: &Path, timeout: Duration) -> Outcome {
                 break;
             }
             kept.extend_from_slice(&buffer[..n]);
-            if kept.len() > KEEP_BYTES * 2 {
-                kept.drain(..kept.len() - KEEP_BYTES);
+            if kept.len() > keep * 2 {
+                kept.drain(..kept.len() - keep);
                 cut = true;
             }
         }
@@ -70,8 +75,8 @@ pub fn run(command: &str, cwd: &Path, timeout: Duration) -> Outcome {
         }
     };
     let (mut bytes, mut cut) = reader.join().unwrap_or_default();
-    if bytes.len() > KEEP_BYTES {
-        bytes.drain(..bytes.len() - KEEP_BYTES);
+    if bytes.len() > keep {
+        bytes.drain(..bytes.len() - keep);
         cut = true;
     }
     Outcome { output: String::from_utf8_lossy(&bytes).into_owned(), code, timed_out, cut }

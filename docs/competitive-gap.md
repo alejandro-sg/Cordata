@@ -71,3 +71,31 @@ model and CLI does each step, from evidence, and moves the work when a quota run
 * **Image paste.** The path exists for the menu bar's screenshot (`os_context`); the terminal client does not attach files
   other than as text.
 * **Live parallel steps across CLIs in separate worktrees** — see `docs/orchestrator.md`.
+
+## Second pass (2026-10-12): modes, plans, questions and the full-screen views
+
+Re-read the same two binaries for the interaction model rather than the command list, and added two references: **DeepSeek
+Harness** (`dsh`, `@deepseek-ai/dsh`) and **DeepSeek-TUI** — both read from their public descriptions (third-party write-ups
+and the repository's front page), not from source, so what follows is what they *say* they do.
+
+| idea | where it comes from | Cordata now |
+|---|---|---|
+| A real hand-over from plan to work: the agent presents the plan, the person answers, a rejection comes back as a revision request | Claude Code's `ExitPlanMode` (the binary's own text: on rejection "revise the plan… call ExitPlanMode again") · Antigravity `/plan` (plans wait for review) | `present_plan` → the **plan card** (`b` build · `e` edit · `a` auto · `k` keep planning · `w` say what to change); the person's answer switches the mode |
+| A mode between "ask for everything" and "ask for nothing" | Claude Code *accept edits* · `agy --mode accept-edits` | **edit** mode: file edits run after preflight, commands still ask |
+| Mode *and* posture as separate axes (Plan/Work/Operate × Ask/Auto-review/Full access) | DeepSeek-TUI | not copied: Cordata's four modes already fold the two; Laya's per-call gate plays the auto-review part |
+| Clarifying questions with suggested options | `dsh`'s planning mode · Claude Code's question tool | `ask_user`: numbered options, `w` to type your own, `s` to leave it to the agent |
+| The harness choosing the mode | `dsh` describes planning before editing; Claude Code has an auto-mode classifier set up with `/auto-mode-setup` | **adaptive mode**: a pure function of the message and Laya's route that only *tightens* (→ plan); never selects `auto` |
+| A fullscreen renderer next to the inline one | Claude Code `/tui` (`default` \| `fullscreen`) | **hybrid**: inline conversation; the command deck (Ctrl+K), HUD (F3) and diff review (F4) take the alternate screen with the mouse on, then hand it back |
+| Interactive diff: files, hunks, line numbers | Antigravity `/diff` (Commit Tree view, `n`/`N`, per-file cursor) | `/diffview`: file list, hunk jumps, old/new line numbers, untracked files, mouse |
+| Command palette | Antigravity `/plugin` pickers · DeepSeek-TUI `/provider` (F3) | Ctrl+K: modes, models, views, sessions, commands, custom commands, one filter |
+| One screen for "what is happening" | `dsh`'s *Trajectory* view (every step with its cost) · Claude Code `/context` grid · Antigravity `/tasks` | the HUD: session, context gauge, usage, tasks, agents, the orchestrator's run board (with per-step cost / tokens), activity |
+| Subagents / workflows visible while they run | Antigravity `/agents` (shows `Error:` for a stopped subagent) | the HUD's AGENTS and RUN panels (steps, workers, handoffs) |
+
+**The look.** A night-time interface rather than boxes and emoji: sodium amber for Cordata itself, electric teal for the other
+voice (agents, the orchestrator), cold mint / vermilion for safe and danger, thin rules, `⌜ ⌝` brackets, `▰▱` gauges and one
+scanning light while the agent works. Everything is a semantic colour remapped in one place (`theme.rs`), so
+`CORDATA_THEME=terminal` and `NO_COLOR` still work.
+
+**Not copied, on purpose.** `/ultraplan` / `/ultrareview` (a cloud session drafting or reviewing for you): they need a service
+Cordata does not run. `/advisor` (consult a stronger model "at key moments"): Cordata's dispatcher already routes by evidence and
+the orchestrator escalates between workers; a second, user-visible escalation switch would duplicate it.
