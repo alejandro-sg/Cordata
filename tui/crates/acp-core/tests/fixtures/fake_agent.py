@@ -15,7 +15,7 @@ Prompt triggers (substring match):
   "slow"        -> streams for ~10s, honouring session/cancel between chunks
   "error"       -> raises (JSON-RPC error response)
   "crash"       -> exits the process mid-turn
-  "laya"        -> sends the backend's live Laya triage as `_sierralab/laya`
+  "laya"        -> sends the backend's live Laya triage as `_cordata/laya`
                    extension notifications (a decision, then an outcome), then "ok"
   "long"        -> a 100-line markdown reply ("line 1" … "line 100"), streamed in
                    small chunks (for the TUI's scrollback test)
@@ -27,7 +27,7 @@ Prompt triggers (substring match):
                    p(ok), then the self-heal phases (detected → proposed patch →
                    sandbox verification progress → verified → healed)
 
-Extension methods (`_sierralab/plugins/list|enable|disable`, `lsp/status`,
+Extension methods (`_cordata/plugins/list|enable|disable`, `lsp/status`,
 `laya/stats`, `heal/status`) and `session/list` answer with canned data.
 """
 
@@ -146,7 +146,7 @@ class FakeAgent:
         return approved
 
     async def ext_method(self, method, params):
-        name = method.removeprefix("_").removeprefix("sierralab/")
+        name = method.removeprefix("_").removeprefix("cordata/")
         if name == "plugins/list":
             return {"plugins": [
                 {"name": "memory", "kind": "memory", "transport": "builtin", "source": "built-in", "status": "running", "tools": ["agent_memory"], "approval": "allow", "error": None},
@@ -171,7 +171,7 @@ class FakeAgent:
         ])
 
     async def _ext(self, kind, payload):
-        await self._conn.ext_notification(f"sierralab/{kind}", payload)
+        await self._conn.ext_notification(f"cordata/{kind}", payload)
 
     async def _task(self, task_id, title, done, total, state="running", message=""):
         # Like the real server (acp_server._forward_event): every harness
@@ -257,7 +257,7 @@ class FakeAgent:
                 ],
             ))
             await asyncio.sleep(0.05)
-            await self._conn.ext_notification("sierralab/lab", {
+            await self._conn.ext_notification("cordata/lab", {
                 "sessionId": session_id, "event": "state", "seq": 7,
                 "pods": [{"name": "debugger", "status": "contained"}],
                 "hitl": [{"id": "i1", "pod": "debugger", "tool": "shell", "status": "pending"}]})
@@ -266,13 +266,13 @@ class FakeAgent:
             return acp.PromptResponse(stopReason="end_turn")
 
         if "laya" in text:
-            await self._conn.ext_notification("sierralab/laya", {
+            await self._conn.ext_notification("cordata/laya", {
                 "sessionId": session_id, "event": "decision", "mode": "route", "route": "files_and_code",
                 "route_confidence": 0.98, "gate": 0.85, "needs_team": 0.1, "complexity": 1.2,
                 "complexity_confidence": 0.7, "latency_ms": 64.0, "waited_ms": 64.0,
                 "hint": "use the file and code tools", "tier": None, "late": False})
             await self._say(session_id, "ok")
-            await self._conn.ext_notification("sierralab/laya", {
+            await self._conn.ext_notification("cordata/laya", {
                 "sessionId": session_id, "event": "outcome", "actual_route": "files_and_code", "agreed": True,
                 "tools": ["file_read"], "tiers": {}, "stop_reason": "end_turn", "turn_ms": 900.0})
             return acp.PromptResponse(stopReason="end_turn")

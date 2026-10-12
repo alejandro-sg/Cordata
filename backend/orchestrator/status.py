@@ -1,7 +1,7 @@
 """Where the orchestrator stands, for the front doors — read from ``state.db``, no model call, no tokens.
 
 ``status_data()`` is the one payload every front door renders: the TUI's ``/status`` (ACP ext method
-``_sierralab/orchestrator/status``), Discord's ``!status`` card, and ``python -m orchestrator status``. Each pool's
+``_cordata/orchestrator/status``), Discord's ``!status`` card, and ``python -m orchestrator status``. Each pool's
 headroom (with the provider's own reading when it gave one), the recent runs and the recent handoffs.
 """
 
@@ -36,6 +36,7 @@ def status_data(cwd: str | None = None, *, limit: int = 6) -> dict[str, Any]:
             "drift_retries": r.drift_retries,
             "replans": r.replans,
             "reason": (r.reason or "")[:200],
+            "usage": usage_totals(r.usage or ledger.run_usage(r.run_id)),
         }
         for r in machine.recent(limit)
     ]
@@ -44,6 +45,15 @@ def status_data(cwd: str | None = None, *, limit: int = 6) -> dict[str, Any]:
         for p in handoff.recent(limit)
     ]
     return {"pools": pools, "runs": runs, "handoffs": handoffs, "ts": time.time()}
+
+
+def usage_totals(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """One run's spend summed over its (role, worker) rows: ``{"calls", "tokens", "cost_usd"}``."""
+    return {
+        "calls": sum(int(r.get("calls") or 0) for r in rows),
+        "tokens": sum(int(r.get("tokens_in") or 0) + int(r.get("tokens_out") or 0) for r in rows),
+        "cost_usd": round(sum(float(r.get("cost_usd") or 0.0) for r in rows), 6),
+    }
 
 
 def gauge(pct: float | None, width: int = GAUGE_WIDTH) -> str:
@@ -66,11 +76,11 @@ LEVEL_MARK = {"ok": "🟢", "soft": "🟡", "hard": "🟠", "exhausted": "🔴"}
 
 
 def pool_line(pool: dict[str, Any], *, marks: bool = False) -> str:
-    """``claude_code  ███████░░░░░  58%  soft  11.6/20 usd · provider`` — one pool, one line."""
+    """``claude_code  ███████░░░░░  58%  soft  11.6/20 usd · provider`` — one pool, one line (``used/∞`` when uncapped)."""
     limit = pool.get("limit")
     pct = pool.get("pct")
     capped = bool(limit) or pool.get("provider_pct") is not None
-    used = f"{_compact(pool['used'])}/{_compact(limit)} {pool['unit']}" if limit else f"{_compact(pool['used'])} {pool['unit']}"
+    used = f"{_compact(pool['used'])}/{_compact(limit) if limit else '∞'} {pool['unit']}"
     mark = (LEVEL_MARK.get(pool.get("level", "ok"), "") + " ") if marks else ""
     source = " · provider" if pool.get("source") == "provider" else ""
     until = ""

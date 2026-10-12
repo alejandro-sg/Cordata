@@ -58,10 +58,22 @@ def render_handoff(context: dict[str, Any] | None) -> str:
     )
 
 
-def compose(task: TaskPacket, *, native_schema: bool) -> str:
+#: Said to a worker whose CLI refuses every shell command when run headless (agy). Without it such a worker does what
+#: any engineer does first — runs the tests — is refused, and stops with nothing done and "success" on its lips. Observed
+#: on the first real multi-step run: two steps "completed" with no edit.
+NO_COMMANDS_NOTE = (
+    "Shell commands are NOT available in this environment: every attempt to run one is refused, and trying ends your turn "
+    "with nothing done. Do not run tests, scripts or git. Read the code with your file tools, make the edit directly, and "
+    "state what you changed. The harness runs the checks itself afterwards."
+)
+
+
+def compose(task: TaskPacket, *, native_schema: bool, can_run_commands: bool = True) -> str:
     """The whole prompt a worker sends: role brief, the task, scope, handoff, and — when the worker cannot enforce a
     schema itself — the schema to answer in."""
     parts = [ROLE_BRIEFS.get(task.role, ""), task.prompt.strip()]
+    if not can_run_commands:
+        parts.append(NO_COMMANDS_NOTE)
     scope = task.writable_scope()
     if task.role in ("execute", "harden"):
         parts.append("Files you may change (project-relative): " + (", ".join(scope) if scope else "(none — report only)"))

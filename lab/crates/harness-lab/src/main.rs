@@ -7,7 +7,7 @@
 //! including one started *after* the window.
 //!
 //! Usage: `harness-lab [--watch <dir>]`, where `--watch` is the workspace the proactive observer
-//! watches (default: `SIERRALAB_LAB_WATCH`, else the current directory).
+//! watches (default: `CORDATA_LAB_WATCH`, else the current directory).
 
 use gpui::{App, AppContext as _, Application, Bounds, SharedString, TitlebarOptions, WindowBounds, WindowOptions, point, px, size};
 
@@ -25,7 +25,7 @@ fn main() {
                     window_min_size: Some(size(px(980.), px(640.))),
                     // A transparent titlebar: the header row is the titlebar, and leaves room for the traffic lights.
                     titlebar: Some(TitlebarOptions {
-                        title: Some(SharedString::from("sierralab · Experimental Lab")),
+                        title: Some(SharedString::from("cordata · Experimental Lab")),
                         appears_transparent: true,
                         traffic_light_position: Some(point(px(16.), px(16.))),
                     }),

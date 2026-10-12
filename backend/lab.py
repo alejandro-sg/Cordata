@@ -6,7 +6,7 @@ thread-safe model — pods, the delegation links between them, the threat readin
 for the pending tool call, staged HITL interventions, memory reads — plus a
 snapshot that is JSON all the way down. Two things consume it:
 
-* the ACP server forwards every change as the ``_sierralab/lab`` extension
+* the ACP server forwards every change as the ``_cordata/lab`` extension
   notification (``harness_events`` → ``acp_server._forward_event``), which the
   Rust TUI renders as the Lab view;
 * the daemon taps the same frames and re-serves the latest snapshot per session

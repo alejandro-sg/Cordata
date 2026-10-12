@@ -14,7 +14,7 @@ kind of change and was turned down again. Now:
    rejection does not say why. A note from the person is the strongest evidence and is used as given; with no note the
    rule is marked *inferred*. The rule must pass ``textfilter`` (no URL, no command, nothing about approvals or
    safeguards) and be short. With no model available and a note given, the note itself is the rule.
-3. **Storage**. ``~/.sierralab/preferences/<project>/rules.jsonl`` (0600, under 0700) is the source of truth, and each
+3. **Storage**. ``~/.cordata/preferences/<project>/rules.jsonl`` (0600, under 0700) is the source of truth, and each
    rule is mirrored into the knowledge graph as a ``USER_PREFERENCE`` node joined to the project and the files it is about
    (``kg.sink_for``: LanceDB, or Cognee when that is the configured sink) — when ``kg.enabled``. A rule stated again
    (same text, or the same meaning by embedding) is counted, not duplicated.
@@ -84,7 +84,7 @@ _RULE_START = re.compile(r"^(do not|don't|never|avoid)\b", re.IGNORECASE)
 
 
 def _home() -> Path:
-    return Path(os.environ.get("SIERRALAB_HOME") or Path.home() / ".sierralab")
+    return Path(os.environ.get("CORDATA_HOME") or Path.home() / ".cordata")
 
 
 def project_key(cwd: str | os.PathLike) -> str:
@@ -330,7 +330,7 @@ def reflect_rule(cwd: str, record_id: str, *, drafter: Callable[[str], str] | No
         if record is None or record.get("status") != "pending":
             return record
         reply = ""
-        model_off = os.environ.get("SIERRALAB_REFLECT", "").lower() == "off" and drafter is None
+        model_off = os.environ.get("CORDATA_REFLECT", "").lower() == "off" and drafter is None
         if not model_off:
             try:
                 reply = (drafter or (lambda text: _model_draft(text, model)))(digest(record))
@@ -519,7 +519,7 @@ def constraints_injector(cwd: str, preferences: Callable[[], Any] | None = None)
 
     # Every model call, not only the turn's first: the edit is usually proposed after a read or two, and an injection is
     # ephemeral — a constraint folded into the first call alone is gone by the time the patch is written (found live).
-    return ContextInjector(render, name="sierralab:rejections", trigger="everyTurn")
+    return ContextInjector(render, name="cordata:rejections", trigger="everyTurn")
 
 
 # ------------------------------------------------------------------------------------------------- a person's view

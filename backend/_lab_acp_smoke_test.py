@@ -54,7 +54,7 @@ async def until(condition, label: str, timeout: float = 5.0) -> None:
 
 
 def lab_states(conn) -> list[dict]:
-    return [params for method, params in conn.ext if method == "sierralab/lab"]
+    return [params for method, params in conn.ext if method == "cordata/lab"]
 
 
 def pod(snapshot: dict, name: str) -> dict:
@@ -68,7 +68,7 @@ async def test_pods_announced() -> None:
     created = await server.new_session(cwd=str(project("announce")))
     await settle()
     states = lab_states(conn)
-    check(bool(states), "the session announces the Lab as _sierralab/lab")
+    check(bool(states), "the session announces the Lab as _cordata/lab")
     last = states[-1]
     check(last["event"] == "state" and last["sessionId"] == created.session_id, "…tagged with the session")
     check({p["name"] for p in last["pods"]} == {"orchestrator", "architect", "debugger"}, f"pods: {[p['name'] for p in last['pods']]}")
@@ -119,7 +119,7 @@ async def test_dial_changes_the_gate() -> None:
     await server.set_session_mode(sid, "auto")
     await server.prompt(sid, [acp.text_block("clean up")])
     check(conn.asked == [], "default dial (0.8): a 0.75 turn runs without asking")
-    reply = await server.ext_method("_sierralab/lab/dial", {"sessionId": sid, "pod": "orchestrator", "value": 0.5})
+    reply = await server.ext_method("_cordata/lab/dial", {"sessionId": sid, "pod": "orchestrator", "value": 0.5})
     check(reply == {"pod": "orchestrator", "dial": 0.5}, "dial control accepted")
     check(lab_states(conn)[-1] and pod(lab_module.get().snapshot(), "orchestrator")["dial"] == 0.5, "the snapshot shows the dial at 0.5")
     turn = asyncio.create_task(server.prompt(sid, [acp.text_block("clean up again")]))
@@ -127,7 +127,7 @@ async def test_dial_changes_the_gate() -> None:
     conn.decide("allow")
     await turn
     check(len(conn.asked) == 1, "…exactly once, and only because of the dial")
-    await server.ext_method("_sierralab/lab/dial", {"sessionId": sid, "pod": "orchestrator", "value": 0.95})
+    await server.ext_method("_cordata/lab/dial", {"sessionId": sid, "pod": "orchestrator", "value": 0.95})
     check(pod(lab_module.get().snapshot(), "orchestrator")["dial"] == 0.8, "a dial above the router's gate resets to the default — it cannot loosen")
     rows = state_store.recent_events(kind="lab", session_id=sid)
     check([r["payload"]["action"] for r in reversed(rows)] == ["dial", "dial"] and rows[-1]["payload"]["value"] == 0.5, f"each control is in the ledger, in order ({[r['payload'] for r in reversed(rows)]})")
@@ -142,7 +142,7 @@ async def test_estop_parked_on_approval() -> None:
     sid = created.session_id
     turn = asyncio.create_task(server.prompt(sid, [acp.text_block("make a file")]))
     await until(lambda: conn.waiting, "build mode asks before shell")
-    reply = await server.ext_method("_sierralab/lab/isolate", {"sessionId": sid, "pod": "orchestrator"})
+    reply = await server.ext_method("_cordata/lab/isolate", {"sessionId": sid, "pod": "orchestrator"})
     check(reply["isolated"] and set(reply["also"]) == {"architect", "debugger"}, f"E-Stop isolates the pod and its specialists ({reply})")
     conn.decide("allow")  # the human clicks Allow a moment too late
     response = await turn
@@ -155,7 +155,7 @@ async def test_estop_parked_on_approval() -> None:
     again = await server.prompt(sid, [acp.text_block("try again")])
     check(len(MODELS["orchestrator"].calls) == 1, "an isolated session does not reach the model on a new prompt")
     check(again is not None, "…and the prompt still returns")
-    released = await server.ext_method("_sierralab/lab/release", {"sessionId": sid, "pod": "orchestrator"})
+    released = await server.ext_method("_cordata/lab/release", {"sessionId": sid, "pod": "orchestrator"})
     check(released["isolated"] is False, "release lifts the isolation")
 
 
@@ -165,19 +165,19 @@ async def test_inject_state_select() -> None:
     server, conn = server_with(laya_answer("code", {"code": 0.5, "answer": 0.5}))
     created = await server.new_session(cwd=str(project("inject")))
     sid = created.session_id
-    reply = await server.ext_method("_sierralab/lab/inject", {"sessionId": sid, "pod": "orchestrator", "text": "only touch files under src/"})
+    reply = await server.ext_method("_cordata/lab/inject", {"sessionId": sid, "pod": "orchestrator", "text": "only touch files under src/"})
     check(reply == {"pod": "orchestrator", "queued": 1}, "guidance queued")
     await server.prompt(sid, [acp.text_block("refactor")])
     seen = MODELS["orchestrator"].calls[0]["last_text"]
     check("only touch files under src/" in seen and "operator directive" in seen and "refactor" in seen, "the model's next call carries the directive alongside the prompt")
-    state = await server.ext_method("_sierralab/lab/state", {"sessionId": sid})
+    state = await server.ext_method("_cordata/lab/state", {"sessionId": sid})
     check({p["name"] for p in state["pods"]} == {"orchestrator", "architect", "debugger"} and state["version"] == 1, "lab/state returns the snapshot")
-    await server.ext_method("_sierralab/lab/select", {"sessionId": sid, "pod": "debugger"})
-    focused = (await server.ext_method("_sierralab/lab/state", {"sessionId": sid}))
+    await server.ext_method("_cordata/lab/select", {"sessionId": sid, "pod": "debugger"})
+    focused = (await server.ext_method("_cordata/lab/state", {"sessionId": sid}))
     check("system_prompt" in pod(focused, "debugger") and "Debugger specialist" in pod(focused, "debugger")["system_prompt"], "selecting a pod returns its system prompt")
     for method, params in (("inject", {"pod": "nobody", "text": "x"}), ("isolate", {"pod": "nobody"}), ("dial", {"pod": "orchestrator", "value": "high"}), ("inject", {"pod": "orchestrator", "text": "  "})):
         try:
-            await server.ext_method(f"_sierralab/lab/{method}", {"sessionId": sid, **params})
+            await server.ext_method(f"_cordata/lab/{method}", {"sessionId": sid, **params})
             raise AssertionError(f"{method} {params} accepted")
         except acp.RequestError:
             pass

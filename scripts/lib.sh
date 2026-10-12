@@ -7,8 +7,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_DIR="$ROOT/.dev"
 mkdir -p "$RUN_DIR"
 
-QDRANT_CONTAINER="sierralab-agent-qdrant"
-QDRANT_VOLUME="sierralab-agent-qdrant-data"
+QDRANT_CONTAINER="cordata-agent-qdrant"
+QDRANT_VOLUME="cordata-agent-qdrant-data"
 
 # --- output -----------------------------------------------------------
 

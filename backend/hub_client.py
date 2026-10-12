@@ -6,7 +6,7 @@ reverse tunnel (`scripts/hub-tunnel.sh`) so the mini's own loopback port reaches
 and the web backend's container reaches that port as `host.docker.internal`. Nothing listens on the
 network that did not before, and the daemon token travels as a file only the mini's user can read.
 
-When `SIERRALAB_HUB_GRPC` is set (and a token is available), `main.py` serves the AG-UI endpoint with a
+When `CORDATA_HUB_GRPC` is set (and a token is available), `main.py` serves the AG-UI endpoint with a
 `HubAgent` instead of a local Strands agent: a web turn *is* a hub turn. The thread it runs in maps to a
 hub conversation — a thread whose id is a conversation handle (`c3f9a1e`, picked from the sidebar) is
 that conversation; any other thread is given one on its first message and remembers it. The reply
@@ -15,10 +15,10 @@ answer it (the web app has no approval channel into the hub yet).
 
 Configured by:
 
-* `SIERRALAB_HUB_GRPC`        — `host:port` of the tunnelled bridge, e.g. `host.docker.internal:18766`
-* `SIERRALAB_HUB_TOKEN_FILE`  — a JSON file with `token` (the laptop's `daemon.json`, copied 0600), or
-  `SIERRALAB_HUB_TOKEN`       — the token itself
-* `SIERRALAB_HUB_CWD`         — the laptop folder new web conversations work in (default: the daemon's)
+* `CORDATA_HUB_GRPC`        — `host:port` of the tunnelled bridge, e.g. `host.docker.internal:18766`
+* `CORDATA_HUB_TOKEN_FILE`  — a JSON file with `token` (the laptop's `daemon.json`, copied 0600), or
+  `CORDATA_HUB_TOKEN`       — the token itself
+* `CORDATA_HUB_CWD`         — the laptop folder new web conversations work in (default: the daemon's)
 """
 
 from __future__ import annotations
@@ -56,20 +56,20 @@ class HubConfig:
 def configured(environ: dict[str, str] | None = None) -> HubConfig | None:
     """The hub this web backend talks to, or None to keep the local agent."""
     env = os.environ if environ is None else environ
-    target = (env.get("SIERRALAB_HUB_GRPC") or "").strip()
+    target = (env.get("CORDATA_HUB_GRPC") or "").strip()
     if not target:
         return None
-    token = (env.get("SIERRALAB_HUB_TOKEN") or "").strip()
-    path = (env.get("SIERRALAB_HUB_TOKEN_FILE") or "").strip()
+    token = (env.get("CORDATA_HUB_TOKEN") or "").strip()
+    path = (env.get("CORDATA_HUB_TOKEN_FILE") or "").strip()
     if not token and path:
         try:
             token = str(json.loads(Path(path).read_text(encoding="utf-8")).get("token") or "").strip()
         except (OSError, ValueError, AttributeError):
             logger.warning("hub: could not read the token file %s", path)
     if not token:
-        logger.warning("hub: SIERRALAB_HUB_GRPC is set but no token is available; keeping the local agent")
+        logger.warning("hub: CORDATA_HUB_GRPC is set but no token is available; keeping the local agent")
         return None
-    return HubConfig(target=target, token=token, cwd=(env.get("SIERRALAB_HUB_CWD") or "").strip())
+    return HubConfig(target=target, token=token, cwd=(env.get("CORDATA_HUB_CWD") or "").strip())
 
 
 def _stub(config: HubConfig):
@@ -164,7 +164,7 @@ class HubAgent:
     def __init__(self, config: HubConfig, threads: ThreadMap) -> None:
         self.config = config
         self.threads = threads
-        self.name = "sierralab_hub"
+        self.name = "cordata_hub"
 
     async def run(self, input_data: Any, **_: Any) -> AsyncIterator[Any]:
         from ag_ui.core import EventType, RunFinishedEvent, RunStartedEvent, TextMessageContentEvent, TextMessageEndEvent, TextMessageStartEvent  # noqa: PLC0415

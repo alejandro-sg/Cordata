@@ -6,7 +6,7 @@ forwards the original bytes unchanged. It never decodes a message into a typed
 object and never re-encodes one.
 
 That is a deliberate choice against the obvious alternative. ACP is a large,
-versioned schema (see `acp/` and the `_sierralab/*` extension methods): decoding
+versioned schema (see `acp/` and the `_cordata/*` extension methods): decoding
 and re-encoding would mean every protocol addition needing a matching change
 here, and a daemon running one version behind would silently mangle messages it
 did not recognise. Passing bytes through means `--transport ws` and

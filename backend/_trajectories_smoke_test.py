@@ -20,8 +20,8 @@ import tempfile
 import time
 
 HOME = tempfile.mkdtemp(prefix="traj-home-")
-os.environ["SIERRALAB_HOME"] = HOME
-os.environ["SIERRALAB_STATE_DB"] = os.path.join(HOME, "state.db")
+os.environ["CORDATA_HOME"] = HOME
+os.environ["CORDATA_STATE_DB"] = os.path.join(HOME, "state.db")
 os.environ.pop("LAYA_MODEL", None)
 
 import bandit  # noqa: E402

@@ -2,7 +2,7 @@
 
 Embedded and repo-local, like `trace_store`'s corpus and for the same reason —
 this graph is *about one checkout's* work, it is most useful beside the code it
-describes, and it is regenerable by running the harness again. `SIERRALAB_KG_DIR`
+describes, and it is regenerable by running the harness again. `CORDATA_KG_DIR`
 moves it, which is how the smoke test stays off a developer's real graph.
 
 Two things are written, and they are not the same thing:
@@ -48,7 +48,7 @@ _unavailable_logged = False
 
 
 def path() -> Path:
-    override = os.environ.get("SIERRALAB_KG_DIR")
+    override = os.environ.get("CORDATA_KG_DIR")
     if override:
         return Path(override)
     return Path(__file__).resolve().parent.parent / DEFAULT_DIR

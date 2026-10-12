@@ -26,7 +26,7 @@
 // daemon). See `THREAT_MODEL.md`, "The gRPC telemetry bridge".
 //
 // Every RPC carries the daemon token as call metadata `x-daemon-token` (the same 0600 secret in
-// ~/.sierralab/daemon.json that guards the HTTP/WebSocket surface); a missing or wrong token is
+// ~/.cordata/daemon.json that guards the HTTP/WebSocket surface); a missing or wrong token is
 // UNAUTHENTICATED. The listener is loopback-only.
 //
 // Evolution rules: numbers are never reused (retired ones go in `reserved`), every enum has an
@@ -35,7 +35,7 @@
 
 syntax = "proto3";
 
-package sierralab.harness.v1;
+package cordata.harness.v1;
 
 service Harness {
   rpc StreamTelemetry(TelemetryRequest) returns (stream TelemetryFrame);

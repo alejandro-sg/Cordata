@@ -25,7 +25,7 @@ from pathlib import Path
 
 HERE = Path(__file__).parent.resolve()
 _TMP = tempfile.TemporaryDirectory()
-os.environ["SIERRALAB_HOME"] = str(Path(_TMP.name) / "home")  # never touch the real ~/.sierralab
+os.environ["CORDATA_HOME"] = str(Path(_TMP.name) / "home")  # never touch the real ~/.cordata
 
 from strands import Agent, tool  # noqa: E402
 
@@ -159,8 +159,8 @@ def test_plugins() -> None:
     check(any(k == "plugins" and p["plugin"]["status"] == "running" for k, p in events), "plugin lifecycle is announced")
 
     # A second server whose tool name clashes gets prefixed with its own name.
-    (project / ".sierralab").mkdir(exist_ok=True)
-    (project / ".sierralab" / "mcp.local.json").write_text(
+    (project / ".cordata").mkdir(exist_ok=True)
+    (project / ".cordata" / "mcp.local.json").write_text(
         json.dumps({"mcpServers": {"dup": {"command": ECHO[0], "args": ECHO[1:], "env": {"ECHO_SERVER_NAME": "dup"}}}})
     )
     host.discover()

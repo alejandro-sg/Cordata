@@ -38,7 +38,7 @@ from typing import Any
 # the denylists below are the reason the allowlist here is trustworthy.
 import sub_agent_common
 
-logger = logging.getLogger("sierralab.observer")
+logger = logging.getLogger("cordata.observer")
 
 #: What the observer may hold. `file_read` to look at a file the evidence
 #: mentioned. No `think` (the SDK deprecated it for native reasoning), no `shell` — the parent already ran the exact
@@ -112,7 +112,7 @@ def build_observer_agent(*, model=None, tools: tuple[str, ...] = OBSERVER_TOOLS)
         # module docstring describes, and it must happen in the child only.
         import sub_agent_common as sac
 
-        model = sac.build_sub_agent_model(os.environ.get("SIERRALAB_OBSERVER_TIER") or None, role="observer")
+        model = sac.build_sub_agent_model(os.environ.get("CORDATA_OBSERVER_TIER") or None, role="observer")
     return Agent(
         name="observer",
         model=model,
@@ -181,7 +181,7 @@ def observe(request: dict[str, Any], *, model=None) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(level=os.environ.get("SIERRALAB_OBSERVER_LOG", "warning").upper(), stream=sys.stderr)
+    logging.basicConfig(level=os.environ.get("CORDATA_OBSERVER_LOG", "warning").upper(), stream=sys.stderr)
     raw = sys.stdin.readline()
     if not raw.strip():
         print(json.dumps({"error": "no request on stdin"}))

@@ -237,7 +237,7 @@ def apply(patch: str, root: str | os.PathLike) -> str:
             summary.append(f"deleted {rel}")
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_name(target.name + ".sierralab-tmp")
+        tmp = target.with_name(target.name + ".cordata-tmp")
         tmp.write_text(text, encoding="utf-8")
         os.replace(tmp, target)
         _invalidate_pyc(target)

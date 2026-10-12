@@ -160,7 +160,7 @@ def reflect(record: dict[str, Any], project: str, *, model: Any = None, session_
     """One turn → at most one staged lesson. Never raises."""
     try:
         # The switch tests and the eval harness use: their turns are scripted, and a lesson drafted from one would be noise.
-        if os.environ.get("SIERRALAB_REFLECT", "").lower() == "off":
+        if os.environ.get("CORDATA_REFLECT", "").lower() == "off":
             return None
         if preferences is not None and preferences.get("learning.reflect", True) is False:
             return None

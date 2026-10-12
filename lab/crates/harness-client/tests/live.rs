@@ -3,10 +3,10 @@
 //! `tests/client.rs` proves the client against a scripted fake daemon, and `backend/_grpc_bridge_smoke_test.py`
 //! proves the bridge against a Python client. Neither proves the two *agree*: this does. Run by
 //! `backend/_lab_gui_live_smoke_test.py` (`make lab-live`), which starts the demo daemon
-//! (`backend/lab_demo.py`) in a throwaway home, points `SIERRALAB_HOME` at it and then checks the
+//! (`backend/lab_demo.py`) in a throwaway home, points `CORDATA_HOME` at it and then checks the
 //! ledger this test leaves behind. It is `#[ignore]`d so a plain `cargo test` never needs Python.
 //!
-//!   SIERRALAB_HOME=<demo home> cargo test -p harness-client --test live -- --ignored --nocapture
+//!   CORDATA_HOME=<demo home> cargo test -p harness-client --test live -- --ignored --nocapture
 
 use std::time::{Duration, Instant};
 
@@ -66,7 +66,7 @@ fn pod<'a>(model: &'a LabModel, id: &str) -> Option<&'a harness_proto::v1::Pod> 
 #[ignore = "needs the demo daemon: run `make lab-live`"]
 fn the_rust_client_and_the_python_bridge_agree() {
     let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
-    let daemon = DaemonConfig::discover().expect("SIERRALAB_HOME must point at a running demo daemon");
+    let daemon = DaemonConfig::discover().expect("CORDATA_HOME must point at a running demo daemon");
     let handle = spawn(ClientConfig::new(daemon), runtime.handle());
     let mut model = LabModel::default();
 

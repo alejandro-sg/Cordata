@@ -23,13 +23,13 @@ import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-_ROOT = Path(tempfile.mkdtemp(prefix="sierralab-hub-web-"))
-os.environ["SIERRALAB_HOME"] = str(_ROOT / "home")
-os.environ["SIERRALAB_DAEMON_CONFIG"] = str(_ROOT / "home" / "daemon.json")
-os.environ["SIERRALAB_STATE_DB"] = str(_ROOT / "home" / "state.db")
-os.environ["SIERRALAB_DISCORD"] = "off"
+_ROOT = Path(tempfile.mkdtemp(prefix="cordata-hub-web-"))
+os.environ["CORDATA_HOME"] = str(_ROOT / "home")
+os.environ["CORDATA_DAEMON_CONFIG"] = str(_ROOT / "home" / "daemon.json")
+os.environ["CORDATA_STATE_DB"] = str(_ROOT / "home" / "state.db")
+os.environ["CORDATA_DISCORD"] = "off"
 os.environ["FAKE_ACP_STATE"] = str(_ROOT / "fake-acp-state.json")
-os.environ["SIERRALAB_ACP_ENTRYPOINT"] = f"{sys.executable} {HERE / 'fixtures' / 'fake_acp_chat_child.py'}"
+os.environ["CORDATA_ACP_ENTRYPOINT"] = f"{sys.executable} {HERE / 'fixtures' / 'fake_acp_chat_child.py'}"
 
 from ag_ui.core import RunAgentInput, UserMessage  # noqa: E402
 
@@ -54,11 +54,11 @@ async def collect(agent: hub_client.HubAgent, thread_id: str, text: str) -> tupl
 
 
 def test_configuration() -> None:
-    check(hub_client.configured({}) is None, "no SIERRALAB_HUB_GRPC: the web backend keeps its own agent")
-    check(hub_client.configured({"SIERRALAB_HUB_GRPC": "h:1"}) is None, "an address without a token is not enough")
+    check(hub_client.configured({}) is None, "no CORDATA_HUB_GRPC: the web backend keeps its own agent")
+    check(hub_client.configured({"CORDATA_HUB_GRPC": "h:1"}) is None, "an address without a token is not enough")
     token_file = _ROOT / "hub.json"
     token_file.write_text(json.dumps({"token": "s3cret-token-value", "port": 8765}))
-    config = hub_client.configured({"SIERRALAB_HUB_GRPC": "host.docker.internal:18766", "SIERRALAB_HUB_TOKEN_FILE": str(token_file), "SIERRALAB_HUB_CWD": "/p"})
+    config = hub_client.configured({"CORDATA_HUB_GRPC": "host.docker.internal:18766", "CORDATA_HUB_TOKEN_FILE": str(token_file), "CORDATA_HUB_CWD": "/p"})
     check(config is not None and config.token == "s3cret-token-value" and config.cwd == "/p", "the token is read from the copied daemon.json")
     check("s3cret" not in repr(config), "and never printed")
     check(hub_client.ThreadMap(_ROOT / "m.json").get("c3f9a1e") == "c3f9a1e", "a thread named like a handle is that conversation")

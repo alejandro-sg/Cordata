@@ -10,7 +10,7 @@ one, so it is bounded the same way a skill is, and a little tighter:
     retired/   was live and stopped helping, or was withdrawn. Kept, not read.
     rejected/  failed the filter or the gate. Kept so the same draft is not proposed again.
 
-Layout (``~/.sierralab/prompts/<project key>/<status>/<name>.md``). The file is the overlay — no frontmatter; the
+Layout (``~/.cordata/prompts/<project key>/<status>/<name>.md``). The file is the overlay — no frontmatter; the
 name is the file name. Appended as its own block at the end of the system prompt, after the project prompt, the
 workspace context and the person's instructions, wrapped so the boundary is unambiguous.
 
@@ -54,7 +54,7 @@ REWARD_WINDOW = 12
 _LOCK = threading.RLock()
 
 #: The environment a promotion arm sets to put a candidate overlay in front of a session without staging it live.
-OVERLAY_ENV = "SIERRALAB_PROMPT_OVERLAY"
+OVERLAY_ENV = "CORDATA_PROMPT_OVERLAY"
 #: Named so a person reading the prompt can tell harness-written text from their own instructions.
 HEADING = "How this project is worked on"
 
@@ -63,7 +63,7 @@ HEADING = "How this project is worked on"
 
 
 def home() -> Path:
-    return Path(os.environ.get("SIERRALAB_HOME") or Path.home() / ".sierralab") / "prompts"
+    return Path(os.environ.get("CORDATA_HOME") or Path.home() / ".cordata") / "prompts"
 
 
 def project_key(project: str | os.PathLike | None) -> str:
@@ -316,7 +316,7 @@ def record_eval(name: str, project: str | os.PathLike | None, verdict: dict[str,
 
 
 def _overlay_from_env() -> str | None:
-    """The promotion arm's candidate: a file named by ``SIERRALAB_PROMPT_OVERLAY``, if it is set and readable."""
+    """The promotion arm's candidate: a file named by ``CORDATA_PROMPT_OVERLAY``, if it is set and readable."""
     path = os.environ.get(OVERLAY_ENV, "")
     if not path:
         return None

@@ -35,7 +35,7 @@ from typing import Any
 from .base import TaskPacket, WorkerCapabilities, WorkerEvent, WorkerFamily
 from .cli_worker import CliWorker, StreamParser
 
-BINARY_ENV = "SIERRALAB_AGY_BIN"
+BINARY_ENV = "CORDATA_AGY_BIN"
 
 AGY_MODELS = (
     "gemini-3.8-flash-low", "gemini-3.8-flash-medium", "gemini-3.8-flash-high",
@@ -120,6 +120,7 @@ class AgyWorker(CliWorker):
     binary_env = BINARY_ENV
     binary_name = "agy"
     native_schema = True
+    can_run_commands = False
 
     def build_argv(self, binary: str, task: TaskPacket, resume: str | None) -> list[str]:
         argv = [binary, "--output-format", "stream-json", "--input-format", "stream-json", "--disable-slash-commands", "--print-timeout", f"{max(1, int(task.timeout_s))}s"]

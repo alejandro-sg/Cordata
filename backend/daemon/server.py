@@ -20,7 +20,7 @@ Security. Three properties, all of them load-bearing:
   This process spawns shells in arbitrary project directories; it must not be
   reachable from a network.
 * **A token, always.** Every route and the socket require the token from
-  `~/.sierralab/daemon.json`, mode 0600. Loopback is not an authorization
+  `~/.cordata/daemon.json`, mode 0600. Loopback is not an authorization
   boundary — any local process, and any page in a local browser, can reach it.
 * **No browser origins.** A WebSocket handshake carries an `Origin` header that
   a script cannot forge. Rejecting any request with one turns a malicious page
@@ -55,7 +55,7 @@ DEFAULT_PORT = 8765
 
 
 def token_path() -> Path:
-    override = os.environ.get("SIERRALAB_DAEMON_CONFIG")
+    override = os.environ.get("CORDATA_DAEMON_CONFIG")
     if override:
         return Path(override)
     import settings_store  # noqa: PLC0415 — keeps this module importable standalone
@@ -73,7 +73,7 @@ def load_or_create_token(port: int = DEFAULT_PORT, grpc_port: int | None = None)
     The port is rewritten every call rather than only on creation. A client
     finds the daemon by reading this file, so a file naming a port the daemon
     is not listening on is worse than no file: it connects somewhere else, or
-    nowhere, and reports the wrong thing. `--port` and `SIERRALAB_DAEMON_PORT`
+    nowhere, and reports the wrong thing. `--port` and `CORDATA_DAEMON_PORT`
     both make that divergence possible, which is why this takes the port the
     server is actually about to bind.
     """
@@ -230,7 +230,7 @@ def _maybe_end_terminal_turn(state: "State", conv: Any, line: str) -> None:
 
 
 def create_app(port: int = DEFAULT_PORT) -> FastAPI:
-    app = FastAPI(title="sierralab daemon", version="1")
+    app = FastAPI(title="cordata daemon", version="1")
     state = State(port)
     app.state.daemon = state
 
@@ -496,7 +496,7 @@ def create_app(port: int = DEFAULT_PORT) -> FastAPI:
             if session != websocket.query_params.get("session"):
                 await websocket.send_text(json.dumps({
                     "jsonrpc": "2.0",
-                    "method": "_sierralab/session",
+                    "method": "_cordata/session",
                     "params": {"sessionId": session},
                 }))
             for line in supervisor.drain_backlog(session):

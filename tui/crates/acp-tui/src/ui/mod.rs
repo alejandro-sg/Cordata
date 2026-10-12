@@ -1,4 +1,5 @@
 pub mod diff;
+mod checklist;
 pub mod footer;
 pub mod heal;
 mod help;
@@ -6,6 +7,7 @@ mod input;
 mod lab;
 mod laya;
 mod markdown;
+mod menu;
 mod panels;
 pub mod progress;
 mod team;
@@ -28,30 +30,26 @@ pub struct LiveFrame {
     pub cursor: Option<(u16, u16)>,
 }
 
-/// The banner written once when the session connects.
+/// The banner written once when the session connects: who, where, and the four keys that matter.
 pub fn welcome_lines(info: &SessionInfo, width: u16) -> Vec<Line<'static>> {
     let dim = Style::new().fg(Color::DarkGray);
     let session: String = info.session_id.chars().take(8).collect();
     let cwd = footer::short_path(&info.cwd);
+    let mut place = vec![Span::styled("   ", dim), Span::styled(cwd, Style::new().fg(Color::Gray))];
+    if let Some(branch) = crate::extras::git_branch(std::path::Path::new(&info.cwd)) {
+        place.push(Span::styled(format!("  ⎇ {branch}"), Style::new().fg(Color::Gray)));
+    }
 
     vec![
         Line::from(vec![
-            Span::styled("✦ ", Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(" ◈ ", Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
             Span::styled("CORDATA", Style::new().fg(Color::White).add_modifier(Modifier::BOLD)),
-            Span::styled(" · autonomous coding intelligence", Style::new().fg(Color::Gray)),
-            Span::styled("  [", dim),
+            Span::styled("  autonomous coding · ", dim),
             Span::styled(session, Style::new().fg(Color::Cyan)),
-            Span::styled("]", dim),
         ]),
-        Line::from(vec![
-            Span::styled("  cwd ", dim),
-            Span::styled(cwd, Style::new().fg(Color::Gray)),
-        ]),
+        Line::from(place),
         Line::styled(
-            text::truncate(
-                "  ? help · /config · Tab cycle mode · Esc cancel",
-                width as usize,
-            ),
+            text::truncate("   /  commands · @  files · !  shell · Tab  mode · ?  help", width as usize),
             dim,
         ),
     ]
@@ -72,7 +70,13 @@ pub fn render_live(app: &App, width: u16, max_rows: u16) -> LiveFrame {
         None => input::height_for(app, width).min(max_rows.saturating_sub(footer_height).max(3)),
     };
     let tasks = progress::lines(&app.tasks, width, app.spinner);
-    let available = max_rows.saturating_sub(bottom_height + footer_height) as usize;
+    // Pinned just above the prompt box, so they are never the rows that get cut when the terminal is short.
+    let mut pinned = checklist::lines(app, width);
+    pinned.extend(input::queue_lines(app, width));
+    if panel.is_none() {
+        pinned.extend(menu::lines(app, width));
+    }
+    let available = max_rows.saturating_sub(bottom_height + footer_height + pinned.len() as u16) as usize;
 
     let mut content = transcript::live_lines(app, width);
     if !tasks.is_empty() {
@@ -84,6 +88,7 @@ pub fn render_live(app: &App, width: u16, max_rows: u16) -> LiveFrame {
         // Only the newest rows fit; the rest is still reachable once it settles into scrollback.
         content.drain(..content.len() - available);
     }
+    content.extend(pinned);
 
     let total = content.len() as u16 + bottom_height + footer_height;
     let mut buffer = Buffer::empty(Rect::new(0, 0, width, total));
@@ -206,7 +211,7 @@ mod tests {
         app.on_event(AppEvent::AgentText("all done".into()));
         let screen = screen(&mut app, 80, 24);
         for needle in [
-            "› hi there",
+            "❯ hi there",
             "╭",
             "shell · execute",
             "$ echo hi",
@@ -362,6 +367,148 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_slash_menu_and_the_queue_sit_above_the_prompt() {
+        let mut app = connected();
+        app.input.set_text("/mo");
+        app.refresh_menu();
+        let shown = screen(&mut app, 90, 24);
+        for needle in ["▸ /mode", "/model", "↑↓ choose · tab complete · enter run", "❯ /mo"] {
+            assert!(shown.contains(needle), "missing {needle:?} in\n{shown}");
+        }
+        let rows: Vec<&str> = shown.lines().collect();
+        let menu = rows.iter().position(|r| r.contains("▸ /mode")).unwrap();
+        let prompt = rows.iter().position(|r| r.contains("❯ /mo")).unwrap();
+        assert!(menu < prompt, "the menu is above the box:\n{shown}");
+        eprintln!("{shown}");
+
+        let mut busy = connected();
+        busy.turn_active = true;
+        busy.queue.push_back("then run the tests".into());
+        busy.queue.push_back("and commit".into());
+        let shown = screen(&mut busy, 90, 24);
+        assert!(shown.contains("⏵ next  then run the tests") && shown.contains("working — enter queues"), "{shown}");
+        eprintln!("{shown}");
+    }
+
+    #[test]
+    fn the_footer_carries_the_context_gauge_the_goal_and_the_branch() {
+        let mut app = connected();
+        app.branch = Some("feat/x".into());
+        app.on_context(&serde_json::json!({"used": 45_000, "window": 128_000, "pct": 0.35}));
+        app.on_goal(&serde_json::json!({"event": "continue", "condition": "tests pass", "how": "check", "turn": 2, "max": 8, "reason": "failing"}));
+        let wide = screen(&mut app, 120, 24);
+        let footer = wide.lines().last().unwrap().to_owned();
+        for needle in ["BUILD", "◎ goal 2/8", "ctx ▰▰▱▱▱▱ 35%", "m1", "/proj ⎇ feat/x", "? help"] {
+            assert!(footer.contains(needle), "missing {needle:?} in footer {footer:?}");
+        }
+        // On a narrow terminal the least important parts go first and the goal is the last to go.
+        let narrow = screen(&mut app, 46, 24);
+        let footer = narrow.lines().last().unwrap().to_owned();
+        assert!(footer.contains("BUILD") && footer.contains("◎ goal 2/8"), "{footer:?}");
+        assert!(!footer.contains("feat/x"), "{footer:?}");
+        assert!(footer.chars().count() <= 46, "{footer:?}");
+
+        // Hot context turns the gauge red-ish and says what to do, once.
+        let mut hot = connected();
+        hot.on_context(&serde_json::json!({"used": 120_000, "window": 128_000, "pct": 0.94}));
+        let shown = screen(&mut hot, 100, 24);
+        assert!(shown.contains("94%") && shown.contains("/compact"), "{shown}");
+    }
+
+    #[test]
+    fn the_agents_checklist_sits_above_the_prompt_and_its_tool_card_stays_out_of_the_transcript() {
+        let mut app = connected();
+        app.on_event(AppEvent::UserText("do the thing".into()));
+        app.turn_active = true;
+        app.on_event(AppEvent::ToolCallStarted(ToolCallInfo {
+            id: "t".into(),
+            name: "todo_write".into(),
+            kind: ToolKind::Other,
+            status: ToolStatus::Completed,
+            raw_input: Some(serde_json::json!({"todos": []})),
+            content: "Checklist saved (1/3 done).".into(),
+            untrusted_source: false,
+            untrusted: false,
+            diffs: vec![],
+        }));
+        app.on_checklist(&serde_json::json!({"items": [
+            {"content": "read the failing test", "status": "completed"},
+            {"content": "fix the off-by-one", "status": "in_progress"},
+            {"content": "run the suite", "status": "pending"},
+        ]}));
+        let shown = screen(&mut app, 80, 24);
+        for needle in ["▣ plan", "1/3", "✓ read the failing test", "fix the off-by-one", "○ run the suite"] {
+            assert!(shown.contains(needle), "missing {needle:?} in\n{shown}");
+        }
+        assert!(!shown.contains("Checklist saved") && !shown.contains("todo_write"), "the card is not shown:\n{shown}");
+        let rows: Vec<&str> = shown.lines().collect();
+        let plan = rows.iter().position(|r| r.contains("▣ plan")).unwrap();
+        let prompt = rows.iter().rposition(|r| r.contains('❯')).unwrap();
+        assert!(plan < prompt, "the plan is above the prompt:\n{shown}");
+
+        // A long list keeps the step in progress visible by folding finished steps away.
+        let items: Vec<_> = (1..=12)
+            .map(|i| serde_json::json!({"content": format!("step {i}"), "status": if i <= 8 { "completed" } else if i == 9 { "in_progress" } else { "pending" }}))
+            .collect();
+        app.on_checklist(&serde_json::json!({ "items": items }));
+        let shown = screen(&mut app, 80, 30);
+        assert!(shown.contains("✓ ") && shown.contains("done") && shown.contains("step 9") && shown.contains("step 12"), "{shown}");
+        assert!(!shown.contains("step 1\n") && !shown.contains(" step 2"), "early finished steps are folded:\n{shown}");
+    }
+
+    #[test]
+    fn a_suggested_next_prompt_shows_as_grey_text_and_tab_takes_it() {
+        let mut app = connected();
+        app.suggestion = Some("run the tests and show me the result".into());
+        let shown = screen(&mut app, 90, 20);
+        assert!(shown.contains("❯ run the tests and show me the result") && shown.contains("tab ⇥"), "{shown}");
+        app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Tab));
+        assert_eq!(app.input.text(), "run the tests and show me the result");
+        assert!(app.suggestion.is_none());
+        // Typing instead throws it away.
+        let mut other = connected();
+        other.suggestion = Some("commit".into());
+        other.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char('x')));
+        assert!(other.suggestion.is_none() && other.input.text() == "x");
+    }
+
+    #[test]
+    fn a_diff_is_coloured_by_line_kind_and_btw_compact_goal_go_where_they_should() {
+        let mut app = connected();
+        app.on_local(crate::app::LocalEvent::ShellDone {
+            command: "git diff".into(),
+            outcome: crate::shell::Outcome { output: "diff --git a/x b/x\n@@ -1 +1 @@\n-old\n+new\n".into(), code: Some(0), timed_out: false, cut: false },
+            share: false,
+            as_diff: true,
+        });
+        let shown = screen(&mut app, 80, 20);
+        assert!(shown.contains("-old") && shown.contains("+new") && !shown.contains("$ git diff"), "{shown}");
+        assert!(app.shell_context.is_empty(), "/diff is for the person, not sent to the agent");
+
+        let mut app = connected();
+        let type_line = |app: &mut App, line: &str| {
+            app.input.set_text(line);
+            app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Enter))
+        };
+        let Some(crate::app::Effect::Ext { method, params, .. }) = type_line(&mut app, "/btw what did we decide?") else { panic!("btw is an extension request") };
+        assert_eq!((method.as_str(), params["question"].as_str()), ("_cordata/btw", Some("what did we decide?")));
+        let Some(crate::app::Effect::Ext { method, .. }) = type_line(&mut app, "/goal clear") else { panic!() };
+        assert_eq!(method, "_cordata/goal/clear");
+        let Some(crate::app::Effect::Ext { method, .. }) = type_line(&mut app, "/context") else { panic!() };
+        assert_eq!(method, "_cordata/context/usage");
+        let Some(crate::app::Effect::Ext { method, params, .. }) = type_line(&mut app, "/compact keep the plan") else { panic!() };
+        assert_eq!((method.as_str(), params["focus"].as_str()), ("_cordata/context/compact", Some("keep the plan")));
+        // A goal is a prompt, so it works in every front door; the backend turns it into the loop.
+        app.on_event(AppEvent::TurnComplete(acp_core::StopReason::EndTurn));
+        let sent = type_line(&mut app, "/goal tests pass --check make test");
+        assert_eq!(sent, Some(crate::app::Effect::SendPrompt("/goal tests pass --check make test".into())));
+        // /compact refuses mid-turn, saying why, instead of failing in the backend.
+        let busy = type_line(&mut app, "/compact");
+        assert!(busy.is_none());
+        assert!(app.messages.iter().any(|m| matches!(m, Message::Info(t) if t.contains("the agent is working"))));
+    }
+
     fn laya_events(app: &mut App) {
         app.on_event(AppEvent::Laya(acp_core::LayaEvent::Decision(
             acp_core::LayaDecision {
@@ -407,7 +554,7 @@ mod tests {
         let rows: Vec<&str> = screen.lines().collect();
         let prompt = rows
             .iter()
-            .position(|r| r.contains("› read settings.py"))
+            .position(|r| r.contains("❯ read settings.py"))
             .expect("prompt");
         assert!(
             rows[prompt + 1].contains("◆ laya  files_and_code 98% ▸ hint sent"),
@@ -464,7 +611,7 @@ mod tests {
         let screen = screen(&mut app, 100, 20);
         assert!(!screen.contains("◆ laya"), "{screen}");
         let rows: Vec<&str> = screen.lines().collect();
-        let prompt = rows.iter().position(|r| r.contains("› hello")).unwrap();
+        let prompt = rows.iter().position(|r| r.contains("❯ hello")).unwrap();
         assert!(
             rows[prompt + 1].trim().is_empty() && rows[prompt + 2].contains("hi"),
             "one blank line, as without laya:\n{screen}"
@@ -523,7 +670,7 @@ mod tests {
             assert!(screen.contains(needle), "missing {needle:?} in\n{screen}");
         }
         assert!(
-            !screen.contains("› "),
+            !screen.contains("❯ "),
             "no prompt box while asking:\n{screen}"
         );
     }
@@ -569,7 +716,7 @@ mod tests {
             r#"{"tui":{"thinking":"expanded"}}"#,
         )
         .unwrap();
-        std::fs::create_dir_all(store.cwd.join(".sierralab")).unwrap();
+        std::fs::create_dir_all(store.cwd.join(".cordata")).unwrap();
         std::fs::write(
             store.path(crate::settings::Scope::Project),
             r#"{"laya":{"dispatch":"hint"}}"#,
@@ -602,7 +749,7 @@ mod tests {
             );
         }
         assert!(
-            !rendered.contains("› "),
+            !rendered.contains("❯ "),
             "the panel replaces the prompt box:\n{rendered}"
         );
 
@@ -680,7 +827,7 @@ mod tests {
             );
         }
         assert_eq!(
-            all.matches("› \u{200b}").count() + all.matches("╭").count(),
+            all.matches("Ask anything").count(),
             1,
             "one prompt box:\n{all}"
         );
@@ -845,7 +992,7 @@ mod tests {
             .iter()
             .position(|l| l.contains("rust: indexing"))
             .unwrap();
-        let prompt = lines.iter().rposition(|l| l.starts_with('╭')).unwrap();
+        let prompt = lines.iter().rposition(|l| l.contains('❯')).unwrap();
         assert!(bar < prompt, "bars sit above the prompt box");
         // finishing it leaves a ✓ that lingers, never in scrollback
         app.on_event(AppEvent::Harness(acp_core::HarnessEvent::Task(

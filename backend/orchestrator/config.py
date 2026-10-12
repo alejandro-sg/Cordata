@@ -6,7 +6,7 @@ notional figure, which is the point: the dispatcher trades quality against *quot
 
     claude_code   haiku (fast) · sonnet (standard) · opus (strong)
     antigravity   gemini-3.8-flash (fast) · claude-sonnet-5-5 (standard) · gemini-3.1-pro (strong)
-    ollama        glm-5.3-flash (fast) · kimi-k2.7-code (standard)
+    ollama        deepseek-v4.1-flash · glm-5.3-flash (fast) · kimi-k2.7-code (standard)
 
 A family is in the roster when ``orchestrator.workers`` names it and it is usable here: its CLI is installed, or (for
 Ollama) the local daemon answers. Nothing is probed over the network beyond that.
@@ -36,7 +36,12 @@ ROSTER: tuple[tuple[str, str, str, float, frozenset[str] | None], ...] = (
     ("antigravity", "gemini-3.8-flash-medium", "fast", 0.05, None),
     ("antigravity", "claude-sonnet-5-5-medium", "standard", 0.30, None),
     ("antigravity", "gemini-3.1-pro-high", "strong", 0.60, None),
-    ("ollama", "glm-5.3-flash", "fast", 0.02, frozenset({"plan", "execute", "audit"})),
+    # Measured on this machine (one 250-line file written / one research brief over this repo): deepseek-v4.1-flash wrote
+    # it in 84 s on 159k tokens, kimi in 127 s on 299k, glm in 374 s on 1.3M — so deepseek is the cheapest in effect as
+    # well as in price. On the open-ended research it read 2.5M+ tokens without converging where kimi finished on 840k,
+    # so it never takes the planning role (which research and conformance also use).
+    ("ollama", "deepseek-v4.1-flash", "fast", 0.02, frozenset({"execute", "harden", "audit"})),
+    ("ollama", "glm-5.3-flash", "fast", 0.03, frozenset({"plan", "execute", "audit"})),
     ("ollama", "kimi-k2.7-code", "standard", 0.05, None),
 )
 
@@ -58,9 +63,9 @@ def enabled_families(preferences: Any) -> list[str]:
 @functools.lru_cache(maxsize=8)
 def family_available(family: str) -> bool:
     if family == "claude_code":
-        return bool(os.environ.get("CORDATA_CLAUDE_BIN") or os.environ.get("SIERRALAB_CLAUDE_BIN") or shutil.which("claude") or os.path.exists(os.path.expanduser("~/.local/bin/claude")))
+        return bool(os.environ.get("CORDATA_CLAUDE_BIN") or shutil.which("claude") or os.path.exists(os.path.expanduser("~/.local/bin/claude")))
     if family == "antigravity":
-        return bool(os.environ.get("CORDATA_AGY_BIN") or os.environ.get("SIERRALAB_AGY_BIN") or shutil.which("agy") or os.path.exists(os.path.expanduser("~/.local/bin/agy")))
+        return bool(os.environ.get("CORDATA_AGY_BIN") or shutil.which("agy") or os.path.exists(os.path.expanduser("~/.local/bin/agy")))
     if family == "ollama":
         try:
             import ollama_cloud
@@ -93,6 +98,7 @@ def run_config(preferences: Any) -> RunConfig:
         max_tokens=int(max_tokens) if max_tokens > 0 else None,
         harden=bool(setting(preferences, "orchestrator.harden", True)),
         tier2=bool(setting(preferences, "orchestrator.tier2", True)),
+        research=True,  # a code default, not a setting: ``run --no-research`` turns it off for one run
     )
 
 

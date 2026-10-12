@@ -65,7 +65,7 @@ SNAPSHOT_ROOT = "session"
 #: `AgentSkills`' bookkeeping in the agent's state (strands.vended_plugins.skills): the last block it injected into the prompt.
 SKILLS_STATE_KEY = "agent_skills"
 #: Where the turn counter lives, in the agent's state (so a restore brings the count back with it).
-TURNS_KEY = "sierralab_turns"
+TURNS_KEY = "cordata_turns"
 #: How many turn checkpoints a session keeps; older ones are deleted as new ones are made.
 KEEP_CHECKPOINTS = 50
 

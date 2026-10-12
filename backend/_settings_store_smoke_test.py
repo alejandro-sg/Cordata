@@ -29,7 +29,7 @@ def check(condition: bool, label: str) -> None:
 
 
 class Sandbox:
-    """A throwaway HOME (SIERRALAB_HOME) and project directory."""
+    """A throwaway HOME (CORDATA_HOME) and project directory."""
 
     def __init__(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -38,7 +38,7 @@ class Sandbox:
         self.project = root / "project"
         self.home.mkdir()
         self.project.mkdir()
-        os.environ["SIERRALAB_HOME"] = str(self.home)
+        os.environ["CORDATA_HOME"] = str(self.home)
 
     def write(self, scope: str, data) -> None:
         import settings_store as ss
@@ -48,7 +48,7 @@ class Sandbox:
         path.write_text(data if isinstance(data, str) else json.dumps(data))
 
     def close(self) -> None:
-        os.environ.pop("SIERRALAB_HOME", None)
+        os.environ.pop("CORDATA_HOME", None)
         self.tmp.cleanup()
 
 
@@ -66,11 +66,11 @@ def test_shared_fixture() -> None:
     """The Rust client is tested against the very same files and expectations."""
     import settings_store as ss
 
-    os.environ["SIERRALAB_HOME"] = str(FIXTURE / "home")
+    os.environ["CORDATA_HOME"] = str(FIXTURE / "home")
     try:
         loaded = ss.load(FIXTURE / "project")
     finally:
-        os.environ.pop("SIERRALAB_HOME", None)
+        os.environ.pop("CORDATA_HOME", None)
     expected = json.loads((FIXTURE / "expected.json").read_text())
     check(summary(loaded) == expected, "the shared fixture merges to the documented result")
 
@@ -134,7 +134,7 @@ def test_trust_gates_project_allow_rules() -> None:
 
 
 def test_trust_gates_the_vault_and_graph_destination() -> None:
-    """A cloned repo ships `.sierralab/settings.json`. It must not be able to
+    """A cloned repo ships `.cordata/settings.json`. It must not be able to
     switch off the egress proxy the user turned on, make it fail open, or point
     its address at a host the project names."""
     import settings_store as ss
@@ -215,7 +215,7 @@ def test_rule_matching() -> None:
 
     k = make_settings({})
     for command in (
-        "security find-generic-password -s sierralab-ollama-api-key -w",
+        "security find-generic-password -s cordata-ollama-api-key -w",
         "security -q find-generic-password -w",
         "echo x; security dump-keychain",
     ):
@@ -279,17 +279,17 @@ def test_instructions() -> None:
     box = Sandbox()
     try:
         check(ss.load_instructions(box.project) == "", "no files → nothing added to the prompt")
-        (box.home / "SIERRALAB.md").write_text("user rule")
+        (box.home / "CORDATA.md").write_text("user rule")
         (box.project / "CLAUDE.md").write_text("claude file")
-        (box.project / "SIERRALAB.local.md").write_text("local note")
+        (box.project / "CORDATA.local.md").write_text("local note")
         text = ss.load_instructions(box.project)
         check("user rule" in text and "claude file" in text and "local note" in text, "user, project (CLAUDE.md fallback) and local files are read")
         check(text.index("user rule") < text.index("claude file") < text.index("local note"), "…broad to specific")
         (box.project / "AGENTS.md").write_text("agents file")
-        (box.project / "SIERRALAB.md").write_text("own file")
+        (box.project / "CORDATA.md").write_text("own file")
         text = ss.load_instructions(box.project)
-        check("own file" in text and "agents file" not in text and "claude file" not in text, "SIERRALAB.md wins over AGENTS.md / CLAUDE.md")
-        (box.project / "SIERRALAB.md").write_text("x" * (ss.INSTRUCTION_CAP * 2))
+        check("own file" in text and "agents file" not in text and "claude file" not in text, "CORDATA.md wins over AGENTS.md / CLAUDE.md")
+        (box.project / "CORDATA.md").write_text("x" * (ss.INSTRUCTION_CAP * 2))
         check(len(ss.load_instructions(box.project)) < ss.INSTRUCTION_CAP + 400 and "truncated" in ss.load_instructions(box.project), "oversized files are capped")
     finally:
         box.close()
@@ -308,7 +308,7 @@ def test_suggested_rules() -> None:
 
 def test_approval_handler() -> None:
     import settings_store as ss
-    from acp_server import SierraLabAcpAgent, _ApprovalHandler
+    from acp_server import CordataAcpAgent, _ApprovalHandler
     from strands.interventions import Confirm, Deny, Proceed
 
     box = Sandbox()
@@ -340,7 +340,7 @@ def test_approval_handler() -> None:
         check(isinstance(plan.before_tool_call(event("file_read", path="a.txt")), Proceed), "plan: reading code is part of planning")
         check(isinstance(plan.before_tool_call(event("editor", command="create", path="x", file_text="y")), Deny), "plan: editor writes are blocked")
 
-        agent = SierraLabAcpAgent()
+        agent = CordataAcpAgent()
         agent._sessions["s"] = SimpleNamespace(cwd=str(box.project), handler=build)
         agent._remember_always("s", "shell(ls -la)")
         loaded = ss.load(box.project)

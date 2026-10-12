@@ -59,8 +59,8 @@ keeps resident — the LanceDB trace corpus, the Laya checkpoint, the Python age
 Code CLI. Out-of-memory there is not an exception to catch; it is the whole machine thrashing.
 
 ```
-ceiling      48 GB   SIERRALAB_MEMORY_CEILING_GB
-− reserve    10 GB   SIERRALAB_MEMORY_RESERVE_GB  (macOS, LanceDB, Laya, the harness, the CLI)
+ceiling      48 GB   CORDATA_MEMORY_CEILING_GB
+− reserve    10 GB   CORDATA_MEMORY_RESERVE_GB  (macOS, LanceDB, Laya, the harness, the CLI)
 = budget     38 GB   for model weights
 ```
 
@@ -125,7 +125,7 @@ for an instruction hidden in it to call.
 `proto/harness.proto` (one schema), `backend/daemon/grpc_bridge.py` (server), `lab/crates/harness-proto`
 and `lab/crates/harness-client` (Rust, generated client + supervisor).
 
-One service, `sierralab.harness.v1.Harness`, on loopback:
+One service, `cordata.harness.v1.Harness`, on loopback:
 
 | RPC | kind | what it is |
 |---|---|---|
@@ -142,7 +142,7 @@ What it is and is not:
 
 * It **relays and reports**; it never decides anything the harness decides. An approval is a
   human's click forwarded into the paused ACP request, restricted to the options the *child
-  offered*; a knob is the child's own `_sierralab/lab/*` control called on the user's behalf; the
+  offered*; a knob is the child's own `_cordata/lab/*` control called on the user's behalf; the
   unload is the same `memory_budget` code the agent's tools use.
   **`SubmitTurn` is the one exception**, and a deliberate one: it *starts* a turn. It still decides
   nothing about it — a daemon-owned conversation gets a real turn through `Chats.send`, a session
@@ -211,7 +211,7 @@ you can see the masking — it pops the modal), a file edit is held (Laya elevat
 tray), a 10,000-line diff is published and a 1,000-update burst runs; then it is quiet for ~100 s
 before it plays again. The knobs really change the pod you are looking at;
 **Unload Memory** unloads the fake oMLX's models (they come back after 20 s so you can do it
-again). It never touches `~/.sierralab` or a daemon you already run.
+again). It never touches `~/.cordata` or a daemon you already run.
 
 **The window** answers four questions, in the order a person asks them, and keeps everything else one
 click away:

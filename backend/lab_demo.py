@@ -10,8 +10,8 @@ working, a Laya reading, a destructive command held for your answer, a 10,000-li
 applies the knobs you turn; oMLX is ``fake_omlx.FakeOmlx``, so **Unload Memory** unloads a model
 that is not on your machine.
 
-It never touches ``~/.sierralab``: its home, token file and ledger live in a throwaway directory
-(``--home``), and the window finds it through ``SIERRALAB_HOME`` — which is why this does not
+It never touches ``~/.cordata``: its home, token file and ledger live in a throwaway directory
+(``--home``), and the window finds it through ``CORDATA_HOME`` — which is why this does not
 disturb a daemon you already run.
 """
 
@@ -33,10 +33,10 @@ HERE = Path(__file__).resolve().parent
 def configure_environment(home: Path) -> None:
     """Must run before the daemon modules are imported: they read these at import or first use."""
     home.mkdir(parents=True, exist_ok=True)
-    os.environ["SIERRALAB_HOME"] = str(home)
-    os.environ["SIERRALAB_DAEMON_CONFIG"] = str(home / "daemon.json")
-    os.environ["SIERRALAB_STATE_DB"] = str(home / "state.db")
-    os.environ["SIERRALAB_ACP_ENTRYPOINT"] = f"{sys.executable} {HERE / 'fixtures' / 'demo_acp_child.py'}"
+    os.environ["CORDATA_HOME"] = str(home)
+    os.environ["CORDATA_DAEMON_CONFIG"] = str(home / "daemon.json")
+    os.environ["CORDATA_STATE_DB"] = str(home / "state.db")
+    os.environ["CORDATA_ACP_ENTRYPOINT"] = f"{sys.executable} {HERE / 'fixtures' / 'demo_acp_child.py'}"
 
 
 DEMO_MODELS = {
@@ -100,11 +100,11 @@ async def serve(home: Path, workspace: Path, grpc_port: int) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
-    parser.add_argument("--home", type=Path, default=None, help="throwaway SIERRALAB_HOME (default: a new temp dir)")
+    parser.add_argument("--home", type=Path, default=None, help="throwaway CORDATA_HOME (default: a new temp dir)")
     parser.add_argument("--workspace", type=Path, default=None, help="the directory the demo session runs in")
     parser.add_argument("--grpc-port", type=int, default=0, help="0 = any free port")
     args = parser.parse_args()
-    home = args.home or Path(tempfile.mkdtemp(prefix="sierralab-demo-"))
+    home = args.home or Path(tempfile.mkdtemp(prefix="cordata-demo-"))
     workspace = args.workspace or (home / "workspace")
     workspace.mkdir(parents=True, exist_ok=True)
     asyncio.run(serve(home, workspace, args.grpc_port))

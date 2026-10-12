@@ -43,7 +43,7 @@ impl LabApp {
             .bg(theme.panel)
             .border_b_1()
             .border_color(theme.border)
-            .child(div().flex().flex_row().items_center().gap_2().child(div().text_color(theme.accent).child("◆")).child(div().font_weight(FontWeight::BOLD).text_size(px(13.)).child("SIERRALAB")))
+            .child(div().flex().flex_row().items_center().gap_2().child(div().text_color(theme.accent).child("◆")).child(div().font_weight(FontWeight::BOLD).text_size(px(13.)).child("CORDATA")))
             .child(div().w(px(1.)).h(px(18.)).bg(theme.border))
             .child(div().flex_1());
         if self.model.labs.len() > 1 {

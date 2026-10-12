@@ -9,9 +9,9 @@ Same rig as `_acp_harness_smoke_test.py` — real `_build_session`, router, hook
    one with `enable_tools`; `tokens`-style switches (`context.coldTools: false`) restore the old behaviour.
 3. **a huge tool result** is capped in what the model reads next, with its head and tail kept (with `context.offload: false`;
    by default it is set aside whole and read back by slice — see `_offload_acp_smoke_test.py`).
-4. **the approval card has its context** — the permission request's `_meta.sierralab` carries what the person
+4. **the approval card has its context** — the permission request's `_meta.cordata` carries what the person
    asked, what the agent said just before the call, and the project, so a remote front door can say *why*.
-5. **a turn announces what it cost** — `_sierralab/turn`: seconds, tool calls, tokens in and out. That is what the
+5. **a turn announces what it cost** — `_cordata/turn`: seconds, tool calls, tokens in and out. That is what the
    Discord receipt (and any other client's status line) is built from, with no model call of its own.
 
     backend/.venv/bin/python _diet_acp_smoke_test.py
@@ -92,8 +92,8 @@ async def test_nothing_is_taken_away() -> None:
 
     seen.clear()
     off = project("diet-off")
-    (off / ".sierralab").mkdir()
-    (off / ".sierralab" / "settings.json").write_text(json.dumps({"context.coldTools": False}))
+    (off / ".cordata").mkdir()
+    (off / ".cordata" / "settings.json").write_text(json.dumps({"context.coldTools": False}))
     settings_trust(off)
     orchestrator_model([watch(text("ok"))])
     server, conn = fresh_server(ROUTE)
@@ -113,8 +113,8 @@ async def test_a_huge_result_is_capped() -> None:
     """The fallback for `context.offload: false` — with offloading on (the default) the result is set aside whole instead,
     and `_offload_acp_smoke_test.py` covers that."""
     cwd = project("diet-cap")
-    (cwd / ".sierralab").mkdir()
-    (cwd / ".sierralab" / "settings.json").write_text(json.dumps({"context.offload": False}))
+    (cwd / ".cordata").mkdir()
+    (cwd / ".cordata" / "settings.json").write_text(json.dumps({"context.offload": False}))
     settings_trust(cwd)
     (cwd / "big.log").write_text("HEADLINE\n" + "noise line\n" * 20_000 + "FINAL: exit 1\n")
     seen: dict = {}
@@ -143,7 +143,7 @@ class Recording:
         self.asks: list[dict] = []
 
     async def request_permission(self, session_id, tool_call, options, **kwargs):
-        self.asks.append({"tool_call": tool_call, "options": options, "meta": kwargs.get("sierralab") or kwargs.get("field_meta") or kwargs})
+        self.asks.append({"tool_call": tool_call, "options": options, "meta": kwargs.get("cordata") or kwargs.get("field_meta") or kwargs})
         return acp.schema.RequestPermissionResponse(outcome=acp.schema.AllowedOutcome(outcome="selected", option_id="allow"))
 
     def __getattr__(self, name):
@@ -171,7 +171,7 @@ async def test_the_approval_card_has_its_context_and_the_turn_its_receipt() -> N
     after = {spec["name"] for spec in server._sessions[created.session_id].agent.tool_registry.get_all_tool_specs()}
     check(set(context_diet.COLD_TOOLS) <= after and "Tools not loaded" not in str(server._sessions[created.session_id].agent.system_prompt), "a turn that paused for an approval and resumed still ends with every tool back and a clean prompt")
 
-    turns = [params for method, params in conn.ext if method == "sierralab/turn"]
+    turns = [params for method, params in conn.ext if method == "cordata/turn"]
     check(len(turns) == 1, f"the turn announced what it cost, once ({len(turns)})")
     receipt = turns[0]
     check(receipt["stop"] == "end_turn" and receipt["seconds"] >= 0 and "tokensIn" in receipt and "tokensOut" in receipt and receipt["calls"] >= 1, f"seconds, stop reason, tokens and tool calls are in it ({receipt})")

@@ -13,7 +13,7 @@ through four places, and only a person's settings or a measured result moves it 
     retired/   was live, stopped helping (``record_use``), or was withdrawn. Kept, not loaded.
     rejected/  failed the filter or the gate, or a person said no. Kept so the same lesson is not drafted again.
 
-Layout (``~/.sierralab/learned/<project key>/<status>/<name>/{SKILL.md,meta.json}``). All of it is
+Layout (``~/.cordata/learned/<project key>/<status>/<name>/{SKILL.md,meta.json}``). All of it is
 local, private (0700) and auditable: every transition is a ``skill`` event in the ledger.
 
 **The filter is not the defence.** A skill is prose a model will read and may follow, and the text it
@@ -67,7 +67,7 @@ _BANNED_RE = [(re.compile(p, re.IGNORECASE), why) for p, why in _BANNED]
 
 
 def home() -> Path:
-    return Path(os.environ.get("SIERRALAB_HOME") or Path.home() / ".sierralab") / "learned"
+    return Path(os.environ.get("CORDATA_HOME") or Path.home() / ".cordata") / "learned"
 
 
 def project_key(project: str | os.PathLike | None) -> str:

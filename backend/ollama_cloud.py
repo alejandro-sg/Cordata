@@ -86,6 +86,7 @@ REGISTRY: dict[str, ModelSpec] = {
     for spec in (
         ModelSpec("glm-5.3-flash", "glm-5.3-flash:cloud", "cloud", "GLM 5.3 Flash — fast general model (18B active)"),
         ModelSpec("kimi-k2.7-code", "kimi-k2.7-code:cloud", "cloud", "Kimi K2.7 Code — long-horizon coding"),
+        ModelSpec("deepseek-v4.1-flash", "deepseek-v4.1-flash:cloud", "cloud", "DeepSeek V4.1 Flash — fast, cheap reasoning and coding"),
         ModelSpec(
             "laguna-xs-2.1",
             "laguna-xs-2.1",

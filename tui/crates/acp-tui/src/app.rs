@@ -61,6 +61,8 @@ pub enum Message {
     Tool(ToolCard),
     Divider(String),
     Info(String),
+    /// A unified diff, drawn with colour (`/diff`).
+    Diff(String),
     Error(String),
 }
 
@@ -123,7 +125,27 @@ pub enum Effect {
     ListConversations,
     /// Continue a hub conversation (by handle) in a new slot.
     OpenConversation(String),
+    /// A command run in the project folder, reported back as a `LocalEvent`. `share` hands its output to the agent
+    /// with the next prompt (`!command`); `as_diff` shows it as a coloured diff (`/diff`).
+    Shell {
+        command: String,
+        share: bool,
+        as_diff: bool,
+    },
+    /// Put text on the clipboard.
+    Copy(String),
     Quit,
+}
+
+/// Something that happened outside the session's own event stream (`main` delivers it).
+#[derive(Debug)]
+pub enum LocalEvent {
+    ShellDone {
+        command: String,
+        outcome: crate::shell::Outcome,
+        share: bool,
+        as_diff: bool,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -205,8 +227,37 @@ pub struct App {
     pub tabs: Vec<TabBadge>,
     /// The Experimental Lab view (F2 / `/lab`).
     pub lab: LabView,
-    /// An initial prompt provided from CLI invocation (e.g. `sierra "prompt"`).
+    /// An initial prompt provided from CLI invocation (e.g. `cordata "prompt"`).
     pub initial_prompt: Option<String>,
+    /// The completion menu above the prompt box (`/` commands, `@` files), derived from the text.
+    pub menu: Option<crate::menu::Menu>,
+    pub(crate) menu_dismissed: Option<String>,
+    /// The project's files, listed the first time an `@` asks.
+    pub(crate) files: Option<Vec<String>>,
+    /// Slash commands from `commands/*.md` files.
+    pub custom: Vec<crate::custom::Custom>,
+    /// Prompts typed while the agent was still working, sent one by one as it frees up.
+    pub queue: VecDeque<String>,
+    /// What `!commands` printed since the last prompt: handed to the agent with the next one.
+    pub(crate) shell_context: Vec<String>,
+    /// How full the conversation is, as the backend last said.
+    pub context: Option<crate::extras::ContextGauge>,
+    pub(crate) warned_context: bool,
+    /// The agent's own checklist (`todo_write`), drawn above the prompt.
+    pub checklist: Vec<crate::extras::TodoItem>,
+    pub(crate) checklist_done_at: Option<Instant>,
+    /// The goal being pursued, if any.
+    pub goal: Option<crate::extras::GoalView>,
+    /// Tokens in and out over this client's session, and the turns that spent them.
+    pub session_tokens: (u64, u64),
+    pub turns_done: u64,
+    /// The project's git branch, for the footer.
+    pub branch: Option<String>,
+    /// A prompt offered as grey text in the empty box after a turn; Tab takes it, typing replaces it.
+    pub suggestion: Option<String>,
+    last_turn_secs: f64,
+    /// Something wants the person (an approval, a long turn finished): the terminal is rung once, then this clears.
+    pub attention: bool,
 }
 
 impl App {
@@ -247,6 +298,23 @@ impl App {
             diff_expanded: false,
             tabs: Vec::new(),
             lab: LabView::default(),
+            menu: None,
+            menu_dismissed: None,
+            files: None,
+            custom: Vec::new(),
+            queue: VecDeque::new(),
+            shell_context: Vec::new(),
+            context: None,
+            warned_context: false,
+            checklist: Vec::new(),
+            checklist_done_at: None,
+            goal: None,
+            session_tokens: (0, 0),
+            turns_done: 0,
+            branch: None,
+            suggestion: None,
+            last_turn_secs: 0.0,
+            attention: false,
         }
     }
 
@@ -265,15 +333,49 @@ impl App {
         self.spinner = self.spinner.wrapping_add(1);
         let now = Instant::now();
         self.tasks.retain(|task| task.visible(now));
+        self.settle_checklist();
     }
 
-    pub fn input_enabled(&self) -> bool {
+    /// Can the person type? Also while the agent works: what is typed then waits in the queue.
+    pub fn can_type(&self) -> bool {
         self.conn == ConnState::Connected
-            && !self.turn_active
             && self.pending.is_empty()
             && self.picker.is_none()
             && self.config.is_none()
             && !self.lab.open
+    }
+
+    /// Can a prompt be sent right now?
+    pub fn input_enabled(&self) -> bool {
+        self.can_type() && !self.turn_active
+    }
+
+    /// The next queued prompt, once the agent is free. Taken one at a time: each is a turn of its own.
+    pub fn take_queued(&mut self) -> Option<Effect> {
+        if !self.input_enabled() || self.queue.is_empty() || self.auto_resume.is_some() {
+            return None;
+        }
+        let line = self.queue.pop_front()?;
+        self.run_line(line)
+    }
+
+    /// A turn that did not finish (cancelled, failed): what was queued behind it goes back into the prompt box, so
+    /// the person decides — it was typed for a conversation that went somewhere else.
+    fn return_queue_to_input(&mut self) {
+        if self.queue.is_empty() {
+            return;
+        }
+        let queued: Vec<String> = self.queue.drain(..).collect();
+        let mut text = queued.join("\n");
+        if !self.input.is_empty() {
+            text = format!("{text}\n{}", self.input.text());
+        }
+        self.input.set_text(&text);
+        let count = queued.len();
+        self.info(format!(
+            "{count} queued message{} back in the prompt box — the turn ended early",
+            if count == 1 { "" } else { "s" }
+        ));
     }
 
     /// The turn to resume on its own, once the session is idle: set when the backend says a loaded session has
@@ -310,6 +412,7 @@ impl App {
     /// Start a turn with `text` as the prompt.
     pub(crate) fn begin_turn(&mut self, text: String) -> Effect {
         self.auto_resume = None;
+        self.suggestion = None;
         self.turn_active = true;
         self.turn_started = Some(Instant::now());
         self.turn_tools = 0;
@@ -336,6 +439,7 @@ impl App {
                 self.modes = info.modes.clone();
                 self.config_options = info.config_options.clone();
                 self.messages.push(Message::Welcome(info.clone()));
+                self.branch = crate::extras::git_branch(std::path::Path::new(&info.cwd));
                 for notice in self.settings_notices() {
                     self.messages.push(Message::Info(notice));
                 }
@@ -417,13 +521,24 @@ impl App {
                 {
                     card.raw_input = Some(input);
                 }
+                self.attention = true;
                 self.pending.push_back(PendingPermission {
                     info,
                     decision: Some(decision),
                 });
             }
             AppEvent::TurnComplete(reason) => {
+                self.last_turn_secs = self.turn_started.map_or(0.0, |t| t.elapsed().as_secs_f64());
                 self.end_turn();
+                // A turn may have switched branches.
+                self.branch = crate::extras::git_branch(&self.project_dir());
+                self.suggestion = matches!(reason, StopReason::EndTurn).then(|| crate::extras::suggest_next(&self.messages)).flatten();
+                if self.last_turn_secs >= 20.0 {
+                    self.attention = true;
+                }
+                if matches!(reason, StopReason::Cancelled) {
+                    self.return_queue_to_input();
+                }
                 if reason != StopReason::EndTurn {
                     self.messages
                         .push(Message::Divider(format!("turn ended: {}", reason.as_str())));
@@ -431,6 +546,7 @@ impl App {
             }
             AppEvent::TurnFailed(error) => {
                 self.end_turn();
+                self.return_queue_to_input();
                 self.messages
                     .push(Message::Error(format!("turn failed: {}", sanitize(&error))));
             }
@@ -492,7 +608,15 @@ impl App {
                         format!("↻ resuming the interrupted turn automatically (attempt {}/{max})", attempts + 1)
                     });
             }
+            HarnessEvent::Goal(event) => self.on_goal(&event),
+            HarnessEvent::Context(event) => self.on_context(&event),
+            HarnessEvent::TaskList(event) => self.on_checklist(&event),
             HarnessEvent::Turn(event) => {
+                if event.get("stop").and_then(Value::as_str) != Some("cancelled") {
+                    self.turns_done += 1;
+                }
+                self.session_tokens.0 += event.get("tokensIn").and_then(Value::as_u64).unwrap_or(0);
+                self.session_tokens.1 += event.get("tokensOut").and_then(Value::as_u64).unwrap_or(0);
                 if let Some(line) = crate::commands::format_turn_receipt(&event) {
                     self.messages.push(Message::Info(sanitize(&line)));
                 }
@@ -558,6 +682,9 @@ impl App {
                 .and_then(Value::as_array)
                 .map_or(0, Vec::len);
             self.drop_turns(forgotten);
+        }
+        if (tag == "context" || tag == "compact") && let Some(gauge) = value.get("after").or(Some(&value)).and_then(crate::extras::ContextGauge::from_json) {
+            self.context = Some(gauge);
         }
         let text = crate::commands::format_ext(tag, &value);
         self.messages.push(Message::Info(sanitize(&text)));
@@ -642,7 +769,7 @@ impl App {
     /// included) instead of arriving as a burst of key presses that would
     /// submit on the first newline.
     pub fn on_paste(&mut self, text: &str) {
-        if !self.input_enabled() {
+        if !self.can_type() {
             return;
         }
         for c in text.replace("\r\n", "\n").replace('\r', "\n").chars() {
@@ -653,6 +780,7 @@ impl App {
                 c => self.input.insert(c),
             }
         }
+        self.refresh_menu();
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> Option<Effect> {
@@ -730,13 +858,14 @@ impl App {
                     None
                 }
                 KeyCode::Char('u') => {
-                    if self.input_enabled() {
+                    if self.can_type() {
                         self.input.clear();
+                        self.refresh_menu();
                     }
                     None
                 }
                 KeyCode::Char('j') => {
-                    if self.input_enabled() {
+                    if self.can_type() {
                         self.input.insert('\n');
                     }
                     None
@@ -745,10 +874,39 @@ impl App {
             };
         }
 
+        // While the completion menu is open it owns the keys that would otherwise walk history, cycle the mode or
+        // send the prompt.
+        if self.menu.is_some() && self.can_type() {
+            let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+            match key.code {
+                KeyCode::Up => {
+                    self.menu_move(-1);
+                    return None;
+                }
+                KeyCode::Down => {
+                    self.menu_move(1);
+                    return None;
+                }
+                KeyCode::Tab => return self.menu_accept(false),
+                KeyCode::Enter if !alt && !shift => return self.menu_accept(true),
+                KeyCode::Esc => {
+                    self.menu_dismiss();
+                    return None;
+                }
+                _ => {}
+            }
+        }
+
         match key.code {
+            KeyCode::Tab if self.input.is_empty() && self.suggestion.is_some() && self.can_type() => {
+                if let Some(text) = self.suggestion.take() {
+                    self.input.set_text(&text);
+                }
+                return None;
+            }
             KeyCode::Tab => {
+                // Writing a command is not the moment to change the mode.
                 if self.input.text().starts_with('/') {
-                    self.complete_slash_command();
                     return None;
                 }
                 return self.cycle_mode(true);
@@ -758,7 +916,7 @@ impl App {
             _ => {}
         }
 
-        if !self.input_enabled() {
+        if !self.can_type() {
             return None;
         }
         // An empty prompt box + `?` is "help", not a question mark.
@@ -770,29 +928,12 @@ impl App {
             KeyCode::Enter if alt || key.modifiers.contains(KeyModifiers::SHIFT) => {
                 self.input.insert('\n')
             }
-            KeyCode::Enter => {
-                let text = self.input.take();
-                let text = text.trim_end().to_owned();
-                self.history_idx = None;
-                if text.is_empty() {
-                    return None;
-                }
-                if self.history.last() != Some(&text) {
-                    self.history.push(text.clone());
-                }
-                if let Some(command) = commands::parse(&text) {
-                    return self.run_command(command);
-                }
-                self.messages.push(Message::User(sanitize(&text)));
-                return Some(self.begin_turn(text));
-            }
+            KeyCode::Enter => return self.submit(),
             KeyCode::Up if self.input.on_first_line() => self.history_back(),
             KeyCode::Down if self.input.on_last_line() => self.history_forward(),
             KeyCode::Char(c) => {
-                self.input.insert(c);
-                if self.hint.as_deref().is_some_and(|h| h.starts_with("commands:")) {
-                    self.hint = None;
-                }
+                self.suggestion = None;
+                self.input.insert(c)
             }
             KeyCode::Backspace => self.input.backspace(),
             KeyCode::Delete => self.input.delete(),
@@ -802,46 +943,126 @@ impl App {
             KeyCode::End => self.input.end(),
             _ => {}
         }
+        self.refresh_menu();
         None
     }
 
-    fn complete_slash_command(&mut self) {
-        let current = self.input.text();
-        if !current.starts_with('/') || current.contains(' ') {
+    /// Enter: send what is in the box (or queue it, or run it as a command).
+    pub(crate) fn submit(&mut self) -> Option<Effect> {
+        let text = self.input.take();
+        let text = text.trim_end().to_owned();
+        self.history_idx = None;
+        self.menu = None;
+        self.suggestion = None;
+        if text.is_empty() {
+            return None;
+        }
+        if self.history.last() != Some(&text) {
+            self.history.push(text.clone());
+        }
+        self.run_line(text)
+    }
+
+    /// One line the person entered, from the box or from the queue: a `!command`, a slash command (built in or a
+    /// file), or a prompt. While the agent is working, only what would start a turn waits; the rest happens now.
+    pub(crate) fn run_line(&mut self, text: String) -> Option<Effect> {
+        if let Some(command) = text.strip_prefix('!').map(str::trim).filter(|c| !c.is_empty()) {
+            return Some(Effect::Shell { command: command.to_owned(), share: true, as_diff: false });
+        }
+        let custom = self.custom_for(&text);
+        let command = if custom.is_some() { None } else { commands::parse(&text) };
+        let starts_a_turn = custom.is_some()
+            || match &command {
+                None => true,
+                Some(c) => matches!(c, Command::Init | Command::ResumeTurn),
+            };
+        if starts_a_turn && self.turn_active {
+            self.queue.push_back(text);
+            return None;
+        }
+        if let Some(custom) = custom {
+            let args = text.trim().split_once(char::is_whitespace).map_or("", |(_, a)| a);
+            let prompt = custom.render(args);
+            return self.send_prompt(&text, prompt);
+        }
+        match command {
+            Some(command) => self.run_command(command),
+            None => self.send_prompt(&text.clone(), text),
+        }
+    }
+
+    /// The custom command a typed line names, if it is one (a built-in of the same name wins).
+    fn custom_for(&self, text: &str) -> Option<crate::custom::Custom> {
+        let rest = text.trim().strip_prefix('/')?;
+        let name = rest.split_whitespace().next()?;
+        if !matches!(commands::parse(&format!("/{name}")), Some(Command::Unknown(_))) {
+            return None;
+        }
+        self.custom.iter().find(|c| c.name.eq_ignore_ascii_case(name)).cloned()
+    }
+
+    /// Start a turn. `shown` is what the transcript echoes; `prompt` is what the model gets, with the files named by
+    /// `@` and whatever `!commands` printed since the last turn put in front of it.
+    fn send_prompt(&mut self, shown: &str, prompt: String) -> Option<Effect> {
+        let expanded = crate::mentions::expand(&prompt, &self.project_dir());
+        self.messages.push(Message::User(sanitize(shown)));
+        if !expanded.attached.is_empty() {
+            self.info(format!("attached {}", expanded.attached.join(", ")));
+        }
+        for (mention, why) in &expanded.skipped {
+            self.info(format!("@{mention}: {why}"));
+        }
+        let mut prompt = expanded.prompt;
+        if !self.shell_context.is_empty() {
+            let context = self.shell_context.drain(..).collect::<Vec<_>>().join("\n\n");
+            prompt = format!("{context}\n\n{prompt}");
+        }
+        Some(self.begin_turn(prompt))
+    }
+
+    /// The result of a `!command`, shown to the person and kept for the agent's next turn.
+    pub fn on_local(&mut self, event: LocalEvent) {
+        let LocalEvent::ShellDone { command, outcome, share, as_diff } = event;
+        let status = match (outcome.timed_out, outcome.code) {
+            (true, _) => "timed out after 60s".to_owned(),
+            (_, Some(0)) => "exit 0".to_owned(),
+            (_, Some(code)) => format!("exit {code}"),
+            (_, None) => "killed".to_owned(),
+        };
+        let output = sanitize(outcome.output.trim_end());
+        let shown_lines: Vec<&str> = output.lines().collect();
+        let tail_start = shown_lines.len().saturating_sub(40);
+        let mut text = format!("$ {command}\n");
+        if tail_start > 0 {
+            text.push_str(&format!("… {tail_start} earlier lines\n"));
+        }
+        text.push_str(&shown_lines[tail_start..].join("\n"));
+        text.push_str(&format!("\n[{status}]"));
+        if as_diff {
+            self.messages.push(Message::Diff(if output.trim().is_empty() { "no changes".to_owned() } else { output.clone() }));
             return;
         }
-        let prefix = current;
-        let matches: Vec<&str> = commands::HELP
-            .iter()
-            .map(|(cmd, _)| cmd.split_whitespace().next().unwrap_or(cmd))
-            .filter(|cmd| cmd.starts_with(prefix))
-            .collect();
-
-        if matches.is_empty() {
+        self.messages.push(Message::Info(text));
+        if !share {
             return;
         }
-
-        if matches.len() == 1 {
-            let completed = format!("{} ", matches[0]);
-            self.input.set_text(&completed);
-            self.hint = None;
-        } else {
-            let mut common = matches[0].to_owned();
-            for m in &matches[1..] {
-                while !m.starts_with(&common) && !common.is_empty() {
-                    common.pop();
-                }
-            }
-            if common.len() > prefix.len() {
-                self.input.set_text(&common);
-            }
-            let list = matches.join(", ");
-            self.hint = Some(format!("commands: {list}"));
-        }
+        let cut = if outcome.cut { " (the start was cut)" } else { "" };
+        self.shell_context.push(format!(
+            "[The user ran `{command}` in their terminal ({status}){cut}. It printed:]\n{}",
+            output
+        ));
     }
 
     /// Esc: interrupt a running turn (like Ctrl+C), else clear what's typed.
     fn on_escape(&mut self) -> Option<Effect> {
+        // Text typed ahead is cleared first; a second Esc stops the turn. Throwing away a half-written message must
+        // not cost the agent's work.
+        if self.turn_active && self.can_type() && !self.input.is_empty() {
+            self.input.clear();
+            self.history_idx = None;
+            self.refresh_menu();
+            return None;
+        }
         if self.turn_active {
             return self.on_ctrl_c();
         }
@@ -881,7 +1102,7 @@ impl App {
         }
     }
 
-    fn info(&mut self, text: impl Into<String>) {
+    pub(crate) fn info(&mut self, text: impl Into<String>) {
         self.messages.push(Message::Info(text.into()));
     }
 
@@ -907,7 +1128,7 @@ impl App {
                 });
             }
             Command::Laya(Some(arg)) if arg == "stats" => {
-                return Some(ext("_sierralab/laya/stats", Value::Null, "laya stats"));
+                return Some(ext("_cordata/laya/stats", Value::Null, "laya stats"));
             }
             Command::Laya(arg) => {
                 self.show_laya = match arg.as_deref() {
@@ -961,13 +1182,21 @@ impl App {
             Command::Status => {
                 self.run_status();
                 // The orchestrator's pools and handoffs, read from the ledger by the backend — no model call.
-                return Some(ext("_sierralab/orchestrator/status", Value::Null, "orchestrator"));
+                return Some(ext("_cordata/orchestrator/status", Value::Null, "orchestrator"));
             }
+            Command::Goal(arg) => return self.run_goal(arg),
+            Command::Btw(arg) => return self.run_btw(arg),
+            Command::Compact(arg) => return self.run_compact(arg),
+            Command::Context => return Some(crate::extras::ext_effect("_cordata/context/usage", "context")),
+            Command::Cost => return self.run_cost(),
+            Command::Diff => return self.run_diff(),
+            Command::Copy => return self.run_copy(),
+            Command::Export(arg) => self.run_export(arg),
             Command::Plugins(arg) => return self.run_plugins(arg),
-            Command::Lsp => return Some(ext("_sierralab/lsp/status", Value::Null, "lsp")),
-            Command::Heal => return Some(ext("_sierralab/heal/status", Value::Null, "heal")),
+            Command::Lsp => return Some(ext("_cordata/lsp/status", Value::Null, "lsp")),
+            Command::Heal => return Some(ext("_cordata/heal/status", Value::Null, "heal")),
             Command::Checkpoints => {
-                return Some(ext("_sierralab/checkpoints/list", Value::Null, "checkpoints"));
+                return Some(ext("_cordata/checkpoints/list", Value::Null, "checkpoints"));
             }
             Command::Undo(arg) => return self.run_undo(arg),
             Command::Back(arg) => return self.run_back(arg),
@@ -1010,7 +1239,7 @@ impl App {
     fn run_back(&mut self, arg: Option<String>) -> Option<Effect> {
         let words: Vec<&str> = arg.as_deref().unwrap_or("").split_whitespace().collect();
         let params = match words.as_slice() {
-            ["list" | "ls"] => return Some(ext("_sierralab/conversation/list", Value::Null, "back list")),
+            ["list" | "ls"] => return Some(ext("_cordata/conversation/list", Value::Null, "back list")),
             [] => serde_json::json!({ "turns": 1 }),
             [n] if n.parse::<u32>().is_ok() => serde_json::json!({ "turns": n.parse::<u32>().unwrap_or(1) }),
             ["to", n] if n.parse::<u32>().is_ok() => serde_json::json!({ "index": n.parse::<u32>().unwrap_or(1) }),
@@ -1023,7 +1252,7 @@ impl App {
             self.info("a turn is running — stop it (Esc) first, then /back");
             return None;
         }
-        Some(ext("_sierralab/conversation/rewind", params, "back"))
+        Some(ext("_cordata/conversation/rewind", params, "back"))
     }
 
     /// `/undo` previews undoing the latest turn's changes; `/undo apply` does it. `/undo <turn>` and
@@ -1049,7 +1278,7 @@ impl App {
             params["turn"] = Value::String(turn.to_owned());
         }
         Some(ext(
-            "_sierralab/checkpoints/undo",
+            "_cordata/checkpoints/undo",
             params,
             if apply { "undo applied" } else { "undo" },
         ))
@@ -1059,10 +1288,10 @@ impl App {
     fn run_plugins(&mut self, arg: Option<String>) -> Option<Effect> {
         let words: Vec<&str> = arg.as_deref().unwrap_or("").split_whitespace().collect();
         match words.as_slice() {
-            [] | ["list"] => Some(ext("_sierralab/plugins/list", Value::Null, "plugins")),
-            ["reload"] => Some(ext("_sierralab/plugins/reload", Value::Null, "plugins")),
+            [] | ["list"] => Some(ext("_cordata/plugins/list", Value::Null, "plugins")),
+            ["reload"] => Some(ext("_cordata/plugins/reload", Value::Null, "plugins")),
             [verb @ ("enable" | "disable"), name] => Some(ext(
-                &format!("_sierralab/plugins/{verb}"),
+                &format!("_cordata/plugins/{verb}"),
                 serde_json::json!({ "name": name }),
                 &format!("plugins {verb}"),
             )),
@@ -1426,18 +1655,130 @@ mod tests {
     }
 
     #[test]
-    fn enter_sends_prompt_and_locks_input_until_turn_ends() {
+    fn enter_sends_a_prompt_and_what_is_typed_meanwhile_waits_its_turn() {
         let mut app = connected();
         type_text(&mut app, "hello");
         let effect = app.on_key(key(KeyCode::Enter));
         assert_eq!(effect, Some(Effect::SendPrompt("hello".into())));
-        assert!(app.turn_active && !app.input_enabled());
+        assert!(app.turn_active && !app.input_enabled() && app.can_type());
 
-        type_text(&mut app, "ignored");
-        assert!(app.input.is_empty(), "input is disabled mid-turn");
+        // The agent is working: typing still works, and Enter lines the message up instead of sending it.
+        type_text(&mut app, "then run the tests");
+        assert_eq!(app.input.text(), "then run the tests");
+        assert_eq!(app.on_key(key(KeyCode::Enter)), None);
+        assert!(app.input.is_empty());
+        assert_eq!(app.queue.len(), 1);
+        assert!(app.take_queued().is_none(), "not while the turn runs");
+        assert!(
+            app.messages.iter().all(|m| !matches!(m, Message::User(t) if t == "then run the tests")),
+            "a queued message is not in the transcript until it is sent"
+        );
 
+        // The turn ends: the queued message goes out as a turn of its own.
         app.on_event(AppEvent::TurnComplete(StopReason::EndTurn));
         assert!(app.input_enabled());
+        assert_eq!(app.take_queued(), Some(Effect::SendPrompt("then run the tests".into())));
+        assert!(app.turn_active && app.queue.is_empty());
+        assert!(matches!(app.messages.last(), Some(Message::User(t)) if t == "then run the tests"));
+    }
+
+    #[test]
+    fn a_cancelled_turn_hands_the_queue_back_instead_of_sending_it() {
+        let mut app = connected();
+        type_text(&mut app, "first");
+        app.on_key(key(KeyCode::Enter));
+        for line in ["second", "third"] {
+            type_text(&mut app, line);
+            app.on_key(key(KeyCode::Enter));
+        }
+        assert_eq!(app.queue.len(), 2);
+        app.on_event(AppEvent::TurnComplete(StopReason::Cancelled));
+        assert!(app.queue.is_empty() && app.take_queued().is_none());
+        assert_eq!(app.input.text(), "second\nthird");
+        assert_info(&app, "2 queued messages back in the prompt box");
+
+        // A failed turn does the same.
+        let mut failed = connected();
+        type_text(&mut failed, "go");
+        failed.on_key(key(KeyCode::Enter));
+        type_text(&mut failed, "later");
+        failed.on_key(key(KeyCode::Enter));
+        failed.on_event(AppEvent::TurnFailed("boom".into()));
+        assert_eq!(failed.input.text(), "later");
+    }
+
+    #[test]
+    fn slash_commands_typed_mid_turn_run_now_except_those_that_start_a_turn() {
+        let mut app = connected();
+        type_text(&mut app, "work");
+        app.on_key(key(KeyCode::Enter));
+        // /tools only flips a setting on this side.
+        type_text(&mut app, "/tools");
+        assert_eq!(app.on_key(key(KeyCode::Enter)), None);
+        assert!(app.expand_tools, "ran immediately");
+        assert!(app.queue.is_empty());
+        // /init starts a turn, so it waits.
+        type_text(&mut app, "/init");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.queue.front().map(String::as_str), Some("/init"));
+    }
+
+    #[test]
+    fn a_bang_runs_the_command_for_the_person_and_tells_the_agent_what_it_printed() {
+        let mut app = connected();
+        type_text(&mut app, "!git status");
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Some(Effect::Shell { command: "git status".into(), share: true, as_diff: false }));
+        assert!(!app.turn_active, "it is the person's command, not a turn");
+        app.on_local(LocalEvent::ShellDone {
+            command: "git status".into(),
+            outcome: crate::shell::Outcome { output: "On branch main\n".into(), code: Some(0), timed_out: false, cut: false },
+            share: true,
+            as_diff: false,
+        });
+        assert_info(&app, "$ git status\nOn branch main\n[exit 0]");
+        // The next prompt carries it.
+        type_text(&mut app, "why is it dirty?");
+        let Some(Effect::SendPrompt(prompt)) = app.on_key(key(KeyCode::Enter)) else { panic!("a prompt") };
+        assert!(prompt.starts_with("[The user ran `git status` in their terminal (exit 0)."), "{prompt}");
+        assert!(prompt.contains("On branch main") && prompt.ends_with("why is it dirty?"), "{prompt}");
+        // …and only that one.
+        type_text(&mut app, "thanks");
+        app.on_event(AppEvent::TurnComplete(StopReason::EndTurn));
+        let Some(Effect::SendPrompt(next)) = app.on_key(key(KeyCode::Enter)) else { panic!("a prompt") };
+        assert_eq!(next, "thanks");
+    }
+
+    #[test]
+    fn a_custom_command_sends_its_file_as_the_prompt_and_a_built_in_keeps_its_name() {
+        let mut app = connected();
+        app.custom = vec![
+            crate::custom::Custom { name: "review".into(), description: String::new(), hint: String::new(), body: "Review the diff, focus: $ARGUMENTS".into(), scope: "project" },
+            crate::custom::Custom { name: "help".into(), description: String::new(), hint: String::new(), body: "impostor".into(), scope: "project" },
+        ];
+        type_text(&mut app, "/review security ");
+        let Some(Effect::SendPrompt(prompt)) = app.on_key(key(KeyCode::Enter)) else { panic!("a prompt") };
+        assert_eq!(prompt, "Review the diff, focus: security");
+        assert!(matches!(app.messages.last(), Some(Message::User(t)) if t == "/review security"), "the transcript echoes what was typed");
+
+        app.on_event(AppEvent::TurnComplete(StopReason::EndTurn));
+        type_text(&mut app, "/help ");
+        assert_eq!(app.on_key(key(KeyCode::Enter)), None);
+        assert!(matches!(app.messages.last(), Some(Message::Help)));
+    }
+
+    #[test]
+    fn at_mentions_put_the_files_in_front_of_the_agent_and_say_so() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "remember the milk\n").unwrap();
+        let mut app = connected();
+        app.session.as_mut().unwrap().cwd = dir.path().to_string_lossy().into_owned();
+        type_text(&mut app, "summarise @notes.txt and @missing.rs ");
+        let effect = app.on_key(key(KeyCode::Enter));
+        let Some(Effect::SendPrompt(prompt)) = effect else { panic!("a prompt, got {effect:?}") };
+        assert!(prompt.starts_with("summarise @notes.txt and @missing.rs"), "{prompt}");
+        assert!(prompt.contains("remember the milk"), "{prompt}");
+        assert_info(&app, "attached notes.txt");
+        assert_info(&app, "@missing.rs: no such file");
     }
 
     #[test]
@@ -1775,12 +2116,12 @@ mod tests {
         let Some(Effect::Ext { method, params, tag }) = submit(&mut app, "/back") else {
             panic!("/back asks the backend");
         };
-        assert_eq!((method.as_str(), tag.as_str()), ("_sierralab/conversation/rewind", "back"));
+        assert_eq!((method.as_str(), tag.as_str()), ("_cordata/conversation/rewind", "back"));
         assert_eq!(params["turns"], 1);
         let Some(Effect::Ext { params, .. }) = submit(&mut app, "/back 2") else { panic!() };
         assert_eq!(params["turns"], 2);
         let Some(Effect::Ext { method, tag, .. }) = submit(&mut app, "/back list") else { panic!() };
-        assert_eq!((method.as_str(), tag.as_str()), ("_sierralab/conversation/list", "back list"));
+        assert_eq!((method.as_str(), tag.as_str()), ("_cordata/conversation/list", "back list"));
         let Some(Effect::Ext { params, .. }) = submit(&mut app, "/back to 3") else { panic!() };
         assert_eq!(params["index"], 3);
         assert!(submit(&mut app, "/back sideways").is_none());
@@ -1946,8 +2287,12 @@ mod tests {
         assert!(app.messages.iter().all(|m| !matches!(m, Message::User(_))));
         let mut busy = connected();
         busy.turn_active = true;
-        busy.on_paste("ignored");
-        assert!(busy.input.is_empty(), "no pasting into a disabled box");
+        busy.on_paste("queued for later");
+        assert_eq!(busy.input.text(), "queued for later", "the box takes text while the agent works");
+        let mut away = connected();
+        away.conn = ConnState::Closed { error: None };
+        away.on_paste("nowhere to go");
+        assert!(away.input.is_empty(), "no pasting into a closed session");
     }
 
     #[test]
@@ -2004,6 +2349,16 @@ mod tests {
         type_text(&mut app, "half typed");
         app.on_key(key(KeyCode::Esc));
         assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn escape_clears_what_was_typed_ahead_before_it_stops_the_agent() {
+        let mut app = connected();
+        submit(&mut app, "go");
+        type_text(&mut app, "never mind this");
+        assert_eq!(app.on_key(key(KeyCode::Esc)), None, "the first Esc only clears the draft");
+        assert!(app.input.is_empty() && app.turn_active && !app.cancelling);
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Some(Effect::Cancel), "the second one stops the turn");
     }
 
     #[test]
@@ -2075,7 +2430,7 @@ mod tests {
         let mut app = connected();
         let (method, _) = ext_of(app.on_key(key(KeyCode::F(2))));
         assert_eq!(
-            method, "_sierralab/lab/state",
+            method, "_cordata/lab/state",
             "no snapshot yet: it asks for one"
         );
         assert!(app.lab.open && !app.input_enabled());
@@ -2112,7 +2467,7 @@ mod tests {
         app.on_key(key(KeyCode::F(2)));
         app.on_key(key(KeyCode::Right));
         let (method, params) = ext_of(app.on_key(key(KeyCode::Char('K'))));
-        assert_eq!(method, "_sierralab/lab/isolate");
+        assert_eq!(method, "_cordata/lab/isolate");
         assert_eq!(params, serde_json::json!({"pod": "debugger"}));
         assert_eq!(
             app.lab.pods()[1].status,
@@ -2231,7 +2586,7 @@ mod tests {
         let mut rx = permission(&mut app, "t1");
         app.on_key(key(KeyCode::F(2)));
         let (method, params) = ext_of(app.on_key(key(KeyCode::Char('K'))));
-        assert_eq!(method, "_sierralab/lab/isolate");
+        assert_eq!(method, "_cordata/lab/isolate");
         assert_eq!(params, serde_json::json!({"pod": "debugger"}));
         assert_eq!(
             rx.try_recv().unwrap(),
@@ -2269,18 +2624,29 @@ mod tests {
     }
 
     #[test]
-    fn slash_command_tab_autocompletion() {
+    fn typing_a_slash_opens_the_menu_and_tab_completes_without_running() {
         let mut app = connected();
         type_text(&mut app, "/hel");
+        assert!(app.menu.is_some(), "the menu follows the text");
         app.on_key(key(KeyCode::Tab));
         assert_eq!(app.input.text(), "/help ");
+        assert!(app.menu.is_none(), "a space ends the command word");
+        assert!(app.messages.iter().all(|m| !matches!(m, Message::Help)), "Tab never runs it");
 
         app.input.clear();
         type_text(&mut app, "/he");
+        let labels: Vec<_> = app.menu.as_ref().unwrap().items.iter().map(|i| i.label.clone()).collect();
+        assert!(labels.contains(&"/help".to_owned()) && labels.contains(&"/heal".to_owned()), "{labels:?}");
+        // Down moves the highlight instead of walking prompt history.
+        app.on_key(key(KeyCode::Down));
+        assert_eq!(app.menu.as_ref().unwrap().selected, 1);
+        // Esc closes the menu and keeps the text; the mode does not change under a half-typed command.
+        let mode = app.mode.clone();
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.menu.is_none() && app.input.text() == "/he");
         app.on_key(key(KeyCode::Tab));
-        assert_eq!(app.input.text(), "/he");
-        assert!(app.hint.as_deref().unwrap().contains("commands:"));
-        assert!(app.hint.as_deref().unwrap().contains("/help"));
-        assert!(app.hint.as_deref().unwrap().contains("/heal"));
+        assert_eq!(app.mode, mode);
+        assert_eq!(app.pending_mode, None);
     }
+
 }

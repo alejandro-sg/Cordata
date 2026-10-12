@@ -179,7 +179,7 @@ def check_syntax(path: str, old: str | None, new: str, root: str) -> list[Proble
 
 
 def ruff_binary(root: str, trusted: bool = False) -> str | None:
-    if os.environ.get("SIERRALAB_PREFLIGHT_RUFF", "").strip().lower() in ("off", "0", "false", "no"):
+    if os.environ.get("CORDATA_PREFLIGHT_RUFF", "").strip().lower() in ("off", "0", "false", "no"):
         return None
     found = shutil.which("ruff")
     if found:

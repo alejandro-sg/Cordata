@@ -12,7 +12,7 @@ pub const BACKEND_ROOT_ENV: &str = "ACP_TUI_BACKEND_ROOT";
 
 /// Where `backend/daemon/server.py` writes its token and port. Same variable
 /// name it reads, so a test or a second daemon can point both ends at one file.
-pub const DAEMON_CONFIG_ENV: &str = "SIERRALAB_DAEMON_CONFIG";
+pub const DAEMON_CONFIG_ENV: &str = "CORDATA_DAEMON_CONFIG";
 
 #[derive(Debug, Clone)]
 pub struct BackendConfig {
@@ -122,23 +122,15 @@ impl std::fmt::Debug for DaemonConfig {
 }
 
 impl DaemonConfig {
-    /// The daemon config file: `CORDATA_DAEMON_CONFIG` / `SIERRALAB_DAEMON_CONFIG`, else
-    /// `~/.cordata/daemon.json` (or `~/.sierralab/daemon.json`).
+    /// The daemon config file: `CORDATA_DAEMON_CONFIG`, else
+    /// `~/.cordata/daemon.json`.
     pub fn path() -> Result<PathBuf> {
-        if let Some(override_path) = std::env::var_os("CORDATA_DAEMON_CONFIG")
-            .or_else(|| std::env::var_os(DAEMON_CONFIG_ENV))
-        {
+        if let Some(override_path) = std::env::var_os("CORDATA_DAEMON_CONFIG") {
             return Ok(PathBuf::from(override_path));
         }
         let home = std::env::var_os("HOME")
             .ok_or_else(|| Error::DaemonConfigNotFound(PathBuf::from("$HOME is not set")))?;
-        let cordata = PathBuf::from(&home).join(".cordata").join("daemon.json");
-        let sierralab = PathBuf::from(&home).join(".sierralab").join("daemon.json");
-        if !cordata.exists() && sierralab.exists() {
-            Ok(sierralab)
-        } else {
-            Ok(cordata)
-        }
+        Ok(PathBuf::from(&home).join(".cordata").join("daemon.json"))
     }
 
     pub fn discover() -> Result<Self> {

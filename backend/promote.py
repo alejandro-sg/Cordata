@@ -88,12 +88,12 @@ def _staged(kind: str, project: str | os.PathLike | None) -> list[dict[str, Any]
 
 @contextmanager
 def _arm(*, skill_dir: str | None = None, prompt_overlay: str | None = None, env: dict[str, str] | None = None) -> Iterator[None]:
-    """Put a candidate in force for an arm: ``SIERRALAB_EXTRA_SKILLS`` for a skill, ``SIERRALAB_PROMPT_OVERLAY``
+    """Put a candidate in force for an arm: ``CORDATA_EXTRA_SKILLS`` for a skill, ``CORDATA_PROMPT_OVERLAY``
     for an overlay, or an arbitrary ``env`` mapping for an arm with no store behind it (a Laya checkpoint, which
     is a directory rather than a body of prose — ``laya_checkpoints.py``). Restores every key on exit.
     (``run_suite`` sets the same variables from its ``config``, so an arm is in force whether or not the caller's
     runner honours ``config``.)"""
-    keys = {"SIERRALAB_EXTRA_SKILLS": skill_dir, "SIERRALAB_PROMPT_OVERLAY": prompt_overlay, **(env or {})}
+    keys = {"CORDATA_EXTRA_SKILLS": skill_dir, "CORDATA_PROMPT_OVERLAY": prompt_overlay, **(env or {})}
     saved = {k: os.environ.get(k) for k in keys}
     for key, value in keys.items():
         if value:

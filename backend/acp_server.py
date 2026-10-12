@@ -31,7 +31,7 @@ The agentic harness on top (docs/agentic-harness.md), per session:
 * **Specialists** (specialists.py) — Architect and Debugger as Strands
   agents-as-tools sharing this session's approval handler.
 * **Plugins** (plugin_host.py) — MCP servers, the memory store and the LSP tools
-  as hot-swappable plugins (``_sierralab/plugins/*`` ext methods).
+  as hot-swappable plugins (``_cordata/plugins/*`` ext methods).
 * **LSP** (lsp_bridge.py) — language servers started for the project; edits get
   fresh diagnostics appended.
 * **Self-healing** (self_heal.py) — failing commands are diagnosed, patched in a
@@ -39,7 +39,7 @@ The agentic harness on top (docs/agentic-harness.md), per session:
 * **Checkpoints** — Strands pauses at every ReAct cycle boundary; the checkpoint
   is written next to the session so an interrupted turn can be resumed.
 * Live state (tasks/progress, heal phases, plugin and LSP changes) goes to the
-  client as ``_sierralab/<kind>`` extension notifications.
+  client as ``_cordata/<kind>`` extension notifications.
 """
 
 import asyncio
@@ -60,7 +60,10 @@ import bandit
 import claude_code_tool
 import context_diet
 import context_offload
+import goal as goal_module
+import session_extras
 import session_store
+import task_tool
 import skill_search
 import fix_memory
 import context_digest_tool
@@ -389,9 +392,9 @@ def _router() -> LayaRouter:
     return _ROUTER
 
 
-class SierraLabAcpAgent:
+class CordataAcpAgent:
     """Implements initialize, new_session, load_session, list_sessions, prompt,
-    cancel, set_session_mode, set_config_option and the ``_sierralab/*``
+    cancel, set_session_mode, set_config_option and the ``_cordata/*``
     extension methods. fork_session/resume_session/authenticate aren't wired up
     (nothing here needs forking or auth).
     """
@@ -405,6 +408,8 @@ class SierraLabAcpAgent:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._unsubscribe = None
         self._last_session: str | None = None
+        #: session -> the goal being pursued across turns (``goal.py``, ``/goal``).
+        self._goals: dict[str, goal_module.Goal] = {}
 
     def on_connect(self, conn: acp.Client) -> None:
         self._conn = conn
@@ -437,11 +442,11 @@ class SierraLabAcpAgent:
     def _forward_event(self, kind: str, payload: dict) -> None:
         if "sessionId" not in payload and self._last_session:
             payload = {**payload, "sessionId": self._last_session}
-        self._send_ext(f"sierralab/{kind}", payload)
+        self._send_ext(f"cordata/{kind}", payload)
 
     def _laya_notifier(self, session_id: str):
         """A thread-safe callback that forwards Laya's live triage events to the
-        client as an ACP *extension notification* (method ``_sierralab/laya``).
+        client as an ACP *extension notification* (method ``_cordata/laya``).
         The ACP spec says a client that doesn't understand an extension
         notification must ignore it, so Zed and other clients are unaffected;
         acp-tui renders it as the live "◆ laya" line.
@@ -451,7 +456,7 @@ class SierraLabAcpAgent:
             self._loop = asyncio.get_running_loop()
 
         def notify(payload: dict) -> None:
-            self._send_ext("sierralab/laya", {"sessionId": session_id, **payload})
+            self._send_ext("cordata/laya", {"sessionId": session_id, **payload})
 
         return notify
 
@@ -559,8 +564,9 @@ class SierraLabAcpAgent:
                 context_diet.enable_tools,
                 env_profile.environment_profile,
                 plugin_host.resources_tool(plugins),
+                task_tool.todo_write,
             ],
-            # A result over the limit is set aside whole — written to ~/.sierralab/offloaded/<session>/, a head+tail preview and
+            # A result over the limit is set aside whole — written to ~/.cordata/offloaded/<session>/, a head+tail preview and
             # a reference in context, `retrieve_offloaded_content` for the slice the agent wants (Strands' ContextOffloader).
             # What a specialist or the Claude Code CLI returns is the answer itself, so those are never set aside.
             offloader=context_offload.build(session_id, preferences=lambda: settings_store.current(cwd), never=set(specialist_agents)),
@@ -614,6 +620,7 @@ class SierraLabAcpAgent:
             lab=lambda: lab_module.get(),
         )
         orchestrate_tool.configure(cwd=lambda: cwd, vault=lambda: handler.vault, preferences=lambda: settings_store.current(cwd), session_id=lambda: session_id)
+        task_tool.configure(lambda: session_id)
         self._wire_lab(session_id, cwd, agent, handler, specialist_agents)
         if preferences.get("model"):
             _apply_model(agent, preferences.get("model"))
@@ -722,7 +729,7 @@ class SierraLabAcpAgent:
                     session_id=session_id,
                     update=acp.update_agent_message_text(f"\n[This session's last turn was interrupted at a checkpoint ({where}). {advice}]\n"),
                 )
-                self._send_ext("sierralab/resume", {"sessionId": session_id, "available": True, "auto": bool(auto), "where": where, "ageSeconds": int(age), "attempts": attempts, "max": MAX_AUTO_RESUMES})
+                self._send_ext("cordata/resume", {"sessionId": session_id, "available": True, "auto": bool(auto), "where": where, "ageSeconds": int(age), "attempts": attempts, "max": MAX_AUTO_RESUMES})
             # Approvals this session was parked on when its process went away.
             # The child that was blocked on the prompt is gone, so the request
             # will never arrive again — the ledger row is all that is left of
@@ -829,9 +836,9 @@ class SierraLabAcpAgent:
     # ------------------------------------------------------ ext methods
 
     async def ext_method(self, method: str, params: dict) -> dict:
-        """``_sierralab/*`` requests from acp-tui: plugins, LSP, Laya stats,
+        """``_cordata/*`` requests from acp-tui: plugins, LSP, Laya stats,
         self-heal state. Unknown methods raise (JSON-RPC method-not-found)."""
-        name = method.removeprefix("_").removeprefix("sierralab/")
+        name = method.removeprefix("_").removeprefix("cordata/")
         session_id = params.get("sessionId") or self._last_session
         state = self._sessions.get(session_id) if session_id else None
         cwd = state.cwd if state else os.getcwd()
@@ -857,6 +864,19 @@ class SierraLabAcpAgent:
             from orchestrator.status import status_data
 
             return await run_blocking(status_data, cwd)
+        if name == "context/usage":
+            return session_extras.context_snapshot(state.agent) if state else {"used": 0, "window": None, "pct": None, "messages": 0, "estimated": True}
+        if name == "context/compact":
+            return await self._compact(session_id, state, str(params.get("focus") or ""))
+        if name == "btw":
+            return await self._aside(state, str(params.get("question") or ""))
+        if name == "goal/status":
+            goal = self._goals.get(session_id) if session_id else None
+            return {"goal": goal.public() if goal else None}
+        if name == "goal/clear":
+            return {"cleared": self._clear_goal(session_id, "cleared by the person") if session_id else False}
+        if name == "tasks/list":
+            return {"items": task_tool.current(session_id) if session_id else []}
         if name == "laya/stats":
             router = _router()
             return {
@@ -917,7 +937,7 @@ class SierraLabAcpAgent:
             return await run_blocking(learned.reject, name, cwd, str(params.get("reason") or "rejected by a person"))
         if action == "retire":
             return await run_blocking(learned.retire, name, cwd, str(params.get("reason") or "retired by a person"), "person")
-        raise acp.RequestError.method_not_found(f"_sierralab/skills/{action}")
+        raise acp.RequestError.method_not_found(f"_cordata/skills/{action}")
 
     async def _checkpoint_control(self, action: str, params: dict, session_id: str | None, cwd: str) -> dict:
         """``checkpoints/list`` · ``checkpoints/undo`` · ``checkpoints/restore``. Anything that changes files is a
@@ -931,7 +951,7 @@ class SierraLabAcpAgent:
                 "turns": await run_blocking(checkpoints.turns, cwd, int(params.get("limit") or 8)),
             }
         if action not in ("undo", "restore"):
-            raise acp.RequestError.method_not_found(f"_sierralab/checkpoints/{action}")
+            raise acp.RequestError.method_not_found(f"_cordata/checkpoints/{action}")
         apply = bool(params.get("apply"))
         if apply and outcomes.active(session_id) is not None:
             return {"ok": False, "reason": "a turn is running — stop it first, then undo"}
@@ -955,7 +975,7 @@ class SierraLabAcpAgent:
         if action == "list":
             return session_store.listing(state.agent, SESSIONS_DIR, int(params.get("limit") or 15))
         if action != "rewind":
-            raise acp.RequestError.method_not_found(f"_sierralab/conversation/{action}")
+            raise acp.RequestError.method_not_found(f"_cordata/conversation/{action}")
         if session_id in self._streaming or outcomes.active(session_id) is not None:
             return {"ok": False, "reason": "a turn is running — stop it first, then go back"}
         index = params.get("index")
@@ -966,7 +986,7 @@ class SierraLabAcpAgent:
             _resume_marker_path(session_id).unlink(missing_ok=True)
             audit = {"turn": result.get("turn"), "now": result.get("now"), "forgot": len(result.get("forgot") or []), "restored": result.get("to"), "undo_with": result.get("undo_with")}
             state_store.append_event("conversation_rewind", audit, session_id=session_id, source="session_store")
-            self._send_ext("sierralab/conversation", {"sessionId": session_id, "event": "rewound", "now": result.get("now"), "forgot": result.get("forgot") or []})
+            self._send_ext("cordata/conversation", {"sessionId": session_id, "event": "rewound", "now": result.get("now"), "forgot": result.get("forgot") or []})
         return result
 
     async def _lab_control(self, action: str, params: dict, session_id: str | None) -> dict:
@@ -981,7 +1001,7 @@ class SierraLabAcpAgent:
                 lab.select(pod or None)
                 return {"focus": lab.focus}
             if action not in ("isolate", "release", "dial", "inject", "effort"):
-                raise acp.RequestError.method_not_found(f"_sierralab/lab/{action}")
+                raise acp.RequestError.method_not_found(f"_cordata/lab/{action}")
             audit = {"action": action, "pod": pod}
             if action in ("dial", "effort"):
                 audit["value"] = params.get("value")
@@ -1013,6 +1033,116 @@ class SierraLabAcpAgent:
 
     async def ext_notification(self, method: str, params: dict) -> None:
         return None
+
+    # ------------------------------------------------ context, aside, goals
+
+    async def _compact(self, session_id: str | None, state: "_Session | None", focus: str) -> dict:
+        if state is None or session_id is None:
+            return {"ok": False, "reason": "no such session"}
+        if session_id in self._streaming or outcomes.active(session_id) is not None:
+            return {"ok": False, "reason": "a turn is running — stop it first, then compact"}
+        result = await run_blocking(session_extras.compact, state.agent, focus)
+        if result.get("ok"):
+            state_store.append_event("conversation_compact", {"before": result["before"], "after": result["after"], "focus": bool(focus)}, session_id=session_id, source="session_extras")
+            self._send_ext("cordata/context", {"sessionId": session_id, **result["after"]})
+        return result
+
+    async def _aside(self, state: "_Session | None", question: str) -> dict:
+        """``/btw``: answered from a copy of the conversation by a tool-less model; nothing is written back."""
+        if state is None:
+            return {"ok": False, "reason": "no such session"}
+        if not question.strip():
+            return {"ok": False, "reason": "ask something: /btw <question>"}
+        messages = list(state.agent.messages)
+        try:
+            answer = await run_blocking(session_extras.ask_aside, question, messages, session_extras.one_shot)
+        except Exception as error:
+            return {"ok": False, "reason": f"could not answer: {error}"}
+        return {"ok": True, "answer": answer}
+
+    def _announce_goal(self, session_id: str, goal: "goal_module.Goal", event: str, **extra) -> None:
+        self._send_ext("cordata/goal", {"sessionId": session_id, "event": event, **goal.public(), **extra})
+
+    def _stop_goal(self, session_id: str, reason: str) -> None:
+        goal = self._goals.get(session_id)
+        if goal is not None and goal.state == "active":
+            goal.state, goal.reason = "stopped", reason
+            self._announce_goal(session_id, goal, "stopped")
+
+    def _clear_goal(self, session_id: str, reason: str) -> bool:
+        goal = self._goals.pop(session_id, None)
+        if goal is None:
+            return False
+        goal.state, goal.reason = "stopped", reason
+        self._announce_goal(session_id, goal, "stopped")
+        return True
+
+    async def _say(self, session_id: str, text: str) -> None:
+        if self._conn is not None:
+            await self._conn.session_update(session_id=session_id, update=acp.update_agent_message_text(text))
+
+    async def _goal_command(self, session_id: str, text: str) -> list | None:
+        """``/goal …`` typed as a prompt, in any front door. Returns the prompt to run (the kickoff), or ``None`` when
+        the command was fully answered here (status, clear, a mistake)."""
+        arguments = text.strip()[len("/goal"):].strip()
+        if arguments.lower() in ("clear", "stop", "off", "cancel"):
+            await self._say(session_id, "Goal cleared." if self._clear_goal(session_id, "cleared by the person") else "There was no active goal.")
+            return None
+        parsed = goal_module.parse(arguments)
+        if parsed is None:
+            current = self._goals.get(session_id)
+            await self._say(session_id, "No active goal.\n\n" + goal_module.USAGE if current is None else self._describe_goal(current))
+            return None
+        if isinstance(parsed, str):
+            await self._say(session_id, parsed)
+            return None
+        self._goals[session_id] = parsed
+        self._announce_goal(session_id, parsed, "set")
+        return [acp.text_block(goal_module.kickoff(parsed))]
+
+    @staticmethod
+    def _describe_goal(goal: "goal_module.Goal") -> str:
+        how = f"checked by `{goal.check}`" if goal.check else "judged from what each turn did"
+        return f"Goal ({goal.state}): {goal.condition}\n{how} · follow-up turn {goal.turns}/{goal.max_turns}" + (f"\nLast: {goal.reason}" if goal.reason else "")
+
+    async def _pursue_goal(self, session_id: str, response, **kwargs):
+        """After a turn: while a goal is active and the turn ended normally, decide whether it is met and, if not, run
+        the next turn. Everything the loop decides is announced; every turn is a full turn (approvals, receipts)."""
+        while True:
+            goal = self._goals.get(session_id)
+            state = self._sessions.get(session_id)
+            if goal is None or goal.state != "active" or state is None:
+                return response
+            stop = str(getattr(response, "stop_reason", None) or "end_turn")
+            if stop != "end_turn":
+                goal.state, goal.reason = "stopped", f"the turn ended: {stop}"
+                self._announce_goal(session_id, goal, "stopped")
+                return response
+            self._announce_goal(session_id, goal, "checking")
+            verdict = await run_blocking(
+                lambda: goal_module.evaluate(goal, cwd=state.cwd, messages=list(state.agent.messages), ask=lambda prompt: session_extras.one_shot("You are a strict judge. Output only the requested JSON.", prompt))
+            )
+            goal.reason = verdict.reason
+            if verdict.met:
+                goal.state = "met"
+                self._announce_goal(session_id, goal, "met")
+                return response
+            goal.judge_failures = goal.judge_failures + 1 if verdict.failed else 0
+            if goal.judge_failures >= goal_module.MAX_JUDGE_FAILURES:
+                goal.state = "stopped"
+                self._announce_goal(session_id, goal, "stopped")
+                return response
+            if goal.turns >= goal.max_turns:
+                goal.state = "exhausted"
+                self._announce_goal(session_id, goal, "exhausted")
+                return response
+            goal.turns += 1
+            self._announce_goal(session_id, goal, "continue")
+            try:
+                response = await self._turn(session_id, [acp.text_block(goal_module.continuation(goal, verdict.reason))], **kwargs)
+            except asyncio.CancelledError:
+                self._stop_goal(session_id, "the turn was cancelled")
+                raise
 
     # ------------------------------------------------------ interrupts
 
@@ -1121,7 +1251,7 @@ class SierraLabAcpAgent:
                     # ACP's `_meta` slot: the exact command or diff, secret-masked, plus the pod
                     # and Laya's reading — what the daemon's gRPC bridge hands the GUI's containment
                     # modal. A client that does not know it (Zed, acp-tui) ignores it.
-                    sierralab=intervention_view.build(
+                    cordata=intervention_view.build(
                         tool_name,
                         tool_input,
                         state.cwd if state else os.getcwd(),
@@ -1673,6 +1803,21 @@ class SierraLabAcpAgent:
         threading.Thread(target=run, name="learn-from-turn", daemon=True).start()
 
     async def prompt(self, session_id: str, prompt: list, **kwargs) -> acp.PromptResponse:
+        """The client's prompt: one turn — or, under ``/goal``, as many as it takes (``goal.py``)."""
+        text = _extract_prompt_text(prompt)
+        if goal_module.is_command(text):
+            kickoff = await self._goal_command(session_id, text)
+            if kickoff is None:
+                return acp.PromptResponse(stopReason="end_turn")
+            prompt = kickoff
+        try:
+            response = await self._turn(session_id, prompt, **kwargs)
+        except asyncio.CancelledError:
+            self._stop_goal(session_id, "the turn was cancelled")
+            raise
+        return await self._pursue_goal(session_id, response, **kwargs)
+
+    async def _turn(self, session_id: str, prompt: list, **kwargs) -> acp.PromptResponse:
         """One turn, recorded: the person's prompt to the stop reason becomes one outcome record
         (``outcomes.py``) — what was asked, what ran, how the approvals went, whether the checks passed,
         what changed. Recording is a side channel: nothing in it can fail or alter the turn."""
@@ -1718,13 +1863,13 @@ class SierraLabAcpAgent:
                     logging.getLogger(__name__).debug("outcomes: could not finish a turn", exc_info=True)
 
     def _announce_turn(self, session_id: str, state: "_Session", started: float, tokens_before: tuple[int, int], stop: str) -> None:
-        """What the turn cost, as ``_sierralab/turn``: a front door that cannot see tokens (the Discord
+        """What the turn cost, as ``_cordata/turn``: a front door that cannot see tokens (the Discord
         bot, the TUI's status line) shows it without a model call of its own. Never raises."""
         try:
             after = self._tokens_used(state)
             recorder = outcomes.active(session_id)
             self._send_ext(
-                "sierralab/turn",
+                "cordata/turn",
                 {
                     "sessionId": session_id,
                     "stop": stop,
@@ -1734,6 +1879,7 @@ class SierraLabAcpAgent:
                     "calls": recorder.call_count if recorder is not None else 0,
                 },
             )
+            self._send_ext("cordata/context", {"sessionId": session_id, **session_extras.context_snapshot(state.agent)})
         except Exception:
             logging.getLogger(__name__).debug("turn announcement failed", exc_info=True)
 
@@ -1816,7 +1962,7 @@ class SierraLabAcpAgent:
                             **extra,
                         }
                     )
-                self._send_ext("sierralab/laya", {"sessionId": session_id, "mode": "route", "router": "v2", **decision.to_event()})
+                self._send_ext("cordata/laya", {"sessionId": session_id, "mode": "route", "router": "v2", **decision.to_event()})
                 if decision.action == "dispatch" and decision.target and decision.target.id in state.specialists:
                     stop_reason = await self._dispatch(session_id, state, decision, text)
                     return acp.PromptResponse(stopReason=stop_reason if stop_reason in ("end_turn", "max_tokens", "cancelled", "max_turn_requests") else "end_turn")
@@ -1847,13 +1993,13 @@ class SierraLabAcpAgent:
 async def _main() -> None:
     # Runs inside this process's one real, long-running event loop — see
     # start_mcp_clients' own docstring for why that matters: whichever
-    # SierraLabAcpAgent session first calls build_agent_for_session already
+    # CordataAcpAgent session first calls build_agent_for_session already
     # tries to start these same MCP clients itself, from a throwaway
     # thread/loop that doesn't survive to serve a real tool call afterward.
     _protect_protocol_stdout()
     asyncio.create_task(start_mcp_clients())
     # One JSON-RPC message is one line, and asyncio's default line limit is 64 KiB: a prompt with a
-    # large embedded file, or the menu bar's screenshot (`_sierralab/os-context`, up to 4 MiB of
+    # large embedded file, or the menu bar's screenshot (`_cordata/os-context`, up to 4 MiB of
     # JPEG as base64), would otherwise end the connection. The supervisor's side reads with a far
     # larger limit (`Supervisor.FRAME_LIMIT`); this keeps the two in the same order of magnitude.
     reader, writer = await acp.stdio.stdio_streams(limit=STDIO_LINE_LIMIT)
@@ -1861,7 +2007,7 @@ async def _main() -> None:
     # a StreamWriter (what the connection writes outgoing messages to), the
     # second a StreamReader (what it reads incoming messages from) — the
     # opposite of the "write to input / read from output" in its docstring.
-    await acp.run_agent(SierraLabAcpAgent(), writer, reader)
+    await acp.run_agent(CordataAcpAgent(), writer, reader)
 
 
 if __name__ == "__main__":

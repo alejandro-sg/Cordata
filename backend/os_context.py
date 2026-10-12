@@ -15,7 +15,7 @@ Why it is a `ContextInjector` and not text prepended to the prompt:
   the calls of a turn and never enters the durable conversation. The registry is cleared at the end of
   the turn (``acp_server.prompt``), so a later turn cannot inherit a screen the person has left.
 * **The person's own words stay the prompt.** ``session/prompt`` carries exactly what they typed; the
-  context arrives out of band through ``_sierralab/os-context``.
+  context arrives out of band through ``_cordata/os-context``.
 
 Everything here is best-effort and fail-open, except the refusals: masking never raises (it masks what
 it recognises and passes the rest through), rendering a missing context returns ``None`` so the model
@@ -88,7 +88,7 @@ def refusal(bundle_id: str) -> str | None:
 
 
 def register(session_id: str, payload: dict) -> None:
-    """Hold ``payload`` as the context for this session's next turn. Called by the ``_sierralab/os-context``
+    """Hold ``payload`` as the context for this session's next turn. Called by the ``_cordata/os-context``
     extension method just before ``session/prompt``; the turn's end clears it."""
     if not session_id:
         return
@@ -253,4 +253,4 @@ def injector(session_id: str):
     """
     from strands.vended_plugins.context_injector import ContextInjector  # noqa: PLC0415
 
-    return ContextInjector(lambda _context: render(pending(session_id)), name="sierralab:os-context", trigger="everyTurn")
+    return ContextInjector(lambda _context: render(pending(session_id)), name="cordata:os-context", trigger="everyTurn")

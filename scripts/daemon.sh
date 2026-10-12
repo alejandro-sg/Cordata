@@ -12,7 +12,7 @@
 # tracking a second source of truth.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-LABEL="dev.sierralab.daemon"
+LABEL="dev.cordata.daemon"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 PYTHON="$ROOT/backend/.venv/bin/python"
 DAEMON_LOG="$RUN_DIR/daemon.log"

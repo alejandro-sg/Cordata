@@ -138,6 +138,32 @@ def test_recorded_dialects() -> None:
     check(agy_struct.structured == {"verdict": "accept", "items": []}, "agy: the finish tool's envelope fields are dropped from the answer (recorded live)")
 
 
+def test_a_refused_no_op_is_not_a_success() -> None:
+    print("\n=== a worker that gave up ===")
+    from workers import prompting
+    from workers.cli_worker import _Outcome, _Running
+
+    root = tempfile.mkdtemp()
+    task = TaskPacket(task_id="t", role="execute", prompt="edit a.py", cwd=root, file_scope=["a.py"])
+    worker = AgyWorker(binary="/bin/echo")
+
+    def finish(task, denied, changed):
+        parser = AgyStream(task)
+        parser.apply({"event": "result", "result": {"status": "SUCCESS", "response": "", "denied_actions": denied}})
+        return worker._finish(task, 0.0, parser, _Outcome(exit_code=0), _Running(sandbox=None), changed, root)
+
+    result = finish(task, [{"action": "command", "display_name": "RunCommand"}], [])
+    check(result.status == "failed" and "command:RunCommand" in (result.error_message or "") and "no change" in result.error_message, f"success + refused + no edit = the worker gave up ({result.error_message})")
+    check(finish(task, [], []).status == "completed", "…but a step with nothing to change that was not refused anything is fine")
+    check(finish(task, [{"action": "command", "display_name": "RunCommand"}], ["a.py"]).status == "completed", "…and a refused command beside a real edit is fine")
+    read_only = TaskPacket(task_id="t", role="audit", prompt="review", cwd=root)
+    check(finish(read_only, [{"action": "command", "display_name": "RunCommand"}], []).status == "completed", "…and a read-only role is never failed for not editing")
+
+    agy = prompting.compose(task, native_schema=True, can_run_commands=AgyWorker.can_run_commands)
+    check("Shell commands are NOT available" in agy and "make the edit directly" in agy, "agy is told it has no shell, so it does not spend its turn asking for one")
+    check("Shell commands are NOT available" not in prompting.compose(task, native_schema=True, can_run_commands=ClaudeCodeWorker.can_run_commands), "…and Claude Code, which can run commands, is not")
+
+
 def test_scope_rules() -> None:
     print("\n=== scope ===")
     check(scope.matches("src/a.py", ["src/"]) and scope.matches("src/x/b.py", ["src/**"]) and not scope.matches("srcx/a.py", ["src/"]), "directory scopes")
@@ -157,6 +183,7 @@ def main() -> int:
     try:
         test_argv()
         test_scope_rules()
+        test_a_refused_no_op_is_not_a_success()
         test_recorded_dialects()
         test_vault_refusal()
         test_conformance(vault, addr)

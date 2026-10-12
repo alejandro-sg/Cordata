@@ -15,7 +15,7 @@ import asyncio
 import os
 import tempfile
 
-os.environ["SIERRALAB_PRISM"] = "off"
+os.environ["CORDATA_PRISM"] = "off"
 
 import provider_settings  # noqa: F401  (imported before agent_common, which chdirs — see main.py)
 

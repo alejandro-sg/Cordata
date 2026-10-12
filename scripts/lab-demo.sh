@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The Experimental Lab against a scripted, self-contained daemon (backend/lab_demo.py): every
 # feature of the window can be tried without a model, a key or a token spent, and nothing touches
-# ~/.sierralab or a daemon you already run.
+# ~/.cordata or a daemon you already run.
 #
 #   make lab-demo
 #   make lab-demo WATCH=~/some/project        # the window's observer watches that workspace
@@ -14,7 +14,7 @@ if ! [[ -x "$PYTHON" ]]; then
   exit 1
 fi
 
-DEMO_HOME="$(mktemp -d "${TMPDIR:-/tmp}/sierralab-demo.XXXXXX")"
+DEMO_HOME="$(mktemp -d "${TMPDIR:-/tmp}/cordata-demo.XXXXXX")"
 WORKSPACE="$DEMO_HOME/workspace"
 mkdir -p "$WORKSPACE"
 DEMO_PID=""
@@ -57,8 +57,8 @@ if [[ "${1:-}" == "--menubar" ]]; then
   dim "Watch the menu bar: the icon is idle, turns cyan while the demo works, and amber when a"
   dim "destructive command is held. cmd-q in a terminal, or quit the process, to stop."
   cd "$ROOT/lab"
-  exec env SIERRALAB_HOME="$DEMO_HOME" cargo run -q -p harness-menubar
+  exec env CORDATA_HOME="$DEMO_HOME" cargo run -q -p harness-menubar
 fi
 
 cd "$ROOT/lab"
-SIERRALAB_HOME="$DEMO_HOME" cargo run -q -p harness-lab -- --watch "${WATCH:-$WORKSPACE}"
+CORDATA_HOME="$DEMO_HOME" cargo run -q -p harness-lab -- --watch "${WATCH:-$WORKSPACE}"

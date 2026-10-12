@@ -75,8 +75,8 @@ logger = logging.getLogger(__name__)
 
 TOOL_NAME = "claude_code_engineer"
 POD_NAME = "claude_code_engineer"
-BINARY_ENV = "SIERRALAB_CLAUDE_BIN"
-ALLOW_ENV = "SIERRALAB_CLAUDE_ALLOW"
+BINARY_ENV = "CORDATA_CLAUDE_BIN"
+ALLOW_ENV = "CORDATA_CLAUDE_ALLOW"
 
 DEFAULT_TIMEOUT = 1800.0
 MAX_TIMEOUT = 3600.0
@@ -93,7 +93,7 @@ CONTEXT_HITS = 5
 CONTEXT_HIT_CHARS = 400
 
 #: What the CLI may use without asking (there is nobody to ask): file tools, read-only git,
-#: and the usual build/test runners. A user extends it with ``SIERRALAB_CLAUDE_ALLOW`` —
+#: and the usual build/test runners. A user extends it with ``CORDATA_CLAUDE_ALLOW`` —
 #: never the model, whose own input is exactly what a person reviews at the approval.
 ALLOWED_TOOLS = (
     "Read",

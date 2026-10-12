@@ -13,7 +13,7 @@
 
 6. **"go back"** — each turn is checkpointed as it starts; going back restores the conversation as it was (messages, agent
    state, the turn count), forgets exactly those turns, survives a restart, can itself be undone, and says so plainly when
-   there is nothing to go back to. Through the real ACP server: `_sierralab/conversation/list|rewind`, refused mid-turn.
+   there is nothing to go back to. Through the real ACP server: `_cordata/conversation/list|rewind`, refused mid-turn.
 
     backend/.venv/bin/python _session_store_smoke_test.py
 """
@@ -212,15 +212,15 @@ async def test_go_back_through_the_server() -> None:
         await server.prompt(sid, [acp.text_block(prompt)])
     await rig.settle()
 
-    listed = await server.ext_method("_sierralab/conversation/list", {"sessionId": sid})
+    listed = await server.ext_method("_cordata/conversation/list", {"sessionId": sid})
     check(listed["enabled"] and listed["turns"] == 3 and [c["prompt"] for c in listed["checkpoints"]][:3] == ["and explain the biggest one", "now list the files", "what is in this project?"], f"the list is newest first, with the prompts ({[c['prompt'] for c in listed['checkpoints']]})")
 
-    result = await server.ext_method("_sierralab/conversation/rewind", {"sessionId": sid, "turns": 2})
+    result = await server.ext_method("_cordata/conversation/rewind", {"sessionId": sid, "turns": 2})
     agent_now = server._sessions[sid].agent
     check(result["ok"] and result["now"] == 1 and result["forgot"] == ["now list the files", "and explain the biggest one"], f"two turns back forgets two prompts ({result.get('forgot')})")
     check(len(agent_now.messages) == 2 and "answer two" not in str(agent_now.messages), "…the agent no longer has them")
     await rig.settle()
-    told = [params for method, params in conn.ext if method == "sierralab/conversation"]
+    told = [params for method, params in conn.ext if method == "cordata/conversation"]
     check(told and told[-1]["event"] == "rewound" and told[-1]["now"] == 1, "clients are told (a transcript can rewind too)")
 
     # a new server process (the daemon restarted) sees the rewound conversation
@@ -246,7 +246,7 @@ async def test_go_back_through_the_server() -> None:
     server2._sessions[sid].agent.tool_registry.register_tool(waiter)
     running = asyncio.create_task(server2.prompt(sid, [acp.text_block("wait please")]))
     await asyncio.sleep(0.5)
-    refused = await server2.ext_method("_sierralab/conversation/rewind", {"sessionId": sid})
+    refused = await server2.ext_method("_cordata/conversation/rewind", {"sessionId": sid})
     check(not refused["ok"] and "running" in refused["reason"], f"going back is refused while a turn runs ({refused['reason']})")
     await running
 

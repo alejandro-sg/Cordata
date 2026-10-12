@@ -2,7 +2,7 @@
 
 Built in the *agent's* process (``acp_server._resolve_interrupts``), because only there are
 the files the call will change readable at the right moment and the registered secrets known,
-and sent to clients in the permission request's ``_meta.sierralab`` — where the daemon's gRPC
+and sent to clients in the permission request's ``_meta.cordata`` — where the daemon's gRPC
 bridge reads it and the Ratatui TUI ignores it. Everything in the view is secret-masked here
 (``secret_patterns.scrub``: registered secrets *and* credential-shaped spans), then masked
 again by the daemon and by the GUI before it draws; the view says how many spans it masked so
@@ -76,7 +76,7 @@ def build(
     said: str = "",
     project: str = "",
 ) -> dict[str, Any]:
-    """The ``_meta.sierralab`` object for one permission request. Never raises.
+    """The ``_meta.cordata`` object for one permission request. Never raises.
 
     ``goal`` is what the person asked this turn, ``said`` what the agent told them just before
     the call, ``project`` the folder it runs in. They are *context for the person deciding*, never

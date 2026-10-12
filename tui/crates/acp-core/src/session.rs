@@ -47,7 +47,7 @@ pub(crate) enum Command {
         id: String,
         value: String,
     },
-    /// An extension request (`_sierralab/...`, or a standard method the typed
+    /// An extension request (`_cordata/...`, or a standard method the typed
     /// API doesn't cover); the answer arrives as `AppEvent::ExtResult { tag }`.
     Ext {
         method: String,

@@ -10,7 +10,7 @@ What this module is, and is not:
 
 * It **relays** and **reports**. It never decides anything the harness decides. An approval is a
   human's click forwarded into the paused ACP request (``Supervisor.answer_permission``), restricted
-  to the options the *child offered*; a knob is the child's own ``_sierralab/lab/*`` control called
+  to the options the *child offered*; a knob is the child's own ``_cordata/lab/*`` control called
   on the user's behalf; the memory unload is the same ``memory_budget`` code the agent's tools use.
   Strands routing, Laya gating, LanceDB and the vault stay where they were.
 * It is **loopback-only and token-gated**. ``127.0.0.1`` is not configurable; every RPC needs the
@@ -75,7 +75,7 @@ MAX_DIRECTIVE = 1500
 
 
 def grpc_port_from_env() -> int | None:
-    raw = os.environ.get("SIERRALAB_GRPC_PORT")
+    raw = os.environ.get("CORDATA_GRPC_PORT")
     if raw is None or raw == "":
         return None
     return int(raw)
@@ -127,7 +127,7 @@ class HarnessService(rpc.HarnessServicer):
         *,
         token: str,
         budget: memory_budget.MemoryBudget | None = None,
-        daemon_id: str = "sierralab-daemon",
+        daemon_id: str = "cordata-daemon",
         daemon_state: Any | None = None,
     ) -> None:
         self.supervisor = supervisor
@@ -249,7 +249,7 @@ class HarnessService(rpc.HarnessServicer):
         )
         if decision.isolate and not decision.approve and pod:
             try:
-                await self.supervisor.call(session_id, "_sierralab/lab/isolate", {"pod": pod})
+                await self.supervisor.call(session_id, "_cordata/lab/isolate", {"pod": pod})
                 self._audit("isolate", {"pod": pod}, session_id)
             except (LookupError, asyncio.TimeoutError) as error:
                 logger.warning("grpc: could not isolate %s after a rejection: %s", pod, error)
@@ -292,7 +292,7 @@ class HarnessService(rpc.HarnessServicer):
         if kind == "reasoning_effort":
             if request.reasoning_effort not in _EFFORT:
                 return pb.KnobReply(ok=False, error=f"reasoning_effort must be one of {', '.join(_EFFORT)}")
-            method, params = "_sierralab/lab/effort", {"pod": request.pod, "value": request.reasoning_effort}
+            method, params = "_cordata/lab/effort", {"pod": request.pod, "value": request.reasoning_effort}
         elif kind == "laya_dial":
             if not math.isfinite(request.laya_dial):
                 return pb.KnobReply(ok=False, error="laya_dial must be a number")
@@ -302,7 +302,7 @@ class HarnessService(rpc.HarnessServicer):
             # dial only ever tightens, so the range is the child's own [DIAL_MIN, DIAL_DEFAULT] —
             # a value at or above the default means "no dial", never "a higher gate".
             value = round(min(DIAL_DEFAULT, max(DIAL_MIN, request.laya_dial)), 2)
-            method, params = "_sierralab/lab/dial", {"pod": request.pod, "value": value}
+            method, params = "_cordata/lab/dial", {"pod": request.pod, "value": value}
         else:
             return pb.KnobReply(ok=False, error="no knob given")
         try:
@@ -342,7 +342,7 @@ class HarnessService(rpc.HarnessServicer):
         return pb.ModeReply(ok=True, mode=request.mode)
 
     async def ControlPod(self, request: pb.PodControlRequest, context: grpc.aio.ServicerContext) -> pb.PodControlReply:
-        """Stop, release or steer one agent — the child's own `_sierralab/lab/{isolate,release,inject}`
+        """Stop, release or steer one agent — the child's own `_cordata/lab/{isolate,release,inject}`
         called on a person's behalf (the same controls the TUI's Lab view has). Like a knob, a refusal
         is a reply, not a status. A STEER directive is length-limited here as well as in the child, and
         reaches the model as an operator directive; it is audited with its length, not its text — the
@@ -363,7 +363,7 @@ class HarnessService(rpc.HarnessServicer):
                 return pb.PodControlReply(ok=False, error="a directive needs some text")
             params["text"] = text[:MAX_DIRECTIVE]
         try:
-            reply = await self.supervisor.call(session_id, f"_sierralab/lab/{action}", params)
+            reply = await self.supervisor.call(session_id, f"_cordata/lab/{action}", params)
         except (LookupError, asyncio.TimeoutError) as error:
             return pb.PodControlReply(ok=False, error=f"the session did not answer: {error or 'timed out'}")
         ok = "error" not in reply
@@ -488,7 +488,7 @@ class HarnessService(rpc.HarnessServicer):
                 vision = {}
             await self._register_os_context(session_id, payload, notices)
             try:
-                reply = await self.supervisor.call(session_id, "_sierralab/lab/inject", {"pod": "orchestrator", "text": text[:MAX_DIRECTIVE]})
+                reply = await self.supervisor.call(session_id, "_cordata/lab/inject", {"pod": "orchestrator", "text": text[:MAX_DIRECTIVE]})
             except (LookupError, asyncio.TimeoutError) as error:
                 return pb.TurnReply(ok=False, error=f"the session did not answer: {error or 'timed out'}", session_id=session_id, turn_id=turn_id, notices=notices)
             if "error" in reply:
@@ -588,7 +588,7 @@ class HarnessService(rpc.HarnessServicer):
         if not payload:
             return
         try:
-            reply = await self.supervisor.call(session_id, "_sierralab/os-context", dict(payload), qualify=False)
+            reply = await self.supervisor.call(session_id, "_cordata/os-context", dict(payload), qualify=False)
         except (LookupError, asyncio.TimeoutError) as error:
             notices.append(f"the screen context was not attached: {error or 'the session did not answer'}")
             return

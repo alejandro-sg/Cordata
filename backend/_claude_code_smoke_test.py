@@ -1,6 +1,6 @@
 """Phase 6: the Claude Code CLI as a Strands tool, and the security contract around it.
 
-The CLI is a stub (``SIERRALAB_CLAUDE_BIN``) that does what the real one would —
+The CLI is a stub (``CORDATA_CLAUDE_BIN``) that does what the real one would —
 streams ``stream-json`` events, edits a file in the project — and then *reports what it
 could see*: its environment, whether it could read ``.env``, the prompt it was given and
 its argv. Everything else is real: the process is spawned through the Strands

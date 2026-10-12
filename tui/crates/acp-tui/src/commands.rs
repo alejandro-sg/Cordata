@@ -21,9 +21,25 @@ pub enum Command {
     Trust,
     /// Show the instruction files in the system prompt.
     Memory,
-    /// Ask the agent to draft SIERRALAB.md for this project.
+    /// Ask the agent to draft CORDATA.md for this project.
     Init,
     Status,
+    /// Keep working until a condition holds (`clear` stops; no argument shows it).
+    Goal(Option<String>),
+    /// A side question, answered without touching the conversation.
+    Btw(Option<String>),
+    /// Summarise the older turns to free context.
+    Compact(Option<String>),
+    /// How full the context window is.
+    Context,
+    /// Tokens this session, and the quota pools.
+    Cost,
+    /// The working tree's changes.
+    Diff,
+    /// The last reply, to the clipboard.
+    Copy,
+    /// The conversation, to a markdown file.
+    Export(Option<String>),
     /// List / enable / disable / reload plugins (MCP servers, memory, LSP tools).
     Plugins(Option<String>),
     /// The project's language servers.
@@ -111,8 +127,16 @@ pub const HELP: &[(&str, &str)] = &[
     ),
     ("/trust", "trust this folder's project settings"),
     ("/memory", "show the instruction files the agent reads"),
-    ("/init", "have the agent draft SIERRALAB.md"),
+    ("/init", "have the agent draft CORDATA.md"),
     ("/status", "session, mode, model, rules, quota pools"),
+    ("/goal [<condition> [--check <command>] [--turns N] | clear]", "keep working until it holds — a command decides it, or a judge reads the turns"),
+    ("/btw <question>", "a side question, answered without touching the conversation (even mid-turn)"),
+    ("/compact [focus]", "summarise the older turns to free context"),
+    ("/context", "how full the model's context window is"),
+    ("/cost", "tokens this session, and the quota pools"),
+    ("/diff", "what is changed in the working tree"),
+    ("/copy", "copy the last reply to the clipboard"),
+    ("/export [file]", "save this conversation as markdown"),
     ("/clear", "clear the screen (the session continues)"),
     ("/quit", "quit"),
 ];
@@ -144,6 +168,14 @@ pub fn parse(input: &str) -> Option<Command> {
         "memory" => Command::Memory,
         "init" => Command::Init,
         "status" => Command::Status,
+        "goal" => Command::Goal(arg),
+        "btw" => Command::Btw(arg),
+        "compact" => Command::Compact(arg),
+        "context" | "ctx" => Command::Context,
+        "cost" | "usage" | "tokens" => Command::Cost,
+        "diff" | "changes" => Command::Diff,
+        "copy" => Command::Copy,
+        "export" => Command::Export(arg),
         "plugins" | "plugin" | "mcp" => Command::Plugins(arg),
         "lsp" => Command::Lsp,
         "heal" | "self-heal" => Command::Heal,
@@ -269,6 +301,9 @@ pub fn format_ext(tag: &str, value: &serde_json::Value) -> String {
             .unwrap_or_default()
             .to_owned()
     };
+    if let Some(text) = crate::extras::format_reply(tag, value) {
+        return text;
+    }
     match tag {
         "orchestrator" => format_orchestrator_status(value),
         "plugins" => {
@@ -278,7 +313,7 @@ pub fn format_ext(tag: &str, value: &serde_json::Value) -> String {
                 .cloned()
                 .unwrap_or_default();
             if rows.is_empty() {
-                return "no plugins (add MCP servers to .mcp.json or ~/.sierralab/mcp.json)".into();
+                return "no plugins (add MCP servers to .mcp.json or ~/.cordata/mcp.json)".into();
             }
             let mut out = vec!["plugins:".to_owned()];
             for row in rows {
@@ -591,7 +626,7 @@ pub fn format_ext(tag: &str, value: &serde_json::Value) -> String {
                 return "no saved sessions for this folder".into();
             }
             let mut out = vec![
-                "saved sessions here (acp-tui --resume <id>, or --continue for the newest):"
+                "saved sessions here (cordata --resume <id>, or --continue for the newest):"
                     .to_owned(),
             ];
             for row in rows.iter().take(10) {
@@ -611,7 +646,7 @@ pub fn format_ext(tag: &str, value: &serde_json::Value) -> String {
     }
 }
 
-/// The one-line notice for a `_sierralab/checkpoint` event, or `None` for a phase that needs no line.
+/// The one-line notice for a `_cordata/checkpoint` event, or `None` for a phase that needs no line.
 pub fn format_checkpoint_event(event: &serde_json::Value) -> Option<String> {
     use serde_json::Value;
     let text = |key: &str| event.get(key).and_then(Value::as_str).unwrap_or_default();
@@ -657,7 +692,7 @@ fn human_count(n: u64) -> String {
     }
 }
 
-/// The receipt line for a `_sierralab/turn` event: `✓ 41s · 3 tool calls · 12.4k in · 1.1k out`. What a turn
+/// The receipt line for a `_cordata/turn` event: `✓ 41s · 3 tool calls · 12.4k in · 1.1k out`. What a turn
 /// cost, shown every time — a person watching their credits should not have to ask. `None` for a turn that did
 /// nothing worth a line (no time, no tokens). Mirrors `daemon/discord_cards.turn_footer`.
 pub fn format_turn_receipt(event: &serde_json::Value) -> Option<String> {

@@ -1,7 +1,7 @@
 """Checkpoints: what makes ``auto`` mode reversible.
 
 Before any tool call that may change files, the harness takes a snapshot of the project into a
-**shadow git repository** that lives under ``~/.sierralab/checkpoints/`` — never inside the project, so
+**shadow git repository** that lives under ``~/.cordata/checkpoints/`` — never inside the project, so
 it cannot touch the project's own ``.git`` (no commits, branches, index or hooks of yours are involved),
 and it works the same in a folder that is not a git repository at all. Each snapshot is one commit
 whose message carries who asked for it: session, turn, agent, tool, a redacted one-line summary.
@@ -54,14 +54,14 @@ KEEP_COMMITS = 400
 _FIRST_TIMEOUT = 90.0
 _TIMEOUT = 25.0
 _EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
-_EXCLUDE_VERSION = "# sierralab checkpoint excludes v2"
+_EXCLUDE_VERSION = "# cordata checkpoint excludes v2"
 
 #: Directories that are rebuilt or vendored — the same set outcomes.py ignores.
 DEPENDENCY_DIRS = frozenset({".git", "node_modules", "target", ".venv", "venv", "__pycache__", ".next", "dist", "build", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", ".cache", "coverage", ".turbo", ".gradle", ".idea"})
 
 _EXCLUDES = f"""{_EXCLUDE_VERSION}
 .git/
-.sierralab/
+.cordata/
 .DS_Store
 node_modules/
 target/
@@ -182,7 +182,7 @@ def writes_files(tool: str, tool_input: Any, extra_tools: Iterable[str] = ()) ->
 
 
 def _home() -> Path:
-    return Path(os.environ.get("SIERRALAB_HOME") or Path.home() / ".sierralab")
+    return Path(os.environ.get("CORDATA_HOME") or Path.home() / ".cordata")
 
 
 def _real(project: str | os.PathLike) -> str:
@@ -236,10 +236,10 @@ class _Git:
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_TERMINAL_PROMPT": "0",
             "GIT_OPTIONAL_LOCKS": "0",
-            "GIT_AUTHOR_NAME": "sierralab",
-            "GIT_AUTHOR_EMAIL": "checkpoints@sierralab.local",
-            "GIT_COMMITTER_NAME": "sierralab",
-            "GIT_COMMITTER_EMAIL": "checkpoints@sierralab.local",
+            "GIT_AUTHOR_NAME": "cordata",
+            "GIT_AUTHOR_EMAIL": "checkpoints@cordata.local",
+            "GIT_COMMITTER_NAME": "cordata",
+            "GIT_COMMITTER_EMAIL": "checkpoints@cordata.local",
         }
 
     def run(self, *args: str, input: bytes | None = None, timeout: float = _TIMEOUT, check: bool = True) -> subprocess.CompletedProcess:

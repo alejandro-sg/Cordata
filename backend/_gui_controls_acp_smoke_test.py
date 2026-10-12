@@ -3,8 +3,8 @@
 * ``Lab.set_effort`` — the ``reasoning_effort`` knob: the next model request carries the new level
   (checked on the wire, against the real Ollama provider over an in-process fake daemon), the role
   table follows, a pod whose model has no such knob refuses, and the snapshot says which pods have one.
-* ``_sierralab/lab/effort`` through the real ACP server object, audited like the other controls.
-* The permission request the ACP server sends carries ``_meta.sierralab`` — the exact command or diff,
+* ``_cordata/lab/effort`` through the real ACP server object, audited like the other controls.
+* The permission request the ACP server sends carries ``_meta.cordata`` — the exact command or diff,
   masked, plus the pod and Laya's reading — and a client that ignores it is unaffected.
 
     backend/.venv/bin/python _gui_controls_acp_smoke_test.py
@@ -14,7 +14,7 @@ import asyncio
 import json
 import os
 
-os.environ["SIERRALAB_PRISM"] = "off"
+os.environ["CORDATA_PRISM"] = "off"
 
 import provider_settings  # noqa: F401  (imported before agent_common, which chdirs — see main.py)
 
@@ -80,7 +80,7 @@ async def test_acp() -> None:
 
     class MetaConn(HitlConn):
         async def request_permission(self, session_id, tool_call, options, **kwargs):
-            metas.append(kwargs.get("sierralab") or {})
+            metas.append(kwargs.get("cordata") or {})
             return await super().request_permission(session_id, tool_call, options, **kwargs)
 
     gui_conn = MetaConn()
@@ -93,7 +93,7 @@ async def test_acp() -> None:
     turn = asyncio.create_task(server.prompt(sid, [acp.text_block("wipe it")]))
     await until(lambda: gui_conn.waiting, "an armed destructive turn asks")
     meta = metas[0]
-    check(meta["tool"] == "shell" and meta["kind"] == "shell" and meta["pod"] == "orchestrator" and meta["armed"] is True, "the permission request carries the view in _meta.sierralab")
+    check(meta["tool"] == "shell" and meta["kind"] == "shell" and meta["pod"] == "orchestrator" and meta["armed"] is True, "the permission request carries the view in _meta.cordata")
     check("echo hi" in meta["command"] and "sk-ABCDEF" not in meta["command"] and "[REDACTED]" in meta["command"], "…the exact command, with the key masked")
     check(meta["risk_score"] >= 0.9 and meta["risk_band"] == "destructive" and meta["interrupt_id"], "…Laya's reading and the interrupt id")
     check(lab_module.get().snapshot()["mission"] == "wipe it", "the person's request becomes the Lab's mission")
@@ -111,10 +111,10 @@ async def test_acp() -> None:
     bundle = oc.build_models("orchestrator", transport=daemon.transport, availability=CLOUD)
     agent = Agent(name="orchestrator", model=bundle.router, tools=[], callback_handler=None)
     orchestrator._agent = __import__("weakref").ref(agent)
-    reply = await server.ext_method("_sierralab/lab/effort", {"sessionId": sid, "pod": "orchestrator", "value": "high"})
-    check(reply == {"pod": "orchestrator", "effort": "high"} and bundle.control.level == "high", "_sierralab/lab/effort changes the live control")
+    reply = await server.ext_method("_cordata/lab/effort", {"sessionId": sid, "pod": "orchestrator", "value": "high"})
+    check(reply == {"pod": "orchestrator", "effort": "high"} and bundle.control.level == "high", "_cordata/lab/effort changes the live control")
     try:
-        await server.ext_method("_sierralab/lab/effort", {"sessionId": sid, "pod": "orchestrator", "value": "turbo"})
+        await server.ext_method("_cordata/lab/effort", {"sessionId": sid, "pod": "orchestrator", "value": "turbo"})
     except acp.RequestError:
         check(bundle.control.level == "high", "a bad level is an invalid-params error and changes nothing")
     else:

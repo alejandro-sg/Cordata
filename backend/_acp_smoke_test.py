@@ -11,7 +11,7 @@ import os
 import sys
 from pathlib import Path
 
-os.environ.setdefault("SIERRALAB_REFLECT", "off")  # live test turns are not lessons (reflect.py)
+os.environ.setdefault("CORDATA_REFLECT", "off")  # live test turns are not lessons (reflect.py)
 
 import acp
 

@@ -135,7 +135,7 @@ _ENCODE_LOCK = threading.Lock()
 
 def _cpu_embedder() -> Any | None:
     """A sentence-transformer of this module's own, **on the CPU**, loaded once per process. None when the library is not
-    installed, the model is not cached, or `SIERRALAB_SKILL_EMBED=off`.
+    installed, the model is not cached, or `CORDATA_SKILL_EMBED=off`.
 
     Not the one `agent_memory_tool` holds: that lives on the Apple GPU (MPS), and Metal aborts the whole process
     (`failed assertion _status < MTLCommandBufferStatusCommitted`, SIGABRT) when two threads submit work at once — and
@@ -143,7 +143,7 @@ def _cpu_embedder() -> Any | None:
     one-sentence query on a 6-layer MiniLM costs milliseconds on the CPU, so nothing is gained by sharing and a crash
     is risked by it. The cost is one more copy of ~90 MB of weights in the agent process."""
     global _MODEL
-    if os.environ.get("SIERRALAB_SKILL_EMBED", "").strip().lower() in ("off", "0", "false", "no"):
+    if os.environ.get("CORDATA_SKILL_EMBED", "").strip().lower() in ("off", "0", "false", "no"):
         return None
     with _MODEL_LOCK:
         if _MODEL is None:
@@ -415,7 +415,7 @@ class SemanticSkills(Plugin):
     `AgentSkills` then injects already describes this turn's selection (docs: the block "is refreshed before each
     invocation")."""
 
-    name = "sierralab:semantic-skills"
+    name = "cordata:semantic-skills"
 
     def __init__(
         self,
@@ -431,7 +431,7 @@ class SemanticSkills(Plugin):
         self.agent_skills = agent_skills
         self.decider = decider
         #: Listed on every turn, on top of the selection — a candidate skill the promotion gate is measuring
-        #: (`SIERRALAB_EXTRA_SKILLS`) must be in front of the model in its arm, or the measurement is of the search.
+        #: (`CORDATA_EXTRA_SKILLS`) must be in front of the model in its arm, or the measurement is of the search.
         self.pinned = [name for name in dict.fromkeys(pinned) if name in index.skills]
         self._preferences = preferences
         self._notify = notify
@@ -572,5 +572,5 @@ def build_skill_plugins(
     pinned = [skill.name for skill in load_skills(pinned_sources)]
     agent_skills = AgentSkills(skills=list(index.skills.values()))
     semantic = SemanticSkills(index, agent_skills, decider, preferences=preferences, notify=notify, pinned=pinned)
-    injector = ContextInjector(lambda context: semantic.hint(context.agent), name="sierralab:skill-hint", trigger="userTurn")
+    injector = ContextInjector(lambda context: semantic.hint(context.agent), name="cordata:skill-hint", trigger="userTurn")
     return [semantic, agent_skills, injector]

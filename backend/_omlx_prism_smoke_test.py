@@ -249,7 +249,7 @@ def test_sub_agent_wiring() -> None:
 
             # off switches
             os.environ[op.PRISM_ENV] = "off"
-            check(not op.hooks_for(sub_agent_common.build_sub_agent_model("strong", role="architect")), "SIERRALAB_PRISM=off: the architect runs on its old provider")
+            check(not op.hooks_for(sub_agent_common.build_sub_agent_model("strong", role="architect")), "CORDATA_PRISM=off: the architect runs on its old provider")
             os.environ.pop(op.PRISM_ENV)
 
             class Prefs:

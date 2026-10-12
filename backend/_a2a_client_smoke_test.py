@@ -17,7 +17,7 @@ import os
 import tempfile
 
 _TMP = tempfile.TemporaryDirectory()
-os.environ["SIERRALAB_HOME"] = _TMP.name
+os.environ["CORDATA_HOME"] = _TMP.name
 
 import acp_server  # noqa: E402
 import agent_common  # noqa: E402
@@ -49,7 +49,7 @@ async def main() -> None:
     check(not resolved, "a sub-agent explicit request for a2a_client is denied")
     default = [getattr(t, "tool_name", None) for t in sac.resolve_tools(None, caller, "smoke-test")]
     check("a2a_client" not in default, "a2a_client not in the default sub-agent tool set")
-    print(f"a2a client smoke test: all checks passed ({os.environ['SIERRALAB_HOME']})")
+    print(f"a2a client smoke test: all checks passed ({os.environ['CORDATA_HOME']})")
 
 
 import asyncio  # noqa: E402

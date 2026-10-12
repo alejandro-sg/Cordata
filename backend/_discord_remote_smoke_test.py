@@ -2,7 +2,7 @@
 
 What it holds the line on, in the order a person meets it:
 
-1. **Fail closed.** No token, no `ALLOWED_USER_ID`, an id that is not an id, or `SIERRALAB_DISCORD=off`
+1. **Fail closed.** No token, no `ALLOWED_USER_ID`, an id that is not an id, or `CORDATA_DISCORD=off`
    all leave the bot inert — and every one says why.
 2. **Zero trust on the caller.** A click or a message from anyone but the operator changes nothing.
 3. **You can talk to an agent.** A message in the channel opens a thread and the agent *answers* — a
@@ -38,12 +38,12 @@ _TMP = tempfile.TemporaryDirectory()
 _TMPDIR = Path(_TMP.name).resolve()  # macOS: /var is a symlink to /private/var, and the daemon resolves folders
 _PROJECT = _TMPDIR / "proj"
 _PROJECT.mkdir()
-os.environ["SIERRALAB_HOME"] = str(_TMPDIR / "home")
-os.environ["SIERRALAB_STATE_DB"] = str(_TMPDIR / "state.db")
-os.environ["SIERRALAB_DISCORD_CWD"] = str(_PROJECT)
+os.environ["CORDATA_HOME"] = str(_TMPDIR / "home")
+os.environ["CORDATA_STATE_DB"] = str(_TMPDIR / "state.db")
+os.environ["CORDATA_DISCORD_CWD"] = str(_PROJECT)
 os.environ["FAKE_ACP_STATE"] = str(_TMPDIR / "fake_acp_state.json")
 HERE = Path(__file__).resolve().parent
-os.environ["SIERRALAB_ACP_ENTRYPOINT"] = f"{sys.executable} {HERE / 'fixtures' / 'fake_acp_chat_child.py'}"
+os.environ["CORDATA_ACP_ENTRYPOINT"] = f"{sys.executable} {HERE / 'fixtures' / 'fake_acp_chat_child.py'}"
 sys.path.insert(0, str(HERE))
 
 import fake_discord  # noqa: E402
@@ -241,8 +241,8 @@ def test_config_fails_closed() -> None:
     no_channel = bot.RemoteConfig.from_env({"DISCORD_BOT_TOKEN": "x" * 20, "ALLOWED_USER_ID": "1"})
     check(not no_channel.enabled and "TELEMETRY_CHANNEL_ID" in no_channel.reason, "no channel: nowhere to post is a reason not to start")
 
-    killed = bot.RemoteConfig.from_env({**ENV, "SIERRALAB_DISCORD": "off"})
-    check(not killed.enabled, "SIERRALAB_DISCORD=off stops the bot without deleting the token")
+    killed = bot.RemoteConfig.from_env({**ENV, "CORDATA_DISCORD": "off"})
+    check(not killed.enabled, "CORDATA_DISCORD=off stops the bot without deleting the token")
 
     ok = bot.RemoteConfig.from_env(ENV)
     check(ok.enabled and ok.allowed_user_id == OPERATOR and ok.channel_id == CHANNEL_ID, "a complete environment enables it, with both ids as ints")
@@ -356,7 +356,7 @@ async def test_quiet_pendings_are_not_posted() -> None:
 async def test_threshold_follows_the_project() -> None:
     """`laya.riskDestroy` is per project (settings_store), so the line the bot applies is the line
     the gate applied for that session's folder — not a constant in this module."""
-    home = Path(os.environ["SIERRALAB_HOME"])
+    home = Path(os.environ["CORDATA_HOME"])
     home.mkdir(parents=True, exist_ok=True)
     (home / "settings.json").write_text(json.dumps({"laya.riskDestroy": 0.5}), encoding="utf-8")
     try:
@@ -515,7 +515,7 @@ async def test_steering_a_terminal_session_is_quiet_and_honest() -> None:
     first = await rig.send("revert that last loop", channel=thread)
     check(len(rig.supervisor.calls) == 1, "an authorized note is relayed")
     call = rig.supervisor.calls[0]
-    check(call["method"] == "_sierralab/lab/inject" and call["params"]["pod"] == "orchestrator", "through the Lab's own guidance path, not a second mechanism")
+    check(call["method"] == "_cordata/lab/inject" and call["params"]["pod"] == "orchestrator", "through the Lab's own guidance path, not a second mechanism")
     check(call["params"]["text"] == "revert that last loop", "verbatim")
     explained = thread.messages[before].content
     check("next step" in explained and "terminal" in explained and "revert that last loop" not in explained, "the first note is told what steering means — and the note is not echoed back")
@@ -660,7 +660,7 @@ async def test_one_conversation_every_door() -> None:
     message = await rig.send("first question")
     thread = message.created_threads[0]
     conv = rig.remote.chats.get(str(thread.id))
-    check(f"conversation `{conv.handle}`" in thread.messages[0].content and f"acp-tui --conversation {conv.handle}" in thread.messages[0].content, "a Discord thread says its conversation's handle, and how to continue it in a terminal")
+    check(f"conversation `{conv.handle}`" in thread.messages[0].content and f"cordata --conversation {conv.handle}" in thread.messages[0].content, "a Discord thread says its conversation's handle, and how to continue it in a terminal")
 
     before = len(thread.messages)
     await rig.remote.chats.send(conv.key, "asked from the terminal", Quiet(), origin="terminal")

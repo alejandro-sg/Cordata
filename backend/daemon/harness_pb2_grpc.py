@@ -35,67 +35,67 @@ class HarnessStub:
             channel: A grpc.Channel.
         """
         self.StreamTelemetry = channel.unary_stream(
-                '/sierralab.harness.v1.Harness/StreamTelemetry',
+                '/cordata.harness.v1.Harness/StreamTelemetry',
                 request_serializer=harness__pb2.TelemetryRequest.SerializeToString,
                 response_deserializer=harness__pb2.TelemetryFrame.FromString,
                 _registered_method=True)
         self.InterventionStream = channel.stream_stream(
-                '/sierralab.harness.v1.Harness/InterventionStream',
+                '/cordata.harness.v1.Harness/InterventionStream',
                 request_serializer=harness__pb2.InterventionReply.SerializeToString,
                 response_deserializer=harness__pb2.InterventionEvent.FromString,
                 _registered_method=True)
         self.ProactiveIngest = channel.stream_unary(
-                '/sierralab.harness.v1.Harness/ProactiveIngest',
+                '/cordata.harness.v1.Harness/ProactiveIngest',
                 request_serializer=harness__pb2.AstSnippet.SerializeToString,
                 response_deserializer=harness__pb2.IngestSummary.FromString,
                 _registered_method=True)
         self.SetKnob = channel.unary_unary(
-                '/sierralab.harness.v1.Harness/SetKnob',
+                '/cordata.harness.v1.Harness/SetKnob',
                 request_serializer=harness__pb2.KnobRequest.SerializeToString,
                 response_deserializer=harness__pb2.KnobReply.FromString,
                 _registered_method=True)
         self.SetMode = channel.unary_unary(
-                '/sierralab.harness.v1.Harness/SetMode',
+                '/cordata.harness.v1.Harness/SetMode',
                 request_serializer=harness__pb2.ModeRequest.SerializeToString,
                 response_deserializer=harness__pb2.ModeReply.FromString,
                 _registered_method=True)
         self.ControlPod = channel.unary_unary(
-                '/sierralab.harness.v1.Harness/ControlPod',
+                '/cordata.harness.v1.Harness/ControlPod',
                 request_serializer=harness__pb2.PodControlRequest.SerializeToString,
                 response_deserializer=harness__pb2.PodControlReply.FromString,
                 _registered_method=True)
         self.UnloadMemory = channel.unary_unary(
-                '/sierralab.harness.v1.Harness/UnloadMemory',
+                '/cordata.harness.v1.Harness/UnloadMemory',
                 request_serializer=harness__pb2.UnloadRequest.SerializeToString,
                 response_deserializer=harness__pb2.UnloadReply.FromString,
                 _registered_method=True)
         self.GetDiff = channel.unary_unary(
-                '/sierralab.harness.v1.Harness/GetDiff',
+                '/cordata.harness.v1.Harness/GetDiff',
                 request_serializer=harness__pb2.DiffRequest.SerializeToString,
                 response_deserializer=harness__pb2.DiffArtifact.FromString,
                 _registered_method=True)
         self.SubmitTurn = channel.unary_unary(
-                '/sierralab.harness.v1.Harness/SubmitTurn',
+                '/cordata.harness.v1.Harness/SubmitTurn',
                 request_serializer=harness__pb2.TurnRequest.SerializeToString,
                 response_deserializer=harness__pb2.TurnReply.FromString,
                 _registered_method=True)
         self.ListConversations = channel.unary_unary(
-                '/sierralab.harness.v1.Harness/ListConversations',
+                '/cordata.harness.v1.Harness/ListConversations',
                 request_serializer=harness__pb2.ConversationsRequest.SerializeToString,
                 response_deserializer=harness__pb2.ConversationList.FromString,
                 _registered_method=True)
         self.OpenConversation = channel.unary_unary(
-                '/sierralab.harness.v1.Harness/OpenConversation',
+                '/cordata.harness.v1.Harness/OpenConversation',
                 request_serializer=harness__pb2.ConversationOpen.SerializeToString,
                 response_deserializer=harness__pb2.Conversation.FromString,
                 _registered_method=True)
         self.WatchConversation = channel.unary_stream(
-                '/sierralab.harness.v1.Harness/WatchConversation',
+                '/cordata.harness.v1.Harness/WatchConversation',
                 request_serializer=harness__pb2.ConversationRef.SerializeToString,
                 response_deserializer=harness__pb2.ConversationEvent.FromString,
                 _registered_method=True)
         self.Ping = channel.unary_unary(
-                '/sierralab.harness.v1.Harness/Ping',
+                '/cordata.harness.v1.Harness/Ping',
                 request_serializer=harness__pb2.PingRequest.SerializeToString,
                 response_deserializer=harness__pb2.PingReply.FromString,
                 _registered_method=True)
@@ -252,9 +252,9 @@ def add_HarnessServicer_to_server(servicer, server):
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-            'sierralab.harness.v1.Harness', rpc_method_handlers)
+            'cordata.harness.v1.Harness', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers('sierralab.harness.v1.Harness', rpc_method_handlers)
+    server.add_registered_method_handlers('cordata.harness.v1.Harness', rpc_method_handlers)
 
 
  # This class is part of an EXPERIMENTAL API.
@@ -275,7 +275,7 @@ class Harness:
         return grpc.experimental.unary_stream(
             request,
             target,
-            '/sierralab.harness.v1.Harness/StreamTelemetry',
+            '/cordata.harness.v1.Harness/StreamTelemetry',
             harness__pb2.TelemetryRequest.SerializeToString,
             harness__pb2.TelemetryFrame.FromString,
             options,
@@ -302,7 +302,7 @@ class Harness:
         return grpc.experimental.stream_stream(
             request_iterator,
             target,
-            '/sierralab.harness.v1.Harness/InterventionStream',
+            '/cordata.harness.v1.Harness/InterventionStream',
             harness__pb2.InterventionReply.SerializeToString,
             harness__pb2.InterventionEvent.FromString,
             options,
@@ -329,7 +329,7 @@ class Harness:
         return grpc.experimental.stream_unary(
             request_iterator,
             target,
-            '/sierralab.harness.v1.Harness/ProactiveIngest',
+            '/cordata.harness.v1.Harness/ProactiveIngest',
             harness__pb2.AstSnippet.SerializeToString,
             harness__pb2.IngestSummary.FromString,
             options,
@@ -356,7 +356,7 @@ class Harness:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/sierralab.harness.v1.Harness/SetKnob',
+            '/cordata.harness.v1.Harness/SetKnob',
             harness__pb2.KnobRequest.SerializeToString,
             harness__pb2.KnobReply.FromString,
             options,
@@ -383,7 +383,7 @@ class Harness:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/sierralab.harness.v1.Harness/SetMode',
+            '/cordata.harness.v1.Harness/SetMode',
             harness__pb2.ModeRequest.SerializeToString,
             harness__pb2.ModeReply.FromString,
             options,
@@ -410,7 +410,7 @@ class Harness:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/sierralab.harness.v1.Harness/ControlPod',
+            '/cordata.harness.v1.Harness/ControlPod',
             harness__pb2.PodControlRequest.SerializeToString,
             harness__pb2.PodControlReply.FromString,
             options,
@@ -437,7 +437,7 @@ class Harness:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/sierralab.harness.v1.Harness/UnloadMemory',
+            '/cordata.harness.v1.Harness/UnloadMemory',
             harness__pb2.UnloadRequest.SerializeToString,
             harness__pb2.UnloadReply.FromString,
             options,
@@ -464,7 +464,7 @@ class Harness:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/sierralab.harness.v1.Harness/GetDiff',
+            '/cordata.harness.v1.Harness/GetDiff',
             harness__pb2.DiffRequest.SerializeToString,
             harness__pb2.DiffArtifact.FromString,
             options,
@@ -491,7 +491,7 @@ class Harness:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/sierralab.harness.v1.Harness/SubmitTurn',
+            '/cordata.harness.v1.Harness/SubmitTurn',
             harness__pb2.TurnRequest.SerializeToString,
             harness__pb2.TurnReply.FromString,
             options,
@@ -518,7 +518,7 @@ class Harness:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/sierralab.harness.v1.Harness/ListConversations',
+            '/cordata.harness.v1.Harness/ListConversations',
             harness__pb2.ConversationsRequest.SerializeToString,
             harness__pb2.ConversationList.FromString,
             options,
@@ -545,7 +545,7 @@ class Harness:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/sierralab.harness.v1.Harness/OpenConversation',
+            '/cordata.harness.v1.Harness/OpenConversation',
             harness__pb2.ConversationOpen.SerializeToString,
             harness__pb2.Conversation.FromString,
             options,
@@ -572,7 +572,7 @@ class Harness:
         return grpc.experimental.unary_stream(
             request,
             target,
-            '/sierralab.harness.v1.Harness/WatchConversation',
+            '/cordata.harness.v1.Harness/WatchConversation',
             harness__pb2.ConversationRef.SerializeToString,
             harness__pb2.ConversationEvent.FromString,
             options,
@@ -599,7 +599,7 @@ class Harness:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/sierralab.harness.v1.Harness/Ping',
+            '/cordata.harness.v1.Harness/Ping',
             harness__pb2.PingRequest.SerializeToString,
             harness__pb2.PingReply.FromString,
             options,

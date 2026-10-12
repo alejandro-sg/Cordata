@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useAgent, useCopilotKit } from "@copilotkit/react-core/v2";
 import { randomId } from "./randomId";
 
-const STORAGE_KEY = "sierralab-agents:agent-settings";
+const STORAGE_KEY = "cordata-agents:agent-settings";
 
 type PersistedSettings = {
   model?: string;
@@ -90,7 +90,7 @@ function savePersisted(patch: Partial<PersistedSettings>) {
  *   just shows "(configured ✓)".
  */
 export default function SettingsModal({ onClose }: { onClose: () => void }) {
-  const { agent, isReady } = useAgent({ agentId: "sierralab_agent" });
+  const { agent, isReady } = useAgent({ agentId: "cordata_agent" });
   const { copilotkit } = useCopilotKit();
   const [tab, setTab] = useState<Tab>("model");
 

@@ -36,7 +36,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-BINARY_ENV = "SIERRALAB_OLLAMA_BIN"
+BINARY_ENV = "CORDATA_OLLAMA_BIN"
 GB = 1024**3
 
 #: A registry tag: ``name``, ``name:tag``, ``org/name:tag``, ``host/org/name:tag``,

@@ -1,6 +1,6 @@
 services:
-  sierralab-agent-backend:
-    container_name: sierralab-agent-backend
+  cordata-agent-backend:
+    container_name: cordata-agent-backend
     build: .
     restart: unless-stopped
     ports:
@@ -14,7 +14,7 @@ services:
       # reached over its own mDNS hostname, same as any other LAN service
       # here, rather than a Docker-Desktop-specific internal DNS name so
       # this keeps working under podman/Linux too.
-      QDRANT_HOST: "sierralab-mini.local"
+      QDRANT_HOST: "mini.local"
       QDRANT_PORT: "6333"
       # Frontend and backend are separate containers now, even on the same
       # host, so the frontend's GET /sandbox/_local-token auto-discovery

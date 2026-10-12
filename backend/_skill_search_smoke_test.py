@@ -28,7 +28,7 @@ import os
 import tempfile
 from pathlib import Path
 
-os.environ.setdefault("SIERRALAB_REFLECT", "off")
+os.environ.setdefault("CORDATA_REFLECT", "off")
 
 from strands import Agent
 
@@ -157,7 +157,7 @@ def test_the_real_embedder() -> None:
 
     Why CPU, in one assertion: the shared embedder lives on the Apple GPU, and Metal aborts the process when two threads
     submit at once — Laya warms on another thread at the very moment a first turn wants a query embedded."""
-    saved = os.environ.pop("SIERRALAB_SKILL_EMBED", None)
+    saved = os.environ.pop("CORDATA_SKILL_EMBED", None)
     try:
         model = ss._cpu_embedder()
         if model is None:
@@ -198,19 +198,19 @@ def test_the_real_embedder() -> None:
         check((TMP / "real_cache.json").exists(), "and the vectors were cached for the next session")
     finally:
         if saved is not None:
-            os.environ["SIERRALAB_SKILL_EMBED"] = saved
+            os.environ["CORDATA_SKILL_EMBED"] = saved
 
 
 def test_the_switch_and_a_cold_index() -> None:
-    os.environ["SIERRALAB_SKILL_EMBED"] = "off"
+    os.environ["CORDATA_SKILL_EMBED"] = "off"
     try:
-        check(ss._cpu_embedder() is None, "SIERRALAB_SKILL_EMBED=off means no embedder is loaded")
+        check(ss._cpu_embedder() is None, "CORDATA_SKILL_EMBED=off means no embedder is loaded")
         index = ss.SkillIndex(ss.load_skills([SKILLS_DIR]), cache_path=None)
         hits = index.search("set up pre-commit hooks", 3)
         check(hits and hits[0].name == "setup-pre-commit" and not index.semantic, "…and requests are ranked by keywords, immediately, without waiting on anything")
     finally:
-        os.environ.pop("SIERRALAB_SKILL_EMBED", None)
-        os.environ["SIERRALAB_SKILL_EMBED"] = "off"  # the scripted default (harness_testing)
+        os.environ.pop("CORDATA_SKILL_EMBED", None)
+        os.environ["CORDATA_SKILL_EMBED"] = "off"  # the scripted default (harness_testing)
 
 
 # --------------------------------------------------------------------------- the decision
@@ -336,7 +336,7 @@ def test_only_the_relevant_skills_are_listed() -> None:
 
 
 def test_pinned_skills_are_always_in_front_of_the_model() -> None:
-    """The promotion gate puts a candidate lesson in force with SIERRALAB_EXTRA_SKILLS and measures whether the agent
+    """The promotion gate puts a candidate lesson in force with CORDATA_EXTRA_SKILLS and measures whether the agent
     does better. If the search could hide it, the gate would be measuring the search."""
     candidate = write_library(TMP / "candidate", {"zebra-lesson": "Obscure unrelated wording about zebras and nothing else."})
     skills = ss.load_skills([SKILLS_DIR, candidate])

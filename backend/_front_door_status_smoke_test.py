@@ -1,8 +1,8 @@
 """Phase 7 of the orchestrator (docs/orchestrator-plan.md): quota and handoffs at the front doors, at zero tokens.
 
 One payload (``orchestrator/status.py``, read from ``state.db``) behind three renderings: the TUI's ``/status`` (ACP ext
-method ``_sierralab/orchestrator/status``; the Rust side's rendering is unit-tested in ``acp-tui``), Discord's
-``!status`` card, and ``python -m orchestrator status``. Live run events reach the TUI as ``_sierralab/orchestrator``
+method ``_cordata/orchestrator/status``; the Rust side's rendering is unit-tested in ``acp-tui``), Discord's
+``!status`` card, and ``python -m orchestrator status``. Live run events reach the TUI as ``_cordata/orchestrator``
 notifications. Nothing here may build or call a model.
 
     backend/.venv/bin/python _front_door_status_smoke_test.py
@@ -18,8 +18,8 @@ import time
 from pathlib import Path
 
 _HOME = tempfile.mkdtemp(prefix="status-home-")
-os.environ["SIERRALAB_HOME"] = _HOME
-os.environ["SIERRALAB_STATE_DB"] = str(Path(_HOME) / "state.db")
+os.environ["CORDATA_HOME"] = _HOME
+os.environ["CORDATA_STATE_DB"] = str(Path(_HOME) / "state.db")
 
 import provider_settings  # noqa: F401,E402
 
@@ -79,13 +79,13 @@ def test_acp() -> None:
     print("\n=== the TUI's /status (ACP ext method) and live events ===")
     import acp_server
 
-    agent = acp_server.SierraLabAcpAgent()
-    data = asyncio.run(agent.ext_method("_sierralab/orchestrator/status", {}))
+    agent = acp_server.CordataAcpAgent()
+    data = asyncio.run(agent.ext_method("_cordata/orchestrator/status", {}))
     check(data["runs"][0]["run_id"] == "run-a" and data["pools"], "the ext method returns the same payload")
     sent: list[tuple[str, dict]] = []
     agent._send_ext = lambda method, payload: sent.append((method, payload))  # type: ignore[method-assign]
     agent._forward_event("orchestrator", {"kind": "handoff", "run_id": "run-a", "reason": "provider_rate_limit"})
-    check(sent and sent[0][0] == "sierralab/orchestrator" and sent[0][1]["kind"] == "handoff", "an orchestrator event is forwarded as _sierralab/orchestrator")
+    check(sent and sent[0][0] == "cordata/orchestrator" and sent[0][1]["kind"] == "handoff", "an orchestrator event is forwarded as _cordata/orchestrator")
 
     import orchestrate_tool
 

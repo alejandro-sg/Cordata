@@ -1,6 +1,6 @@
 """Minimal MCP server wrapping Pi-hole v6's FTL REST API — status,
 enable/disable blocking, top blocked domains. First test case for turning
-other mini-hosted services (see ~/docker/ on sierralab-mini) into agent
+other mini-hosted services (see ~/docker/ on mini) into agent
 tools via mcp_manager.py, so deliberately small: four tools, stdlib-only
 HTTP, one auth-call-logout cycle per tool call rather than a cached
 session — nothing here needs the complexity a longer-lived session would
@@ -16,7 +16,7 @@ backend/mcp_servers.json, e.g.:
           "command": "/absolute/path/to/backend/.venv/bin/python3",
           "args": ["/absolute/path/to/mcp-servers/pihole/server.py"],
           "env": {
-            "PIHOLE_BASE_URL": "http://sierralab-mini.local:8080",
+            "PIHOLE_BASE_URL": "http://mini.local:8080",
             "PIHOLE_API_PASSWORD": "${PIHOLE_API_PASSWORD}"
           }
         }
@@ -36,12 +36,12 @@ import urllib.request
 
 from mcp.server.mcpserver import MCPServer
 
-BASE_URL = os.environ.get("PIHOLE_BASE_URL", "http://sierralab-mini.local:8080").rstrip("/")
+BASE_URL = os.environ.get("PIHOLE_BASE_URL", "http://mini.local:8080").rstrip("/")
 API_PASSWORD = os.environ.get("PIHOLE_API_PASSWORD", "")
 
 server = MCPServer(
     name="pihole",
-    instructions="Admin tools for the Pi-hole DNS/ad-blocker on sierralab-mini: check status, "
+    instructions="Admin tools for the Pi-hole DNS/ad-blocker on mini: check status, "
     "pause or resume blocking, list today's top blocked domains.",
 )
 

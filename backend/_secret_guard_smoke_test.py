@@ -116,7 +116,7 @@ def test_keychain_fallback() -> None:
     if sys.platform != "darwin" or subprocess.run(["which", "security"], capture_output=True).returncode != 0:
         print("skip keychain test (not macOS)")
         return
-    service = f"sierralab-smoke-{os.getpid()}"
+    service = f"cordata-smoke-{os.getpid()}"
     value = "keychain-dummy-0123456789-abcdef"
     subprocess.run(["security", "add-generic-password", "-a", "smoke", "-s", service, "-w", value], check=True, capture_output=True)
     try:
@@ -197,14 +197,14 @@ def test_cloud_key_probe() -> None:
         check(seen and seen[-1][0] == "/v1/chat/completions", "the probe hits {base}/chat/completions (no tokens: empty body)")
         check(True, "a key the endpoint accepts (400) passes")
 
-        agent_common.ACTIVE_CLOUD_API_KEY = sg.Secret("abc1234", "macOS Keychain item sierralab-ollama-api-key")
+        agent_common.ACTIVE_CLOUD_API_KEY = sg.Secret("abc1234", "macOS Keychain item cordata-ollama-api-key")
         try:
             agent_common.ensure_provider_ready()
             check(False, "a rejected key fails fast")
         except RuntimeError as error:
             text = str(error)
             check("rejected the API key (HTTP 401)" in text, "a rejected key (401) fails at session start with that reason")
-            check("macOS Keychain item sierralab-ollama-api-key" in text and "7 characters" in text, "…naming where the key came from and its length (the usual truncated-paste clue)")
+            check("macOS Keychain item cordata-ollama-api-key" in text and "7 characters" in text, "…naming where the key came from and its length (the usual truncated-paste clue)")
             check("make key" in text and "check-key" in text, "…and how to fix it")
             check("abc1234" not in text, "…without ever including the key")
     finally:

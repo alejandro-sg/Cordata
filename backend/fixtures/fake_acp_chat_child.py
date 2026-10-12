@@ -5,9 +5,9 @@ What it does, because the chat layer's behaviour depends on each:
 
 * `initialize`, `session/new` (mints `acp-N`), `session/load` (replays two history updates for an id it
   has seen — remembered in `$FAKE_ACP_STATE` so a *respawned* child can restore it — and errors for one
-  it has not), `session/set_mode`, `session/cancel` (a notification) and `_sierralab/lab/inject`.
+  it has not), `session/set_mode`, `session/cancel` (a notification) and `_cordata/lab/inject`.
 * `session/prompt` is a conversation turn: a `tool_call`, two `agent_message_chunk`s that echo the text,
-  a `tool_call_update`, a `_sierralab/turn` receipt, then the response. Prompt text steers it:
+  a `tool_call_update`, a `_cordata/turn` receipt, then the response. Prompt text steers it:
     - `ask: <cmd>`      sends `session/request_permission` (allow / always / reject) and waits for it,
     - `ask-armed: <cmd>` the same, flagged armed with no always-allow offered,
     - `slow`            runs until `session/cancel` arrives (stop reason `cancelled`),
@@ -103,7 +103,7 @@ def ask(session_id: str, command: str, armed: bool) -> bool:
             "sessionId": session_id,
             "toolCall": {"toolCallId": f"call-{request_id}", "title": "Run shell", "kind": "execute", "rawInput": {"command": command}},
             "options": options,
-            "_meta": {"sierralab": {
+            "_meta": {"cordata": {
                 "interrupt_id": str(request_id), "pod": "orchestrator", "tool": "shell", "kind": "shell", "command": command,
                 "diff": "", "input_json": json.dumps({"command": command}),
                 "risk_score": 0.93 if armed else 0.45, "risk_band": "destructive" if armed else "elevated", "armed": armed,
@@ -139,7 +139,7 @@ def prompt(request: dict) -> None:
     elif text == "slow":
         while not cancelled.is_set():
             time.sleep(0.02)
-        send({"jsonrpc": "2.0", "method": "_sierralab/turn", "params": {"sessionId": session_id, "stop": "cancelled", "seconds": 0.5, "tokensIn": 10, "tokensOut": 0, "calls": 1}})
+        send({"jsonrpc": "2.0", "method": "_cordata/turn", "params": {"sessionId": session_id, "stop": "cancelled", "seconds": 0.5, "tokensIn": 10, "tokensOut": 0, "calls": 1}})
         send({"jsonrpc": "2.0", "id": request["id"], "result": {"stopReason": "cancelled"}})
         return
     elif text == "die":
@@ -158,7 +158,7 @@ def prompt(request: dict) -> None:
     update(session_id, {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": reply[:half]}})
     time.sleep(0.05)
     update(session_id, {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": reply[half:]}})
-    send({"jsonrpc": "2.0", "method": "_sierralab/turn", "params": {"sessionId": session_id, "stop": "end_turn", "seconds": round(time.time() - started, 1), "tokensIn": 1200, "tokensOut": 300, "calls": 1}})
+    send({"jsonrpc": "2.0", "method": "_cordata/turn", "params": {"sessionId": session_id, "stop": "end_turn", "seconds": round(time.time() - started, 1), "tokensIn": 1200, "tokensOut": 300, "calls": 1}})
     send({"jsonrpc": "2.0", "id": request["id"], "result": {"stopReason": "end_turn"}})
 
 
@@ -190,10 +190,10 @@ def main() -> None:
         elif method == "session/set_mode":
             mode = params.get("modeId", mode)
             send({"jsonrpc": "2.0", "id": request_id, "result": {}})
-        elif method == "_sierralab/conversation/list":
+        elif method == "_cordata/conversation/list":
             send({"jsonrpc": "2.0", "id": request_id, "result": {"enabled": True, "turns": len(turns_taken), "checkpoints": [
                 {"index": n, "id": f"id{n}", "turn": t, "prompt": p, "kind": "turn", "at": 0, "messages": 2 * (t - 1)} for n, (t, p) in enumerate(reversed(list(enumerate(turns_taken, 1))), 1)]}})
-        elif method == "_sierralab/conversation/rewind":
+        elif method == "_cordata/conversation/rewind":
             count = int(params.get("turns") or 1)
             if not turns_taken:
                 send({"jsonrpc": "2.0", "id": request_id, "result": {"ok": False, "reason": "nothing to go back to — no turn has been taken in this session"}})
@@ -201,12 +201,12 @@ def main() -> None:
                 forgot = turns_taken[-count:]
                 del turns_taken[-count:]
                 send({"jsonrpc": "2.0", "id": request_id, "result": {"ok": True, "now": len(turns_taken), "forgot": forgot, "turn": len(turns_taken) + 1, "to": "id1", "undo_with": "id9"}})
-        elif method == "_sierralab/lab/inject":
+        elif method == "_cordata/lab/inject":
             injected.append(params.get("text", ""))
             send({"jsonrpc": "2.0", "id": request_id, "result": {"pod": params.get("pod"), "queued": len(injected)}})
         elif method == "session/prompt":
             # On its own thread, like the real agent: while a turn is parked on an approval or running
-            # long, the connection still answers `session/set_mode` and `_sierralab/lab/inject`.
+            # long, the connection still answers `session/set_mode` and `_cordata/lab/inject`.
             threading.Thread(target=prompt, args=(message,), daemon=True).start()
         elif request_id is not None:
             send({"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": f"unknown method {method}"}})

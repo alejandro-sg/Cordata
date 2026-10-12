@@ -27,7 +27,7 @@ and this module turns those outcomes into three things:
 
 What this is not: it does not change Laya's transformer weights (fine-tuning
 is the offline loop in ``docs/laya-triage.md``). It is the cheap, local, online
-layer on top, keyed per user (``~/.sierralab/laya/calibration.json``).
+layer on top, keyed per user (``~/.cordata/laya/calibration.json``).
 """
 
 from __future__ import annotations

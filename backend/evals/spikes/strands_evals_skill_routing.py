@@ -22,8 +22,8 @@ or skill-activation regression needs catching that the recall test cannot see.
 """
 import os, sys, time, json
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
-os.environ.setdefault("SIERRALAB_HOME", __import__("tempfile").mkdtemp())
-os.environ.pop("SIERRALAB_SKILL_EMBED", None)
+os.environ.setdefault("CORDATA_HOME", __import__("tempfile").mkdtemp())
+os.environ.pop("CORDATA_SKILL_EMBED", None)
 
 import skill_search as ss
 from agent_common import SKILLS_DIR
@@ -89,7 +89,7 @@ for r in reports:
     for c in r.cases[:2]: print("  case:", {k: (str(v)[:70]) for k, v in c.items()})
     print("  detailed:", str(r.detailed_results[:1])[:200])
 try:
-    exp.to_file(os.path.join(os.environ["SIERRALAB_HOME"], "exp_skills.json"))
+    exp.to_file(os.path.join(os.environ["CORDATA_HOME"], "exp_skills.json"))
     print("A: experiment serialises to JSON ok")
 except Exception as e:
     print("A: to_file failed:", type(e).__name__, e)

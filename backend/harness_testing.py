@@ -24,10 +24,13 @@ from typing import Any
 from strands.models.model import Model
 
 # Scripted turns are not lessons: reflection (reflect.py) would draft one, on a background thread, from every bad one.
-os.environ.setdefault("SIERRALAB_REFLECT", "off")
+os.environ.setdefault("CORDATA_REFLECT", "off")
 # Nor does a scripted turn need a sentence-transformer loading in the background: skills rank by keywords. The real
 # embedder is exercised by `_skill_search_smoke_test.py` (an injected one, and the real one when it is cached).
-os.environ.setdefault("SIERRALAB_SKILL_EMBED", "off")
+os.environ.setdefault("CORDATA_SKILL_EMBED", "off")
+# Nor does a scripted turn need the network: Laya's loader asks the Hugging Face hub whether its cached weights are
+# current, and a test that points HTTPS_PROXY at a fake vault would wait on that request forever.
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 
 @dataclass

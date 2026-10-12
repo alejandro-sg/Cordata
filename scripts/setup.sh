@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# One-time setup: backend venv + pinned deps, frontend deps, .env files
-# from their .example templates (never overwrites an existing .env).
-# Re-running is safe — every step is idempotent.
+# One-time setup: the backend's Python environment with pinned dependencies, backend/.env from its template (never
+# overwritten), and a release build of the terminal client. Re-running is safe — every step is idempotent.
 #
-# Usage: scripts/setup.sh
+#   scripts/setup.sh           # what the terminal client and `cordata run` need
+#   scripts/setup.sh --web     # also install the web UI's dependencies (kept working, not developed)
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+WEB=0
+[[ "${1:-}" == "--web" ]] && WEB=1
 
 log "== backend =="
 cd "$ROOT/backend"
@@ -19,25 +22,32 @@ ok "backend deps installed"
 
 if ! [[ -f .env ]]; then
   cp .env.example .env
-  ok "backend/.env created from .env.example — edit it if your oMLX/Qdrant setup isn't the default"
+  ok "backend/.env created from .env.example — choose your model provider in it (README: \"Pick a model\")"
 else
   dim "backend/.env already exists, left untouched"
 fi
 
 log ""
-log "== frontend =="
-cd "$ROOT/frontend"
-log "Installing dependencies (npm ci)..."
-npm ci --silent
-ok "frontend deps installed"
-
-if ! [[ -f .env.local ]]; then
-  cp .env.local.example .env.local
-  ok "frontend/.env.local created from .env.local.example"
+log "== terminal client =="
+if command -v cargo >/dev/null 2>&1; then
+  (cd "$ROOT/tui" && cargo build --release -p acp-tui 2>&1 | tail -1)
+  ok "acp-tui built"
 else
-  dim "frontend/.env.local already exists, left untouched"
+  warn "cargo not found — install Rust (https://rustup.rs), then re-run this script"
+fi
+
+if [[ "$WEB" == 1 ]]; then
+  log ""
+  log "== web UI =="
+  cd "$ROOT/frontend"
+  npm ci --silent
+  ok "frontend deps installed"
+  if ! [[ -f .env.local ]]; then
+    cp .env.local.example .env.local
+    ok "frontend/.env.local created from .env.local.example"
+  fi
 fi
 
 log ""
 ok "Setup complete."
-dim "Next: make sure your oMLX model server is running, then scripts/dev-up.sh (or: make up)."
+dim "Next: make cli   (puts \`cordata\` on your PATH), then cordata doctor."

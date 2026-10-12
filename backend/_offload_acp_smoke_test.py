@@ -44,8 +44,8 @@ SECRET = "S3CR3T-credential-value-9f8e7d6c"
 
 def trusted_project(name: str, settings: dict):
     cwd = project(name)
-    (cwd / ".sierralab").mkdir()
-    (cwd / ".sierralab" / "settings.json").write_text(json.dumps(settings))
+    (cwd / ".cordata").mkdir()
+    (cwd / ".cordata" / "settings.json").write_text(json.dumps(settings))
     settings_store.trust_project(str(cwd))
     return cwd
 

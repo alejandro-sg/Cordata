@@ -3,7 +3,7 @@
 Models are scripted (no provider needed), Laya's forward pass is replaced by a
 fixed answer per test (routing has to be deterministic to assert on), and the
 plugins come from a throwaway project. Everything else is the real code path:
-SierraLabAcpAgent._build_session, the router, specialists as agents-as-tools,
+CordataAcpAgent._build_session, the router, specialists as agents-as-tools,
 the plugin host, checkpoints, ext methods and the event forwarding.
 
 1. dispatch: a confident ``debugger`` route runs the specialist directly — the
@@ -16,7 +16,7 @@ the plugin host, checkpoints, ext methods and the event forwarding.
 4. checkpoints: a turn killed between cycle boundaries leaves a checkpoint; a new
    server process resumes it with /resume-turn and the pending tool runs.
 5. ext methods + live events: plugins/list|disable|enable, lsp/status,
-   laya/stats, heal/status; task events reach the client as _sierralab/task.
+   laya/stats, heal/status; task events reach the client as _cordata/task.
 6. command outcomes: a failing shell command's p(ok) is scored and learned.
 
     backend/.venv/bin/python _acp_harness_smoke_test.py
@@ -32,11 +32,11 @@ from pathlib import Path
 HERE = Path(__file__).parent.resolve()
 _TMP = tempfile.TemporaryDirectory()
 ROOT = Path(_TMP.name)
-os.environ["SIERRALAB_HOME"] = str(ROOT / "home")
+os.environ["CORDATA_HOME"] = str(ROOT / "home")
 os.environ["LAYA_TRIAGE_MODE"] = "route"
 os.environ["LAYA_TRIAGE_LOG"] = str(ROOT / "laya.jsonl")
 os.environ.setdefault("BYPASS_TOOL_CONSENT", "true")
-os.environ.setdefault("SIERRALAB_REFLECT", "off")  # scripted turns are not lessons; _learning_acp_smoke_test turns it on
+os.environ.setdefault("CORDATA_REFLECT", "off")  # scripted turns are not lessons; _learning_acp_smoke_test turns it on
 
 import acp  # noqa: E402
 
@@ -127,7 +127,7 @@ _SERVERS = []
 def fresh_server(predict):
     _SERVERS.append(predict)
     acp_server._ROUTER = laya_router.LayaRouter(predict=predict, calibrator=laya_router.Calibrator(ROOT / f"cal-{len(_SERVERS)}.json"))
-    server = acp_server.SierraLabAcpAgent()
+    server = acp_server.CordataAcpAgent()
     conn = Conn()
     server.on_connect(conn)
     return server, conn
@@ -144,7 +144,7 @@ def texts(conn) -> str:
 
 
 def laya_events(conn, event):
-    return [p for m, p in conn.ext if m == "sierralab/laya" and p.get("event") == event]
+    return [p for m, p in conn.ext if m == "cordata/laya" and p.get("event") == event]
 
 
 async def test_dispatch() -> None:
@@ -176,8 +176,8 @@ async def test_dispatch() -> None:
 
 async def test_abstain_escalates() -> None:
     cwd = project("abstain")
-    (cwd / ".sierralab").mkdir()
-    (cwd / ".sierralab" / "settings.json").write_text(json.dumps({"tiers": {"strong": "frontier-model"}}))
+    (cwd / ".cordata").mkdir()
+    (cwd / ".cordata" / "settings.json").write_text(json.dumps({"tiers": {"strong": "frontier-model"}}))
     seen_models = []
     orchestrator_model([lambda m, s, t: (seen_models.append(MODELS["orchestrator"].config["model_id"]), text("answered"))[1]])
     server, conn = fresh_server(laya_answer("architect", {"architect": 0.4, "code": 0.35, "answer": 0.25}, low=True))
@@ -222,16 +222,16 @@ async def test_plugin_scope() -> None:
     decision = laya_events(conn, "decision")[0]
     check(decision["action"] == "scope", "the decision says so")
 
-    listed = await server.ext_method("_sierralab/plugins/list", {"sessionId": created.session_id})
+    listed = await server.ext_method("_cordata/plugins/list", {"sessionId": created.session_id})
     names = {row["name"]: row["status"] for row in listed["plugins"]}
     check(names.get("echo") == "running" and names.get("memory") == "running" and names.get("lsp") == "running", f"plugins/list shows MCP and built-in plugins ({names})")
-    row = await server.ext_method("_sierralab/plugins/disable", {"sessionId": created.session_id, "name": "echo"})
+    row = await server.ext_method("_cordata/plugins/disable", {"sessionId": created.session_id, "name": "echo"})
     check(row["status"] == "disabled" and "echo" not in state.agent.tool_names, "plugins/disable hot-removes from the live session")
-    row = await server.ext_method("_sierralab/plugins/enable", {"sessionId": created.session_id, "name": "echo"})
+    row = await server.ext_method("_cordata/plugins/enable", {"sessionId": created.session_id, "name": "echo"})
     check(row["status"] == "running" and "echo" in state.agent.tool_names, "plugins/enable hot-adds again")
-    tasks = [p for m, p in conn.ext if m == "sierralab/task"]
+    tasks = [p for m, p in conn.ext if m == "cordata/task"]
     check(any(p["title"] == "plugin echo" and p["state"] == "completed" for p in tasks), "plugin start-up is reported as task progress")
-    lsp = await server.ext_method("_sierralab/lsp/status", {"sessionId": created.session_id})
+    lsp = await server.ext_method("_cordata/lsp/status", {"sessionId": created.session_id})
     check(lsp["enabled"] is True and isinstance(lsp["servers"], list), "lsp/status answers")
     for row in state.plugins.status():
         if row["status"] == "running":
@@ -298,13 +298,13 @@ async def test_command_outcomes_and_stats() -> None:
     check(outcome and outcome[0]["ok"] is False and outcome[0]["log_loss"] > 2.0, f"the stderr failure is scored with log loss ({outcome[0]})")
     turn = laya_events(conn, "outcome")[-1]
     check(turn["clean"] is False and turn["agreed"] is True, "an unresolved failure makes the turn unclean (route still agreed)")
-    stats = await server.ext_method("_sierralab/laya/stats", {"sessionId": created.session_id})
+    stats = await server.ext_method("_cordata/laya/stats", {"sessionId": created.session_id})
     check(stats["stats"]["command_ok"]["n"] == 1 and stats["stats"]["route"]["n"] == 1, f"laya/stats reports both learners ({stats['summary']!r})")
     check(any(k.startswith("command_ok/") for k in stats["weights"]), "the failure moved a decision weight")
-    heal = await server.ext_method("_sierralab/heal/status", {"sessionId": created.session_id})
+    heal = await server.ext_method("_cordata/heal/status", {"sessionId": created.session_id})
     check(heal["config"]["enabled"] is False, "heal/status answers")
     try:
-        await server.ext_method("_sierralab/nope", {})
+        await server.ext_method("_cordata/nope", {})
         raise AssertionError("unknown ext method accepted")
     except acp.RequestError:
         check(True, "unknown ext methods are method-not-found")

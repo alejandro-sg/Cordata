@@ -46,7 +46,7 @@ It never blocks a tool and never forces one. That is deliberate — see "Why adv
 - **In `acp-tui`:** nothing to turn on. A dim `◆ laya` line appears under each prompt ~70 ms
   after you send it — route and confidence, and whether a hint was sent or why not — and a second
   line when the turn ends says what the LLM actually did and whether it agreed. `/laya off` hides
-  it. The backend pushes these as an ACP extension notification (`_sierralab/laya`, emitted by
+  it. The backend pushes these as an ACP extension notification (`_cordata/laya`, emitted by
   `LayaTriageHooks(notify=…)`); clients that don't know it ignore it.
 - **Any front door** (the web UI, Zed, scripts): `make laya-watch` follows the log and prints
   one line per turn as it ends. It lags the TUI line by one turn, because the log is written when
@@ -121,7 +121,7 @@ and `ask`.
 
 1. Run normally (or with `acp-stress` scenarios) so the log accumulates real turns.
 2. **Export.** `backend/.venv/bin/python backend/trajectory.py export --validate` writes
-   every row shape in one directory (`~/.sierralab/trajectories/<project>/`, override
+   every row shape in one directory (`~/.cordata/trajectories/<project>/`, override
    `--out`): `laya.{train,eval}.jsonl` — `state`, `questions`, `gold` as JSON-string
    columns, byte-for-byte the schema `_laya_triage_export.py` writes and Laya's training
    script reads (a `--validate` pass feeds every question through Laya's own
@@ -140,7 +140,7 @@ and `ask`.
    Laya's own run used ~30k questions and took hours on 2×T4; a few hundred rows will
    mostly memorise, so treat early runs as a way to exercise the loop.
 4. **Register and gate.** `backend/.venv/bin/python backend/laya_checkpoints.py register
-   <id> <checkpoint dir>` records it under `~/.sierralab/laya/checkpoints.json` as a
+   <id> <checkpoint dir>` records it under `~/.cordata/laya/checkpoints.json` as a
    *candidate*. `make laya-eval` (default `--mode shadow`) then puts it in force for an
    eval run (`LAYA_MODEL=<dir>`) and measures it the same way a staged skill is measured:
    nothing that passed without it may fail with it, something must improve, and the same

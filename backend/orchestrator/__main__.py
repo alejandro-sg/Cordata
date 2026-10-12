@@ -1,12 +1,14 @@
 """``python -m orchestrator`` — run, inspect and resume orchestrated coding tasks.
 
     run "<goal>" [--cwd DIR] [--workers claude_code,antigravity,ollama] [--dispatch off|shadow|live]
-                 [--max-usd N] [--no-harden] [--no-tier2] [--json]
-    status [--json]               pool headroom, recent runs and handoffs — reads state.db, spends nothing
-    show RUN_ID [--json]          one run: its plan, history, audit
+                 [--max-usd N] [--max-rounds N] [--max-parallel N] [--no-research] [--no-harden]
+                 [--no-conformance] [--no-tier2] [--json]
+    status [--json]               pool headroom, recent runs (with their spend) and handoffs — reads state.db, spends nothing
+    show RUN_ID [--json]          one run: its research, plan, history, audit, rounds and usage by role and worker
     resume RUN_ID                 continue a paused run
     replay [--world steep|ceiling] [--logs N] [--ledger]
                                   judge the learned dispatch policy against always-strongest by replay
+    doctor [--json] [--cwd DIR]   is everything this tool leans on in place? — local checks, spends nothing
 
 Settings (``orchestrator.*``, docs/settings.md) give the defaults; flags override them for one run.
 """
@@ -28,6 +30,42 @@ def _prefs(cwd: str) -> Any:
     return settings_store.current(cwd)
 
 
+def _usage_summary(rows: list[dict[str, Any]]) -> str:
+    """``usage 4 call(s) · 12k tokens · $0.0310 — plan 1, execute 2, audit 1`` — one line for a ``usage`` event."""
+    from .status import _compact, usage_totals
+
+    totals = usage_totals(rows)
+    by_role: dict[str, int] = {}
+    for row in rows:
+        by_role[str(row.get("role"))] = by_role.get(str(row.get("role")), 0) + int(row.get("calls") or 0)
+    roles = ", ".join(f"{role} {calls}" for role, calls in by_role.items())
+    return f"usage {totals['calls']} call(s) · {_compact(totals['tokens'])} tokens · ${totals['cost_usd']:.4f}" + (f" — {roles}" if roles else "")
+
+
+def _usage_table(rows: list[dict[str, Any]]) -> list[str]:
+    header = ("role", "worker", "calls", "tokens in", "tokens out", "cost")
+    body = [(str(r.get("role")), str(r.get("worker")), str(int(r.get("calls") or 0)), str(int(r.get("tokens_in") or 0)), str(int(r.get("tokens_out") or 0)), f"${float(r.get('cost_usd') or 0.0):.4f}") for r in rows]
+    widths = [max(len(row[i]) for row in [header, *body]) for i in range(len(header))]
+    fmt = lambda row: "  " + "  ".join(cell.ljust(w) if i < 2 else cell.rjust(w) for i, (cell, w) in enumerate(zip(row, widths)))  # noqa: E731
+    return [fmt(header)] + [fmt(row) for row in body]
+
+
+def _printer(as_json: bool):
+    """The event listener for a run on a terminal: one line per state change or worker dispatch, or NDJSON."""
+
+    def show(event: dict[str, Any]) -> None:
+        if as_json:
+            print(json.dumps(event, default=str), flush=True)
+        elif event["kind"] == "usage":
+            print("  " + _usage_summary(event.get("totals") or []), flush=True)
+        elif event["kind"] == "state":
+            print(f"[{event['state']}]" + "".join(f" {k}={v}" for k, v in event.items() if k not in ("kind", "run_id", "state", "ts")), flush=True)
+        elif event["kind"] in ("step_dispatch", "step_result", "handoff", "rollback", "paused", "budget_exhausted"):
+            print("  " + event["kind"] + " " + " ".join(f"{k}={v}" for k, v in event.items() if k not in ("kind", "run_id")), flush=True)
+
+    return show
+
+
 async def _run(args: argparse.Namespace) -> int:
     from . import config
     from .machine import OrchestratorMachine
@@ -40,21 +78,22 @@ async def _run(args: argparse.Namespace) -> int:
     run_config = config.run_config(prefs)
     if getattr(args, "allow_direct", False):
         os.environ["CORDATA_VAULT_DIRECT"] = "1"
-        os.environ["SIERRALAB_VAULT_DIRECT"] = "1"
     if args.max_usd is not None:
         run_config.max_usd = args.max_usd
     if args.no_harden:
         run_config.harden = False
     if args.no_tier2:
         run_config.tier2 = False
+    if args.max_rounds is not None:
+        run_config.max_rounds = max(0, args.max_rounds)
+    if args.max_parallel is not None:
+        run_config.max_parallel = max(1, args.max_parallel)
+    if args.no_conformance:
+        run_config.conformance = False
+    if args.no_research:
+        run_config.research = False
 
-    def show(event: dict[str, Any]) -> None:
-        if args.json:
-            print(json.dumps(event, default=str), flush=True)
-        elif event["kind"] == "state":
-            print(f"[{event['state']}]" + "".join(f" {k}={v}" for k, v in event.items() if k not in ("kind", "run_id", "state", "ts")), flush=True)
-        elif event["kind"] in ("step_dispatch", "step_result", "handoff", "rollback", "paused", "budget_exhausted"):
-            print("  " + event["kind"] + " " + " ".join(f"{k}={v}" for k, v in event.items() if k not in ("kind", "run_id")), flush=True)
+    show = _printer(args.json)
 
     machine = OrchestratorMachine(goal=args.goal, project=cwd, dispatcher=dispatcher, ledger=ledger, config=run_config, on_event=show)
     record = await machine.run()
@@ -77,7 +116,11 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--dispatch", choices=("off", "shadow", "live"), help="worker dispatch policy mode")
     run.add_argument("--allow-direct", action="store_true", help="allow direct network access without an active vault proxy")
     run.add_argument("--max-usd", type=float, help="budget cap envelope in USD")
+    run.add_argument("--max-rounds", type=int, help="most conformance fix rounds before replanning (default 3)")
+    run.add_argument("--max-parallel", type=int, help="most independent steps run at once in a wave (default 3)")
+    run.add_argument("--no-research", action="store_true", help="skip the research brief before planning")
     run.add_argument("--no-harden", action="store_true", help="skip the cross-family hardening review pass")
+    run.add_argument("--no-conformance", action="store_true", help="skip the conformance check against the goal after audit")
     run.add_argument("--no-tier2", action="store_true", help="skip the residual LLM review in audit")
     run.add_argument("--json", action="store_true", help="stream NDJSON events instead of terminal formatting")
     status = sub.add_parser("status", help="pool headroom, recent runs and handoffs")
@@ -85,19 +128,26 @@ def main(argv: list[str] | None = None) -> int:
     show = sub.add_parser("show", help="show one run's plan, history, and audit")
     show.add_argument("run_id")
     show.add_argument("--json", action="store_true")
-    resume = sub.add_parser("resume", help="continue a paused run")
+    resume = sub.add_parser("resume", help="continue a paused or interrupted run")
     resume.add_argument("run_id")
+    resume.add_argument("--allow-direct", action="store_true", help="allow direct network access without an active vault proxy")
+    resume.add_argument("--max-usd", type=float, help="budget cap envelope in USD (a resumed run otherwise gets the default, not the original run's)")
+    resume.add_argument("--json", action="store_true", help="stream NDJSON events instead of terminal formatting")
     replay = sub.add_parser("replay", help="judge the learned dispatch policy against always-strongest")
     replay.add_argument("--world", choices=("steep", "ceiling"), default="steep")
     replay.add_argument("--logs", type=int, default=6000)
     replay.add_argument("--ledger", action="store_true", help="judge on this machine's own logged outcomes instead of simulated ones")
+
+    doctor = sub.add_parser("doctor", help="check the tools, services and settings this depends on")
+    doctor.add_argument("--json", action="store_true")
+    doctor.add_argument("--cwd", default=os.getcwd())
 
     args_list = list(sys.argv[1:] if argv is None else argv)
     if not args_list:
         parser.print_help()
         return 0
 
-    known_cmds = {"run", "status", "show", "resume", "replay"}
+    known_cmds = {"run", "status", "show", "resume", "replay", "doctor"}
     if not any(arg in known_cmds or arg in ("-h", "--help") for arg in args_list):
         # Allow running directly: orchestrator "Goal" or orchestrator --max-usd 2 "Goal"
         args_list.insert(0, "run")
@@ -106,6 +156,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "run":
         return asyncio.run(_run(args))
+    if args.cmd == "doctor":
+        from . import doctor as doctor_module
+
+        checks = doctor_module.run_checks(os.path.realpath(args.cwd))
+        print(json.dumps([c.to_json() for c in checks], indent=1) if args.json else doctor_module.render(checks, color=sys.stdout.isatty()))
+        return 1 if any(c.level == doctor_module.FAIL for c in checks) else 0
     if args.cmd == "status":
         from .status import render, status_data
 
@@ -124,6 +180,8 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(record.to_json(), indent=1, default=str))
         else:
             print(f"{record.run_id}  {record.state}  {record.goal}\n")
+            if record.research:
+                print(f"Research: {len(record.research.get('findings') or [])} verified finding(s)\n")
             if record.plan:
                 print(Plan.from_json(record.plan).render())
             for entry in record.history:
@@ -132,6 +190,11 @@ def main(argv: list[str] | None = None) -> int:
                 print("\nAudit: " + ("passed" if record.audit.get("tier1_ok") else "failed") + (f", verdict {record.audit.get('verdict')}" if record.audit.get("verdict") else ""))
                 for failure in record.audit.get("failures", []):
                     print(f"  - {failure.splitlines()[0]}")
+            print(f"\nConformance rounds: {record.rounds}")
+            if record.usage:
+                print("\nUsage:")
+                for line in _usage_table(record.usage):
+                    print(line)
         return 0
     if args.cmd == "resume":
         from . import config
@@ -143,7 +206,12 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         prefs = _prefs(record.cwd)
         ledger = config.ledger(prefs)
-        done = asyncio.run(resume_run(args.run_id, config.dispatcher(prefs, ledger=ledger, project=record.cwd), ledger=ledger, config=config.run_config(prefs)))
+        if args.allow_direct:
+            os.environ["CORDATA_VAULT_DIRECT"] = "1"
+        run_config = config.run_config(prefs)
+        if args.max_usd is not None:
+            run_config.max_usd = args.max_usd
+        done = asyncio.run(resume_run(args.run_id, config.dispatcher(prefs, ledger=ledger, project=record.cwd), ledger=ledger, config=run_config, on_event=_printer(args.json)))
         print(f"{done.run_id}: {done.state}" + (f" — {done.reason}" if done.reason else ""))
         return 0 if done.state == "done" else 1
     if args.cmd == "replay":

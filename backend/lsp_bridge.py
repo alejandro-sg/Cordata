@@ -360,7 +360,7 @@ class LspClient:
                 "rootUri": root_uri,
                 "rootPath": self.root,
                 "workspaceFolders": [{"uri": root_uri, "name": Path(self.root).name}],
-                "clientInfo": {"name": "sierralab-agents", "version": "0.1"},
+                "clientInfo": {"name": "cordata-agents", "version": "0.1"},
                 **({"initializationOptions": self.restricted} if self.restricted is not None else {}),
                 "capabilities": {
                     "window": {"workDoneProgress": True},

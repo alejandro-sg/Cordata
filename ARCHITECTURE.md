@@ -23,9 +23,9 @@ A map, not a manual: what runs where, how a turn flows, and which document holds
  └──────────────────────────────────────────────────────────────────────────────────────────────┘
         │ models                                   │ memory / stores
         ▼                                          ▼
- Ollama Cloud (via the local daemon) · Anthropic   Qdrant (agent_memory, on sierralab-mini) · LanceDB
+ Ollama Cloud (via the local daemon) · Anthropic   Qdrant (agent_memory, on mini) · LanceDB
  · OpenAI-compatible · oMLX local (Prism models,   (traces, knowledge graph; Cognee optional) ·
-   loaded/unloaded through memory_budget)          ~/.cordata (or ~/.sierralab; settings, sessions, checkpoints,
+   loaded/unloaded through memory_budget)          ~/.cordata (or ~/.cordata; settings, sessions, checkpoints,
                                                    preferences, learned skills, state.db ledger)
  Native Lab (lab/, Rust GPUI): telemetry, the containment modal, E-Stop, effort dials — over gRPC (proto/harness.proto).
  Menu bar (lab/crates/harness-menubar): status icon + ⌘⇧Space deck; screen context (harness-capture, deny-by-default)
@@ -64,7 +64,18 @@ A map, not a manual: what runs where, how a turn flows, and which document holds
 ```
 
 [`docs/orchestrator.md`](docs/orchestrator.md) has the detail; [`docs/orchestrator-plan.md`](docs/orchestrator-plan.md)
-the plan it was built from.
+the plan it was built from. `cordata doctor` (`backend/orchestrator/doctor.py`) checks that the CLIs, services and
+settings all of this leans on are in place.
+
+## The terminal client
+
+`tui/crates/acp-tui` is an inline (no alternate screen) ratatui client over `acp-core`'s ACP connection. Beyond the
+chat itself it owns: the `/` and `@` completion menus and file index (`menu.rs`, `mentions.rs`), custom commands
+(`custom.rs`), `!shell` (`shell.rs`), the type-ahead queue (`app.rs`), the context gauge, goal line, plan checklist and
+next-prompt suggestion (`extras.rs`, `ui/checklist.rs`), and the colour theme (`theme.rs`, applied where a colour
+becomes an escape sequence). The session-level features it calls are backend extension methods under `_cordata/*`:
+`context/usage`, `context/compact`, `btw`, `goal/*`, `tasks/list`; `/goal` itself is a prompt the backend interprets, so
+it works from any front door.
 
 ## Status: core and frozen
 
@@ -97,7 +108,7 @@ Frozen means kept working and built, not developed; nothing core depends on a fr
 
 Every mechanism has a hermetic smoke test in `backend/_*_smoke_test.py` (scripted models, the real ACP server object,
 no network). `make test` runs all of them in parallel (`backend/run_tests.py`: each in its own throwaway
-`CORDATA_HOME` / `SIERRALAB_HOME`, longest first — about 3 minutes against ~21 one by one); CI runs the ones that need no local service
+`CORDATA_HOME`, longest first — about 3 minutes against ~21 one by one); CI runs the ones that need no local service
 (`.github/workflows/ci.yml`). Rust: `make tui-test`,
 `make lab-test`. Live checks (`_acp_smoke_test.py`, `_ollama_cloud_live_test.py`, `make lab-live`) need the real
-providers and are run by hand — with `CORDATA_DISCORD=off` / `SIERRALAB_DISCORD=off`, so a test turn does not page the operator.
+providers and are run by hand — with `CORDATA_DISCORD=off`, so a test turn does not page the operator.

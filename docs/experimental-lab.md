@@ -154,7 +154,7 @@ The deck can attach what you are looking at to a turn — and only what you allo
    title='…' selection=42 chars '…'`.
 
 Permissions are macOS's: Accessibility for the title and selection, Screen Recording for the image.
-Grant them to a bundled build — `make lab-menubar-app INSTALL=1` builds `~/Applications/Sierralab.app`
+Grant them to a bundled build — `make lab-menubar-app INSTALL=1` builds `~/Applications/Cordata.app`
 (`LSUIElement`, signed; set `SIGN_IDENTITY` to a code-signing certificate so a grant survives
 rebuilds — ad-hoc signing makes every rebuild a new app to macOS). Policy and its limits:
 `THREAT_MODEL.md`, "OS context capture"; settings: `docs/settings.md`, "Screen context".
@@ -172,13 +172,13 @@ a real selection from Safari — is a hand check:
 make lab-menubar-app INSTALL=1
 ```
 
-then open `~/Applications/Sierralab.app`, grant it Accessibility, select text in Safari, press
-`⌘⇧Space`, Capture, Always allow, type a prompt, Enter, and read `~/.sierralab/daemon.log` (or the
+then open `~/Applications/Cordata.app`, grant it Accessibility, select text in Safari, press
+`⌘⇧Space`, Capture, Always allow, type a prompt, Enter, and read `~/.cordata/daemon.log` (or the
 demo's `daemon.log`) for the `submit_turn` line.
 
 ## Protocol
 
-Backend → client: the ACP extension notification `_sierralab/lab`, always a **full snapshot**
+Backend → client: the ACP extension notification `_cordata/lab`, always a **full snapshot**
 with a monotonic `seq` — a dropped one is healed by the next, and a client ignores any whose
 `seq` is older than the one it has (notifications are written from concurrent tasks, so two
 can swap):
@@ -199,19 +199,19 @@ Client → backend, ACP extension requests (each recorded in `state.db` as a `la
 
 | method | params | effect |
 |---|---|---|
-| `_sierralab/lab/state` | – | the snapshot |
-| `_sierralab/lab/select` | `pod` \| null | which pod's detail rides on snapshots |
-| `_sierralab/lab/isolate` | `pod` | E-Stop the pod and its descendants |
-| `_sierralab/lab/release` | `pod` | lift the isolation (and any stale cancel) |
-| `_sierralab/lab/dial` | `pod`, `value` | clamped to [0.30, 0.80]; only tightens |
-| `_sierralab/lab/inject` | `pod`, `text` | merged into the pod's next model call |
+| `_cordata/lab/state` | – | the snapshot |
+| `_cordata/lab/select` | `pod` \| null | which pod's detail rides on snapshots |
+| `_cordata/lab/isolate` | `pod` | E-Stop the pod and its descendants |
+| `_cordata/lab/release` | `pod` | lift the isolation (and any stale cancel) |
+| `_cordata/lab/dial` | `pod`, `value` | clamped to [0.30, 0.80]; only tightens |
+| `_cordata/lab/inject` | `pod`, `text` | merged into the pod's next model call |
 
 Approving or rejecting a staged call is the ordinary ACP permission response — the Lab draws
 that request, it doesn't replace it.
 
 ## Daemon stream
 
-`backend/daemon/` taps `_sierralab/lab` frames as they pass (the frame still reaches the driving
+`backend/daemon/` taps `_cordata/lab` frames as they pass (the frame still reaches the driving
 client byte for byte) and keeps the newest per session:
 
 * `GET /lab` → `{"sessions": {id: snapshot}, "observer": pod | null}`
