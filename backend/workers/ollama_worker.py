@@ -212,7 +212,7 @@ class OllamaWorker(Worker):
         model_factory: Callable[[TaskPacket, str | None], Any] | None = None,
         default_model: str | None = None,
         base_url: str | None = None,
-        models: tuple[str, ...] = ("glm-5.3-flash", "kimi-k2.7-code", "laguna-xs-2.1"),
+        models: tuple[str, ...] = ("glm-5.3-flash", "kimi-k2.7-code", "deepseek-v4.1-flash", "laguna-xs-2.1"),
         worker_id: str = "ollama",
         cost_basis: str = "subscription",
     ) -> None:

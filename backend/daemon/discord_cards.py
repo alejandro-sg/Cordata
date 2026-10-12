@@ -5,7 +5,7 @@ and so there is one place to hold the rules that make it worth reading:
 
 - **Say what, where and why before how risky.** A card that opens with `shell scored 0.99` asks the
   person to trust a number. One that opens with "The agent wants to run a shell command in
-  *sierralab-agents*. You asked: … It said: …" can be answered from a phone, in a queue, in five
+  *cordata-agents*. You asked: … It said: …" can be answered from a phone, in a queue, in five
   seconds. The score and Laya's reason are still there — as evidence, second.
 - **Honest buttons.** "Allow" and "Deny" do exactly that. (The old "Reject & Isolate" did not isolate
   anything; a label that promises a containment it does not perform is worse than a plain one.)
@@ -295,7 +295,7 @@ def parse_command(text: str) -> tuple[str, str] | None:
 
 
 def parse_back(arg: str) -> dict[str, Any] | str | None:
-    """`!back`'s argument as the params of `_sierralab/conversation/rewind`, the string `"list"`, or None when it is not
+    """`!back`'s argument as the params of `_cordata/conversation/rewind`, the string `"list"`, or None when it is not
     something `!back` takes."""
     words = (arg or "").split()
     if not words:
@@ -574,7 +574,7 @@ def help_card(operator_id: int, *, chat_ready: bool = True) -> dict[str, Any]:
             ("Talk to an agent", talk, False),
             ("Ask where things stand", "“what are you working on?” · `!status` — answered instantly, costs nothing.", False),
             ("Control", "`!stop` cancel the running turn · `!mode auto|build|plan` how often it asks · `!new <folder>` chat in a specific project · `!usage` tokens spent", False),
-            ("Same conversation everywhere", "Every conversation has a handle (`c3f9a1e`). `!conversations` lists them — the terminal's, the menu bar's and the web app's too. `!continue <handle>` picks one up in a thread here; turns from the other doors show up in it as they finish. In a terminal: `acp-tui --conversation <handle>`.", False),
+            ("Same conversation everywhere", "Every conversation has a handle (`c3f9a1e`). `!conversations` lists them — the terminal's, the menu bar's and the web app's too. `!continue <handle>` picks one up in a thread here; turns from the other doors show up in it as they finish. In a terminal: `cordata --conversation <handle>`.", False),
             ("Take it back", "`!back` makes the agent forget the last turn (`!back 2` the last two) · `!back list` shows the checkpoints · `!back to <number>` restores one — including the state a `!back` left. Files are not touched.", False),
             ("Approvals", "Only things that need you reach this channel. **Allow routine steps in this chat** on the first card stops the routine ones; destructive calls always still ask.", False),
         ],
@@ -601,7 +601,7 @@ def conversations_text(rows: list[dict[str, Any]], now: float) -> str:
         running = f" · ⏳ running a turn from {door_label(str(row.get('turnOrigin') or ''))}" if row.get("busy") else ""
         turns = int(row.get("turns") or 0)
         lines.append(f"`{row['handle']}` {title} — {turns} turn{'s' if turns != 1 else ''} · from {door_label(str(row.get('origin') or ''))} · {age}{running}")
-    lines.append("-# `!continue <handle>` picks one up here · `acp-tui --conversation <handle>` in a terminal")
+    lines.append("-# `!continue <handle>` picks one up here · `cordata --conversation <handle>` in a terminal")
     return "\n".join(lines)
 
 

@@ -32,7 +32,7 @@ use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use crate::extract::{self, Change, Key, Lang, Symbol};
 
 const IGNORED_DIRS: &[&str] = &[
-    ".git", "target", "node_modules", ".venv", "venv", "__pycache__", ".next", "dist", "build", ".sierralab", ".idea", ".vscode", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", ".cache",
+    ".git", "target", "node_modules", ".venv", "venv", "__pycache__", ".next", "dist", "build", ".cordata", ".idea", ".vscode", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", ".cache",
 ];
 
 #[derive(Debug, thiserror::Error)]

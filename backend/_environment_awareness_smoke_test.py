@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-os.environ["SIERRALAB_PRISM"] = "off"
+os.environ["CORDATA_PRISM"] = "off"
 
 import provider_settings  # noqa: F401  (before agent_common, which chdirs)
 

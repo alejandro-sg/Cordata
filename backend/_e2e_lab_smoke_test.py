@@ -1,6 +1,6 @@
 """Phase 5, deterministic: the whole pipeline over real HTTP, no cloud.
 
-The real ``SierraLabAcpAgent``, the real ``ollama_cloud`` provider (registry,
+The real ``CordataAcpAgent``, the real ``ollama_cloud`` provider (registry,
 ModelRouter, reasoning throttle, endpoint guard), the real specialists and the real
 Lab hooks — talking to ``fake_ollama.FakeOllama`` on a loopback port, which answers
 each model from a script and records every request. Only Laya's forward pass is
@@ -21,7 +21,7 @@ from pathlib import Path
 
 _TMP = tempfile.TemporaryDirectory()
 ROOT = Path(_TMP.name)
-os.environ["SIERRALAB_HOME"] = str(ROOT / "home")
+os.environ["CORDATA_HOME"] = str(ROOT / "home")
 os.environ["LAYA_TRIAGE_MODE"] = "route"
 os.environ["LAYA_TRIAGE_LOG"] = str(ROOT / "laya.jsonl")
 os.environ.setdefault("BYPASS_TOOL_CONSENT", "true")
@@ -94,7 +94,7 @@ class HitlConn:
         self.waiting.pop(0).set_result(option_id)
 
     def states(self) -> list[dict]:
-        return [params for method, params in self.ext if method == "sierralab/lab"]
+        return [params for method, params in self.ext if method == "cordata/lab"]
 
 
 async def until(condition, label: str, timeout: float = 10.0) -> None:
@@ -130,7 +130,7 @@ async def scenario(fake: FakeOllama) -> None:
     (project / "README.md").write_text("demo\n")
 
     acp_server._ROUTER = laya_router.LayaRouter(predict=destructive_laya(), calibrator=laya_router.Calibrator(ROOT / "cal.json"))
-    server = acp_server.SierraLabAcpAgent()
+    server = acp_server.CordataAcpAgent()
     conn = HitlConn()
     server.on_connect(conn)
     lab_module.get().reset()
@@ -182,7 +182,7 @@ async def scenario(fake: FakeOllama) -> None:
     options = await server.set_config_option("model", sid, KIMI)
     model_option = next(o for o in options.config_options if o.id == "model")
     offered = [choice.value for choice in model_option.options]
-    check(offered == [GLM, KIMI] and model_option.current_value == KIMI, f"the picker offers the cloud tags only and shows the swap ({offered})")
+    check(offered == [GLM, KIMI, "deepseek-v4.1-flash:cloud"] and model_option.current_value == KIMI, f"the picker offers the cloud tags only and shows the swap ({offered})")
     fake.scripts.setdefault(KIMI, []).append(text("swapped and answering"))
     before = len(fake.chats())
     await server.prompt(sid, [acp.text_block("say hi")])
@@ -200,7 +200,7 @@ async def scenario(fake: FakeOllama) -> None:
     turn = asyncio.create_task(server.prompt(sid, [acp.text_block("clean up once more")]))
     await until(lambda: conn.waiting, "a second destructive call parks")
     chats_before = len(fake.chats())
-    reply = await server.ext_method("_sierralab/lab/isolate", {"sessionId": sid, "pod": "orchestrator"})
+    reply = await server.ext_method("_cordata/lab/isolate", {"sessionId": sid, "pod": "orchestrator"})
     check(reply["isolated"] and set(reply["also"]) == {"architect", "debugger"}, f"E-Stop reply: {reply}")
     conn.decide("reject")
     await turn

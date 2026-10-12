@@ -1,6 +1,23 @@
 backend/.venv/
 backend/**/__pycache__/
 backend/.env
+# Credentials, wherever they end up: any .env (the *.example templates are kept), keys, certificates, daemon tokens.
+.env
+.env.*
+!.env.example
+!*.env.example
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.*.example
+*.pem
+*.p12
+*.pfx
+*.key
+*.keystore
+id_rsa*
+id_ed25519*
+daemon.json
 frontend/node_modules/
 frontend/.next/
 frontend/.env.local
@@ -41,8 +58,8 @@ backend/laya_triage.jsonl
 
 # Per-machine agent settings and instructions (backend/settings_store.py,
 # docs/settings.md) — never something a clone should inherit.
-.sierralab/settings.local.json
-SIERRALAB.local.md
+.cordata/settings.local.json
+CORDATA.local.md
 
 # Per-machine suite timings run_tests.py schedules by (longest first).
 backend/.test-durations.json

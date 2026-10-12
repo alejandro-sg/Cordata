@@ -97,7 +97,7 @@ def _model_state(_ctx) -> dict:
     Re-derives state from scratch (the ACTIVE_* globals + a fresh oMLX
     /models query) instead of parsing the tool's own text return — decouples
     the shared-state shape from whatever prose the tool happens to return.
-    Read on the frontend via useAgent({agentId: "sierralab_agent"}).state.
+    Read on the frontend via useAgent({agentId: "cordata_agent"}).state.
     """
     return _agent_config_payload()
 
@@ -150,7 +150,7 @@ def session_manager_provider(run_input):
 
 agui_agent = StrandsAgent(
     agent=build_template_agent(),
-    name="sierralab_agent",
+    name="cordata_agent",
     description="Local Strands agent with shell/file/code tools and durable per-thread memory.",
     # Plugins (AgentSkills) don't survive the template agent -> per-thread
     # agent cloning ag_ui_strands does internally — they have to be given to
@@ -186,7 +186,7 @@ agui_agent = StrandsAgent(
     ),
 )
 
-# The conversation hub (hub_client.py): with SIERRALAB_HUB_GRPC set, a web turn runs in the laptop
+# The conversation hub (hub_client.py): with CORDATA_HUB_GRPC set, a web turn runs in the laptop
 # daemon's hub — the same conversations as the terminal, Discord and the menu bar — instead of in the
 # local agent above. That endpoint then drives agents on the laptop, so it is no longer open to whatever
 # can reach this port: it requires the frontend's X-Sandbox-Token (the Next.js server sends it).

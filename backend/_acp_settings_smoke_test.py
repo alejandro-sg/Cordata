@@ -4,7 +4,7 @@ a tool call asks, and "Always allow" saving a rule that holds afterwards.
 
 Like _acp_smoke_test.py this talks to the configured model (a few short turns), so
 it needs the provider reachable — cloud key in the environment/Keychain, or the
-local oMLX server. SIERRALAB_HOME and the project are throwaway directories, so
+local oMLX server. CORDATA_HOME and the project are throwaway directories, so
 your real settings are never read or written.
 
     backend/.venv/bin/python _acp_settings_smoke_test.py
@@ -13,7 +13,7 @@ your real settings are never read or written.
 import asyncio
 import json
 import os
-os.environ.setdefault("SIERRALAB_REFLECT", "off")  # scripted/live test turns are not lessons (reflect.py)
+os.environ.setdefault("CORDATA_REFLECT", "off")  # scripted/live test turns are not lessons (reflect.py)
 import sys
 import tempfile
 from pathlib import Path
@@ -55,14 +55,14 @@ class Sandbox:
         root = Path(self.tmp.name).resolve()
         self.home = root / "home"
         self.project = root / "project"
-        (self.project / ".sierralab").mkdir(parents=True)
+        (self.project / ".cordata").mkdir(parents=True)
         self.home.mkdir()
 
     def user(self, data: dict) -> None:
         (self.home / "settings.json").write_text(json.dumps(data))
 
     def env(self) -> dict:
-        return {**os.environ, "SIERRALAB_HOME": str(self.home)}
+        return {**os.environ, "CORDATA_HOME": str(self.home)}
 
 
 async def ask(conn, session_id: str, text: str):
@@ -82,7 +82,7 @@ async def test_default_mode_and_instructions() -> None:
 
     print("\n=== project 'auto' is ignored until the folder is trusted ===")
     box = Sandbox()
-    (box.project / ".sierralab" / "settings.json").write_text(json.dumps({"permissions": {"defaultMode": "auto"}}))
+    (box.project / ".cordata" / "settings.json").write_text(json.dumps({"permissions": {"defaultMode": "auto"}}))
     async with acp.spawn_agent_process(lambda _a: client, sys.executable, SERVER, env=box.env()) as (conn, proc):
         await conn.initialize(protocol_version=acp.PROTOCOL_VERSION)
         created = await conn.new_session(cwd=str(box.project))
@@ -93,7 +93,7 @@ async def test_default_mode_and_instructions() -> None:
 async def test_instructions_reach_the_model() -> None:
     print("\n=== instruction file in the system prompt ===")
     box = Sandbox()
-    (box.project / "SIERRALAB.md").write_text("The project codeword is PINEAPPLE-7. Mention it when asked for the codeword.")
+    (box.project / "CORDATA.md").write_text("The project codeword is PINEAPPLE-7. Mention it when asked for the codeword.")
     text: list[str] = []
 
     class Chatty(Client):
@@ -107,7 +107,7 @@ async def test_instructions_reach_the_model() -> None:
         await conn.initialize(protocol_version=acp.PROTOCOL_VERSION)
         created = await conn.new_session(cwd=str(box.project))
         await ask(conn, created.sessionId, "What is the project codeword? Answer with just the codeword.")
-        check("PINEAPPLE-7" in "".join(text), f"the model saw SIERRALAB.md ({''.join(text)[:80]!r})")
+        check("PINEAPPLE-7" in "".join(text), f"the model saw CORDATA.md ({''.join(text)[:80]!r})")
         proc.terminate()
 
 
@@ -146,7 +146,7 @@ async def test_always_allow_is_saved_and_holds() -> None:
         check(len(client.requests) == 1, "the first call asks")
         offered = {kind: name for _id, kind, name in client.options[0]}
         check(offered.get("allow_always", "").startswith("Always allow shell("), f"…offering a narrow rule ({offered.get('allow_always')!r})")
-        local = box.project / ".sierralab" / "settings.local.json"
+        local = box.project / ".cordata" / "settings.local.json"
         saved = json.loads(local.read_text())["permissions"]["allow"]
         check(saved == [f"shell({command})"], f"the rule was saved to settings.local.json ({saved})")
         check(str(box.project) in json.loads((box.home / "settings.json").read_text())["trustedProjects"], "…and the folder was marked trusted")

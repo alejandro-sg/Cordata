@@ -14,7 +14,7 @@ machinery rather than growing a second one:
 
 - **Approvals** are the supervisor's `PendingPermission` + `answer_permission`, the same relay the
   GUI's containment modal uses — the front door shows them, this module does not decide anything.
-- **Steering** while a turn runs is the Lab's `_sierralab/lab/inject`, unchanged.
+- **Steering** while a turn runs is the Lab's `_cordata/lab/inject`, unchanged.
 - **One writer per stdin.** An owned session is invisible to a terminal's directory lookup and
   refused by the socket (`Supervisor.find_by_cwd`, `server.session_socket`), so a person's TUI and a
   Discord chat can never be typing into the same child.
@@ -104,7 +104,7 @@ class TurnResult:
     stop: str
     text: str
     seconds: float
-    turn: dict[str, Any] = field(default_factory=dict)  # the child's `_sierralab/turn` receipt, when it came
+    turn: dict[str, Any] = field(default_factory=dict)  # the child's `_cordata/turn` receipt, when it came
     #: Things the person should be told about this turn that are not the agent's words — today only "I could
     #: not restore this chat's history". Said plainly rather than letting an agent that forgot look like it remembers.
     notices: list[str] = field(default_factory=list)
@@ -203,11 +203,11 @@ def resolve_dir(raw: str) -> str:
 
 
 def default_cwd(supervisor: Any, environ: dict[str, str] | None = None) -> str:
-    """Where a new chat starts, when the operator did not say: `SIERRALAB_DISCORD_CWD`, else the
+    """Where a new chat starts, when the operator did not say: `CORDATA_DISCORD_CWD`, else the
     folder of the newest session a person is driving (the project they are plausibly asking about),
     else a private workspace. Always shown in the thread's first line — never a surprise."""
     env = os.environ if environ is None else environ
-    named = (env.get("CORDATA_DISCORD_CWD") or env.get("SIERRALAB_DISCORD_CWD") or "").strip()
+    named = (env.get("CORDATA_DISCORD_CWD") or "").strip()
     if named:
         try:
             return resolve_dir(named)
@@ -551,7 +551,7 @@ class Chats:
             conv.notices.append("I couldn't attach the screen context: the agent had not opened a session yet.")
             return
         try:
-            reply = await self.supervisor.call(conv.daemon_id, "_sierralab/os-context", {"sessionId": conv.acp_id, **payload}, qualify=False)
+            reply = await self.supervisor.call(conv.daemon_id, "_cordata/os-context", {"sessionId": conv.acp_id, **payload}, qualify=False)
         except (LookupError, asyncio.TimeoutError) as error:
             conv.notices.append(f"I couldn't attach the screen context: {error or 'the agent did not answer'}.")
             return
@@ -575,7 +575,7 @@ class Chats:
         try:
             init = await sup.call(
                 session.session_id, "initialize",
-                {"protocolVersion": 1, "clientCapabilities": {}, "clientInfo": {"name": "sierralab-discord", "version": "1"}},
+                {"protocolVersion": 1, "clientCapabilities": {}, "clientInfo": {"name": "cordata-discord", "version": "1"}},
                 timeout=HANDSHAKE_TIMEOUT, qualify=False,
             )
             if init.get("error"):
@@ -640,7 +640,7 @@ class Chats:
         if conv is None or not conv.daemon_id:
             raise ChatError("The agent is not running — send a message to wake it.")
         try:
-            reply = await self.supervisor.call(conv.daemon_id, "_sierralab/lab/inject", {"pod": "orchestrator", "text": text[:MAX_STEER_CHARS]})
+            reply = await self.supervisor.call(conv.daemon_id, "_cordata/lab/inject", {"pod": "orchestrator", "text": text[:MAX_STEER_CHARS]})
         except (LookupError, asyncio.TimeoutError) as error:
             raise ChatError(f"I could not reach the agent: {error or 'timed out'}") from None
         error = (reply or {}).get("error")
@@ -649,7 +649,7 @@ class Chats:
         return int(((reply or {}).get("result") or {}).get("queued") or 0)
 
     async def conversation(self, key: str, action: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        """`list` / `rewind` the conversation of one chat (`_sierralab/conversation/*`): the agent forgets turns, or the
+        """`list` / `rewind` the conversation of one chat (`_cordata/conversation/*`): the agent forgets turns, or the
         checkpoints are listed. A chat that is asleep is woken first — its history is on disk, and that is what is rewound.
         Refused while a turn is running."""
         conv = self._convs.get(str(key))
@@ -660,7 +660,7 @@ class Chats:
         conv.busy = True  # a message arriving meanwhile waits its turn: the history is being replaced
         try:
             await self._ensure_child(conv)
-            reply = await self.supervisor.call(conv.daemon_id, f"_sierralab/conversation/{action}", dict(params or {}), timeout=30.0)
+            reply = await self.supervisor.call(conv.daemon_id, f"_cordata/conversation/{action}", dict(params or {}), timeout=30.0)
         except (LookupError, asyncio.TimeoutError) as error:
             raise ChatError(f"I could not reach the agent: {error or 'timed out'}") from None
         finally:

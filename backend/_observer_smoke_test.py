@@ -13,9 +13,9 @@ stops being true:
    politely asked to stop.
 
 Hermetic: the observer's agent is replaced by a stub script (a real model call
-would need a provider), the ledger is a temp `SIERRALAB_STATE_DB`, and the
+would need a provider), the ledger is a temp `CORDATA_STATE_DB`, and the
 briefing lands in a temp file. Nothing here touches the developer's own
-`~/.sierralab/`.
+`~/.cordata/`.
 
     backend/.venv/bin/python _observer_smoke_test.py
 """
@@ -33,9 +33,9 @@ from types import SimpleNamespace
 
 _TMP = tempfile.TemporaryDirectory()
 _TMPDIR = Path(_TMP.name)
-os.environ["SIERRALAB_STATE_DB"] = str(_TMPDIR / "state.db")
-os.environ["SIERRALAB_OBSERVER_BRIEFING"] = str(_TMPDIR / "nightly_briefing.md")
-os.environ["SIERRALAB_OBSERVER_QUIET"] = ""
+os.environ["CORDATA_STATE_DB"] = str(_TMPDIR / "state.db")
+os.environ["CORDATA_OBSERVER_BRIEFING"] = str(_TMPDIR / "nightly_briefing.md")
+os.environ["CORDATA_OBSERVER_QUIET"] = ""
 # Must be set before observer_runner imports sub_agent_common (no chdir either
 # way, but keeping the child's imports deterministic matters for a smoke test).
 sys.path.insert(0, str(Path(__file__).resolve().parent))

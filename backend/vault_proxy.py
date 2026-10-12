@@ -65,16 +65,13 @@ DEFAULT_ADDR = "http://127.0.0.1:14322"
 #: "$USER" -s cordata-agent-vault-token -w`). Never a settings key — see the
 #: module docstring.
 KEYCHAIN_SERVICE = "cordata-agent-vault-token"
-LEGACY_KEYCHAIN_SERVICE = "sierralab-agent-vault-token"
 
 #: The vault binary, and the hook the smoke test uses to point at a stub.
 BINARY_ENV = "CORDATA_AGENT_VAULT_BIN"
-LEGACY_BINARY_ENV = "SIERRALAB_AGENT_VAULT_BIN"
 DEFAULT_BINARY = "agent-vault"
 
 #: Comma- or space-separated extra placeholder names (see `placeholders()`).
 PLACEHOLDERS_ENV = "CORDATA_VAULT_PLACEHOLDERS"
-LEGACY_PLACEHOLDERS_ENV = "SIERRALAB_VAULT_PLACEHOLDERS"
 
 #: Names a tool subprocess may hold a placeholder for, so the vault can swap in
 #: the real value on the way out.
@@ -174,7 +171,7 @@ def placeholders(environ: Mapping[str, str] | None = None) -> dict[str, str]:
     environment dump.
     """
     env = environ if environ is not None else os.environ
-    extra = (env.get(PLACEHOLDERS_ENV) or env.get(LEGACY_PLACEHOLDERS_ENV) or "").replace(",", " ").split()
+    extra = (env.get(PLACEHOLDERS_ENV) or "").replace(",", " ").split()
     names: list[str] = []
     for name in (*DEFAULT_PLACEHOLDERS, *extra):
         if name in RESERVED:
@@ -188,14 +185,14 @@ def placeholders(environ: Mapping[str, str] | None = None) -> dict[str, str]:
 def ca_bundle(environ: Mapping[str, str] | None = None) -> str | None:
     """The vault's CA certificate, when one has been exported for us.
 
-    `CORDATA_VAULT_CA` / `SIERRALAB_VAULT_CA` names the file. There is no default path: a guessed CA
+    `CORDATA_VAULT_CA` names the file. There is no default path: a guessed CA
     path that silently does not exist turns every TLS client into a failure, and
     one that does exist but is the *wrong* CA is worse. Without it the proxy
     variables are still set — a vault that mints credentials per request and
     does not re-sign TLS needs no CA file — and the caller is warned.
     """
     env = environ if environ is not None else os.environ
-    path = (env.get("CORDATA_VAULT_CA") or env.get("SIERRALAB_VAULT_CA") or "").strip()
+    path = (env.get("CORDATA_VAULT_CA") or "").strip()
     return path or None
 
 
@@ -299,7 +296,7 @@ def split_addr(addr: str) -> tuple[str | None, int | None]:
 
 def binary() -> str | None:
     """The vault executable, or None when it is not installed."""
-    override = (os.environ.get(BINARY_ENV) or os.environ.get(LEGACY_BINARY_ENV) or "").strip()
+    override = (os.environ.get(BINARY_ENV) or "").strip()
     if override:
         return override if os.path.exists(override) else None
     return shutil.which(DEFAULT_BINARY)
@@ -326,7 +323,7 @@ def launch_under_vault(argv: Sequence[str], *, exe: str | None = None, vault_nam
     launcher = exe or binary()
     if not launcher:
         raise VaultUnavailableError(
-            f"the Agent Vault CLI ({os.environ.get(BINARY_ENV) or os.environ.get(LEGACY_BINARY_ENV) or DEFAULT_BINARY!r}) is not on PATH, "
+            f"the Agent Vault CLI ({os.environ.get(BINARY_ENV) or DEFAULT_BINARY!r}) is not on PATH, "
             "so there is no way to run this under the vault"
         )
     return [launcher, "run", *(["--vault", vault_name] if vault_name else []), "--", *argv]
@@ -341,14 +338,13 @@ def _route_through(addr: str, target: dict[str, str], token: str | None) -> Vaul
     applied = build_proxy_env(addr, environ=target)
     target.update(applied)
     if token is None:
-        token = secret_guard.take_secret(keychain=(KEYCHAIN_SERVICE, LEGACY_KEYCHAIN_SERVICE)).reveal()
+        token = secret_guard.take_secret(keychain=KEYCHAIN_SERVICE).reveal()
     if token:
         # Not registered for masking: the token is the harness's own, and a
         # value in the environment of a tool subprocess is exactly what the
         # vault is meant to stop mattering. It is passed to the vault CLI,
         # never to the tools.
         target["CORDATA_VAULT_TOKEN_PRESENT"] = "1"
-        target["SIERRALAB_VAULT_TOKEN_PRESENT"] = "1"
     # `credentialed` is a claim the TUI and the resume notice repeat to the
     # user, so it is only made when there is a token behind it: a reachable
     # vault with nothing in the Keychain item routes egress through the proxy

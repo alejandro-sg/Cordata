@@ -20,7 +20,7 @@ same streaming ``StreamChunk`` / ``ExecutionResult`` contract) and changes what 
   file and the cloud-credential files. It is the kernel refusing the ``open``, so a ``cat
   .env``, a ``Read`` tool call or a script the child writes and runs all fail the same way —
   which no ``--disallowedTools`` rule can promise. Where Seatbelt is unavailable the
-  sandbox *refuses to run* rather than run unconfined (``SIERRALAB_SANDBOX_SEATBELT=off``
+  sandbox *refuses to run* rather than run unconfined (``CORDATA_SANDBOX_SEATBELT=off``
   is the explicit, logged opt-out for a nested-sandbox dev box).
 * **A killable process group.** The child leads its own group; a timeout or a cancelled
   task kills the whole tree, so a build the CLI launched does not outlive it.
@@ -55,7 +55,6 @@ logger = logging.getLogger(__name__)
 
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 SEATBELT_ENV = "CORDATA_SANDBOX_SEATBELT"
-LEGACY_SEATBELT_ENV = "SIERRALAB_SANDBOX_SEATBELT"
 
 #: The only parent-environment variables a child inherits.
 DEFAULT_ENV_ALLOW = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TERM", "LANG", "TZ", "LC_ALL", "LC_CTYPE", "COLORTERM", "NO_COLOR")
@@ -69,7 +68,7 @@ _SB_DOTENV_TEMPLATE = r"(^|/)\.env\.(example|sample|template|dist)$"
 
 #: Home-relative files and directories the child never needs and must not read.
 DENY_HOME = (
-    ".sierralab/daemon.json",
+    ".cordata/daemon.json",
     ".aws",
     ".netrc",
     ".config/gh",
@@ -153,7 +152,7 @@ class ScrubbedSandbox(Sandbox):
         self.root = Path(root or os.getcwd()).resolve()
         self._base_env = base_env
         self._allow = tuple(env_allow)
-        mode = (os.getenv(SEATBELT_ENV) or os.getenv(LEGACY_SEATBELT_ENV) or seatbelt).strip().lower()
+        mode = (os.getenv(SEATBELT_ENV) or seatbelt).strip().lower()
         if mode not in ("auto", "on", "off"):
             raise ValueError(f"seatbelt must be auto|on|off, got {mode!r}")
         self.seatbelt_mode = mode

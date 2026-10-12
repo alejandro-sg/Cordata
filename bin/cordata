@@ -1,1 +1,103 @@
-orchestrator
+#!/usr/bin/env bash
+# Cordata CLI
+# Fast, interactive AI coding assistant (Claude Code & Antigravity style)
+# with autonomous multi-worker orchestration.
+#
+# Interactive mode (default):
+#   cordata                             # Launch interactive TUI session
+#   cordata "what is this project"      # Launch interactive TUI with initial query
+#   cordata -c                          # Continue newest session
+#   cordata --resume <id>               # Resume session by ID
+#
+# Batch autonomous commands:
+#   cordata run "<goal>"                # Autonomous multi-worker coding run
+#   cordata status                      # Worker pool headroom & recent runs
+#   cordata show <run_id>               # Inspect plan, history, and audit
+#   cordata resume <run_id>             # Continue paused batch run
+#   cordata replay                      # Replay learned dispatch policy
+#   cordata doctor                      # Is everything in place? One screen, fixes included
+
+set -euo pipefail
+
+# Resolve the absolute path to this script, resolving symlinks
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+  DIR="$( cd -P "$( dirname "$SOURCE" )" >/dev/null 2>&1 && pwd )"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+BIN_DIR="$( cd -P "$( dirname "$SOURCE" )" >/dev/null 2>&1 && pwd )"
+REPO_ROOT="$( cd -P "$BIN_DIR/.." >/dev/null 2>&1 && pwd )"
+
+PYTHON="$REPO_ROOT/backend/.venv/bin/python"
+TUI_BIN="$REPO_ROOT/tui/target/release/acp-tui"
+if [[ ! -x "$TUI_BIN" ]]; then
+  TUI_BIN="$REPO_ROOT/tui/target/debug/acp-tui"
+fi
+
+if [[ ! -x "$PYTHON" ]]; then
+  echo "Error: Cordata virtualenv not found at $PYTHON" >&2
+  echo "Please run: make setup (or scripts/setup.sh) in $REPO_ROOT" >&2
+  exit 1
+fi
+
+export PYTHONPATH="$REPO_ROOT/backend:${PYTHONPATH:-}"
+export ACP_TUI_BACKEND_ROOT="$REPO_ROOT"
+
+is_batch_cmd() {
+  case "${1:-}" in
+    run|status|show|resume|replay|doctor) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Explicit TUI invocation
+if [[ "${1:-}" == "tui" ]]; then
+  shift
+  exec "$TUI_BIN" "$@"
+fi
+
+# Help flag handling
+if [[ "$#" -eq 1 && ("$1" == "-h" || "$1" == "--help") ]]; then
+  cat << 'EOF'
+Cordata — AI Coding Assistant & Autonomous Orchestrator
+
+Interactive Assistant (Claude Code & Antigravity style):
+  cordata [PROMPT]                 Launch interactive TUI (optionally with initial query)
+  cordata -c, --continue           Resume newest session in current directory
+  cordata --resume SESSION_ID      Resume an existing interactive session
+
+Autonomous Batch Commands:
+  cordata run "<goal>" [OPTIONS]   Run an orchestrated coding task across CLI workers
+  cordata status                   Inspect worker headroom, recent runs and handoffs
+  cordata show RUN_ID              Show one run's plan, history, and audit
+  cordata resume RUN_ID            Continue a paused batch run
+  cordata replay [OPTIONS]         Benchmark learned dispatch policy against baseline
+  cordata doctor                   Check the CLIs, services and settings Cordata leans on
+
+Options:
+  --cwd DIR                        Target project directory (default: current directory)
+  --allow-direct                   Allow direct network access without vault proxy
+  -h, --help                       Show this help message
+  --version                        Show version
+EOF
+  exit 0
+fi
+
+if [[ "$#" -eq 0 ]]; then
+  # No arguments: launch interactive TUI
+  exec "$TUI_BIN"
+fi
+
+if is_batch_cmd "$1"; then
+  # Explicit batch command: run python orchestrator
+  exec "$PYTHON" -m orchestrator "$@"
+fi
+
+# If first arg is a known python flag (e.g. --world, --logs, etc.)
+if [[ "$1" == --* && ("$1" == "--world" || "$1" == "--logs" || "$1" == "--ledger") ]]; then
+  exec "$PYTHON" -m orchestrator "$@"
+fi
+
+# Default: route to the interactive TUI client (supports prompts and TUI options)
+exec "$TUI_BIN" "$@"

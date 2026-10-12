@@ -20,13 +20,13 @@ Where MCP servers come from (lowest precedence first; a later file's server of
 the same name replaces an earlier one):
 
     backend   backend/mcp_servers.json           (the web settings UI's file)
-    user      ~/.sierralab/mcp.json
+    user      ~/.cordata/mcp.json
     project   <cwd>/.vscode/mcp.json, <cwd>/.cursor/mcp.json, <cwd>/mcp.json
               (other editors' declarations: a repository set up for VS Code or
               Cursor brings its servers along — VS Code's ``servers`` / ``type``
               shape is read too, ``${workspaceFolder}`` is the project)
-    project   <cwd>/.mcp.json, <cwd>/.sierralab/mcp.json   (committed with a repo)
-    local     <cwd>/.sierralab/mcp.local.json    (this machine only)
+    project   <cwd>/.mcp.json, <cwd>/.cordata/mcp.json   (committed with a repo)
+    local     <cwd>/.cordata/mcp.local.json    (this machine only)
 
 Trust: a project or local server is a command a cloned repository wants to run
 on your machine, so it starts only once the folder is trusted (``/trust``,
@@ -40,7 +40,7 @@ sources), ``autostart`` (default true) and ``untrusted_output`` (default true:
 results are wrapped in the untrusted-data guard, like web content).
 
 ``/plugins disable <name>`` can persist the choice in
-``<cwd>/.sierralab/plugins.local.json`` (``{"disabled": [...]}``).
+``<cwd>/.cordata/plugins.local.json`` (``{"disabled": [...]}``).
 """
 
 from __future__ import annotations
@@ -112,8 +112,8 @@ def mcp_config_paths(cwd: str | os.PathLike) -> list[tuple[str, Path]]:
         ("project", cwd / ".cursor" / "mcp.json"),
         ("project", cwd / "mcp.json"),
         ("project", cwd / ".mcp.json"),
-        ("project", cwd / ".sierralab" / "mcp.json"),
-        ("local", cwd / ".sierralab" / "mcp.local.json"),
+        ("project", cwd / ".cordata" / "mcp.json"),
+        ("local", cwd / ".cordata" / "mcp.local.json"),
     ]
 
 
@@ -149,7 +149,7 @@ def _editor_shaped(raw: dict, cwd: Path) -> tuple[dict, str | None]:
     nothing here can answer that prompt)."""
     text = json.dumps(raw)
     if "${input:" in text:
-        return raw, "needs a value VS Code prompts for (${input:…}); declare it in .sierralab/mcp.json instead"
+        return raw, "needs a value VS Code prompts for (${input:…}); declare it in .cordata/mcp.json instead"
     if "${workspaceFolder" in text:
         raw = json.loads(text.replace("${workspaceFolder}", str(cwd)).replace("${workspaceFolderBasename}", cwd.name))
     if "type" in raw and "transport" not in raw and raw["type"] in _VSCODE_TYPES:
@@ -242,7 +242,7 @@ class PluginHost:
         return settings_store.current(self.cwd).trusted
 
     def _disabled_path(self) -> Path:
-        return Path(self.cwd) / ".sierralab" / "plugins.local.json"
+        return Path(self.cwd) / ".cordata" / "plugins.local.json"
 
     def persisted_disabled(self) -> set[str]:
         try:
@@ -296,7 +296,7 @@ class PluginHost:
         call from a worker thread — MCP servers can take seconds to start).
 
         A *project's own* plugin declarations (``.mcp.json``,
-        ``.sierralab/mcp.json``, ``mcp.local.json``) are started only when the
+        ``.cordata/mcp.json``, ``mcp.local.json``) are started only when the
         folder is trusted — the same ``trustedProjects`` check the settings
         files use, and the same principle (a stranger's repo cannot activate
         anything of its own). Spawning a server is a launch-time action, not a
@@ -633,7 +633,7 @@ def capabilities_injector(host: "PluginHost") -> Any:
     session began is mentioned from the next message on)."""
     from strands.vended_plugins.context_injector import ContextInjector  # noqa: PLC0415
 
-    return ContextInjector(lambda context: capabilities_text(host) or None, name="sierralab:mcp", trigger="userTurn")
+    return ContextInjector(lambda context: capabilities_text(host) or None, name="cordata:mcp", trigger="userTurn")
 
 
 async def run_blocking(fn: Callable, *args, **kwargs):

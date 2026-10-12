@@ -7,7 +7,7 @@
 //! the audit row and the log line. Run by `backend/_lab_gui_live_smoke_test.py` (`make lab-live`),
 //! which then reads the demo daemon's `daemon.log` and `state.db` for what this left behind.
 //!
-//!   SIERRALAB_HOME=<demo home> cargo test -p harness-menubar --test live_turn -- --ignored --nocapture
+//!   CORDATA_HOME=<demo home> cargo test -p harness-menubar --test live_turn -- --ignored --nocapture
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -46,7 +46,7 @@ fn turn_reply(events: &[ClientEvent]) -> Option<harness_proto::v1::TurnReply> {
 #[ignore = "needs the demo daemon: run `make lab-live`"]
 fn a_captured_turn_reaches_the_daemon_masked_and_a_password_manager_never_does() {
     let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
-    let daemon = DaemonConfig::discover().expect("SIERRALAB_HOME must point at a running demo daemon");
+    let daemon = DaemonConfig::discover().expect("CORDATA_HOME must point at a running demo daemon");
     let handle = spawn(ClientConfig::new(daemon).with_name("harness-menubar"), runtime.handle());
     let mut model = LabModel::default();
     assert!(pump_until(&handle, &mut model, Duration::from_secs(20), |m, _| m.connection.is_online() && m.focus.is_some()), "never came online with a session: {:?}", model.connection);

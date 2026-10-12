@@ -17,7 +17,7 @@ import os
 import tempfile
 from pathlib import Path
 
-os.environ["SIERRALAB_STATE_DB"] = os.path.join(tempfile.mkdtemp(prefix="fixmem-ledger-"), "state.db")
+os.environ["CORDATA_STATE_DB"] = os.path.join(tempfile.mkdtemp(prefix="fixmem-ledger-"), "state.db")
 
 import fix_memory  # noqa: E402
 import state_store  # noqa: E402

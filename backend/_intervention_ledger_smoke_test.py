@@ -4,7 +4,7 @@ the turn comes back after a crash.
 
 Runs the real `_resolve_interrupts` — no model server and no ACP connection, so
 it is a few hundred milliseconds rather than the ~8s a full session costs.
-Hermetic: `SIERRALAB_STATE_DB` points at a temp file before `state_store` (and
+Hermetic: `CORDATA_STATE_DB` points at a temp file before `state_store` (and
 therefore `acp_server`) is imported, so a run never touches the developer's real
 ledger. Run directly:
 
@@ -14,19 +14,19 @@ ledger. Run directly:
 import asyncio
 import json
 import os
-os.environ.setdefault("SIERRALAB_REFLECT", "off")  # scripted/live test turns are not lessons (reflect.py)
+os.environ.setdefault("CORDATA_REFLECT", "off")  # scripted/live test turns are not lessons (reflect.py)
 import tempfile
 import time
 import types
 from pathlib import Path
 
 _TMP = tempfile.TemporaryDirectory()
-os.environ["SIERRALAB_STATE_DB"] = str(Path(_TMP.name) / "state.db")
+os.environ["CORDATA_STATE_DB"] = str(Path(_TMP.name) / "state.db")
 
 import acp  # noqa: E402
 import settings_store  # noqa: E402
 import state_store  # noqa: E402
-from acp_server import SierraLabAcpAgent, _settled_intervention  # noqa: E402
+from acp_server import CordataAcpAgent, _settled_intervention  # noqa: E402
 
 
 def check(condition: bool, label: str) -> None:
@@ -51,7 +51,7 @@ class FakeConn:
 
 
 def fake_agent(conn=None):
-    """A stand-in `SierraLabAcpAgent` for the interrupt path. `_resolve_interrupts`
+    """A stand-in `CordataAcpAgent` for the interrupt path. `_resolve_interrupts`
     touches only `_conn`, `_sessions` and `_remember_always`; an empty registry
     means the router-hook rejection note is skipped, which is the only other
     thing it reaches for. `saved_rules` records what always-allow would have
@@ -79,7 +79,7 @@ def test_a_prompt_is_staged_then_resolved() -> None:
     risk = {"event": "risk", "score": 0.12, "band": "safe", "label": "read_only", "confidence": 0.9}
     item = interrupt("int-approved", "shell", {"command": "ls"}, always_rule="shell(ls)", risk=risk)
 
-    responses = asyncio.run(SierraLabAcpAgent._resolve_interrupts(agent, "sess-1", [item]))
+    responses = asyncio.run(CordataAcpAgent._resolve_interrupts(agent, "sess-1", [item]))
 
     check(responses == [{"interruptResponse": {"interruptId": "int-approved", "response": True}}], "an allowed prompt resumes the tool")
     check(len(conn.asks) == 1, "the user is asked exactly once")
@@ -103,15 +103,15 @@ def test_a_prompt_is_staged_then_resolved() -> None:
 
 
 def test_a_relayed_answer_names_its_front_door() -> None:
-    """The daemon stamps `_meta.sierralab.decidedBy` on the answer it relays to the child when
+    """The daemon stamps `_meta.cordata.decidedBy` on the answer it relays to the child when
     the decision came from a remote door (the Discord bot). Every answer reaches the child as the
     same JSON-RPC response, so without this the ledger would attribute a phone approval to a
     person at the GUI — an audit trail that cannot answer "who decided this"."""
     print("\n=== a relayed answer names its front door ===")
-    conn = FakeConn("allow", meta={"sierralab": {"decidedBy": "discord"}})
+    conn = FakeConn("allow", meta={"cordata": {"decidedBy": "discord"}})
     agent = fake_agent(conn)
 
-    asyncio.run(SierraLabAcpAgent._resolve_interrupts(agent, "sess-door", [interrupt("int-door", "shell", {"command": "ls"})]))
+    asyncio.run(CordataAcpAgent._resolve_interrupts(agent, "sess-door", [interrupt("int-door", "shell", {"command": "ls"})]))
 
     row = state_store.get_intervention("int-door")
     check(row["status"] == "approved" and row["decided_by"] == "discord", "the ledger names the door that answered, not just 'user'")
@@ -121,10 +121,10 @@ def test_a_relayed_answer_names_its_front_door() -> None:
     # A response with no `_meta` at all is a person on the socket, which is what "user" has
     # always meant — and an unreadable slot must not invent a door.
     for meta, expected, label in ((None, "user", "a client that says nothing is a person at the socket"),
-                                 ({"sierralab": "not a dict"}, "user", "an unreadable slot falls back rather than guessing"),
-                                 ({"other": {"decidedBy": "discord"}}, "user", "a door named outside the sierralab slot is ignored")):
+                                 ({"cordata": "not a dict"}, "user", "an unreadable slot falls back rather than guessing"),
+                                 ({"other": {"decidedBy": "discord"}}, "user", "a door named outside the cordata slot is ignored")):
         agent = fake_agent(FakeConn("allow", meta=meta))
-        asyncio.run(SierraLabAcpAgent._resolve_interrupts(agent, "sess-plain", [interrupt(f"int-plain-{expected}-{label[:4]}", "shell", {"command": "ls"})]))
+        asyncio.run(CordataAcpAgent._resolve_interrupts(agent, "sess-plain", [interrupt(f"int-plain-{expected}-{label[:4]}", "shell", {"command": "ls"})]))
         row = state_store.get_intervention(f"int-plain-{expected}-{label[:4]}")
         check(row["decided_by"] == expected, label)
 
@@ -135,7 +135,7 @@ def test_always_allow_is_recorded_as_a_rule() -> None:
     agent = fake_agent(conn)
     item = interrupt("int-always", "shell", {"command": "git status"}, always_rule="shell(git status)")
 
-    responses = asyncio.run(SierraLabAcpAgent._resolve_interrupts(agent, "sess-2", [item]))
+    responses = asyncio.run(CordataAcpAgent._resolve_interrupts(agent, "sess-2", [item]))
     check(responses[0]["interruptResponse"]["response"] is True, "always-allow approves the call")
     check(agent.saved_rules == ["shell(git status)"], "and the rule is saved for the project")
 
@@ -151,7 +151,7 @@ def test_a_rejected_prompt_is_recorded_as_rejected() -> None:
     agent = fake_agent(FakeConn("reject"))
     item = interrupt("int-rejected", "file_write", {"path": "x"})
 
-    responses = asyncio.run(SierraLabAcpAgent._resolve_interrupts(agent, "sess-3", [item]))
+    responses = asyncio.run(CordataAcpAgent._resolve_interrupts(agent, "sess-3", [item]))
 
     check(responses[0]["interruptResponse"]["response"] is False, "a rejected prompt blocks the call")
     row = state_store.get_intervention("int-rejected")
@@ -163,7 +163,7 @@ def test_no_client_is_a_rejection_not_a_user_decision() -> None:
     agent = fake_agent(None)
     item = interrupt("int-headless", "shell", {"command": "rm -rf /"})
 
-    responses = asyncio.run(SierraLabAcpAgent._resolve_interrupts(agent, "sess-4", [item]))
+    responses = asyncio.run(CordataAcpAgent._resolve_interrupts(agent, "sess-4", [item]))
 
     check(responses[0]["interruptResponse"]["response"] is False, "with nobody to ask, the call does not run")
     row = state_store.get_intervention("int-headless")
@@ -183,7 +183,7 @@ def test_a_recorded_decision_is_replayed_not_re_asked() -> None:
     agent = fake_agent(conn)
     item = types.SimpleNamespace(id="int-replay", reason=json.dumps(payload))
 
-    responses = asyncio.run(SierraLabAcpAgent._resolve_interrupts(agent, "sess-5", [item]))
+    responses = asyncio.run(CordataAcpAgent._resolve_interrupts(agent, "sess-5", [item]))
 
     check(conn.asks == [], "the recorded answer is replayed instead of asking again")
     check(responses[0]["interruptResponse"]["response"] is True, "the turn resumes with the answer the user gave")
@@ -233,7 +233,7 @@ def test_a_mismatched_row_re_prompts() -> None:
     conn = FakeConn("allow")
     agent = fake_agent(conn)
     item = interrupt("int-reuse", "file_write", {"path": "x"})
-    responses = asyncio.run(SierraLabAcpAgent._resolve_interrupts(agent, "sess-6", [item]))
+    responses = asyncio.run(CordataAcpAgent._resolve_interrupts(agent, "sess-6", [item]))
     check(len(conn.asks) == 1, "a mismatched row means the user is asked")
     check(responses[0]["interruptResponse"]["response"] is True, "and the fresh answer decides")
     check(state_store.get_intervention("int-reuse")["tool"] == "file_write", "the row now describes the call it decided")
@@ -244,7 +244,7 @@ def test_an_unparseable_reason_still_gets_a_row() -> None:
     agent = fake_agent(FakeConn("reject"))
     item = types.SimpleNamespace(id="int-garbled", reason="not json at all")
 
-    responses = asyncio.run(SierraLabAcpAgent._resolve_interrupts(agent, "sess-7", [item]))
+    responses = asyncio.run(CordataAcpAgent._resolve_interrupts(agent, "sess-7", [item]))
 
     check(responses[0]["interruptResponse"]["response"] is False, "a malformed interrupt is refused, not crashed on")
     row = state_store.get_intervention("int-garbled")

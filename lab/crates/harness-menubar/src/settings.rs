@@ -11,7 +11,7 @@
 //! Three rules, and each is the difference between a setting and a hole:
 //!
 //! * **User scope only.** `capture.allowlist` is trusted-gated for the same reason `vault.enabled` is
-//!   (`backend/settings_store.py:200-215`): `.sierralab/settings.json` is a file a cloned repository
+//!   (`backend/settings_store.py:200-215`): `.cordata/settings.json` is a file a cloned repository
 //!   brings with it, and a repository must not be able to grant itself the ability to read windows.
 //!   The project and local files are still *read*, so this can say they were seen and ignored rather
 //!   than pretend they do not exist.
@@ -28,11 +28,11 @@ use std::path::{Path, PathBuf};
 use harness_capture::Allowlist;
 use serde_json::{Map, Value};
 
-/// The settings file's home, honouring `SIERRALAB_HOME` exactly as the Python side does.
+/// The settings file's home, honouring `CORDATA_HOME` exactly as the Python side does.
 pub fn home() -> PathBuf {
-    match std::env::var_os("SIERRALAB_HOME") {
+    match std::env::var_os("CORDATA_HOME") {
         Some(dir) if !dir.is_empty() => PathBuf::from(dir),
-        _ => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".sierralab"),
+        _ => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cordata"),
     }
 }
 
@@ -158,11 +158,11 @@ impl CaptureSettings {
 fn ignored_scopes() -> Vec<String> {
     let cwd = std::env::current_dir().unwrap_or_default();
     let mut warnings = Vec::new();
-    for (name, path) in [("settings.json", cwd.join(".sierralab").join("settings.json")), ("settings.local.json", cwd.join(".sierralab").join("settings.local.json"))] {
+    for (name, path) in [("settings.json", cwd.join(".cordata").join("settings.json")), ("settings.local.json", cwd.join(".cordata").join("settings.local.json"))] {
         let Ok(text) = fs::read_to_string(&path) else { continue };
         let mentions = serde_json::from_str::<Value>(&text).ok().and_then(|json| json.get("capture").cloned()).is_some();
         if mentions {
-            warnings.push(format!(".sierralab/{name} sets capture.*; only your own settings may allow an app to be read"));
+            warnings.push(format!(".cordata/{name} sets capture.*; only your own settings may allow an app to be read"));
         }
     }
     warnings
@@ -193,7 +193,7 @@ mod tests {
     use super::*;
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("sierralab-capture-settings-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("cordata-capture-settings-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -288,7 +288,7 @@ mod tests {
         // the ability to read windows. The user file is read; the project file is read only to say so.
         let dir = scratch("scopes");
         let user = dir.join("settings.json");
-        let project = dir.join(".sierralab").join("settings.json");
+        let project = dir.join(".cordata").join("settings.json");
         write(&user, r#"{"capture":{"allowlist":["com.apple.Safari"]}}"#);
         write(&project, r#"{"capture":{"enabled":true,"allowlist":["com.tinyspeck.slackmacgap"]}}"#);
 

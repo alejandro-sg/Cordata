@@ -1,11 +1,11 @@
-"""Layered user settings and permission rules — the sierralab-agents analogue of
+"""Layered user settings and permission rules — the cordata-agents analogue of
 Claude Code's ``settings.json`` / ``CLAUDE.md`` (and Kilo's ``kilo.jsonc``).
 
 Three JSON files, lowest precedence first (a higher one wins on a conflict):
 
-    user     ~/.sierralab/settings.json            (``SIERRALAB_HOME`` moves the dir)
-    project  <cwd>/.sierralab/settings.json        (commit it; shared with the team)
-    local    <cwd>/.sierralab/settings.local.json  (this machine only; gitignored)
+    user     ~/.cordata/settings.json            (``CORDATA_HOME`` moves the dir)
+    project  <cwd>/.cordata/settings.json        (commit it; shared with the team)
+    local    <cwd>/.cordata/settings.local.json  (this machine only; gitignored)
 
 Objects merge key by key; ``permissions.allow/ask/deny`` lists *accumulate* across
 files (so a project can add a deny without erasing the user's own rules); every
@@ -18,7 +18,7 @@ macOS Keychain (see ``secret_guard.py``); a settings value that looks like a
 secret, or a key named like one, is refused. The model *provider* is deployment
 configuration (env / ``.env``), not a preference.
 
-Trust. A cloned repository can ship ``.sierralab/settings*.json``. Its ``deny``
+Trust. A cloned repository can ship ``.cordata/settings*.json``. Its ``deny``
 and ``ask`` rules only restrict, so they always apply; its ``allow`` rules and a
 more permissive default mode would let a stranger's repo switch off the approval
 prompts, so they apply only once the folder is listed in the *user* file's
@@ -226,7 +226,7 @@ USER_ONLY_KEYS = ("trustedProjects",)
 
 #: Keys a repository must not be able to set for itself. Like `defaultMode:
 #: "auto"` and `selfHeal.autoApply`, they decide how much the harness protects
-#: the user, and `.sierralab/settings.json` is a file a cloned project brings
+#: the user, and `.cordata/settings.json` is a file a cloned project brings
 #: along: `vault.enabled: false` would turn off the egress proxy the user chose,
 #: `vault.egressPolicy: "proxy"` would turn its fail-closed refusal into
 #: fail-open, `vault.addr` would point every tool subprocess's proxy variables at
@@ -265,21 +265,17 @@ BUILTIN_DENY = (
 
 
 def user_dir() -> Path:
-    env_dir = os.environ.get("CORDATA_HOME") or os.environ.get("SIERRALAB_HOME")
+    env_dir = os.environ.get("CORDATA_HOME")
     if env_dir:
         return Path(env_dir)
-    cordata = Path.home() / ".cordata"
-    sierralab = Path.home() / ".sierralab"
-    if not cordata.exists() and sierralab.exists():
-        return sierralab
-    return cordata
+    return Path.home() / ".cordata"
 
 
 def settings_path(scope: str, cwd: str | os.PathLike) -> Path:
     if scope == "user":
         return user_dir() / "settings.json"
     p_cwd = Path(cwd)
-    base = p_cwd / ".cordata" if (p_cwd / ".cordata").exists() else p_cwd / ".sierralab"
+    base = p_cwd / ".cordata"
     return base / ("settings.json" if scope == "project" else "settings.local.json")
 
 
@@ -510,7 +506,7 @@ def _after_write(scope: str, path: Path) -> None:
     if scope == "local":
         ignore = path.parent / ".gitignore"
         if not ignore.exists():
-            ignore.write_text("settings.local.json\nSIERRALAB.local.md\n", encoding="utf-8")
+            ignore.write_text("settings.local.json\nCORDATA.local.md\n", encoding="utf-8")
 
 
 def set_value(scope: str, key: str, value, cwd) -> Path:
@@ -590,21 +586,19 @@ INSTRUCTION_CAP = 16_000
 
 def instruction_files(cwd: str | os.PathLike) -> list[tuple[str, Path]]:
     """(scope, path) of the guidance files that exist: the user's own, the
-    project's (``SIERRALAB.md``, else ``AGENTS.md`` / ``CLAUDE.md`` so a repo set
+    project's (``CORDATA.md``, else ``AGENTS.md`` / ``CLAUDE.md`` so a repo set
     up for another tool still works), and this machine's local one."""
     cwd = Path(cwd)
     found: list[tuple[str, Path]] = []
     candidates = [
-        ("user", [user_dir() / "CORDATA.md", user_dir() / "SIERRALAB.md"]),
+        ("user", [user_dir() / "CORDATA.md"]),
         ("project", [
             cwd / "CORDATA.md",
             cwd / ".cordata" / "CORDATA.md",
-            cwd / "SIERRALAB.md",
-            cwd / ".sierralab" / "SIERRALAB.md",
             cwd / "AGENTS.md",
             cwd / "CLAUDE.md",
         ]),
-        ("local", [cwd / "CORDATA.local.md", cwd / "SIERRALAB.local.md"]),
+        ("local", [cwd / "CORDATA.local.md"]),
     ]
     for scope, options in candidates:
         for path in options:

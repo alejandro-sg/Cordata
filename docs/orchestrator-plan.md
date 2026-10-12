@@ -8,7 +8,7 @@ Baseline measurements recorded from checkout commit `1817ee9` (`feat/acp-tui-lay
 
 ## 1. The mission, restated
 
-Make sierralab-agents a **lean, headless-first orchestrator** whose primary job is to get a coding task done at the lowest cost that reliably passes its own verification checks, by delegating between three worker families:
+Make cordata-agents a **lean, headless-first orchestrator** whose primary job is to get a coding task done at the lowest cost that reliably passes its own verification checks, by delegating between three worker families:
 
 | Worker | What it is here | Headless surface (measured on this machine) |
 | --- | --- | --- |

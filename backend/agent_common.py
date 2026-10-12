@@ -379,7 +379,7 @@ def build_plugins(
     notify: Any = None,
 ) -> list:
     """The skills a session can reach: the ones that ship, plus ``extra_skill_dirs`` (the learned skills that have been
-    promoted for the session's project — ``learned.live_dirs``) and any named in ``SIERRALAB_EXTRA_SKILLS`` (the
+    promoted for the session's project — ``learned.live_dirs``) and any named in ``CORDATA_EXTRA_SKILLS`` (the
     promotion gate's A/B runs put a candidate there).
 
     Not listed in the prompt wholesale — 49 skills were 19 KB on every model call. ``skill_search`` lists the few that
@@ -387,7 +387,7 @@ def build_plugins(
     ``search_skills`` for the rest; every skill stays one search away. ``context.skillSearch: false`` lists them all."""
     import skill_search
 
-    from_env = [p for p in os.environ.get("SIERRALAB_EXTRA_SKILLS", "").split(os.pathsep) if p]
+    from_env = [p for p in os.environ.get("CORDATA_EXTRA_SKILLS", "").split(os.pathsep) if p]
     # `from_env` are candidates under measurement (promote.py's A/B arms): pinned, so the arm really shows the model the lesson.
     plugins = skill_search.build_skill_plugins(
         [str(SKILLS_DIR), *(extra_skill_dirs or [])], decider=decider, preferences=preferences, notify=notify, pinned_sources=from_env
@@ -527,10 +527,10 @@ def ensure_provider_ready() -> None:
         ]
         if missing:
             raise RuntimeError(
-                f"MODEL_PROVIDER=openai_compatible but {', '.join(missing)} is not set. For the key: export "
-                "OLLAMA_API_KEY in the shell that starts the client, or store it once in the macOS Keychain "
-                '(it prompts for the value):  security add-generic-password -a "$USER" -s sierralab-ollama-api-key -w   '
-                "— or set MODEL_PROVIDER=local in backend/.env to use oMLX."
+                f"MODEL_PROVIDER=openai_compatible but {', '.join(missing)} is not set. For the key, run `make key` in the Cordata "
+                "folder (a hidden prompt; it is stored in the macOS Keychain, never in a file) or export OLLAMA_API_KEY in the shell "
+                "that starts the client. To use a model without a key instead, set MODEL_PROVIDER=ollama_cloud (after `ollama signin`) "
+                "or MODEL_PROVIDER=local in backend/.env."
             )
         rejection = _cloud_key_rejection()
         if rejection:
@@ -544,7 +544,7 @@ def ensure_provider_ready() -> None:
     elif ACTIVE_PROVIDER == "anthropic" and not reveal(ACTIVE_ANTHROPIC_API_KEY):
         raise RuntimeError(
             "MODEL_PROVIDER=anthropic but no API key was found. Export ANTHROPIC_API_KEY, or store it in the macOS "
-            'Keychain:  security add-generic-password -a "$USER" -s sierralab-anthropic-api-key -w'
+            'Keychain:  security add-generic-password -a "$USER" -s cordata-anthropic-api-key -w'
         )
 
 

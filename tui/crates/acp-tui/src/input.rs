@@ -31,6 +31,14 @@ impl Input {
         self.cursor = self.text.len();
     }
 
+    /// Replace the bytes in `range` with `with` and put the cursor just after it (completion).
+    pub fn replace_range(&mut self, range: std::ops::Range<usize>, with: &str) {
+        let start = range.start.min(self.text.len());
+        let end = range.end.clamp(start, self.text.len());
+        self.text.replace_range(start..end, with);
+        self.cursor = start + with.len();
+    }
+
     /// No newline before the cursor: Up should walk history, not move a line.
     pub fn on_first_line(&self) -> bool {
         !self.text[..self.cursor].contains('\n')
@@ -107,6 +115,15 @@ mod tests {
         input.end();
         input.insert('!');
         assert_eq!(input.text(), "élo!");
+    }
+
+    #[test]
+    fn completion_replaces_a_range_and_leaves_the_cursor_after_it() {
+        let mut input = Input::default();
+        input.set_text("fix @sr and more");
+        input.replace_range(4..7, "@src/app.rs ");
+        assert_eq!(input.text(), "fix @src/app.rs  and more");
+        assert_eq!(input.cursor(), 4 + "@src/app.rs ".len());
     }
 
     #[test]

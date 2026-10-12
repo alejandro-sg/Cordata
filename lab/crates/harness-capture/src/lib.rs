@@ -138,7 +138,7 @@ mod tests {
     fn the_deck_reads_the_app_it_was_summoned_over_not_itself() {
         // The deck is frontmost when the person clicks Capture; the read is for the app recorded at
         // summon time, by pid, and the deck's own identity never enters it.
-        let deck = FakeCaptureSource::new("harness-menubar", "dev.sierralab.menubar").with_selection("not this");
+        let deck = FakeCaptureSource::new("harness-menubar", "dev.cordata.menubar").with_selection("not this");
         let target = crate::Frontmost { name: "Safari".into(), bundle_id: "com.apple.Safari".into(), pid: deck.frontmost().map(|f| f.pid).unwrap_or(1) };
         let capture = capture_app(&deck, &target, &allowed());
         let preview = preview_of(&capture);

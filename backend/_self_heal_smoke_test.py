@@ -25,7 +25,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-os.environ["SIERRALAB_STATE_DB"] = os.path.join(tempfile.mkdtemp(prefix="heal-ledger-"), "state.db")  # remembered fixes go to a private ledger
+os.environ["CORDATA_STATE_DB"] = os.path.join(tempfile.mkdtemp(prefix="heal-ledger-"), "state.db")  # remembered fixes go to a private ledger
 os.environ.setdefault("BYPASS_TOOL_CONSENT", "true")
 os.environ.setdefault("STRANDS_NON_INTERACTIVE", "true")
 

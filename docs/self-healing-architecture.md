@@ -1,4 +1,4 @@
-# Self-Healing Multi-Agent Architecture for sierralab-agents
+# Self-Healing Multi-Agent Architecture for cordata-agents
 
 **Status:** design document (no code in this repo implements this yet).
 **Scope:** extends the existing Strands + AG-UI + CopilotKit skeleton with (1) a self-learning/self-healing loop that writes and validates new `@tool`s, and (2) a hierarchical Agents-as-Tools sub-agent layer, both gated by Human-in-the-Loop (HITL) at the same points the app already uses.

@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-os.environ["SIERRALAB_PRISM"] = "off"
+os.environ["CORDATA_PRISM"] = "off"
 
 import provider_settings  # noqa: F401  (before agent_common, which chdirs)
 
@@ -57,7 +57,7 @@ def patch(path: str, old: str, new: str) -> str:
 
 def test_syntax() -> None:
     root = repo("syntax", {"ok.py": "x = 1\n", "broken.py": "def f(:\n", "conf.json": '{"a": 1}\n', "conf.toml": "a = 1\n"})
-    os.environ["SIERRALAB_PREFLIGHT_RUFF"] = "off"
+    os.environ["CORDATA_PREFLIGHT_RUFF"] = "off"
     bad = preflight.check(str(root), "apply_patch", {"patch": patch("ok.py", "x = 1", "x = (1")}, lsp=False)
     check(not bad.ok and bad.problems[0].check == "syntax" and bad.problems[0].path == "ok.py" and bad.problems[0].line == 1, f"a Python syntax error is caught ({bad.problems[0].render()})")
     good = preflight.check(str(root), "apply_patch", {"patch": patch("ok.py", "x = 1", "x = 2")}, lsp=False)
@@ -84,7 +84,7 @@ def test_ruff_baseline() -> None:
     fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
     host_path = os.environ["PATH"]
     os.environ["PATH"] = f"{bindir}{os.pathsep}{host_path}"
-    os.environ.pop("SIERRALAB_PREFLIGHT_RUFF", None)
+    os.environ.pop("CORDATA_PREFLIGHT_RUFF", None)
     try:
         check(preflight.ruff_binary(str(root)) == str(fake), "a ruff on PATH is the one used")
         same = preflight.check(str(root), "apply_patch", {"patch": patch("mod.py", "import os  # LINT", "import os  # LINT  (comment)")}, lsp=False)
@@ -97,7 +97,7 @@ def test_ruff_baseline() -> None:
         os.environ["PATH"] = os.pathsep.join(d for d in os.environ["PATH"].split(os.pathsep)[1:] if not os.path.exists(os.path.join(d, "ruff")))
         check(preflight.ruff_binary(str(root)) is None and preflight.ruff_binary(str(root), trusted=True) == str(root / ".venv" / "bin" / "ruff"), "a repository's own .venv/bin/ruff only runs for a trusted folder")
     finally:
-        os.environ["SIERRALAB_PREFLIGHT_RUFF"] = "off"
+        os.environ["CORDATA_PREFLIGHT_RUFF"] = "off"
         os.environ["PATH"] = host_path
 
 
@@ -204,7 +204,7 @@ class CountingConn(Conn):
 
 
 def user_settings(values: dict) -> None:
-    home = Path(os.environ["SIERRALAB_HOME"])
+    home = Path(os.environ["CORDATA_HOME"])
     home.mkdir(parents=True, exist_ok=True)
     (home / "settings.json").write_text(json.dumps(values))
 

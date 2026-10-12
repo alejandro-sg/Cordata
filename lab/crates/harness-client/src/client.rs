@@ -63,7 +63,7 @@ impl ConfigSource {
         Self(Arc::new(source))
     }
 
-    /// `~/.sierralab/daemon.json` (or `SIERRALAB_HOME` / `SIERRALAB_DAEMON_CONFIG`), re-read each time.
+    /// `~/.cordata/daemon.json` (or `CORDATA_HOME` / `CORDATA_DAEMON_CONFIG`), re-read each time.
     pub fn discover() -> Self {
         Self::new(|| DaemonConfig::discover().map_err(|error| error.to_string()))
     }

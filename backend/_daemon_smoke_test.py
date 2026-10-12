@@ -22,12 +22,12 @@ from pathlib import Path
 
 _TMP = tempfile.TemporaryDirectory()
 _ROOT = Path(_TMP.name)
-os.environ["SIERRALAB_DAEMON_CONFIG"] = str(_ROOT / "daemon.json")
-os.environ["SIERRALAB_DAEMON_PID"] = str(_ROOT / "daemon.pid")
+os.environ["CORDATA_DAEMON_CONFIG"] = str(_ROOT / "daemon.json")
+os.environ["CORDATA_DAEMON_PID"] = str(_ROOT / "daemon.pid")
 # The daemon state carries an `Observer`, whose settings come from the user
 # directory — so without this the test would read the developer's real
-# `~/.sierralab/settings.json` and assert against whatever is in it.
-os.environ["SIERRALAB_HOME"] = str(_ROOT / "home")
+# `~/.cordata/settings.json` and assert against whatever is in it.
+os.environ["CORDATA_HOME"] = str(_ROOT / "home")
 
 # A stand-in for acp_server.py: newline-delimited JSON in, newline-delimited
 # JSON out. It answers `initialize` and echoes anything else, so the test can
@@ -39,7 +39,7 @@ _CHILD.write_text(
     "\n"
     "# The daemon's client sees this before it has sent anything, which is the\n"
     "# situation the backlog exists for.\n"
-    "print(json.dumps({'jsonrpc': '2.0', 'method': '_sierralab/hello'}), flush=True)\n"
+    "print(json.dumps({'jsonrpc': '2.0', 'method': '_cordata/hello'}), flush=True)\n"
     "\n"
     "for line in sys.stdin:\n"
     "    line = line.rstrip('\\r\\n')\n"
@@ -54,11 +54,11 @@ _CHILD.write_text(
     "    elif message.get('method') == 'late/emit':\n"
     "        # Output that arrives after the client that asked has gone.\n"
     "        time.sleep(0.4)\n"
-    "        reply = {'jsonrpc': '2.0', 'method': '_sierralab/late'}\n"
+    "        reply = {'jsonrpc': '2.0', 'method': '_cordata/late'}\n"
     "    elif message.get('method') == 'lab/emit':\n"
     "        # What acp_server.py's Lab sends: a state notification the daemon taps.\n"
     "        args = message.get('params') or {}\n"
-    "        reply = {'jsonrpc': '2.0', 'method': '_sierralab/lab', 'params': {'event': 'state', 'version': 1, 'seq': args.get('seq'), 'sessionId': args.get('sessionId'), 'pods': [{'name': 'orchestrator', 'status': args.get('status', 'idle')}], 'links': [], 'threat': None, 'hitl': []}}\n"
+    "        reply = {'jsonrpc': '2.0', 'method': '_cordata/lab', 'params': {'event': 'state', 'version': 1, 'seq': args.get('seq'), 'sessionId': args.get('sessionId'), 'pods': [{'name': 'orchestrator', 'status': args.get('status', 'idle')}], 'links': [], 'threat': None, 'hitl': []}}\n"
     "    elif message.get('method') == 'initialize':\n"
     "        reply = {'jsonrpc': '2.0', 'id': message.get('id'), 'result': {'protocolVersion': 1}}\n"
     "    else:\n"
@@ -68,7 +68,7 @@ _CHILD.write_text(
     "    print(json.dumps(reply), flush=True)\n"
 )
 
-os.environ["SIERRALAB_ACP_ENTRYPOINT"] = f"{os.sys.executable} {_CHILD}"
+os.environ["CORDATA_ACP_ENTRYPOINT"] = f"{os.sys.executable} {_CHILD}"
 
 from fastapi.testclient import TestClient  # noqa: E402  (after the env above)
 from starlette.websockets import WebSocketDisconnect  # noqa: E402
@@ -129,8 +129,8 @@ def test_remote_taps() -> None:
     stops = [supervisor.listen(topic, seen[topic].append) for topic in seen]
     supervisor._sessions["s1"] = Session(session_id="s1", cwd="/tmp", process=SimpleNamespace(returncode=None, pid=1))
 
-    task = json.dumps({"jsonrpc": "2.0", "method": "_sierralab/task", "params": {"title": "team plan", "state": "running"}})
-    laya = json.dumps({"jsonrpc": "2.0", "method": "_sierralab/laya", "params": {"route": "cloud", "risk": 0.9}})
+    task = json.dumps({"jsonrpc": "2.0", "method": "_cordata/task", "params": {"title": "team plan", "state": "running"}})
+    laya = json.dumps({"jsonrpc": "2.0", "method": "_cordata/laya", "params": {"route": "cloud", "risk": 0.9}})
     update = json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1", "update": {"sessionUpdate": "agent_message_chunk"}}})
     for line in (task, laya, update):
         supervisor._deliver("s1", line)
@@ -142,7 +142,7 @@ def test_remote_taps() -> None:
     # A frame that is not a task/laya update notifies nothing — the taps are narrow.
     seen["task"].clear()
     seen["laya"].clear()
-    supervisor._deliver("s1", json.dumps({"jsonrpc": "2.0", "method": "_sierralab/task", "params": "not a dict"}))
+    supervisor._deliver("s1", json.dumps({"jsonrpc": "2.0", "method": "_cordata/task", "params": "not a dict"}))
     check(not seen["task"] and not seen["laya"], "a malformed task frame notifies nobody instead of raising")
 
     # A listener that raises must not take the daemon down, and must not stop the
@@ -201,7 +201,7 @@ def test_second_doors() -> None:
                     {"optionId": "allow_always", "name": "Always allow shell(pytest *)", "kind": "allow_always"},
                     {"optionId": "reject", "name": "Reject", "kind": "reject_once"},
                 ],
-                "_meta": {"sierralab": {"tool": "shell"}},
+                "_meta": {"cordata": {"tool": "shell"}},
             },
         }
     )
@@ -214,7 +214,7 @@ def test_second_doors() -> None:
         asyncio.run(supervisor.write("s1", late_tui))
         responses = [w for w in stdin.writes if w.get("id") == 41]
         check(len(responses) == 1 and responses[0]["result"]["outcome"]["optionId"] == "allow", f"a terminal's late answer after {door} decided never reaches the child: one response")
-        check(responses[0]["result"]["_meta"]["sierralab"]["decidedBy"] == door, f"…and the one that did is attributed to {door}")
+        check(responses[0]["result"]["_meta"]["cordata"]["decidedBy"] == door, f"…and the one that did is attributed to {door}")
 
     supervisor, stdin = rig()
     supervisor._deliver("s1", ask)
@@ -237,16 +237,16 @@ def test_second_doors() -> None:
     asyncio.run(supervisor.write("s1", late_tui))
     check(len([w for w in stdin.writes if w.get("id") == 41]) == 1 and supervisor.session("s1").answered["41"] == "tui", "a terminal answering first is forwarded and recorded as the terminal")
 
-    # `session/update` and `_sierralab/turn` are tapped for whoever asked — a chat streams its reply from them.
+    # `session/update` and `_cordata/turn` are tapped for whoever asked — a chat streams its reply from them.
     supervisor, _ = rig()
     updates: list[dict] = []
     turns: list[dict] = []
     supervisor.listen("update", updates.append)
     supervisor.listen("turn", turns.append)
     supervisor._deliver("s1", json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "acp-1", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "hi"}}}}))
-    supervisor._deliver("s1", json.dumps({"jsonrpc": "2.0", "method": "_sierralab/turn", "params": {"sessionId": "acp-1", "tokensIn": 5, "tokensOut": 2}}))
+    supervisor._deliver("s1", json.dumps({"jsonrpc": "2.0", "method": "_cordata/turn", "params": {"sessionId": "acp-1", "tokensIn": 5, "tokensOut": 2}}))
     check(updates and updates[0]["session_id"] == "s1" and updates[0]["update"]["content"]["text"] == "hi", "a `session/update` reaches an update listener, tagged with the daemon's session")
-    check(turns and turns[0]["tokensIn"] == 5 and turns[0]["session_id"] == "s1", "a `_sierralab/turn` receipt reaches a turn listener")
+    check(turns and turns[0]["tokensIn"] == 5 and turns[0]["session_id"] == "s1", "a `_cordata/turn` receipt reaches a turn listener")
     check(len(supervisor.backlog("s1")) == 2, "and neither is consumed")
 
 
@@ -366,7 +366,7 @@ def test_daemon() -> None:
     # task — `asyncio.create_task` in `Supervisor.spawn`, which is what reads
     # the child's stdout — is cancelled the moment the request returns. The
     # symptom is subtle: the child starts fine, but its greeting never lands and
-    # the client instead sees the synthesized `_sierralab/daemon` "exited"
+    # the client instead sees the synthesized `_cordata/daemon` "exited"
     # frame. Inside the `with`, the loop lives as long as the test, which is
     # also how the real daemon's loop behaves under uvicorn.
     with TestClient(app) as client:
@@ -448,7 +448,7 @@ def test_daemon() -> None:
         with client.websocket_connect(f"/ws?session={session_id}&token={token}") as socket:
             replayed = json.loads(socket.receive_text())
             check(
-                replayed.get("method") == "_sierralab/hello",
+                replayed.get("method") == "_cordata/hello",
                 "the backlog the client missed is replayed on attach (what an approval prompt needs)",
             )
             message = '{"jsonrpc":"2.0","id":7,"method":"initialize","params":{"protocolVersion":1,"sessionId":"' + session_id + '"}}'
@@ -473,7 +473,7 @@ def test_daemon() -> None:
         with client.websocket_connect(f"/ws?cwd={project}&token={token}") as socket:
             named = json.loads(socket.receive_text())
             check(
-                named.get("method") == "_sierralab/session"
+                named.get("method") == "_cordata/session"
                 and named["params"]["sessionId"] == session_id,
                 f"attaching by directory names the live session there (got {named})",
             )
@@ -504,12 +504,12 @@ def test_daemon() -> None:
         with client.websocket_connect(f"/ws?session={session_id}&token={token}") as socket:
             socket.send_text('{"jsonrpc":"2.0","method":"late/emit","params":{"sessionId":"' + session_id + '"}}')
         check(
-            wait_for(lambda: any("_sierralab/late" in line for line in supervisor.backlog(session_id))),
+            wait_for(lambda: any("_cordata/late" in line for line in supervisor.backlog(session_id))),
             "a frame emitted after the client left is held in the backlog",
         )
         with client.websocket_connect(f"/ws?session={session_id}&token={token}") as socket:
             late = json.loads(socket.receive_text())
-            check(late.get("method") == "_sierralab/late", f"and delivered on reattach (got {late})")
+            check(late.get("method") == "_cordata/late", f"and delivered on reattach (got {late})")
             check(supervisor.backlog(session_id) == [], "the backlog is cleared once it has been handed over")
 
         # A directory with nothing running in it gets a session started, and a
@@ -553,7 +553,7 @@ def test_daemon() -> None:
 
 
 def test_lab_stream() -> None:
-    """The daemon taps `_sierralab/lab` frames and re-serves them read-only."""
+    """The daemon taps `_cordata/lab` frames and re-serves them read-only."""
     app = create_app()
     with TestClient(app) as client:
         daemon = app.state.daemon
@@ -581,13 +581,13 @@ def test_lab_stream() -> None:
             driver.send_text(json.dumps({"jsonrpc": "2.0", "method": "lab/emit", "params": {"sessionId": session_id, "seq": seq, "status": status}}))
 
         with client.websocket_connect(f"/ws?session={session_id}&token={token}") as driver:
-            check(json.loads(driver.receive_text()).get("method") == "_sierralab/hello", "the driving client attaches")
+            check(json.loads(driver.receive_text()).get("method") == "_cordata/hello", "the driving client attaches")
             with client.websocket_connect(f"/lab/ws?token={token}") as canvas:
                 first = json.loads(canvas.receive_text())
                 check(first["type"] == "snapshot" and first["sessions"] == {}, "a canvas starts from a snapshot (empty here)")
                 emit(driver, 1, "synthesizing")
                 seen = json.loads(driver.receive_text())
-                check(seen["method"] == "_sierralab/lab" and seen["params"]["seq"] == 1, "the driving client still receives the frame — the tap only reads a copy")
+                check(seen["method"] == "_cordata/lab" and seen["params"]["seq"] == 1, "the driving client still receives the frame — the tap only reads a copy")
                 frame = json.loads(canvas.receive_text())
                 check(frame["type"] == "state" and frame["sessionId"] == session_id and frame["state"]["pods"][0]["status"] == "synthesizing", f"the canvas receives the state ({frame['state']['pods']})")
                 check(session_id in daemon.supervisor._subscribers and daemon._subscribers == {session_id}, "watching does not displace the driving client")

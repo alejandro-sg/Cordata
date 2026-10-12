@@ -1,8 +1,8 @@
 //! Where the daemon is and the token it wants.
 //!
-//! The daemon writes both to `~/.sierralab/daemon.json` (mode 0600): `token`, `port` (the HTTP /
-//! WebSocket surface) and `grpcPort` (this client's). `SIERRALAB_DAEMON_CONFIG` points at another
-//! file, `SIERRALAB_HOME` at another directory; `SIERRALAB_GRPC_ADDR` / `SIERRALAB_DAEMON_TOKEN`
+//! The daemon writes both to `~/.cordata/daemon.json` (mode 0600): `token`, `port` (the HTTP /
+//! WebSocket surface) and `grpcPort` (this client's). `CORDATA_DAEMON_CONFIG` points at another
+//! file, `CORDATA_HOME` at another directory; `CORDATA_GRPC_ADDR` / `CORDATA_DAEMON_TOKEN`
 //! override the pair outright (for a daemon on a non-default port or a test). The listener is
 //! loopback-only, so the address is always `127.0.0.1:<port>`.
 
@@ -56,19 +56,19 @@ impl DaemonConfig {
     }
 
     pub fn config_path() -> PathBuf {
-        if let Some(path) = std::env::var_os("SIERRALAB_DAEMON_CONFIG") {
+        if let Some(path) = std::env::var_os("CORDATA_DAEMON_CONFIG") {
             return PathBuf::from(path);
         }
-        let home = std::env::var_os("SIERRALAB_HOME")
+        let home = std::env::var_os("CORDATA_HOME")
             .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".sierralab")))
-            .unwrap_or_else(|| PathBuf::from(".sierralab"));
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cordata")))
+            .unwrap_or_else(|| PathBuf::from(".cordata"));
         home.join("daemon.json")
     }
 
     pub fn discover() -> Result<Self, ConfigError> {
-        let env_addr = std::env::var("SIERRALAB_GRPC_ADDR").ok().filter(|a| !a.is_empty());
-        let env_token = std::env::var("SIERRALAB_DAEMON_TOKEN").ok().filter(|t| !t.is_empty());
+        let env_addr = std::env::var("CORDATA_GRPC_ADDR").ok().filter(|a| !a.is_empty());
+        let env_token = std::env::var("CORDATA_DAEMON_TOKEN").ok().filter(|t| !t.is_empty());
         if let (Some(addr), Some(token)) = (env_addr.clone(), env_token.clone()) {
             return Ok(Self { addr, token });
         }

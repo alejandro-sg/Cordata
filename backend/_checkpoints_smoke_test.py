@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 
 HOME = tempfile.mkdtemp(prefix="ckpt-home-")
-os.environ["SIERRALAB_HOME"] = HOME
+os.environ["CORDATA_HOME"] = HOME
 
 import checkpoints  # noqa: E402
 from harness_testing import check  # noqa: E402

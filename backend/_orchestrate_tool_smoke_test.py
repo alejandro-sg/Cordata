@@ -18,14 +18,14 @@ import types
 from pathlib import Path
 
 _HOME = tempfile.mkdtemp(prefix="orchestrate-home-")
-os.environ["SIERRALAB_HOME"] = _HOME
-os.environ["SIERRALAB_STATE_DB"] = str(Path(_HOME) / "state.db")
+os.environ["CORDATA_HOME"] = _HOME
+os.environ["CORDATA_STATE_DB"] = str(Path(_HOME) / "state.db")
 
 import provider_settings  # noqa: F401,E402
 import scrubbed_sandbox  # noqa: E402
 
 if not scrubbed_sandbox.seatbelt_works():
-    os.environ["SIERRALAB_SANDBOX_SEATBELT"] = "off"
+    os.environ["CORDATA_SANDBOX_SEATBELT"] = "off"
 
 import orchestrate_tool  # noqa: E402
 import workers as workers_pkg  # noqa: E402

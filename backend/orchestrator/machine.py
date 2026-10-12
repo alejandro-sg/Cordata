@@ -60,6 +60,10 @@ class RunConfig:
     max_tokens: int | None = None
     max_drift_retries: int = 2
     max_replans: int = 1
+    #: How many times a step that failed every attempt is tried again — strongest worker first, told to work in small
+    #: pieces — before the run gives up on the plan. Completed steps are kept: a replan restores the whole project to
+    #: the start of the run, so one stubborn step must not be allowed to cost nine good ones.
+    max_step_recoveries: int = 2
     harden: bool = True
     tier2: bool = True
     step_timeout_s: float = 1800.0
@@ -77,6 +81,7 @@ class RunRecord:
     start_checkpoint: str | None = None
     drift_retries: int = 0
     replans: int = 0
+    recoveries: int = 0
     reason: str = ""
     audit: dict[str, Any] | None = None
     workers: dict[str, list[str]] = field(default_factory=lambda: {"plan": [], "execute": [], "harden": [], "audit": []})
@@ -106,10 +111,10 @@ def save(record: RunRecord) -> None:
 
 
 def artifacts_dir(run_id: str) -> Path:
-    """Where a run's readable artifacts live: ``~/.sierralab/orchestrator/<run_id>/`` (``SIERRALAB_HOME`` moves it)."""
+    """Where a run's readable artifacts live: ``~/.cordata/orchestrator/<run_id>/`` (``CORDATA_HOME`` moves it)."""
     import os
 
-    return Path(os.environ.get("SIERRALAB_HOME") or Path.home() / ".sierralab") / "orchestrator" / run_id
+    return Path(os.environ.get("CORDATA_HOME") or Path.home() / ".cordata") / "orchestrator" / run_id
 
 
 def walkthrough(record: RunRecord) -> str:
@@ -230,6 +235,7 @@ class OrchestratorMachine:
         self.plan: Plan | None = Plan.from_json(record.plan) if record.plan else None
         self._exec_families: set[str] = set()
         self._resume_packet: handoff.HandoffPacket | None = None
+        self._recovery_note = ""
 
     # ------------------------------------------------------------------ bookkeeping
 
@@ -329,6 +335,7 @@ class OrchestratorMachine:
         if steps is not None:  # a fix pass runs its own synthetic step against the same goal and criteria
             plan = Plan.from_json({**self.plan.to_json(), "steps": [asdict(s) for s in steps]})
         start, self._resume_packet = self._resume_packet, None
+        recovering = bool(self._recovery_note) and steps is None
         executor = StepExecutor(
             run_id=self.record.run_id,
             project=self.project,
@@ -337,10 +344,15 @@ class OrchestratorMachine:
             ledger=self.ledger,
             on_event=self.on_event,
             timeout_s=self.config.step_timeout_s,
-            extra_prompt=extra_prompt,
+            extra_prompt=extra_prompt or (self._recovery_note if recovering else ""),
             start_packet=start,
+            # A drift fix is the hard case — the plan was done and was not good enough — so it goes to the strongest
+            # worker still allowed, not to whichever pool has the most room.
+            strongest_first=recovering or steps is not None,
         )
         result = await executor.run()
+        if recovering and result.status == "completed":
+            self._recovery_note = ""
         if steps is None:
             self.plan = plan
         self.record.handoffs.extend(p.handoff_id for p in result.handoffs)
@@ -428,6 +440,18 @@ class OrchestratorMachine:
                 elif result.status in ("paused", "budget_exhausted", "cancelled"):
                     self.record.reason = result.reason
                     self._transition(result.status, reason=result.reason, handoff=result.last_packet.handoff_id if result.last_packet else None)
+                elif self.plan is not None and any(s.status == "completed" for s in self.plan.steps) and self.record.recoveries < self.config.max_step_recoveries:
+                    # A step defeated every attempt, but the steps before it are done and good. Keep them: try the
+                    # failed step again with the strongest worker allowed, rather than restoring the whole project.
+                    self.record.recoveries += 1
+                    failed = next((s for s in self.plan.steps if s.status == "failed"), None)
+                    self._recovery_note = (
+                        f"Earlier attempts at this step failed: {result.reason[:400]}\n"
+                        "Work in several SMALL edits instead of one large one — a long file written in a single reply is what "
+                        "ran out of room before; create it in pieces. Shell commands may be refused here: do not spend your "
+                        "turn on them."
+                    )
+                    self._transition("execute", recovery=self.record.recoveries, step=failed.step_id if failed else None, reason=result.reason[:300])
                 else:
                     self._replan_or_fail([result.reason], "execution failed")
                     feedback = [result.reason]
@@ -476,10 +500,30 @@ class OrchestratorMachine:
         else:
             self._transition("audit", fix=step.step_id, fix_failed=result.reason)
 
+    def _keep_discarded(self, why: str) -> None:
+        """Before the project goes back to the start of the run, write what is about to be thrown away to the run's
+        artifacts folder as a patch. A restore is the right answer to a plan that cannot be made to work, but it is
+        irreversible by design — and the first real multi-step run lost nine good steps to one bad one. Never raises."""
+        if not self.record.start_checkpoint:
+            return
+        try:
+            patch, stat = checkpoints.diff_since(self.project, self.record.start_checkpoint)
+            if not patch.strip():
+                return
+            target = artifacts_dir(self.record.run_id)
+            target.mkdir(parents=True, exist_ok=True)
+            name = f"discarded-{len(self.record.history):03d}.patch"
+            (target / name).write_text(f"# discarded by the orchestrator: {why}\n# {stat.strip().splitlines()[-1] if stat.strip() else ''}\n{patch}", encoding="utf-8")
+            (target / name).chmod(0o600)
+            self.record.warnings.append(f"work discarded by a restore ({why}) was saved to {target / name}")
+        except Exception:
+            logger.debug("orchestrator: could not save the work a restore discards", exc_info=True)
+
     def _replan_or_fail(self, reasons: list[str], why: str) -> None:
         if self.record.replans < self.config.max_replans:
             self.record.replans += 1
             self.record.drift_retries = 0
+            self._keep_discarded(why)
             if self.record.start_checkpoint:
                 checkpoints.restore(self.project, self.record.start_checkpoint, session_id=self.record.run_id)
             self.plan = None
@@ -492,6 +536,7 @@ class OrchestratorMachine:
 
     def _fail(self, reason: str) -> None:
         self.record.reason = reason
+        self._keep_discarded(reason[:120])
         restored = None
         if self.record.start_checkpoint:
             restored = checkpoints.restore(self.project, self.record.start_checkpoint, session_id=self.record.run_id).get("ok")

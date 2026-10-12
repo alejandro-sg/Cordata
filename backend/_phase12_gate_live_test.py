@@ -8,8 +8,8 @@ The same three scenarios the hermetic suites prove with scripted models, with a 
 3. **Rejection learning** — turn 1: the person rejects the model's debug-output change with a note; the ReflectionAgent
    (a real, tool-less model call) states the rule. Turn 2, a new session: a similar request — does the proposal follow it?
 
-Runs the real ACP server object in-process: no daemon, no Discord (``SIERRALAB_DISCORD=off``), Laya off (no local
-weights), a throwaway ``SIERRALAB_HOME`` (nothing written to ``~/.sierralab``), ``context.maxSteps`` 10 per turn.
+Runs the real ACP server object in-process: no daemon, no Discord (``CORDATA_DISCORD=off``), Laya off (no local
+weights), a throwaway ``CORDATA_HOME`` (nothing written to ``~/.cordata``), ``context.maxSteps`` 10 per turn.
 Prints what happened rather than asserting a real model's choices; exits non-zero only on a harness failure.
 
     backend/.venv/bin/python _phase12_gate_live_test.py
@@ -25,12 +25,12 @@ from pathlib import Path
 
 _TMP = tempfile.TemporaryDirectory(prefix="gate-live-")
 ROOT = Path(_TMP.name)
-os.environ["SIERRALAB_HOME"] = str(ROOT / "home")
-os.environ["SIERRALAB_STATE_DB"] = str(ROOT / "state.db")
-os.environ["SIERRALAB_DISCORD"] = "off"
+os.environ["CORDATA_HOME"] = str(ROOT / "home")
+os.environ["CORDATA_STATE_DB"] = str(ROOT / "state.db")
+os.environ["CORDATA_DISCORD"] = "off"
 os.environ["LAYA_TRIAGE_MODE"] = "off"
-os.environ["SIERRALAB_PRISM"] = "off"
-os.environ["SIERRALAB_REFLECT"] = "on"
+os.environ["CORDATA_PRISM"] = "off"
+os.environ["CORDATA_REFLECT"] = "on"
 (ROOT / "home").mkdir()
 (ROOT / "home" / "settings.json").write_text(json.dumps({"context.maxSteps": 10, "lsp.enabled": True}))
 
@@ -60,7 +60,7 @@ class Door:
         self.asked.append(raw)
         answer = self.answers.pop(0) if self.answers else ("allow", "")
         if answer[0] == "reject":
-            return acp.schema.RequestPermissionResponse(outcome=acp.schema.AllowedOutcome(outcome="selected", option_id="reject"), field_meta={"sierralab": {"decidedBy": "gui", "note": answer[1]}})
+            return acp.schema.RequestPermissionResponse(outcome=acp.schema.AllowedOutcome(outcome="selected", option_id="reject"), field_meta={"cordata": {"decidedBy": "gui", "note": answer[1]}})
         return acp.schema.RequestPermissionResponse(outcome=acp.schema.AllowedOutcome(outcome="selected", option_id="allow"))
 
     async def ext_notification(self, method, params):
@@ -86,7 +86,7 @@ def results(agent) -> list[str]:
 
 
 async def turn(cwd: Path, prompt: str, answers) -> tuple[Door, object, float]:
-    server = acp_server.SierraLabAcpAgent()
+    server = acp_server.CordataAcpAgent()
     door = Door(answers)
     server.on_connect(door)
     sid = (await server.new_session(cwd=str(cwd))).session_id

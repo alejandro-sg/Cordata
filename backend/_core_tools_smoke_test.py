@@ -399,8 +399,8 @@ async def test_the_web_tools_in_a_session() -> None:
 
     default = project("core-web-a")
     markdown = project("core-web-b")
-    (markdown / ".sierralab").mkdir()
-    (markdown / ".sierralab" / "settings.json").write_text(json.dumps({"context.webFetch": "markdown"}))
+    (markdown / ".cordata").mkdir()
+    (markdown / ".cordata" / "settings.json").write_text(json.dumps({"context.webFetch": "markdown"}))
     import settings_store
 
     settings_store.trust_project(str(markdown))
@@ -440,7 +440,7 @@ async def test_the_analysts_tokens_are_in_the_receipt() -> None:
         created = await server_.new_session(cwd=str(cwd))
         await server_.prompt(created.session_id, [acp.text_block("how much is plan A on " + base + "/page ?")])
         await settle()
-        receipts = [params for method, params in conn.ext if method == "sierralab/turn"]
+        receipts = [params for method, params in conn.ext if method == "cordata/turn"]
         spent = receipts[-1]["tokensIn"] + receipts[-1]["tokensOut"] if receipts else 0
         check(spent >= 1_000, f"the turn's receipt includes the analyst's ~1,000 tokens ({spent})")
     finally:

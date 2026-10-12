@@ -5,7 +5,7 @@ Strands version actually installed. stream_async no longer yields a
 event — and acp_server used to listen only for the old shape, so every
 ToolCallStart stayed "pending" forever in Zed or any other client.
 
-No LLM, no network: a scripted model drives the real SierraLabAcpAgent.prompt
+No LLM, no network: a scripted model drives the real CordataAcpAgent.prompt
 loop and a fake connection records what would have gone to the client.
 
     backend/.venv/bin/python _acp_tool_result_smoke_test.py
@@ -13,7 +13,7 @@ loop and a fake connection records what would have gone to the client.
 
 import asyncio
 import os
-os.environ.setdefault("SIERRALAB_REFLECT", "off")  # scripted/live test turns are not lessons (reflect.py)
+os.environ.setdefault("CORDATA_REFLECT", "off")  # scripted/live test turns are not lessons (reflect.py)
 
 import acp
 from strands import Agent, tool
@@ -81,7 +81,7 @@ class FakeConn:
 
 
 async def run(tool_name: str) -> list:
-    server = acp_server.SierraLabAcpAgent()
+    server = acp_server.CordataAcpAgent()
     conn = FakeConn()
     server._conn = conn
     agent = Agent(model=Scripted(tool_name), tools=[good_tool, bad_tool], callback_handler=None)

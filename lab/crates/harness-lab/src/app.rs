@@ -706,9 +706,9 @@ pub fn window_title(app: &LabApp) -> String {
 pub fn title_text(no_config: bool, online: bool, sessions: usize) -> String {
     let plural = if sessions == 1 { "" } else { "s" };
     match (no_config, online) {
-        (true, _) => "sierralab · Lab (no daemon config)".into(),
-        (false, true) => format!("sierralab · Lab · {sessions} session{plural}"),
-        (false, false) => format!("sierralab · Lab · offline · {sessions} session{plural}"),
+        (true, _) => "cordata · Lab (no daemon config)".into(),
+        (false, true) => format!("cordata · Lab · {sessions} session{plural}"),
+        (false, false) => format!("cordata · Lab · offline · {sessions} session{plural}"),
     }
 }
 
@@ -783,7 +783,7 @@ mod tests {
         assert!(title_text(true, false, 0).contains("no daemon config"));
         assert!(title_text(true, true, 3).contains("no daemon config"), "a missing config outranks a live daemon");
         assert!(title_text(false, false, 1).contains("offline"));
-        assert_eq!(title_text(false, true, 1), "sierralab · Lab · 1 session");
-        assert_eq!(title_text(false, true, 2), "sierralab · Lab · 2 sessions");
+        assert_eq!(title_text(false, true, 1), "cordata · Lab · 1 session");
+        assert_eq!(title_text(false, true, 2), "cordata · Lab · 2 sessions");
     }
 }

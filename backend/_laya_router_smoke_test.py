@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 _TMP = tempfile.TemporaryDirectory()
-os.environ["SIERRALAB_HOME"] = _TMP.name
+os.environ["CORDATA_HOME"] = _TMP.name
 
 from strands import Agent  # noqa: E402
 from strands.vended_plugins.skills import AgentSkills  # noqa: E402

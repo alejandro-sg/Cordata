@@ -89,8 +89,8 @@ def is_secret_file(name: str) -> bool:
 
 
 def ripgrep() -> str | None:
-    """The ``rg`` binary, or None. ``SIERRALAB_RG=off`` forces the Python engine (tests)."""
-    if os.environ.get("SIERRALAB_RG", "").strip().lower() in ("off", "0", "false", "no"):
+    """The ``rg`` binary, or None. ``CORDATA_RG=off`` forces the Python engine (tests)."""
+    if os.environ.get("CORDATA_RG", "").strip().lower() in ("off", "0", "false", "no"):
         return None
     return shutil.which("rg")
 

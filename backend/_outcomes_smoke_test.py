@@ -21,8 +21,8 @@ from pathlib import Path
 
 _TMP = tempfile.TemporaryDirectory()
 ROOT = Path(_TMP.name).resolve()
-os.environ["SIERRALAB_HOME"] = str(ROOT / "home")
-os.environ["SIERRALAB_STATE_DB"] = str(ROOT / "state.db")
+os.environ["CORDATA_HOME"] = str(ROOT / "home")
+os.environ["CORDATA_STATE_DB"] = str(ROOT / "state.db")
 
 import outcomes as oc  # noqa: E402
 import state_store  # noqa: E402

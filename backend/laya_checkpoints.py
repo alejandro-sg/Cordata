@@ -7,7 +7,7 @@ live?** A checkpoint is a candidate exactly like a staged skill — it is put in
 promoted only if nothing that passed without it fails with it and something improved, on the dev tasks *and*
 on held-out ones (`promote.py`). `shadow` records the verdict and switches nothing.
 
-The registry (`~/.sierralab/laya/checkpoints.json`) maps an id to its directory, its measured numbers, and its
+The registry (`~/.cordata/laya/checkpoints.json`) maps an id to its directory, its measured numbers, and its
 status. `LAYA_MODEL` itself resolves through it (`settings.py`): with the environment variable unset, a live
 checkpoint here wins over the stock repo, so activating one is all it takes to run on it — and setting
 `LAYA_MODEL` explicitly still overrides everything, which is what makes an experiment possible without
@@ -42,7 +42,7 @@ MAX_EVALS = 20
 
 
 def home() -> Path:
-    return Path(os.environ.get("SIERRALAB_HOME") or Path.home() / ".sierralab") / "laya"
+    return Path(os.environ.get("CORDATA_HOME") or Path.home() / ".cordata") / "laya"
 
 
 def registry_path() -> Path:

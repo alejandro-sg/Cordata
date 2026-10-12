@@ -10,13 +10,13 @@
 # The API key is the one thing that must NOT live in a project file — the
 # agent's own file tools can read backend/.env — so it comes from, in order:
 #   1. OLLAMA_API_KEY / CLOUD_OPENAI_API_KEY already exported in your shell
-#   2. the macOS Keychain item "sierralab-ollama-api-key" (one-time setup below)
+#   2. the macOS Keychain item "cordata-ollama-api-key" (one-time setup below)
 # and is exported only into the child process this script execs. The backend
 # then removes it from its own environment and masks it in tool output
 # (backend/secret_guard.py; THREAT_MODEL.md, "Provider API keys").
 #
 # One-time Keychain setup (prompts for the key; nothing is echoed or stored in a file):
-#     security add-generic-password -a "$USER" -s sierralab-ollama-api-key -w
+#     security add-generic-password -a "$USER" -s cordata-ollama-api-key -w
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 if [[ $# -eq 0 ]]; then
@@ -32,13 +32,13 @@ export CLOUD_OPENAI_MODEL_ID="${CLOUD_OPENAI_MODEL_ID:-gpt-oss:20b}"
 
 if [[ -z "${OLLAMA_API_KEY:-}" && -z "${CLOUD_OPENAI_API_KEY:-}" ]]; then
   if command -v security >/dev/null 2>&1 \
-     && key="$(security find-generic-password -s sierralab-ollama-api-key -w 2>/dev/null)" \
+     && key="$(security find-generic-password -s cordata-ollama-api-key -w 2>/dev/null)" \
      && [[ -n "$key" ]]; then
     export OLLAMA_API_KEY="$key"
     unset key
   else
     err "no Ollama API key found. Either export OLLAMA_API_KEY in this shell, or store it once in the macOS Keychain:"
-    err '    security add-generic-password -a "$USER" -s sierralab-ollama-api-key -w'
+    err '    security add-generic-password -a "$USER" -s cordata-ollama-api-key -w'
     err "(it prompts for the key; it is never written to a project file)"
     exit 1
   fi

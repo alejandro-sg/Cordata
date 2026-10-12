@@ -12,7 +12,7 @@ import os
 # The role table below is about Ollama Cloud models. On a machine with oMLX running, the
 # architect role would otherwise go to the local Prism model first (omlx_provider) — a
 # different test (_omlx_prism_smoke_test.py).
-os.environ["SIERRALAB_PRISM"] = "off"
+os.environ["CORDATA_PRISM"] = "off"
 
 import provider_settings  # noqa: F401  (imported before agent_common, which chdirs — see main.py)
 
@@ -86,11 +86,11 @@ def run(agent: Agent, prompt: str = "hi", **state) -> str:
 
 
 def test_registry() -> None:
-    check(set(oc.REGISTRY) == {"glm-5.3-flash", "kimi-k2.7-code", "laguna-xs-2.1"}, "registry exposes the three tags")
+    check(set(oc.REGISTRY) == {"glm-5.3-flash", "kimi-k2.7-code", "deepseek-v4.1-flash", "laguna-xs-2.1"}, "registry exposes the four tags")
     check(oc.resolve("glm-5.3-flash").wire_id == "glm-5.3-flash:cloud", "glm wire id carries :cloud (bare tag 404s on the daemon)")
     check(oc.resolve("kimi-k2.7-code:cloud").alias == "kimi-k2.7-code", "wire id resolves back to its alias")
     check(oc.resolve("laguna-xs-2.1").hosting == "local" and oc.resolve("laguna-xs-2.1").pulls_weights, "laguna is local-weights, flagged as needing a pull")
-    check(oc.CLOUD_ALIASES == ("glm-5.3-flash", "kimi-k2.7-code"), "only two tags are cloud-hosted")
+    check(oc.CLOUD_ALIASES == ("glm-5.3-flash", "kimi-k2.7-code", "deepseek-v4.1-flash"), "three tags are cloud-hosted")
     try:
         oc.resolve("gpt-9")
         check(False, "unknown model rejected")
@@ -310,7 +310,7 @@ def test_picker_and_config_swap() -> None:
     check([s["alias"] for s in seen] == ["glm-5.3-flash", "kimi-k2.7-code"], "request telemetry follows the live model_id, not a stale spec")
     check(model.current_spec.alias == "kimi-k2.7-code", "current_spec reads the config")
     offered = [spec.alias for spec in oc.routable(availability=lambda spec: None if spec.hosting == "cloud" else "no")]
-    check(offered == ["glm-5.3-flash", "kimi-k2.7-code"], "a picker offers cloud tags only while the local tag is not installed")
+    check(offered == ["glm-5.3-flash", "kimi-k2.7-code", "deepseek-v4.1-flash"], "a picker offers cloud tags only while the local tag is not installed")
     check([spec.alias for spec in oc.routable(availability=lambda spec: None)] == list(oc.REGISTRY), "…and the local one once it is")
 
 

@@ -1,6 +1,6 @@
 services:
-  sierralab-agent-frontend:
-    container_name: sierralab-agent-frontend
+  cordata-agent-frontend:
+    container_name: cordata-agent-frontend
     build: .
     restart: unless-stopped
     ports:

@@ -8,7 +8,7 @@ completes there, and the project's own tests pass. Plus the soft line at a step 
 off mid-way, keeping partial work, pausing when every pool is spent, and the envelope.
 
 Hermetic: in-process fake workers, a real shadow-git checkpoint store and a real ``state.db``, both under a
-throwaway ``SIERRALAB_HOME``.
+throwaway ``CORDATA_HOME``.
 
     backend/.venv/bin/python _quota_ledger_smoke_test.py
 """
@@ -23,8 +23,8 @@ import tempfile
 from pathlib import Path
 
 _HOME = tempfile.mkdtemp(prefix="quota-home-")
-os.environ["SIERRALAB_HOME"] = _HOME
-os.environ["SIERRALAB_STATE_DB"] = str(Path(_HOME) / "state.db")
+os.environ["CORDATA_HOME"] = _HOME
+os.environ["CORDATA_STATE_DB"] = str(Path(_HOME) / "state.db")
 
 import provider_settings  # noqa: F401,E402
 

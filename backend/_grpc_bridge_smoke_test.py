@@ -2,7 +2,7 @@
 
 Real: the ``Supervisor`` (a stand-in ACP child process per session, ``fixtures/fake_acp_bridge_child.py``),
 the telemetry hub, the intervention arbitration, the ingest worker and ``state.db``. Fake: oMLX
-(``fake_omlx.FakeOmlx``) and the Ollama binary. Hermetic — a temp ``SIERRALAB_HOME``, a temp token file.
+(``fake_omlx.FakeOmlx``) and the Ollama binary. Hermetic — a temp ``CORDATA_HOME``, a temp token file.
 
     backend/.venv/bin/python _grpc_bridge_smoke_test.py
 """
@@ -19,9 +19,9 @@ from pathlib import Path
 
 _TMP = tempfile.TemporaryDirectory()
 ROOT = Path(_TMP.name).resolve()
-os.environ["SIERRALAB_DAEMON_CONFIG"] = str(ROOT / "daemon.json")
-os.environ["SIERRALAB_HOME"] = str(ROOT / "home")
-os.environ["SIERRALAB_ACP_ENTRYPOINT"] = f"{sys.executable} {Path(__file__).parent / 'fixtures' / 'fake_acp_bridge_child.py'}"
+os.environ["CORDATA_DAEMON_CONFIG"] = str(ROOT / "daemon.json")
+os.environ["CORDATA_HOME"] = str(ROOT / "home")
+os.environ["CORDATA_ACP_ENTRYPOINT"] = f"{sys.executable} {Path(__file__).parent / 'fixtures' / 'fake_acp_bridge_child.py'}"
 
 import grpc  # noqa: E402
 
@@ -294,7 +294,7 @@ async def test_interventions(rig: Rig) -> None:
     answer = next(row for row in rig.child_log() if row["kind"] == "response" and row["id"] == 77)
     check(answer["id"] == 77 and answer["result"]["outcome"] == {"outcome": "selected", "optionId": "allow"}, "…as the ACP response selecting the child's own 'allow' option (never 'allow always')")
     frames = await rig.driver_frames(0.2)
-    check(any(f.get("method") == "_sierralab/resolved" and f["params"]["decidedBy"] == "gui" for f in frames), "the driving client is told its prompt is moot")
+    check(any(f.get("method") == "_cordata/resolved" and f["params"]["decidedBy"] == "gui" for f in frames), "the driving client is told its prompt is moot")
     late = json.dumps({"jsonrpc": "2.0", "id": 77, "result": {"outcome": {"outcome": "selected", "optionId": "reject"}}})
     await rig.state.supervisor.write(rig.sid, late)
     await asyncio.sleep(0.3)
@@ -313,17 +313,17 @@ async def test_interventions(rig: Rig) -> None:
     check(len([r for r in rig.child_log() if r["kind"] == "response" and r["id"] == 78]) == 1, "the GUI's late click is refused as stale — the child saw one answer")
 
     # --- reject & isolate ---------------------------------------------------------------------
-    isolates_before = len([r for r in rig.child_log() if r["kind"] == "received" and r["method"] == "_sierralab/lab/isolate"])
+    isolates_before = len([r for r in rig.child_log() if r["kind"] == "received" and r["method"] == "_cordata/lab/isolate"])
     await rig.child("bridge/permit", id=79, tool="shell", input={"command": "danger"}, meta={**meta, "pod": "debugger", "command": "danger"})
     await drain_events(call, lambda e: any(x.WhichOneof("event") == "request" and x.request.intervention_id.endswith("/79") for x in e))
     await replies.put(pb.InterventionReply(decision=pb.InterventionDecision(intervention_id=f"{rig.sid}/79", approve=False, isolate=True)))
     # Scoped to *this* request: an E-Stop sent earlier (a person stopping a pod from the Lab) does not count.
     await until(
-        lambda: len([r for r in rig.child_log() if r["kind"] == "received" and r["method"] == "_sierralab/lab/isolate"]) > isolates_before
+        lambda: len([r for r in rig.child_log() if r["kind"] == "received" and r["method"] == "_cordata/lab/isolate"]) > isolates_before
         and any(r["kind"] == "response" and r["id"] == 79 for r in rig.child_log()),
         "the daemon E-Stops the pod after a Reject & Isolate",
     )
-    isolate = [r for r in rig.child_log() if r["kind"] == "received" and r["method"] == "_sierralab/lab/isolate"][-1]
+    isolate = [r for r in rig.child_log() if r["kind"] == "received" and r["method"] == "_cordata/lab/isolate"][-1]
     reject = next(r for r in rig.child_log() if r["kind"] == "response" and r["id"] == 79)
     check(isolate["params"]["pod"] == "debugger" and reject["result"]["outcome"]["optionId"] == "reject", "[Reject & Isolate]: the call is rejected AND the asking pod is isolated")
     check(not any(f.get("id") == "daemon-1" for f in await rig.driver_frames(0.1)), "the daemon's own request/response never reaches the driving client")
@@ -397,12 +397,12 @@ async def gen_one(snippet):
 async def test_knobs(rig: Rig) -> None:
     reply = await rig.stub.SetKnob(pb.KnobRequest(session_id=rig.sid, pod="orchestrator", reasoning_effort="high"), metadata=rig.meta)
     check(reply.ok and json.loads(reply.applied)["applied"] == "high", "SetKnob reasoning_effort reaches the session's own control and reports what is in force")
-    sent = [r for r in rig.child_log() if r["kind"] == "received" and r["method"] == "_sierralab/lab/effort"]
-    check(sent and sent[-1]["params"]["pod"] == "orchestrator" and sent[-1]["params"]["value"] == "high", "…as `_sierralab/lab/effort`")
+    sent = [r for r in rig.child_log() if r["kind"] == "received" and r["method"] == "_cordata/lab/effort"]
+    check(sent and sent[-1]["params"]["pod"] == "orchestrator" and sent[-1]["params"]["value"] == "high", "…as `_cordata/lab/effort`")
     reply = await rig.stub.SetKnob(pb.KnobRequest(session_id=rig.sid, pod="debugger", laya_dial=0.55), metadata=rig.meta)
     check(reply.ok, "SetKnob laya_dial")
-    sent = [r for r in rig.child_log() if r["kind"] == "received" and r["method"] == "_sierralab/lab/dial"]
-    check(sent and abs(sent[-1]["params"]["value"] - 0.55) < 1e-9, "…as `_sierralab/lab/dial`")
+    sent = [r for r in rig.child_log() if r["kind"] == "received" and r["method"] == "_cordata/lab/dial"]
+    check(sent and abs(sent[-1]["params"]["value"] - 0.55) < 1e-9, "…as `_cordata/lab/dial`")
     reply = await rig.stub.SetKnob(pb.KnobRequest(session_id=rig.sid, pod="orchestrator", reasoning_effort="turbo"), metadata=rig.meta)
     check(not reply.ok and "must be one of" in reply.error, "an invalid level is refused before it reaches the session")
     reply = await rig.stub.SetKnob(pb.KnobRequest(session_id=rig.sid, pod="../etc", reasoning_effort="low"), metadata=rig.meta)
@@ -413,7 +413,7 @@ async def test_knobs(rig: Rig) -> None:
     check(not bogus.ok, "NaN is not a dial position")
     for asked, expected in ((0.95, 0.8), (0.05, 0.3)):
         reply = await rig.stub.SetKnob(pb.KnobRequest(session_id=rig.sid, pod="debugger", laya_dial=asked), metadata=rig.meta)
-        sent = [r for r in rig.child_log() if r["kind"] == "received" and r["method"] == "_sierralab/lab/dial"]
+        sent = [r for r in rig.child_log() if r["kind"] == "received" and r["method"] == "_cordata/lab/dial"]
         check(reply.ok and abs(sent[-1]["params"]["value"] - expected) < 1e-9,
               f"a dial of {asked} is clamped to {expected} in the bridge, not forwarded: a client cannot loosen the gate")
     audit = [row["payload"] for row in state_store.recent_events(kind="gui", limit=50) if row["payload"]["action"] == "knob"]
@@ -464,15 +464,15 @@ async def test_pod_control(rig: Rig) -> None:
         return [r for r in rig.child_log() if r["kind"] == "received" and r["method"] == method]
 
     reply = await control("debugger", pb.POD_ACTION_ISOLATE)
-    check(reply.ok and received("_sierralab/lab/isolate")[-1]["params"]["pod"] == "debugger", "ControlPod ISOLATE is the child's own `_sierralab/lab/isolate`")
+    check(reply.ok and received("_cordata/lab/isolate")[-1]["params"]["pod"] == "debugger", "ControlPod ISOLATE is the child's own `_cordata/lab/isolate`")
     reply = await control("debugger", pb.POD_ACTION_RELEASE)
-    check(reply.ok and received("_sierralab/lab/release")[-1]["params"]["pod"] == "debugger", "ControlPod RELEASE is `_sierralab/lab/release`")
+    check(reply.ok and received("_cordata/lab/release")[-1]["params"]["pod"] == "debugger", "ControlPod RELEASE is `_cordata/lab/release`")
     reply = await control("architect", pb.POD_ACTION_STEER, "  focus on the failing tests first  ")
-    sent = received("_sierralab/lab/inject")[-1]["params"]
+    sent = received("_cordata/lab/inject")[-1]["params"]
     check(reply.ok and reply.queued == 1 and sent["text"] == "focus on the failing tests first", "STEER delivers the trimmed directive and reports how many are queued")
     long = "x" * 5000
     await control("architect", pb.POD_ACTION_STEER, long)
-    check(len(received("_sierralab/lab/inject")[-1]["params"]["text"]) == 1500, "a directive is cut to its limit in the bridge, not only in the child")
+    check(len(received("_cordata/lab/inject")[-1]["params"]["text"]) == 1500, "a directive is cut to its limit in the bridge, not only in the child")
     reply = await control("architect", pb.POD_ACTION_STEER, "   ")
     check(not reply.ok and "text" in reply.error, "an empty directive is refused before it reaches the child")
     reply = await control("stopped", pb.POD_ACTION_STEER, "go")
@@ -544,7 +544,7 @@ async def test_submit_turn(rig: "Rig") -> None:
 
     The session in this rig is one the daemon merely relays (a TUI's), so the route under test is the
     honest one: the text is queued as guidance and the reply says so. What the child must actually
-    *receive* is the point — the context as its own `_sierralab/os-context`, keyed by the child's
+    *receive* is the point — the context as its own `_cordata/os-context`, keyed by the child's
     session and not the daemon's, and the person's words in the inject."""
     import os_context
 
@@ -601,13 +601,13 @@ async def test_submit_turn(rig: "Rig") -> None:
     check(any("does not start a new turn" in n for n in reply.notices), f"…and says plainly that it was guidance, not a turn ({list(reply.notices)[:2]})")
     check(any("not attached" in n for n in reply.notices), "…and that the screenshot was not attached, rather than dropping it silently")
 
-    context_calls = received("_sierralab/os-context")
+    context_calls = received("_cordata/os-context")
     sent = context_calls[-1]["params"] if context_calls else {}
-    check(bool(context_calls) and sent.get("window_title", "").startswith("Deploy"), "the child receives the capture as its own `_sierralab/os-context`, before the prompt")
+    check(bool(context_calls) and sent.get("window_title", "").startswith("Deploy"), "the child receives the capture as its own `_cordata/os-context`, before the prompt")
     check("sessionId" not in sent, "…keyed by the child's own session, not the daemon's (qualify=False)")
     check(sent.get("app_bundle_id") == "com.apple.Safari" and sent.get("selected_text") == "raise the timeout to 30s", "…with the app and the person's selection")
     check("screenshot" not in sent and "screenshot_bytes" not in sent, "…and never the pixels: image input is not wired up, so the bytes do not travel")
-    injects = received("_sierralab/lab/inject")
+    injects = received("_cordata/lab/inject")
     check(bool(injects) and injects[-1]["params"]["text"] == "what am I looking at?", "the person's words reach the session as guidance")
 
     row = audit("submit_turn")[0]  # newest first
@@ -623,7 +623,7 @@ async def test_submit_turn(rig: "Rig") -> None:
         metadata=rig.meta,
     )
     check(not denied.ok and "never-read" in denied.error, f"a never-read app's context is refused outright ({denied.error!r})")
-    check(len(received("_sierralab/os-context")) == len(context_calls), "…and nothing about it reaches the child")
+    check(len(received("_cordata/os-context")) == len(context_calls), "…and nothing about it reaches the child")
     check(audit("submit_turn")[0]["ok"] is False and audit("submit_turn")[0]["app_bundle_id"] == "com.1password.1password", "the refusal is in the ledger with its reason")
 
     # A vision model configured: the screenshot still does not ride along with *guidance* — a relayed
@@ -643,7 +643,7 @@ async def test_submit_turn(rig: "Rig") -> None:
             user_settings.write_text(previous)
     check(steered.ok and any("text only" in n for n in steered.notices), f"with a vision model set, a steer still sends no image, and says so ({list(steered.notices)[:3]})")
     check(audit("submit_turn")[0].get("screenshot_sent_to") == "", "…and the ledger records that no model saw it")
-    sent = received("_sierralab/os-context")[-1]["params"]
+    sent = received("_cordata/os-context")[-1]["params"]
     check("screenshot_b64" not in sent and "vision_model" not in sent, "…the bytes never reached the child")
     check(os_context.refusal("com.1password.1password") is not None, "…and the policy the daemon enforces is the same one the client carries")
 

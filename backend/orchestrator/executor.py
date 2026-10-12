@@ -121,6 +121,7 @@ class StepExecutor:
         extra_prompt: str = "",
         start_packet: handoff.HandoffPacket | None = None,
         max_attempts: int = MAX_ATTEMPTS,
+        strongest_first: bool = False,
     ) -> None:
         self.run_id = run_id
         self.project = project
@@ -132,6 +133,10 @@ class StepExecutor:
         self.extra_prompt = extra_prompt
         self.packet = start_packet
         self.max_attempts = max_attempts
+        #: A recovery pass: take candidates in the dispatcher's order whatever their pool's level (``ok`` or ``soft``),
+        #: instead of preferring any ``ok`` pool. The ``ok`` pools are often the weakest workers, and a step that has
+        #: already defeated them needs the best one still allowed to run, not the one with the most quota left.
+        self.strongest_first = strongest_first
         self.current: Candidate | None = None
 
     # ------------------------------------------------------------------ choosing
@@ -142,6 +147,8 @@ class StepExecutor:
     def pick(self, exclude_pools: set[str] | None = None) -> Candidate | None:
         exclude_pools = exclude_pools or set()
         usable = [c for c in self.candidates if self.ledger.pool_for(c.family, c.model).pool_id not in exclude_pools]
+        if self.strongest_first:
+            return next((c for c in usable if self._level(c) in ("ok", "soft")), None)
         for wanted in ("ok", "soft"):
             for candidate in usable:
                 if self._level(candidate) == wanted:

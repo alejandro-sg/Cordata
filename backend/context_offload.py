@@ -13,7 +13,7 @@ What this module adds to the SDK's plugin, and why each part is here:
 * **Head and tail in the preview.** The SDK's preview is the first N tokens. An error, a summary line, an exit code
   is at the *end* of build and test output, so the preview keeps both ends (`_slice_preview` is the SDK's documented
   slicing hook).
-* **A private store.** `~/.sierralab/offloaded/<session>/`, directory 0700 and files 0600, written directly on the
+* **A private store.** `~/.cordata/offloaded/<session>/`, directory 0700 and files 0600, written directly on the
   host — never routed through the agent's sandbox (the SDK's `LocalFileStorage` binds to `agent.sandbox`, which in a
   restricted sandbox mode would refuse the write and silently keep the whole result in context). Tool output can hold
   anything the project holds; it is stored only after the registered credentials are masked, exactly as the model

@@ -2,9 +2,9 @@
 //!
 //! Three JSON files, lowest precedence first:
 //!
-//!   user     `~/.sierralab/settings.json`            (`SIERRALAB_HOME` moves the dir)
-//!   project  `<cwd>/.sierralab/settings.json`        (committed; shared with the team)
-//!   local    `<cwd>/.sierralab/settings.local.json`  (this machine only; gitignored)
+//!   user     `~/.cordata/settings.json`            (`CORDATA_HOME` moves the dir)
+//!   project  `<cwd>/.cordata/settings.json`        (committed; shared with the team)
+//!   local    `<cwd>/.cordata/settings.local.json`  (this machine only; gitignored)
 //!
 //! The backend enforces permissions and applies model / mode / Laya / tier
 //! preferences; this module reads the same files so the TUI can show what is in
@@ -760,18 +760,10 @@ pub fn default_user_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("CORDATA_HOME").filter(|dir| !dir.is_empty()) {
         return PathBuf::from(dir);
     }
-    if let Some(dir) = std::env::var_os("SIERRALAB_HOME").filter(|dir| !dir.is_empty()) {
-        return PathBuf::from(dir);
+    match std::env::var_os("HOME") {
+        Some(home) => PathBuf::from(home).join(".cordata"),
+        None => PathBuf::from(".cordata"),
     }
-    if let Some(home) = std::env::var_os("HOME") {
-        let cordata = PathBuf::from(&home).join(".cordata");
-        let sierralab = PathBuf::from(&home).join(".sierralab");
-        if !cordata.exists() && sierralab.exists() {
-            return sierralab;
-        }
-        return cordata;
-    }
-    PathBuf::from(".cordata")
 }
 
 fn expand_home(text: &str) -> PathBuf {
@@ -915,11 +907,7 @@ impl Store {
     }
 
     pub fn path(&self, scope: Scope) -> PathBuf {
-        let base = if self.cwd.join(".cordata").exists() {
-            self.cwd.join(".cordata")
-        } else {
-            self.cwd.join(".sierralab")
-        };
+        let base = self.cwd.join(".cordata");
         match scope {
             Scope::User => self.user_dir.join("settings.json"),
             Scope::Project => base.join("settings.json"),
@@ -1099,7 +1087,7 @@ impl Store {
         if scope == Scope::Local {
             let ignore = dir.join(".gitignore");
             if !ignore.exists() {
-                let _ = fs::write(ignore, "settings.local.json\nSIERRALAB.local.md\n");
+                let _ = fs::write(ignore, "settings.local.json\nCORDATA.local.md\n");
             }
         }
         Ok(())
@@ -1217,15 +1205,13 @@ pub fn instruction_files(store: &Store) -> Vec<(Scope, PathBuf)> {
     let project = [
         store.cwd.join("CORDATA.md"),
         store.cwd.join(".cordata").join("CORDATA.md"),
-        store.cwd.join("SIERRALAB.md"),
-        store.cwd.join(".sierralab").join("SIERRALAB.md"),
         store.cwd.join("AGENTS.md"),
         store.cwd.join("CLAUDE.md"),
     ];
     let candidates: [(Scope, Vec<PathBuf>); 3] = [
-        (Scope::User, vec![store.user_dir.join("CORDATA.md"), store.user_dir.join("SIERRALAB.md")]),
+        (Scope::User, vec![store.user_dir.join("CORDATA.md")]),
         (Scope::Project, project.to_vec()),
-        (Scope::Local, vec![store.cwd.join("CORDATA.local.md"), store.cwd.join("SIERRALAB.local.md")]),
+        (Scope::Local, vec![store.cwd.join("CORDATA.local.md")]),
     ];
     candidates
         .into_iter()
@@ -1419,7 +1405,7 @@ mod tests {
             local,
             serde_json::json!({"permissions": {"allow": ["shell(git status)"]}})
         );
-        let ignore = fs::read_to_string(sb.store.cwd.join(".sierralab/.gitignore")).unwrap();
+        let ignore = fs::read_to_string(sb.store.cwd.join(".cordata/.gitignore")).unwrap();
         assert!(ignore.contains("settings.local.json"));
 
         sb.store
@@ -1498,17 +1484,17 @@ mod tests {
     }
 
     #[test]
-    fn instruction_files_prefer_sierralab_md_over_other_tools_files() {
+    fn instruction_files_prefer_cordata_md_over_other_tools_files() {
         let sb = sandbox();
         assert!(instruction_files(&sb.store).is_empty());
         fs::write(sb.store.cwd.join("CLAUDE.md"), "x").unwrap();
         fs::write(sb.store.cwd.join("AGENTS.md"), "x").unwrap();
         assert!(instruction_files(&sb.store)[0].1.ends_with("AGENTS.md"));
-        fs::write(sb.store.cwd.join("SIERRALAB.md"), "x").unwrap();
-        fs::write(sb.store.user_dir.join("SIERRALAB.md"), "x").unwrap();
+        fs::write(sb.store.cwd.join("CORDATA.md"), "x").unwrap();
+        fs::write(sb.store.user_dir.join("CORDATA.md"), "x").unwrap();
         let found = instruction_files(&sb.store);
         assert_eq!(found.len(), 2);
         assert_eq!((found[0].0, found[1].0), (Scope::User, Scope::Project));
-        assert!(found[1].1.ends_with("SIERRALAB.md"));
+        assert!(found[1].1.ends_with("CORDATA.md"));
     }
 }

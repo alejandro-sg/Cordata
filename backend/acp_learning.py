@@ -83,11 +83,11 @@ def _bandit_learn(cwd: str) -> None:
 def _optimize_artifacts(cwd: str, preferences: dict) -> None:
     """Draft a sharper variant of a live lesson or prompt overlay whose turns went badly (``optimize.py``). A
     no-op unless ``learning.optimizePrompts`` is on; never raises. Also off the turn's path, and off during an eval
-    run (``SIERRALAB_REFLECT=off``), where a scripted turn is not evidence about anything."""
+    run (``CORDATA_REFLECT=off``), where a scripted turn is not evidence about anything."""
     try:
         if preferences.get("learning.optimizePrompts", False) is not True:
             return
-        if os.environ.get("SIERRALAB_REFLECT", "").lower() == "off":
+        if os.environ.get("CORDATA_REFLECT", "").lower() == "off":
             return
         for kind in ("skill", "prompt"):
             optimize.cycle(cwd, kind=kind, preferences=preferences)

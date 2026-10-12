@@ -186,7 +186,7 @@ class ShadowWorkspace:
         self._tmp: tempfile.TemporaryDirectory | None = None
 
     def __enter__(self) -> "ShadowWorkspace":
-        self._tmp = tempfile.TemporaryDirectory(prefix="sierralab-heal-")
+        self._tmp = tempfile.TemporaryDirectory(prefix="cordata-heal-")
         self.path = Path(self._tmp.name) / self.root.name
         self.path.mkdir()
         # "__pycache__" must not ride along either: its .pyc files record the

@@ -188,17 +188,17 @@ def aggregate(results: list[TaskResult]) -> dict[str, Any]:
 def sandbox(root: Path, *, live: bool = False, env: dict[str, str] | None = None) -> Iterator[None]:
     """A private ledger, home and session directory, and the harness's network-touching bits quieted, so a
     run never reads or writes the user's history. ``env`` is the arm the run is measuring — a candidate skill
-    (``SIERRALAB_EXTRA_SKILLS``) or prompt overlay (``SIERRALAB_PROMPT_OVERLAY``) put in force for the run and
+    (``CORDATA_EXTRA_SKILLS``) or prompt overlay (``CORDATA_PROMPT_OVERLAY``) put in force for the run and
     removed on exit. Restores everything on exit."""
-    saved_env = {k: os.environ.get(k) for k in ("SIERRALAB_HOME", "SIERRALAB_STATE_DB", "BYPASS_TOOL_CONSENT", "LAYA_TRIAGE_MODE", "LAYA_TRIAGE_LOG", "SIERRALAB_PRISM", "SIERRALAB_REFLECT", *(env or {}))}
+    saved_env = {k: os.environ.get(k) for k in ("CORDATA_HOME", "CORDATA_STATE_DB", "BYPASS_TOOL_CONSENT", "LAYA_TRIAGE_MODE", "LAYA_TRIAGE_LOG", "CORDATA_PRISM", "CORDATA_REFLECT", *(env or {}))}
     os.environ.update(
-        SIERRALAB_HOME=str(root / "home"),
-        SIERRALAB_STATE_DB=str(root / "state.db"),
+        CORDATA_HOME=str(root / "home"),
+        CORDATA_STATE_DB=str(root / "state.db"),
         BYPASS_TOOL_CONSENT="true",
         LAYA_TRIAGE_MODE="off",
         LAYA_TRIAGE_LOG=str(root / "laya.jsonl"),
-        SIERRALAB_PRISM="off",
-        SIERRALAB_REFLECT="off",  # an eval turn is not a lesson
+        CORDATA_PRISM="off",
+        CORDATA_REFLECT="off",  # an eval turn is not a lesson
         **(env or {}),
     )
     import acp_server
@@ -384,7 +384,7 @@ async def run_task(task: Task, driver: Driver, *, workdir: Path, timeout: float 
 
         specialists._model = lambda tier, role=None: ScriptedModel([text("(specialist idle)")])
     conn = EvalConn(task.approvals)
-    server = acp_server.SierraLabAcpAgent()
+    server = acp_server.CordataAcpAgent()
     server.on_connect(conn)
     reasons: list[str] = []
     session_id = ""
@@ -452,9 +452,9 @@ def _arm_env(config: dict[str, Any] | None) -> dict[str, str]:
     overlay path. This is what puts a candidate *in force* for the run — the point of the A/B."""
     env: dict[str, str] = {}
     if (skill_dir := (config or {}).get("skill_dir")):
-        env["SIERRALAB_EXTRA_SKILLS"] = str(skill_dir)
+        env["CORDATA_EXTRA_SKILLS"] = str(skill_dir)
     if (overlay := (config or {}).get("prompt_overlay")):
-        env["SIERRALAB_PROMPT_OVERLAY"] = str(overlay)
+        env["CORDATA_PROMPT_OVERLAY"] = str(overlay)
     return env
 
 

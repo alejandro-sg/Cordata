@@ -629,7 +629,7 @@ mod tests {
         let mut app = MenubarApp::blank();
         app.note_target(Some(safari()));
         app.attached = Some(Capture::refused_app("x", &safari()));
-        app.note_target(Some(Frontmost { name: "deck".into(), bundle_id: "dev.sierralab.menubar".into(), pid: std::process::id() as i32 }));
+        app.note_target(Some(Frontmost { name: "deck".into(), bundle_id: "dev.cordata.menubar".into(), pid: std::process::id() as i32 }));
         assert_eq!(app.target.as_ref().map(|t| t.name.as_str()), Some("Safari"), "summoning over the deck keeps the real target");
         assert!(app.attached.is_some(), "and keeps its capture");
         app.note_target(Some(Frontmost { name: "Mail".into(), bundle_id: "com.apple.mail".into(), pid: 9 }));
