@@ -28,8 +28,12 @@ use crate::platform::Display;
 use crate::session::{Connection, Row, Runtime, Session, SessionEvent, Target, WindowRequest};
 use crate::theme::{color, tint};
 
+mod browser;
 mod editor;
+mod models;
 mod review;
+mod settings_view;
+mod terminal;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DockTab {
@@ -38,6 +42,10 @@ pub enum DockTab {
     Files,
     Editor,
     Review,
+    Terminal,
+    Browser,
+    Models,
+    Settings,
 }
 
 actions!(
@@ -58,6 +66,10 @@ actions!(
         ShowFiles,
         ShowEditor,
         ShowReview,
+        ShowTerminal,
+        ShowBrowser,
+        ShowModels,
+        ShowSettings,
         OpenFiles,
         SaveFile,
     ]
@@ -104,6 +116,10 @@ pub struct Workspace {
     pub(super) files: editor::Files,
     pub(super) file_filter: Entity<InputState>,
     pub(super) review: review::Review,
+    pub(super) terminal: terminal::Terminal,
+    pub(super) browser_view: browser::BrowserView,
+    pub(super) models_view: models::ModelsView,
+    pub(super) settings_view: settings_view::SettingsView,
     /// `--selftest`: answer every approval with Allow and quit with a summary once the first turn ends.
     selftest: Option<SelfTest>,
     _subscriptions: Vec<Subscription>,
@@ -137,6 +153,10 @@ impl Workspace {
         let first = cx.new(|cx| Session::start(&connection, Target::Default, cwd.clone(), initial_prompt, cx));
         let goal_input = cx.new(|cx| InputState::new(window, cx).placeholder("A multi-step goal for the orchestrator…"));
         let file_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter files…"));
+        let terminal = terminal::Terminal::new(window, cx);
+        let browser_view = browser::BrowserView::new(window, cx);
+        let models_view = models::ModelsView::new(window, cx);
+        let settings_view = settings_view::SettingsView::new(window, cx);
         let composer_subscription = cx.subscribe_in(&composer, window, Self::on_composer);
         let file_filter_subscription = cx.subscribe_in(&file_filter, window, Self::on_file_filter);
         composer.update(cx, |state, cx| state.focus(window, cx));
@@ -164,6 +184,10 @@ impl Workspace {
             files: editor::Files::default(),
             file_filter,
             review: review::Review::default(),
+            terminal,
+            browser_view,
+            models_view,
+            settings_view,
             selftest: selftest.then(SelfTest::default),
             _subscriptions: vec![composer_subscription, file_filter_subscription],
         };
@@ -172,6 +196,7 @@ impl Workspace {
         this.schedule_mission(cx);
         this.load_tree(cx);
         this.load_review(cx);
+        this.load_settings_data(cx);
         this
     }
 
@@ -368,6 +393,65 @@ impl Workspace {
                 if let (Some(name), Some(text)) = (value.get("name").and_then(|v| v.as_str()), value.get("text").and_then(|v| v.as_str())) {
                     self.mission.artifact = Some((name.to_owned(), text.to_owned()));
                 }
+            }
+            settings_view::TRUST_STATUS_TAG => {
+                self.settings_view.take_trust_status(&value);
+            }
+            settings_view::SETTINGS_GET_TAG => {
+                self.settings_view.take_settings_get(&value);
+            }
+            settings_view::SETTINGS_SCHEMA_TAG => {
+                self.settings_view.take_schema(&value);
+            }
+            settings_view::READINESS_TAG => {
+                self.settings_view.take_readiness(&value);
+            }
+            settings_view::DOCTOR_TAG => {
+                self.settings_view.take_doctor(&value);
+            }
+            settings_view::TRUST_GRANT_TAG => {
+                let ok = value.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false);
+                if ok {
+                    self.settings_view.set_notice("Folder trust granted successfully.".into(), false);
+                    self.settings_view.trusted = true;
+                    self.session.update(cx, |s, _| s.view.settings.trusted = true);
+                    self.load_settings_data(cx);
+                } else {
+                    let reason = value.get("reason").and_then(serde_json::Value::as_str).unwrap_or("Grant trust failed");
+                    self.settings_view.set_notice(reason.to_owned(), true);
+                }
+            }
+            settings_view::SETTINGS_RULE_ADD_TAG => {
+                let ok = value.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false);
+                if ok {
+                    self.settings_view.set_notice("Rule added successfully.".into(), false);
+                    self.session.read(cx).request("_cordata/settings/get", serde_json::json!({}), settings_view::SETTINGS_GET_TAG);
+                } else {
+                    let reason = value.get("reason").and_then(serde_json::Value::as_str).unwrap_or("Failed to add rule");
+                    self.settings_view.set_notice(reason.to_owned(), true);
+                }
+            }
+            settings_view::SETTINGS_RULE_REMOVE_TAG => {
+                let ok = value.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false);
+                if ok {
+                    self.settings_view.set_notice("Rule removed.".into(), false);
+                    self.session.read(cx).request("_cordata/settings/get", serde_json::json!({}), settings_view::SETTINGS_GET_TAG);
+                } else {
+                    self.settings_view.set_notice("Failed to remove rule".into(), true);
+                }
+            }
+            settings_view::SETTINGS_SET_TAG => {
+                let ok = value.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false);
+                if ok {
+                    self.settings_view.set_notice("Setting updated.".into(), false);
+                    self.session.read(cx).request("_cordata/settings/get", serde_json::json!({}), settings_view::SETTINGS_GET_TAG);
+                } else {
+                    let reason = value.get("reason").and_then(serde_json::Value::as_str).unwrap_or("Setting update failed");
+                    self.settings_view.set_notice(reason.to_owned(), true);
+                }
+            }
+            models::OLLAMA_STATUS_TAG => {
+                self.models_view.take_status(&value);
             }
             _ => {}
         }
@@ -653,6 +737,22 @@ impl Workspace {
         self.switch_dock(DockTab::Review, cx);
     }
 
+    fn show_terminal_action(&mut self, _: &ShowTerminal, _: &mut Window, cx: &mut Context<Self>) {
+        self.switch_dock(DockTab::Terminal, cx);
+    }
+
+    fn show_browser_action(&mut self, _: &ShowBrowser, _: &mut Window, cx: &mut Context<Self>) {
+        self.switch_dock(DockTab::Browser, cx);
+    }
+
+    fn show_models_action(&mut self, _: &ShowModels, _: &mut Window, cx: &mut Context<Self>) {
+        self.switch_dock(DockTab::Models, cx);
+    }
+
+    fn show_settings_action(&mut self, _: &ShowSettings, _: &mut Window, cx: &mut Context<Self>) {
+        self.switch_dock(DockTab::Settings, cx);
+    }
+
     fn open_files_action(&mut self, _: &OpenFiles, window: &mut Window, cx: &mut Context<Self>) {
         self.switch_dock(DockTab::Files, cx);
         self.file_filter.update(cx, |state, cx| state.focus(window, cx));
@@ -667,6 +767,10 @@ impl Workspace {
         match tab {
             DockTab::Files => self.load_tree(cx),
             DockTab::Review => self.load_review(cx),
+            DockTab::Settings => self.load_settings_data(cx),
+            DockTab::Models => {
+                self.session.read(cx).request("_cordata/ollama/status", serde_json::json!({}), models::OLLAMA_STATUS_TAG);
+            }
             _ => {}
         }
         cx.notify();
@@ -675,7 +779,7 @@ impl Workspace {
     fn dock_width(&self) -> f32 {
         match self.dock_tab {
             DockTab::Mission | DockTab::Files => DOCK_WIDTH,
-            DockTab::Editor | DockTab::Review => DOCK_WIDTH_WIDE,
+            DockTab::Editor | DockTab::Review | DockTab::Terminal | DockTab::Browser | DockTab::Models | DockTab::Settings => DOCK_WIDTH_WIDE,
         }
     }
 
@@ -935,7 +1039,20 @@ impl Workspace {
                     .px(px(2.))
                     .child(hud::label("project", cx))
                     .child(div().text_sm().text_color(color(cx, Role::Text)).child(SharedString::from(project)))
-                    .when_some(branch, |this, branch| this.child(div().text_xs().text_color(color(cx, Role::Agent)).child(SharedString::from(format!("⎇ {branch}"))))),
+                    .when_some(branch, |this, branch| this.child(div().text_xs().text_color(color(cx, Role::Agent)).child(SharedString::from(format!("⎇ {branch}")))))
+                    .child({
+                        let trusted = self.settings_view.trusted;
+                        div()
+                            .id("rail-trust-status")
+                            .cursor_pointer()
+                            .text_xs()
+                            .font_family(cordata_theme::fonts::MONO)
+                            .text_color(color(cx, if trusted { Role::Ok } else { Role::Attention }))
+                            .child(if trusted { "✓ trusted" } else { "⚠ untrusted" })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.switch_dock(DockTab::Settings, cx);
+                            }))
+                    }),
             )
             .when(waiting > 0, |this| {
                 this.child(
@@ -1201,7 +1318,7 @@ impl Workspace {
     // ------------------------------------------------------------------------------------------------ the dock
 
     fn dock(&self, cx: &mut Context<Self>) -> AnyElement {
-        const TABS: [DockTab; 4] = [DockTab::Mission, DockTab::Files, DockTab::Editor, DockTab::Review];
+        const TABS: [DockTab; 8] = [DockTab::Mission, DockTab::Files, DockTab::Editor, DockTab::Review, DockTab::Terminal, DockTab::Browser, DockTab::Models, DockTab::Settings];
         let tab_buttons = div()
             .id("dock-tabs")
             .flex()
@@ -1261,6 +1378,10 @@ impl Workspace {
             DockTab::Files => editor::pane("files", self.files_panel(cx), cx),
             DockTab::Editor => self.editor_panel(cx),
             DockTab::Review => self.review_panel(cx),
+            DockTab::Terminal => editor::pane("terminal", self.terminal_panel(cx), cx),
+            DockTab::Browser => editor::pane("browser agent", self.browser_panel(cx), cx),
+            DockTab::Models => editor::pane("models & voice", self.models_panel(cx), cx),
+            DockTab::Settings => editor::pane("settings & trust", self.settings_panel(cx), cx),
         };
 
         div()
@@ -1351,6 +1472,10 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::show_files_action))
             .on_action(cx.listener(Self::show_editor_action))
             .on_action(cx.listener(Self::show_review_action))
+            .on_action(cx.listener(Self::show_terminal_action))
+            .on_action(cx.listener(Self::show_browser_action))
+            .on_action(cx.listener(Self::show_models_action))
+            .on_action(cx.listener(Self::show_settings_action))
             .on_action(cx.listener(Self::open_files_action))
             .on_action(cx.listener(Self::save_file_action))
             .size_full()
@@ -1462,6 +1587,11 @@ pub fn bind_keys(cx: &mut App) {
         gpui::KeyBinding::new("cmd-2", ShowFiles, Some("Workspace")),
         gpui::KeyBinding::new("cmd-3", ShowEditor, Some("Workspace")),
         gpui::KeyBinding::new("cmd-4", ShowReview, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-5", ShowSettings, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-6", ShowTerminal, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-7", ShowBrowser, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-8", ShowModels, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-,", ShowSettings, Some("Workspace")),
         gpui::KeyBinding::new("cmd-p", OpenFiles, Some("Workspace")),
         gpui::KeyBinding::new("cmd-s", SaveFile, Some("Workspace")),
         gpui::KeyBinding::new("cmd-s", SaveFile, Some("CordataEditor")),
@@ -1615,13 +1745,70 @@ mod window_tests {
         cx.run_until_parked();
         assert_eq!(view.read_with(cx, |this, _| this.dock_tab), super::DockTab::Review);
 
+        cx.simulate_keystrokes("cmd-5");
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |this, _| this.dock_tab), super::DockTab::Settings);
+
         cx.simulate_keystrokes("cmd-1");
         cx.run_until_parked();
         assert_eq!(view.read_with(cx, |this, _| this.dock_tab), super::DockTab::Mission);
 
+        cx.simulate_keystrokes("cmd-,");
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |this, _| this.dock_tab), super::DockTab::Settings);
+
+        cx.simulate_keystrokes("cmd-6");
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |this, _| this.dock_tab), super::DockTab::Terminal);
+
+        cx.simulate_keystrokes("cmd-7");
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |this, _| this.dock_tab), super::DockTab::Browser);
+
+        cx.simulate_keystrokes("cmd-8");
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |this, _| this.dock_tab), super::DockTab::Models);
+
         cx.simulate_keystrokes("cmd-p");
         cx.run_until_parked();
         assert_eq!(view.read_with(cx, |this, _| this.dock_tab), super::DockTab::Files);
+    }
+
+    #[gpui::test]
+    fn settings_trust_data_routes(cx: &mut TestAppContext) {
+        let (view, cx) = workspace(cx);
+        view.update(cx, |this, cx| {
+            let tag = super::settings_view::TRUST_STATUS_TAG;
+            this.session.update(cx, |s, _| {
+                s.data.insert(tag.into(), Ok(serde_json::json!({
+                    "trusted": false,
+                    "ignored": ["permissions.defaultMode: auto ignored (folder not trusted)"],
+                    "allowRules": ["shell(make deploy)"],
+                    "blockedPlugins": [{
+                        "name": "repo-tool",
+                        "command": "python",
+                        "args": ["-c", "print(1)"],
+                        "envKeys": ["TOKEN"],
+                        "reason": "folder not trusted"
+                    }]
+                })));
+            });
+            this.on_data(tag, cx);
+            assert!(!this.settings_view.trusted);
+            assert_eq!(this.settings_view.blocked_plugins.len(), 1);
+            assert_eq!(this.settings_view.blocked_plugins[0].name, "repo-tool");
+
+            // Grant trust
+            let grant_tag = super::settings_view::TRUST_GRANT_TAG;
+            this.session.update(cx, |s, _| {
+                s.data.insert(grant_tag.into(), Ok(serde_json::json!({
+                    "ok": true,
+                    "trusted": true
+                })));
+            });
+            this.on_data(grant_tag, cx);
+            assert!(this.settings_view.trusted);
+        });
     }
 
     #[gpui::test]

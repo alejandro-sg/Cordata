@@ -50,12 +50,36 @@ fn parse_args() -> Args {
             "--prompt" => args.prompt = it.next(),
             "--run" => args.run = it.next(),
             "--selftest" => args.selftest = true,
+            other if other.starts_with("cordata://") => parse_cordata_url(other, &mut args),
             // A bundle opened by `open -a Cordata dir` (or `cordata .`) gets the folder as its one argument.
             other if !other.starts_with('-') => args.cwd = std::fs::canonicalize(other).unwrap_or_else(|_| PathBuf::from(other)),
             _ => {}
         }
     }
     args
+}
+
+fn parse_cordata_url(url: &str, args: &mut Args) {
+    let stripped = url.trim_start_matches("cordata://");
+    if let Some(rest) = stripped.strip_prefix("session/") {
+        let id = rest.split(['?', '&', '/']).next().unwrap_or(rest);
+        if !id.is_empty() {
+            args.conversation = id.to_owned();
+        }
+    } else if let Some(rest) = stripped.strip_prefix("run/") {
+        let run_id = rest.split(['?', '&', '/']).next().unwrap_or(rest);
+        if !run_id.is_empty() {
+            args.run = Some(run_id.to_owned());
+        }
+    } else if let Some(query) = stripped.strip_prefix("ask?") {
+        for param in query.split('&') {
+            if let Some((k, v)) = param.split_once('=')
+                && k == "prompt"
+            {
+                args.prompt = Some(v.replace("%20", " ").replace('+', " "));
+            }
+        }
+    }
 }
 
 /// Launched from Finder the working directory is `/`: the person's home is the honest default there.
@@ -134,4 +158,30 @@ fn main() {
             .detach();
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_cordata_deep_links() {
+        let mut args = Args {
+            cwd: PathBuf::from("/"),
+            conversation: "latest".into(),
+            prefer: Prefer::Hub,
+            prompt: None,
+            run: None,
+            selftest: false,
+        };
+
+        parse_cordata_url("cordata://session/sess-abc-123", &mut args);
+        assert_eq!(args.conversation, "sess-abc-123");
+
+        parse_cordata_url("cordata://run/run-xyz-789", &mut args);
+        assert_eq!(args.run.as_deref(), Some("run-xyz-789"));
+
+        parse_cordata_url("cordata://ask?prompt=review%20this%20code", &mut args);
+        assert_eq!(args.prompt.as_deref(), Some("review this code"));
+    }
 }

@@ -1182,6 +1182,11 @@ class CordataAcpAgent:
             config = heal.config if heal else HealConfig()
             memory = await run_blocking(fix_memory.stats, cwd) if config.memory else None
             return {"episodes": episodes, "config": config.__dict__, "memory": memory}
+        if name.startswith("ollama/"):
+            action = name.removeprefix("ollama/")
+            model = str(params.get("model") or "")
+            needed_gb = float(params.get("needed_gb") or 0.0)
+            return await run_blocking(ollama_resource_tool.ollama_resource_manager, action, model, needed_gb)
         raise acp.RequestError.method_not_found(method)
 
     async def _orchestrator_control(self, action: str, params: dict, session_id: str | None, state: "_Session | None", cwd: str) -> dict:

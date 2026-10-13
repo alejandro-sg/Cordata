@@ -677,6 +677,16 @@ impl Workspace {
                 0 => "review".into(),
                 n => format!("review {n}"),
             },
+            DockTab::Terminal => "terminal".into(),
+            DockTab::Browser => "browser".into(),
+            DockTab::Models => "models".into(),
+            DockTab::Settings => {
+                if self.settings_view.trusted {
+                    "settings".into()
+                } else {
+                    "settings ⚠".into()
+                }
+            }
         }
     }
 

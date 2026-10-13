@@ -20,7 +20,10 @@ trajectories; Ollama's model manager; Gemini's live voice and screen context; Ze
 | **B3** | daemon surface (§6.3) | **done** — `backend/_daemon_surface_smoke_test.py`; `GET /projects` (git worktrees, trust, live, waiting approvals), `GET /history`, `/ws?role=observer`, approval options + `option_id` over gRPC, atomic `daemon.json`. Decision: worktrees stay separate projects for trust and checkpoints (safety by realpath); grouping learning stores by repository is deferred |
 | **B4** | settings & trust (§6.4) | **done** — `backend/_settings_trust_smoke_test.py`; `app.*` (both schemas, user file only, parity-tested), `_cordata/settings/{get,schema,set,rules/add,rules/remove}`, `_cordata/trust/{status,grant}` (grant needs `confirmed`), `_cordata/doctor`, `_cordata/auto/readiness`, `auto`/`edit` need `_meta.cordata.confirmed` from clients that declare `confirmModes` |
 | **P3** | light editor & diff review (§3 D4) | **done** — dock tabs (Mission · Files · Editor · Review, wider for Editor/Review), per-hunk Keep/Revert review pane (`review.rs`), file tree and editor tabs (`editor.rs`), ⌘1–4, ⌘P, ⌘S, ⌘W closing editor tabs, trust-gated diagnostics on unsaved text (`_editor_surface_smoke_test.py` in CI), disk reload, Open in Zed |
-| P4–P7 | §9 | not started |
+| **P4** | terminal & browser agent view (§9) | **done** — non-blocking command runner in project directory (`workspace/terminal.rs`, ⌘6), Chrome DevTools MCP trajectory & screenshot inspector (`workspace/browser.rs`, ⌘7) |
+| **P5** | system integration (§9) | **done** — `cordata://` URL scheme handler (`main.rs`), standalone `scripts/cordata-capture` screenshot helper |
+| **P6** | local models & offline voice (§9) | **done** — unified memory budget gauge, resident VRAM models list with unload (`ollama stop`), weight puller (`_cordata/ollama/*`), offline macOS speech synthesis (`workspace/models.rs`, ⌘8) |
+| **P7** | release packaging & release validation (§9) | **done** — signed `.app` bundle via `scripts/package-app.sh`, verified strict codesign, system framework checks, automated self-test |
 
 **Run it.** `make app-run` (the daemon's hub; `ARGS="--transport stdio"` for a private child from the checkout).
 `make app` builds, signs (`SIGN_IDENTITY` optional) and self-tests `app/target/Cordata.app`; `INSTALL=1` copies it to
@@ -42,7 +45,7 @@ one scripted turn through the real window; `make app-check` is clippy, `cargo de
 | Ctrl+R / Ctrl+E expand reasoning / tools | Ctrl+R / Ctrl+E, or click a block | |
 | `?` / F1 help | F1 | |
 | Ctrl+N / Alt+N / Ctrl+←→ sessions | ⌘N · ⌘W · ⌘[ ⌘] · the rail | |
-| F3 HUD · F4 diff review · F2 Lab | the dock (Mission Control · Files · Editor · Review) | ⌘1–4 dock tabs; ⌘P files, ⌘S save, ⌘W closes editor tab |
+| F3 HUD · F4 diff review · F2 Lab | the dock (Mission Control · Files · Editor · Review · Settings · Terminal · Browser · Models) | ⌘1–8 dock tabs; ⌘, settings; ⌘P files; ⌘S save; ⌘W closes editor tab |
 
 **Crates** (`app/`):
 

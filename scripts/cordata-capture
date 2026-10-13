@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# cordata-capture — macOS screen capture helper for Cordata.app (docs/app.md §4, phase P5).
+#
+# Interactive screen region capture that saves to ~/.cordata/captures/
+# and triggers Cordata quick-ask with the captured image attached.
+#
+# Usage:
+#   scripts/cordata-capture            # interactive rectangle capture
+#   scripts/cordata-capture --window   # window capture
+#   scripts/cordata-capture --screen   # full screen capture
+set -euo pipefail
+
+CAPTURE_DIR="$HOME/.cordata/captures"
+mkdir -p "$CAPTURE_DIR"
+
+TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
+FILE="$CAPTURE_DIR/capture-$TIMESTAMP.png"
+
+MODE="-i"
+if [[ "${1:-}" == "--window" ]]; then
+  MODE="-w"
+elif [[ "${1:-}" == "--screen" ]]; then
+  MODE=""
+fi
+
+if [[ -n "$MODE" ]]; then
+  screencapture "$MODE" "$FILE"
+else
+  screencapture "$FILE"
+fi
+
+if [[ -f "$FILE" && -s "$FILE" ]]; then
+  echo "Captured: $FILE"
+  # Notify or open in Cordata if requested
+  if [[ "${2:-}" == "--ask" || "${1:-}" == "--ask" ]]; then
+    open "cordata://ask?image=$FILE" 2>/dev/null || true
+  fi
+else
+  echo "Capture cancelled" >&2
+  exit 1
+fi
