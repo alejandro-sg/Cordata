@@ -100,5 +100,9 @@ if [[ "$INSTALL" == 1 ]]; then
   pkill -x cordata-app 2>/dev/null || true
   rm -rf "$HOME/Applications/$APP_NAME.app"
   cp -R "$APP" "$HOME/Applications/"
+  # Unregister and remove the build artifact copy so LaunchServices and Spotlight only see the installed app.
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "$APP" 2>/dev/null || true
+  rm -rf "$APP"
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$HOME/Applications/$APP_NAME.app" 2>/dev/null || true
   ok "installed: ~/Applications/$APP_NAME.app"
 fi
