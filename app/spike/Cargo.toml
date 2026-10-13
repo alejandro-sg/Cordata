@@ -1,0 +1,18 @@
+[package]
+name = "cordata-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT"
+
+[dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.9", default-features = false, features = ["font-kit"] }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.9", default-features = false, features = ["font-kit", "runtime_shaders"] }
+gpui-component = { version = "=0.7.3", features = ["tree-sitter-languages"] }
+gpui-fps = { version = "=0.7.3" }
+
+[dev-dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.9", default-features = false, features = ["font-kit", "test-support"] }
+gpui-component = { version = "=0.7.3", features = ["test-support"] }
+
+[workspace]

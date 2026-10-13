@@ -63,6 +63,27 @@ def current(session_id: str) -> list[dict]:
         return [dict(item) for item in _lists.get(session_id, [])]
 
 
+def restore(session_id: str) -> list[dict]:
+    """The checklist this session last published — from memory, or from the ledger when this process is new (a reloaded
+    session, a child respawned by the daemon). Restored into memory so the next `todo_write` replaces it as usual."""
+    items = current(session_id)
+    if items or not session_id:
+        return items
+    try:
+        import state_store
+
+        rows = state_store.recent_events(session_id=session_id, kind="tasklist", limit=1)
+        saved = rows[0]["payload"].get("items") if rows else None
+    except Exception:
+        saved = None
+    cleaned, problem = validate(saved) if saved else ([], "none")
+    if problem:
+        return []
+    with _lock:
+        _lists.setdefault(session_id, cleaned)
+        return [dict(item) for item in _lists[session_id]]
+
+
 def clear(session_id: str) -> None:
     with _lock:
         _lists.pop(session_id, None)
@@ -70,7 +91,14 @@ def clear(session_id: str) -> None:
 
 def _publish(session_id: str, todos: list[dict]) -> None:
     done = sum(1 for t in todos if t["status"] == "completed")
-    harness_events.emit("tasklist", {"sessionId": session_id, "items": todos, "done": done, "total": len(todos)})
+    payload = {"sessionId": session_id, "items": todos, "done": done, "total": len(todos)}
+    harness_events.emit("tasklist", payload)
+    try:
+        import state_store
+
+        state_store.append_event("tasklist", payload, session_id=session_id or None, source="task_tool")
+    except Exception:
+        pass
 
 
 @tool

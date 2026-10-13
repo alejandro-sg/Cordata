@@ -9,7 +9,7 @@ use acp_core::{
     LayaDecision, LayaEvent, LayaOutcome, ModeInfo, PermissionInfo, SessionInfo, StopReason,
     TaskState, ToolCallInfo, ToolKind, ToolStatus,
 };
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crate::key::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use serde_json::Value;
 use tokio::sync::oneshot;
 
@@ -214,7 +214,7 @@ pub struct App {
     /// committed progressively as complete lines arrive).
     pub committed_rows: usize,
     /// Kind of the last committed message, for spacing between blocks.
-    pub last_committed: Option<crate::ui::transcript::Kind>,
+    pub last_committed: Option<crate::view::Kind>,
     /// Prompts sent this run, oldest first, for Up/Down recall.
     history: Vec<String>,
     history_idx: Option<usize>,
@@ -224,7 +224,7 @@ pub struct App {
     pub turn_tools: usize,
     pub spinner: usize,
     /// Background work (plugins, language servers, self-heal, MCP progress).
-    pub tasks: Vec<crate::ui::progress::TaskView>,
+    pub tasks: Vec<crate::view::TaskView>,
     /// The approval panel shows the whole diff instead of its first rows (`d`).
     pub diff_expanded: bool,
     /// Every open session, for the footer (empty / one entry: no tab strip).
@@ -235,21 +235,21 @@ pub struct App {
     pub initial_prompt: Option<String>,
     /// The completion menu above the prompt box (`/` commands, `@` files), derived from the text.
     pub menu: Option<crate::menu::Menu>,
-    pub(crate) menu_dismissed: Option<String>,
+    pub menu_dismissed: Option<String>,
     /// The project's files, listed the first time an `@` asks.
-    pub(crate) files: Option<Vec<String>>,
+    pub files: Option<Vec<String>>,
     /// Slash commands from `commands/*.md` files.
     pub custom: Vec<crate::custom::Custom>,
     /// Prompts typed while the agent was still working, sent one by one as it frees up.
     pub queue: VecDeque<String>,
     /// What `!commands` printed since the last prompt: handed to the agent with the next one.
-    pub(crate) shell_context: Vec<String>,
+    pub shell_context: Vec<String>,
     /// How full the conversation is, as the backend last said.
     pub context: Option<crate::extras::ContextGauge>,
-    pub(crate) warned_context: bool,
+    pub warned_context: bool,
     /// The agent's own checklist (`todo_write`), drawn above the prompt.
     pub checklist: Vec<crate::extras::TodoItem>,
-    pub(crate) checklist_done_at: Option<Instant>,
+    pub checklist_done_at: Option<Instant>,
     /// The goal being pursued, if any.
     pub goal: Option<crate::extras::GoalView>,
     /// Tokens in and out over this client's session, and the turns that spent them.
@@ -266,11 +266,19 @@ pub struct App {
     pub mode_changed_at: Option<Instant>,
     /// The full-screen overlay in front of the conversation (command deck, HUD, diff review), if one is open.
     pub overlay: Option<crate::overlay::Overlay>,
+    /// Builds an overlay when one is asked for: the front end's (`overlay::none` for one that draws these its own way).
+    pub overlay_factory: crate::overlay::Factory,
     /// The orchestrator's current (or last) run, folded from its events, for the HUD.
     pub run: Option<crate::run_board::RunBoard>,
     /// The person's own words for the approval card in front of them (`w`): a reason for refusing, what a plan should
     /// change, or an answer to a question the offered options did not cover.
     pub note: Option<Input>,
+}
+
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl App {
@@ -330,6 +338,7 @@ impl App {
             attention: false,
             mode_changed_at: None,
             overlay: None,
+            overlay_factory: crate::overlay::none,
             note: None,
             run: None,
         }
@@ -423,12 +432,12 @@ impl App {
 
     /// Can a prompt be sent right now? (Same as `input_enabled`, named for the
     /// commands that send one on the user's behalf.)
-    pub(crate) fn input_enabled_for_prompt(&self) -> bool {
+    pub fn input_enabled_for_prompt(&self) -> bool {
         self.input_enabled()
     }
 
     /// Start a turn with `text` as the prompt.
-    pub(crate) fn begin_turn(&mut self, text: String) -> Effect {
+    pub fn begin_turn(&mut self, text: String) -> Effect {
         self.auto_resume = None;
         self.suggestion = None;
         self.turn_active = true;
@@ -606,14 +615,14 @@ impl App {
                         task.finished = task.finished.or(finished);
                         task.info = info;
                     }
-                    None => self.tasks.push(crate::ui::progress::TaskView {
+                    None => self.tasks.push(crate::view::TaskView {
                         info,
                         started: Instant::now(),
                         finished,
                     }),
                 }
             }
-            HarnessEvent::Heal(info) if crate::ui::heal::is_shown(&info.phase) => {
+            HarnessEvent::Heal(info) if crate::view::is_shown(&info.phase) => {
                 self.messages.push(Message::Heal(info));
             }
             HarnessEvent::Heal(_) => {}
@@ -919,7 +928,7 @@ impl App {
         self.handle_input_key(key)
     }
 
-    pub(crate) fn handle_input_key(&mut self, key: KeyEvent) -> Option<Effect> {
+    pub fn handle_input_key(&mut self, key: KeyEvent) -> Option<Effect> {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         // While the completion menu is open it owns the keys that would otherwise walk history, cycle the mode or
         // send the prompt.
@@ -996,7 +1005,7 @@ impl App {
 
     /// Toggle the Blade Runner 2049 interactive split-pane workspace (F3 / /panes).
     pub fn toggle_panes(&mut self) -> Option<Effect> {
-        if self.overlay.as_ref().map(crate::overlay::Overlay::kind) == Some(crate::overlay::Kind::Panes) {
+        if self.overlay.as_ref().map(|overlay| overlay.kind()) == Some(crate::overlay::Kind::Panes) {
             self.overlay = None;
             None
         } else {
@@ -1006,7 +1015,7 @@ impl App {
 
     /// Open an overlay (closing any other). The review needs the diff, which the event loop fetches.
     pub fn open_overlay(&mut self, kind: crate::overlay::Kind) -> Option<Effect> {
-        self.overlay = Some(crate::overlay::Overlay::new(kind, self));
+        self.overlay = (self.overlay_factory)(kind, self);
         (kind == crate::overlay::Kind::Review).then_some(Effect::Review)
     }
 
@@ -1032,14 +1041,14 @@ impl App {
     }
 
     /// A mouse event, delivered only while an overlay is open (the terminal's own mouse handling is untouched otherwise).
-    pub fn on_mouse(&mut self, mouse: crossterm::event::MouseEvent) -> Option<Effect> {
+    pub fn on_mouse(&mut self, mouse: crate::key::MouseEvent) -> Option<Effect> {
         let mut overlay = self.overlay.take()?;
         let outcome = overlay.on_mouse(self, mouse);
         self.apply_outcome(overlay, outcome)
     }
 
     /// Enter: send what is in the box (or queue it, or run it as a command).
-    pub(crate) fn submit(&mut self) -> Option<Effect> {
+    pub fn submit(&mut self) -> Option<Effect> {
         let text = self.input.take();
         let text = text.trim_end().to_owned();
         self.history_idx = None;
@@ -1056,7 +1065,7 @@ impl App {
 
     /// One line the person entered, from the box or from the queue: a `!command`, a slash command (built in or a
     /// file), or a prompt. While the agent is working, only what would start a turn waits; the rest happens now.
-    pub(crate) fn run_line(&mut self, text: String) -> Option<Effect> {
+    pub fn run_line(&mut self, text: String) -> Option<Effect> {
         if let Some(command) = text.strip_prefix('!').map(str::trim).filter(|c| !c.is_empty()) {
             return Some(Effect::Shell { command: command.to_owned(), share: true, as_diff: false });
         }
@@ -1115,8 +1124,8 @@ impl App {
     pub fn on_local(&mut self, event: LocalEvent) {
         let (command, outcome, share, as_diff) = match event {
             LocalEvent::ReviewDone(outcome) => {
-                if let Some(crate::overlay::Overlay::Review(review)) = self.overlay.as_mut() {
-                    review.load(&outcome);
+                if let Some(overlay) = self.overlay.as_mut() {
+                    overlay.review_loaded(&outcome);
                 }
                 return;
             }
@@ -1172,7 +1181,7 @@ impl App {
         None
     }
 
-    fn history_back(&mut self) {
+    pub fn history_back(&mut self) {
         if self.history.is_empty() {
             return;
         }
@@ -1187,7 +1196,7 @@ impl App {
         self.input.set_text(&self.history[next]);
     }
 
-    fn history_forward(&mut self) {
+    pub fn history_forward(&mut self) {
         let Some(index) = self.history_idx else {
             return;
         };
@@ -1201,7 +1210,7 @@ impl App {
         }
     }
 
-    pub(crate) fn info(&mut self, text: impl Into<String>) {
+    pub fn info(&mut self, text: impl Into<String>) {
         self.messages.push(Message::Info(text.into()));
     }
 
@@ -1450,7 +1459,7 @@ impl App {
         }
     }
 
-    pub(crate) fn on_key_permission(&mut self, key: KeyEvent) -> Option<Effect> {
+    pub fn on_key_permission(&mut self, key: KeyEvent) -> Option<Effect> {
         let offers_always = self
             .pending
             .front()
@@ -1461,7 +1470,7 @@ impl App {
         // The plan card (`present_plan`) has its own answers (build, edit, auto, keep planning); a question
         // (`ask_user`) is answered by its option's number.
         let is_plan = self.pending.front().is_some_and(|pending| pending.info.tool_name == "present_plan");
-        let ask_choices = self.pending.front().filter(|pending| pending.info.tool_name == "ask_user").map(|pending| crate::ui::panels::ask_choices(&pending.info));
+        let ask_choices = self.pending.front().filter(|pending| pending.info.tool_name == "ask_user").map(|pending| crate::view::ask_choices(&pending.info));
         let is_ask = ask_choices.is_some();
         let offered = |id: &str| self.pending.front().is_some_and(|pending| pending.info.option(id).is_some());
         let decision = match key.code {
@@ -1484,10 +1493,7 @@ impl App {
             KeyCode::Char('k' | 'K') if is_plan => ApprovalDecision::Reject,
             KeyCode::Char(digit @ '1'..='9') if is_ask => {
                 let index = digit as usize - '1' as usize;
-                match ask_choices.as_ref().and_then(|choices| choices.get(index)) {
-                    Some(choice) => ApprovalDecision::Choose(choice.id.clone()),
-                    None => return None,
-                }
+                ApprovalDecision::Choose(ask_choices.as_ref().and_then(|choices| choices.get(index))?.id.clone())
             }
             KeyCode::Char('s' | 'S') if is_ask => ApprovalDecision::Reject,
             // The HITL station's own keys, alongside the prompt's: Y approves and
@@ -1518,8 +1524,16 @@ impl App {
             }
             _ => return None,
         };
+        self.answer(decision);
+        None
+    }
+
+    /// Answer the approval at the front of the queue — from a key above, or from a front end's button. An "always" that
+    /// saved a rule says so in the transcript (a plan card's "auto" is a mode, not a rule).
+    pub fn answer(&mut self, decision: ApprovalDecision) {
         self.diff_expanded = false;
         if let Some(mut pending) = self.pending.pop_front() {
+            let is_plan = pending.info.tool_name == "present_plan";
             if decision == ApprovalDecision::AllowAlways
                 && !is_plan
                 && let Some(label) = &pending.info.always_label
@@ -1532,7 +1546,13 @@ impl App {
             pending.answer(decision);
         }
         self.hint = None;
-        None
+    }
+
+    /// Type `text` into the composer and press Enter: what a front end without its own key handling calls to send.
+    /// Slash commands, `!` shell, `@` mentions, custom commands and the type-ahead queue all apply exactly as typed.
+    pub fn submit_text(&mut self, text: &str) -> Option<Effect> {
+        self.input.set_text(text);
+        self.submit()
     }
 
     /// Typing in the note box under an approval card: Enter sends it as the answer (or the reason), Esc goes back to the card.
@@ -1572,7 +1592,7 @@ impl App {
         self.lab.on_key(key)
     }
 
-    pub(crate) fn on_key_picker(&mut self, key: KeyEvent) -> Option<Effect> {
+    pub fn on_key_picker(&mut self, key: KeyEvent) -> Option<Effect> {
         let picker = self.picker.as_mut()?;
         match key.code {
             KeyCode::Esc => self.picker = None,

@@ -5,7 +5,7 @@ shape Claude Code (`settings.json`, `CLAUDE.md`) and Kilo CLI (`kilo.jsonc`) use
 
 The contract lives here; two implementations follow it and are tested against the same files
 (`tui/fixtures/settings/`): `backend/settings_store.py` (enforces permissions, applies
-model / mode / Laya / tier preferences, reads instructions) and `tui/crates/acp-tui/src/settings.rs`
+model / mode / Laya / tier preferences, reads instructions) and `app/crates/cordata-view/src/settings.rs`
 (shows what's in effect, applies display preferences, writes changes).
 
 ## Files
@@ -421,3 +421,11 @@ backend/.venv/bin/python backend/settings_store.py ~/some/project   # merged val
 Tests: `backend/_settings_store_smoke_test.py` (no model), `backend/_acp_settings_smoke_test.py`
 (real server and model: defaults, instructions, deny/allow, always-allow), `cargo test -p acp-tui`
 (the Rust reader against the same fixture).
+
+## The native app's settings (`app.*`)
+
+`app.theme` (`night` · `high-contrast` · `system`), `app.density` (`comfortable` · `compact`), `app.notifications`
+(`all` · `approvals` · `off`), `app.restoreWindows`, `app.showReasoning`. Read **only from the user file**
+(`USER_ONLY_PREFIXES`, both schemas): a project's `.cordata/settings.json` setting one is ignored with a warning, and
+writing one to a project scope is refused. The app reads and writes them through `_cordata/settings/*`, so the
+validation is the backend's.

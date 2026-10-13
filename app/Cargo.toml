@@ -1,0 +1,32 @@
+# Cordata.app — the native macOS workspace (docs/app.md). Core tier: built and tested in the default CI.
+#
+#   cordata-view   front-end state shared with the terminal (no UI toolkit)
+#   cordata-theme  the Blade Runner 2049 tokens, with WCAG checks; adapters for ratatui and GPUI
+#   cordata-app    the GPUI application
+#
+# `spike/` is the D1 gate's throwaway (its own workspace, see spike/GATE.md).
+[workspace]
+resolver = "3"
+members = ["crates/cordata-view", "crates/cordata-theme", "crates/cordata-app"]
+exclude = ["spike"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "MIT"
+rust-version = "1.88"
+
+[workspace.dependencies]
+cordata-view = { path = "crates/cordata-view" }
+cordata-theme = { path = "crates/cordata-theme" }
+acp-core = { path = "../tui/crates/acp-core" }
+# GPUI and its component library, pinned exactly (docs/app.md §3 D1; app/scripts/verify-gpui-snapshot.sh proves the
+# gpui-pre crates are zed@93d7456). A bump is a deliberate PR that re-runs that script.
+gpui = { package = "gpui-pre", version = "=0.3.9", default-features = false, features = ["font-kit"] }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.9", default-features = false, features = ["font-kit", "runtime_shaders"] }
+gpui-component = { version = "=0.7.3", default-features = false }
+gpui-fps = { version = "=0.7.3" }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "net"] }

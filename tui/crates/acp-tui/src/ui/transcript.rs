@@ -24,42 +24,7 @@ use super::{heal, help, laya, markdown, text::wrap, tool_card};
 use crate::app::{App, Message};
 use acp_core::ToolStatus;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Kind {
-    User,
-    Laya,
-    LayaOutcome,
-    Agent,
-    Thought,
-    Tool,
-    Divider,
-    Info,
-    Diff,
-    Error,
-    Help,
-    Welcome,
-    Heal,
-}
-
-impl Message {
-    pub fn kind(&self) -> Kind {
-        match self {
-            Message::User(_) => Kind::User,
-            Message::Laya(_) => Kind::Laya,
-            Message::LayaOutcome(_) => Kind::LayaOutcome,
-            Message::Agent(_) => Kind::Agent,
-            Message::Thought(_) => Kind::Thought,
-            Message::Tool(_) => Kind::Tool,
-            Message::Divider(_) => Kind::Divider,
-            Message::Info(_) => Kind::Info,
-            Message::Diff(_) => Kind::Diff,
-            Message::Error(_) => Kind::Error,
-            Message::Help => Kind::Help,
-            Message::Heal(_) => Kind::Heal,
-            Message::Welcome(_) => Kind::Welcome,
-        }
-    }
-}
+pub use cordata_view::view::Kind;
 
 /// A blank line goes between messages — except where two belong together.
 fn blank_between(previous: Option<Kind>, next: Kind) -> bool {

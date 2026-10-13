@@ -179,7 +179,7 @@ mod tests {
     }
 
     fn connected() -> App {
-        let mut app = App::new();
+        let mut app = crate::overlay::new_app();
         app.on_event(AppEvent::Connected(SessionInfo {
             session_id: "abcdef12-3456".into(),
             cwd: "/proj".into(),
@@ -347,7 +347,7 @@ mod tests {
     #[test]
     fn a_plan_is_shown_as_a_plan_with_its_answers_and_each_key_means_one() {
         use acp_core::ApprovalDecision::{Choose, Reject, Say};
-        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use cordata_view::key::{KeyCode, KeyEvent, KeyModifiers};
         let press = |app: &mut App, code| app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
 
         let mut app = connected();
@@ -425,7 +425,7 @@ mod tests {
     #[test]
     fn a_question_is_drawn_with_numbered_options_and_a_number_answers_it() {
         use acp_core::ApprovalDecision::{Choose, Reject, Say};
-        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use cordata_view::key::{KeyCode, KeyEvent, KeyModifiers};
         let press = |app: &mut App, code| app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
 
         let mut app = connected();
@@ -456,7 +456,7 @@ mod tests {
     #[test]
     fn any_approval_can_be_refused_with_a_reason() {
         use acp_core::ApprovalDecision::Say;
-        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use cordata_view::key::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = connected();
         let mut rx = ask(&mut app, "t1");
         let shown = screen(&mut app, 110, 30);
@@ -474,7 +474,7 @@ mod tests {
         let _rx = plan_request(&mut app, &plan);
         let short = screen(&mut app, 100, 80);
         assert!(short.contains("more rows — d shows the whole plan") && !short.contains("step number 60"), "{short}");
-        app.on_key(crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Char('d'), crossterm::event::KeyModifiers::NONE));
+        app.on_key(cordata_view::key::KeyEvent::new(cordata_view::key::KeyCode::Char('d'), cordata_view::key::KeyModifiers::NONE));
         let whole = screen(&mut app, 100, 120);
         assert!(whole.contains("step number 60"), "{whole}");
     }
@@ -734,13 +734,13 @@ mod tests {
         app.suggestion = Some("run the tests and show me the result".into());
         let shown = screen(&mut app, 90, 20);
         assert!(shown.contains("❯ run the tests and show me the result") && shown.contains("tab ⇥"), "{shown}");
-        app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Tab));
+        app.on_key(cordata_view::key::KeyEvent::from(cordata_view::key::KeyCode::Tab));
         assert_eq!(app.input.text(), "run the tests and show me the result");
         assert!(app.suggestion.is_none());
         // Typing instead throws it away.
         let mut other = connected();
         other.suggestion = Some("commit".into());
-        other.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char('x')));
+        other.on_key(cordata_view::key::KeyEvent::from(cordata_view::key::KeyCode::Char('x')));
         assert!(other.suggestion.is_none() && other.input.text() == "x");
     }
 
@@ -760,7 +760,7 @@ mod tests {
         let mut app = connected();
         let type_line = |app: &mut App, line: &str| {
             app.input.set_text(line);
-            app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Enter))
+            app.on_key(cordata_view::key::KeyEvent::from(cordata_view::key::KeyCode::Enter))
         };
         let Some(crate::app::Effect::Ext { method, params, .. }) = type_line(&mut app, "/btw what did we decide?") else { panic!("btw is an extension request") };
         assert_eq!((method.as_str(), params["question"].as_str()), ("_cordata/btw", Some("what did we decide?")));
@@ -998,8 +998,8 @@ mod tests {
         let mut app = connected();
         app.attach_store(store.clone());
         app.input.set_text("/config");
-        app.on_key(crossterm::event::KeyEvent::from(
-            crossterm::event::KeyCode::Enter,
+        app.on_key(cordata_view::key::KeyEvent::from(
+            cordata_view::key::KeyCode::Enter,
         ));
         let rendered = screen(&mut app, 100, 30);
         for needle in [
@@ -1035,13 +1035,13 @@ mod tests {
             let mut app = connected();
             app.attach_store(store.clone());
             app.input.set_text("/config");
-            app.on_key(crossterm::event::KeyEvent::from(
-                crossterm::event::KeyCode::Enter,
+            app.on_key(cordata_view::key::KeyEvent::from(
+                cordata_view::key::KeyCode::Enter,
             ));
             if !top {
                 for _ in 0..crate::settings::SCHEMA.len() {
-                    app.on_key(crossterm::event::KeyEvent::from(
-                        crossterm::event::KeyCode::Down,
+                    app.on_key(cordata_view::key::KeyEvent::from(
+                        cordata_view::key::KeyCode::Down,
                     ));
                 }
             }
@@ -1061,12 +1061,12 @@ mod tests {
         let mut app = connected();
         app.attach_store(store.clone());
         app.input.set_text("/config");
-        app.on_key(crossterm::event::KeyEvent::from(
-            crossterm::event::KeyCode::Enter,
+        app.on_key(cordata_view::key::KeyEvent::from(
+            cordata_view::key::KeyCode::Enter,
         ));
         for _ in 0..crate::settings::SCHEMA.len() {
-            app.on_key(crossterm::event::KeyEvent::from(
-                crossterm::event::KeyCode::Down,
+            app.on_key(cordata_view::key::KeyEvent::from(
+                cordata_view::key::KeyCode::Down,
             ));
         }
         let rendered = screen(&mut app, 100, 30);
@@ -1116,8 +1116,8 @@ mod tests {
         term.show(&mut app);
         assert!(app.committed > 0);
         app.input.set_text("/clear");
-        let effect = app.on_key(crossterm::event::KeyEvent::from(
-            crossterm::event::KeyCode::Enter,
+        let effect = app.on_key(cordata_view::key::KeyEvent::from(
+            cordata_view::key::KeyCode::Enter,
         ));
         assert_eq!(effect, Some(crate::app::Effect::ClearScreen));
         assert_eq!((app.committed, app.committed_rows), (0, 0));
@@ -1221,8 +1221,8 @@ mod tests {
             "keys visible:\n{shown}"
         );
         assert!(shown.contains("more rows"), "the cut is marked:\n{shown}");
-        app.on_key(crossterm::event::KeyEvent::from(
-            crossterm::event::KeyCode::Char('d'),
+        app.on_key(cordata_view::key::KeyEvent::from(
+            cordata_view::key::KeyCode::Char('d'),
         ));
         assert!(app.diff_expanded, "d toggles the whole diff");
     }

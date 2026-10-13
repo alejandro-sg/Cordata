@@ -115,12 +115,7 @@ fn plan_panel(app: &App, width: u16) -> Option<Panel> {
     })
 }
 
-/// The choices of an `ask_user` question, in the order the agent gave them. The backend marks them `reject_always` so that a
-/// front door which only knows ACP's four kinds (the Discord bot, the GUI's modal) can never turn a click into an answer;
-/// "decide for me" and "skip" carry the other kinds and are not numbered.
-pub(crate) fn ask_choices(info: &acp_core::PermissionInfo) -> Vec<acp_core::PermissionChoice> {
-    info.options.iter().filter(|option| option.kind == acp_core::ChoiceKind::RejectAlways).cloned().collect()
-}
+pub use cordata_view::view::ask_choices;
 
 /// The note box under a card while the person is typing their own words (`w`), or `None` when it is closed.
 fn note_lines(app: &App, inner_width: usize) -> Option<Vec<Line<'static>>> {

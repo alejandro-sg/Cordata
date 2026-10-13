@@ -90,7 +90,7 @@ pub fn describe_context(gauge: &ContextGauge) -> String {
 impl App {
     // ------------------------------------------------------------ events
 
-    pub(crate) fn on_context(&mut self, value: &Value) {
+    pub fn on_context(&mut self, value: &Value) {
         self.context = ContextGauge::from_json(value);
         // Once, when it gets tight — not on every turn after.
         let high = self.context.as_ref().and_then(|g| g.pct).is_some_and(|p| p >= 0.8);
@@ -102,7 +102,7 @@ impl App {
         }
     }
 
-    pub(crate) fn on_checklist(&mut self, value: &Value) {
+    pub fn on_checklist(&mut self, value: &Value) {
         let items: Vec<TodoItem> = value
             .get("items")
             .and_then(Value::as_array)
@@ -123,7 +123,7 @@ impl App {
     }
 
     /// Fold a finished checklist into one line once it has been on screen long enough to be read.
-    pub(crate) fn settle_checklist(&mut self) {
+    pub fn settle_checklist(&mut self) {
         if self.checklist_done_at.is_some_and(|at| at.elapsed() >= CHECKLIST_LINGER) {
             let done = self.checklist.len();
             self.checklist.clear();
@@ -132,7 +132,7 @@ impl App {
         }
     }
 
-    pub(crate) fn on_goal(&mut self, value: &Value) {
+    pub fn on_goal(&mut self, value: &Value) {
         let text = |key: &str| value.get(key).and_then(Value::as_str).unwrap_or_default().to_owned();
         let number = |key: &str| value.get(key).and_then(Value::as_u64).unwrap_or(0);
         let (turn, max) = (number("turn"), number("max"));
@@ -175,7 +175,7 @@ impl App {
 
     /// `/goal`: with text, a prompt the backend turns into a goal (so it works the same in every front door);
     /// `clear` and no argument ask the backend directly, because they must work while a turn is running.
-    pub(crate) fn run_goal(&mut self, arg: Option<String>) -> Option<Effect> {
+    pub fn run_goal(&mut self, arg: Option<String>) -> Option<Effect> {
         match arg.as_deref().map(str::trim) {
             None | Some("") => Some(ext_effect("_cordata/goal/status", "goal")),
             Some("clear" | "stop" | "off" | "cancel") => Some(ext_effect("_cordata/goal/clear", "goal clear")),
@@ -183,7 +183,7 @@ impl App {
         }
     }
 
-    pub(crate) fn run_btw(&mut self, arg: Option<String>) -> Option<Effect> {
+    pub fn run_btw(&mut self, arg: Option<String>) -> Option<Effect> {
         let Some(question) = arg.filter(|q| !q.trim().is_empty()) else {
             self.info("/btw <question> — a side question, answered from the conversation without touching it (works while the agent is busy)");
             return None;
@@ -192,7 +192,7 @@ impl App {
         Some(Effect::Ext { method: "_cordata/btw".into(), params: serde_json::json!({ "question": question }), tag: "btw".into() })
     }
 
-    pub(crate) fn run_compact(&mut self, arg: Option<String>) -> Option<Effect> {
+    pub fn run_compact(&mut self, arg: Option<String>) -> Option<Effect> {
         if self.turn_active {
             self.info("the agent is working — /compact once it has finished (or Esc to stop it)");
             return None;
@@ -201,7 +201,7 @@ impl App {
         Some(Effect::Ext { method: "_cordata/context/compact".into(), params: serde_json::json!({ "focus": arg.unwrap_or_default() }), tag: "compact".into() })
     }
 
-    pub(crate) fn run_cost(&mut self) -> Option<Effect> {
+    pub fn run_cost(&mut self) -> Option<Effect> {
         let (tin, tout) = self.session_tokens;
         let mut lines = vec![format!(
             "this session  {} turn{} · {} in · {} out",
@@ -217,7 +217,7 @@ impl App {
         Some(Effect::Ext { method: "_cordata/orchestrator/status".into(), params: Value::Null, tag: "orchestrator".into() })
     }
 
-    pub(crate) fn run_copy(&mut self) -> Option<Effect> {
+    pub fn run_copy(&mut self) -> Option<Effect> {
         let last = self.messages.iter().rev().find_map(|m| match m {
             Message::Agent(text) if !text.trim().is_empty() => Some(text.clone()),
             _ => None,
@@ -234,7 +234,7 @@ impl App {
         }
     }
 
-    pub(crate) fn run_export(&mut self, arg: Option<String>) {
+    pub fn run_export(&mut self, arg: Option<String>) {
         let id: String = self.session.as_ref().map(|s| s.session_id.chars().take(8).collect()).unwrap_or_else(|| "session".into());
         let name = arg.filter(|a| !a.trim().is_empty()).unwrap_or_else(|| format!("cordata-{id}.md"));
         let path = if std::path::Path::new(&name).is_absolute() { std::path::PathBuf::from(&name) } else { self.project_dir().join(&name) };
@@ -271,7 +271,7 @@ impl App {
     }
 
     /// `/diff`: what is changed in the working tree, as the person's own command (not shared with the agent).
-    pub(crate) fn run_diff(&mut self) -> Option<Effect> {
+    pub fn run_diff(&mut self) -> Option<Effect> {
         Some(Effect::Shell {
             command: "git --no-pager diff --stat HEAD 2>&1 | tail -n 40; echo; git --no-pager diff HEAD --unified=2 2>&1 | head -n 400".into(),
             share: false,
@@ -279,7 +279,7 @@ impl App {
         })
     }
 
-    pub(crate) fn run_line_as_prompt(&mut self, line: &str) -> Option<Effect> {
+    pub fn run_line_as_prompt(&mut self, line: &str) -> Option<Effect> {
         if self.turn_active {
             self.queue.push_back(line.to_owned());
             return None;
@@ -330,7 +330,7 @@ pub fn suggest_next(messages: &[Message]) -> Option<String> {
     }
 }
 
-pub(crate) fn ext_effect(method: &str, tag: &str) -> Effect {
+pub fn ext_effect(method: &str, tag: &str) -> Effect {
     Effect::Ext { method: method.into(), params: Value::Null, tag: tag.into() }
 }
 

@@ -183,7 +183,18 @@ def request_to_proto(pending: PendingPermission) -> pb.InterventionRequest:
         reason=reason,
         requested_ms=int(pending.ts * 1000),
         redactions=redactions,
+        tool_call_id=str(pending.tool_call_id or ""),
+        project=str(meta.get("project") or ""),
+        conversation=str(meta.get("conversation") or ""),
     )
+    for field_name in ("goal", "said"):
+        masked, n = secret_patterns.scrub(str(meta.get(field_name) or ""))
+        redactions += n
+        setattr(request, field_name, masked[:2000])
+    request.redactions = redactions
+    for option in pending.options:
+        if option.get("optionId"):
+            request.options.append(pb.ApprovalOption(option_id=str(option["optionId"]), name=secret_patterns.scrub(str(option.get("name") or ""))[0][:200], kind=str(option.get("kind") or "")))
     if (score := _opt_float(meta.get("risk_score"))) is not None:
         request.risk_score = score
         # A missing band is derived rather than left blank, and `armed` only ever *tightens*: a

@@ -81,10 +81,11 @@ it works from any front door.
 
 | Tier | What | In default CI |
 | --- | --- | --- |
-| Core | daemon, `acp_server`, the orchestrator and workers, Laya, outcomes/bandit/promote/evals, checkpoints, self-heal, preflight, vault, sandbox, `acp-tui` | yes |
+| Core | daemon, `acp_server`, the orchestrator and workers, Laya, outcomes/bandit/promote/evals, checkpoints, self-heal, preflight, vault, sandbox, `acp-tui`, the native app (`app/`: `cordata-app`, and `cordata-view` / `cordata-theme`, which the terminal shares) | yes |
 | Frozen | the Next.js web UI (`frontend/`, its own workflow on `frontend/**` changes), the GPUI Lab and menu bar (`lab/`, `make lab-test`), oMLX (`omlx_*`, local Prism models on the mini) | no |
 
-Frozen means kept working and built, not developed; nothing core depends on a frozen piece.
+Frozen means kept working and built, not developed; nothing core depends on a frozen piece. The app lifts what it
+reuses from `lab/` (the secret-masking table, the Liquid Glass call) into its own crates rather than depending on it.
 
 ## Where the detail is
 

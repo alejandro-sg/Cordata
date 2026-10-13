@@ -1,19 +1,11 @@
-mod app;
-mod commands;
-mod config_ui;
-mod custom;
-mod extras;
-mod input;
-mod lab;
-mod mentions;
-mod menu;
 mod overlay;
-mod run_board;
-mod settings;
-mod shell;
 mod term;
 mod theme;
 mod ui;
+
+// The state half moved to cordata-view (shared with the native app); kept at its old paths so `crate::app::App` and
+// friends still name it everywhere here.
+use cordata_view::{app, commands, config_ui, extras, input, menu, settings, shell};
 
 use std::io;
 use std::panic;
@@ -164,7 +156,7 @@ impl Workspace {
                 }
             }
         });
-        let mut app = App::new();
+        let mut app = crate::overlay::new_app();
         app.attach_store(settings::Store::discover(&self.cwd));
         app.initial_prompt = initial_prompt;
         self.slots.push(Slot {
@@ -456,12 +448,16 @@ fn draw(
 fn draw_overlay(app: &mut App, last: &mut Option<Frame>) -> io::Result<()> {
     use std::io::Write;
     let (width, height) = terminal::size()?;
-    let Some(mut overlay) = app.overlay.take() else {
+    let Some(mut boxed) = app.overlay.take() else {
+        return Ok(());
+    };
+    let Some(overlay) = overlay::concrete(&mut boxed) else {
+        app.overlay = Some(boxed);
         return Ok(());
     };
     let buffer = overlay.render(app, width, height);
     let cursor = overlay.cursor();
-    app.overlay = Some(overlay);
+    app.overlay = Some(boxed);
     let rows = term::buffer_to_ansi_rows(&buffer);
     let frame = Frame {
         rows,
@@ -525,9 +521,9 @@ async fn run(
         let mut effects = Vec::new();
         tokio::select! {
             Some(event) = keys.next() => match event? {
-                Event::Key(key) => effects.extend(workspace.app().on_key(key)),
+                Event::Key(key) => effects.extend(workspace.app().on_key(key.into())),
                 Event::Paste(text) => workspace.app().on_paste(&text),
-                Event::Mouse(mouse) => effects.extend(workspace.app().on_mouse(mouse)),
+                Event::Mouse(mouse) => effects.extend(workspace.app().on_mouse(mouse.into())),
                 // The terminal re-wrapped what was on screen; draw the region afresh.
                 Event::Resize(..) => {
                     last = None;

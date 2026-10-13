@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Cordata.app's entitlements (docs/app.md §3 D6, THREAT_MODEL.md "Native app"). Deliberately empty: the app runs
+  unsandboxed under the hardened runtime and asks for nothing the runtime would otherwise refuse — no JIT, no
+  unsigned executable memory, no library-validation exemption, no DYLD environment, no Apple Events, no camera.
+  Microphone access belongs to the voice helper (cordata-voice), not to this process. Adding a key here is a
+  reviewed change: app/scripts/check-bundle.sh fails the build when the signed set differs from this file.
+-->
+<plist version="1.0">
+<dict/>
+</plist>

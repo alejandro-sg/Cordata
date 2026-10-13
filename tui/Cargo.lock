@@ -35,6 +35,8 @@ dependencies = [
  "acp-core",
  "anyhow",
  "clap",
+ "cordata-theme",
+ "cordata-view",
  "crossterm",
  "futures",
  "ratatui",
@@ -509,6 +511,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "633458d4ef8c78b72454de2d54fd6ab2e60f9e02be22f3c6104cdc8a4e0fceb9"
 dependencies = [
  "unicode-segmentation",
+]
+
+[[package]]
+name = "cordata-theme"
+version = "0.1.0"
+
+[[package]]
+name = "cordata-view"
+version = "0.1.0"
+dependencies = [
+ "acp-core",
+ "crossterm",
+ "regex",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

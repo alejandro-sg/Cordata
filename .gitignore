@@ -53,6 +53,11 @@ tui/target/
 # Rust Lab build output (harness-lab / harness-observer)
 lab/target/
 
+# Rust native app build output
+app/target/
+app/spike/target/
+**/target/
+
 # Shadow-mode triage log (laya_triage.py) — holds user prompts, local only.
 backend/laya_triage.jsonl
 

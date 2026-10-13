@@ -88,20 +88,21 @@ def load_or_create_token(port: int = DEFAULT_PORT, grpc_port: int | None = None)
     if not token:
         token = secrets.token_urlsafe(32)
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Created 0600 rather than chmod-ed after the write: `write_text` makes the
-    # file with the umask's mode first, which leaves a window in which the token
-    # is readable by other local users. `os.open` applies the mode at creation;
-    # the `fchmod` covers a file that already existed with looser permissions.
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
+    # Written to a temporary file created 0600 and renamed over the old one: a client reading the file mid-write
+    # (the GUI connecting while the daemon starts — this runs twice at startup) sees the old file or the new one,
+    # never a truncated one. `os.open` applies the mode at creation, so the token is never readable by other users.
+    record: dict[str, Any] = {"token": token, "port": port}
+    if grpc_port:
+        record["grpcPort"] = grpc_port  # where the GUI's gRPC client finds the bridge
+    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
     try:
         os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
     except OSError:
-        logger.warning("daemon: could not restrict %s to 0600", path)
+        logger.warning("daemon: could not restrict %s to 0600", temp)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        record: dict[str, Any] = {"token": token, "port": port}
-        if grpc_port:
-            record["grpcPort"] = grpc_port  # where the GUI's gRPC client finds the bridge
         handle.write(json.dumps(record, indent=2) + "\n")
+    os.replace(temp, path)
     return token
 
 
@@ -227,6 +228,37 @@ def _maybe_end_terminal_turn(state: "State", conv: Any, line: str) -> None:
     if isinstance(message, dict) and "method" not in message and str(message.get("id")) == conv.external_turn:
         stop = str(((message.get("result") or {}).get("stopReason")) or ("error" if "error" in message else "end_turn"))
         state.chats.end_external(conv, stop)
+
+
+async def _observe_socket(websocket: WebSocket, state: "State", session: str | None, conversation: str | None) -> None:
+    """``/ws?…&role=observer``: watch a live session (by id, or a hub conversation by handle) without driving it. Any
+    number of observers; the driver is never displaced; an observer that writes is closed (4405) — answering an approval
+    is the driver's, and "first answer wins" holds among drivers only."""
+    supervisor = state.supervisor
+    if conversation:
+        conv = state.chats.resolve(conversation)
+        session = conv.daemon_id if conv is not None else None
+    rows = {row["sessionId"] for row in supervisor.sessions()}
+    if not session or session not in rows:
+        await websocket.close(code=4404, reason="no such live session")
+        return
+    queue = supervisor.watch_session(session)
+    await websocket.accept()
+
+    async def send() -> None:
+        while True:
+            await websocket.send_text(await queue.get())
+
+    sender = asyncio.ensure_future(send())
+    try:
+        message = await websocket.receive()
+        if message.get("type") != "websocket.disconnect":
+            await websocket.close(code=4405, reason="observers are read-only")
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+    finally:
+        sender.cancel()
+        supervisor.unwatch_session(session, queue)
 
 
 def create_app(port: int = DEFAULT_PORT) -> FastAPI:
@@ -390,6 +422,75 @@ def create_app(port: int = DEFAULT_PORT) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(error)) from error
         return conv.row()
 
+    # ------------------------------------------------------------- projects and their conversations (the app's rail)
+
+    @app.get("/projects")
+    async def list_projects(limit: int = 60, x_daemon_token: str | None = Header(default=None)) -> dict[str, Any]:
+        """Every project the harness has worked in, newest-active first: its git repository and branch (a worktree says
+        whose), whether it is trusted, its live sessions, conversations and approvals waiting (daemon/projects.py)."""
+        authorised(x_daemon_token)
+        from . import projects  # noqa: PLC0415
+
+        hub = state.chats.rows(None, 500) if hasattr(state, "chats") and state.chats is not None else []
+        return {"projects": await asyncio.to_thread(projects.projects, hub_rows=hub, live=state.supervisor.sessions(), limit=limit)}
+
+    @app.get("/history")
+    async def project_history(cwd: str, limit: int = 50, cursor: float | None = None, x_daemon_token: str | None = Header(default=None)) -> dict[str, Any]:
+        """One project's conversations, newest first, paged by ``cursor`` — any of them, live or not."""
+        authorised(x_daemon_token)
+        if not os.path.isabs(cwd):
+            raise HTTPException(status_code=400, detail="cwd must be an absolute path")
+        from . import projects  # noqa: PLC0415
+
+        sessions_dir = os.environ.get("CORDATA_SESSIONS_DIR") or str(Path(__file__).resolve().parent.parent / "sessions")
+        return await asyncio.to_thread(lambda: projects.history(cwd, limit=limit, cursor=cursor, sessions_dir=sessions_dir))
+
+    # ------------------------------------------------------------- orchestrator runs (Mission Control)
+
+    @app.get("/orchestrator/runs")
+    async def orchestrator_runs(cwd: str | None = None, limit: int = 30, before: float | None = None, x_daemon_token: str | None = Header(default=None)) -> dict[str, Any]:
+        """Runs newest first, each with its liveness (running / paused / interrupted / terminal) — read from the ledger
+        and the runs' own folders, no agent needed (orchestrator/control.py)."""
+        authorised(x_daemon_token)
+        from orchestrator import control  # noqa: PLC0415
+
+        return {"runs": await asyncio.to_thread(control.list_runs, cwd=cwd, limit=limit, before=before)}
+
+    @app.get("/orchestrator/runs/{run_id}")
+    async def orchestrator_run(run_id: str, x_daemon_token: str | None = Header(default=None)) -> dict[str, Any]:
+        authorised(x_daemon_token)
+        from orchestrator import control  # noqa: PLC0415
+
+        shown = await asyncio.to_thread(control.show_run, run_id)
+        if shown is None:
+            raise HTTPException(status_code=404, detail=f"no run {run_id}")
+        return shown
+
+    @app.get("/orchestrator/runs/{run_id}/events")
+    async def orchestrator_events(run_id: str, offset: int = 0, limit: int = 500, x_daemon_token: str | None = Header(default=None)) -> dict[str, Any]:
+        """A run's events after byte ``offset`` (``next`` continues): a door that attaches late catches up here."""
+        authorised(x_daemon_token)
+        from orchestrator import control  # noqa: PLC0415
+
+        return await asyncio.to_thread(control.read_events, run_id, offset, limit)
+
+    @app.post("/orchestrator/runs/{run_id}/control")
+    async def orchestrator_control(run_id: str, payload: dict, x_daemon_token: str | None = Header(default=None)) -> dict[str, Any]:
+        """``{"cmd": "pause" | "cancel" | "resume", "now", "restore"}``. Audited before it takes effect. Resume never
+        grants direct network access from here — that is a trust card, in a session."""
+        authorised(x_daemon_token)
+        from orchestrator import control  # noqa: PLC0415
+
+        import state_store  # noqa: PLC0415
+
+        cmd = str(payload.get("cmd") or "")
+        if cmd not in ("pause", "cancel", "resume"):
+            raise HTTPException(status_code=400, detail="cmd must be pause, cancel or resume")
+        state_store.append_event("orchestrator_control", {"action": cmd, "run_id": run_id, "now": bool(payload.get("now")), "restore": bool(payload.get("restore")), "via": "daemon"}, source="daemon")
+        if cmd == "resume":
+            return await asyncio.to_thread(control.resume_run, run_id)
+        return await asyncio.to_thread(lambda: control.request(run_id, cmd, now=bool(payload.get("now")), restore=bool(payload.get("restore")) and cmd == "cancel", by="daemon"))
+
     @app.delete("/sessions/{session_id}")
     async def close_session(session_id: str, x_daemon_token: str | None = Header(default=None)) -> dict[str, Any]:
         """Stop a session and its process group.
@@ -411,6 +512,7 @@ def create_app(port: int = DEFAULT_PORT) -> FastAPI:
         session: str | None = None,
         cwd: str | None = None,
         conversation: str | None = None,
+        role: str | None = None,
     ) -> None:
         # The token arrives as a query parameter because a browser WebSocket
         # constructor cannot set headers — and rejecting browsers (below) is
@@ -429,6 +531,10 @@ def create_app(port: int = DEFAULT_PORT) -> FastAPI:
         supervisor = state.supervisor
         #: The hub conversation this socket attached to, when it named one (`conversation=`).
         conv = None
+
+        if role == "observer":
+            await _observe_socket(websocket, state, session, conversation)
+            return
 
         if conversation:
             # Attach to a conversation the daemon holds — the way one conversation is shared by every

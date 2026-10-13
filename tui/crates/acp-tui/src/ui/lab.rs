@@ -751,7 +751,7 @@ mod tests {
     }
 
     fn app() -> App {
-        let mut app = App::new();
+        let mut app = crate::overlay::new_app();
         app.lab.on_state(LabState {
             seq: 12,
             session_id: Some("abcdef0123".into()),
@@ -935,7 +935,7 @@ mod tests {
 
     #[test]
     fn an_empty_lab_says_what_it_is_waiting_for() {
-        let mut app = App::new();
+        let mut app = crate::overlay::new_app();
         app.lab.open = true;
         let text = text_of(&render_live(&app, 100, 30));
         assert!(

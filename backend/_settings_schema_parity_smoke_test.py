@@ -1,6 +1,6 @@
 """The two front doors must agree about what a valid setting is.
 
-`backend/settings_store.py` and `tui/crates/acp-tui/src/settings.rs` each keep
+`backend/settings_store.py` and `app/crates/cordata-view/src/settings.rs` each keep
 their own `SCHEMA`, and each *rejects an unknown key with a warning*
 (settings_store.py `_check`, settings.rs `check`). Nothing at runtime compares
 them, so a key added on one side and not the other does not fail — it shows up
@@ -23,7 +23,7 @@ from pathlib import Path
 import settings_store
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-RUST_SETTINGS = REPO_ROOT / "tui" / "crates" / "acp-tui" / "src" / "settings.rs"
+RUST_SETTINGS = REPO_ROOT / "app" / "crates" / "cordata-view" / "src" / "settings.rs"
 
 
 def check(condition: bool, label: str) -> None:
@@ -111,6 +111,13 @@ def main() -> None:
     )
     for key in ("laya.callGuard", "laya.riskDestroy", "laya.mode", "preflight.enabled", "preflight.tests"):
         check(key in settings_store.TRUST_GATED_KEYS, f"{key} is trust-gated")
+
+    # Groups only the user file may set (a repository cannot restyle or re-notify someone's app).
+    start = source.index("pub const USER_ONLY_PREFIXES: &[&str] = &[")
+    rust_prefixes = tuple(re.findall(r'"([^"]+)"', source[start : source.index("];", start)]))
+    check(rust_prefixes == settings_store.USER_ONLY_PREFIXES, f"the user-only groups agree ({rust_prefixes} vs {settings_store.USER_ONLY_PREFIXES})")
+    for key in ("app.theme", "app.density", "app.notifications", "app.restoreWindows", "app.showReasoning"):
+        check(key in rust and key in settings_store.SCHEMA and settings_store.user_only(key), f"{key} is declared on both sides, user file only")
 
     # A credential must never be settable through a settings file, which is why
     # vault.token is absent from both tables rather than range-checked.

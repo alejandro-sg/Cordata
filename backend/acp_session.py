@@ -20,26 +20,14 @@ from laya_router import Policy, RouterHooks
 from plugin_host import PluginHost
 from self_heal import HealConfig, SelfHealHooks
 from acp_approval import _ApprovalHandler  # noqa: E402
-from acp_protocol import _TEMPERATURE_PRESETS  # noqa: E402
+from acp_protocol import _TEMPERATURE_PRESETS, _tool_kind  # noqa: E402
+import session_history  # noqa: E402
 
 def _replay_history(messages: list[dict]) -> list:
-    """Turn an Agent's restored message history into ACP session/update
-    notifications, for load_session — Zed rebuilds its chat view entirely
-    from these, since it has no other way to see a conversation that started
-    before this process existed.
-    """
-    updates = []
-    for message in messages:
-        role = message.get("role")
-        for block in message.get("content") or []:
-            text = block.get("text") if isinstance(block, dict) else None
-            if not text:
-                continue
-            if role == "user":
-                updates.append(acp.update_user_message_text(text))
-            elif role == "assistant":
-                updates.append(acp.update_agent_message_text(text))
-    return updates
+    """Turn an Agent's restored message history into ACP session/update notifications, for load_session — a client
+    rebuilds its chat view entirely from these. Text, reasoning, and every tool call with its result
+    (``session_history.replay``); it used to be the text alone."""
+    return session_history.replay(messages, kind_of=_tool_kind)
 
 
 def _project_system_prompt(cwd: str) -> str:

@@ -237,14 +237,14 @@ class HarnessService(rpc.HarnessServicer):
         pending = next((p for p in self.supervisor.all_pending() if p.public_id == decision.intervention_id), None)
         pod = str((pending.meta if pending else {}).get("pod") or "")
         try:
-            await self.supervisor.answer_permission(session_id, key, decision.approve, note=decision.note if not decision.approve else "")
+            await self.supervisor.answer_permission(session_id, key, decision.approve, note=decision.note if not decision.approve else "", option_id=decision.option_id or None)
         except (LookupError, ValueError) as error:
             logger.info("grpc: decision for %s not applied: %s", decision.intervention_id, error)
             offer(queue, stale)  # already answered elsewhere, or the session ended: close the modal
             return
         self._audit(
             "approve" if decision.approve else "reject",
-            {"intervention": decision.intervention_id, "tool": (pending.meta if pending else {}).get("tool"), "pod": pod, "isolate": decision.isolate, "note": decision.note[:200]},
+            {"intervention": decision.intervention_id, "tool": (pending.meta if pending else {}).get("tool"), "pod": pod, "isolate": decision.isolate, "note": decision.note[:200], "option": decision.option_id or None},
             session_id,
         )
         if decision.isolate and not decision.approve and pod:

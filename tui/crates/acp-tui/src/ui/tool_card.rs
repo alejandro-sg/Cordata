@@ -56,39 +56,7 @@ fn input_summary(card: &ToolCard) -> Option<String> {
     summarize_input(card.raw_input.as_ref()?, team::is_team_tool(&card.name))
 }
 
-fn summarize_input(value: &Value, is_team: bool) -> Option<String> {
-    let text = match value {
-        Value::Null => return None,
-        Value::String(raw) if raw.is_empty() => return None,
-        // While a call streams in, its input is the JSON *text* so far. Once it
-        // parses, summarise the parsed object; until then a team call is still
-        // being written (its input is long), anything else shows the raw text.
-        Value::String(raw) => match serde_json::from_str::<Value>(raw) {
-            Ok(parsed @ Value::Object(_)) => return summarize_input(&parsed, is_team),
-            _ if is_team => return Some("(preparing the team…)".to_owned()),
-            _ => raw.clone(),
-        },
-        // A team tool's input is a task plus every specialist's full system
-        // prompt; the task is what a reader wants (the agents get their own rows).
-        Value::Object(map) if map.get("agents").is_some() && map.get("task").is_some() => {
-            format!(
-                "task: {}",
-                map.get("task").and_then(Value::as_str).unwrap_or_default()
-            )
-        }
-        Value::Object(map) => {
-            let command = map.get("command").and_then(Value::as_str);
-            let code = map.get("code").and_then(Value::as_str);
-            match (command, code) {
-                (Some(command), _) => format!("$ {command}"),
-                (_, Some(code)) => code.to_owned(),
-                _ => value.to_string(),
-            }
-        }
-        other => other.to_string(),
-    };
-    Some(crate::app::sanitize(&text))
-}
+use cordata_view::view::summarize_input;
 
 /// "completed in 1.7s" from a team tool's result JSON, if it is one.
 fn team_result_summary(body: &str) -> Option<String> {

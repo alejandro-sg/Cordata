@@ -302,7 +302,7 @@ pub fn format_orchestrator_event(event: &serde_json::Value) -> Option<String> {
             event.get("to_worker").and_then(Value::as_str).unwrap_or("none")
         )),
         "rollback" => Some(format!("↺ orchestrator rolled back step {}", s("step_id"))),
-        "state" if matches!(s("state").as_str(), "done" | "failed" | "paused" | "budget_exhausted") => {
+        "state" if matches!(s("state").as_str(), "done" | "failed" | "paused" | "budget_exhausted" | "cancelled") => {
             Some(format!("◆ orchestrator run {} {}", s("run_id"), s("state")))
         }
         _ => None,

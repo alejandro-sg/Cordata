@@ -5,7 +5,7 @@
 //! in `App` — the HUD adds no requests and no state of its own beyond focus and scroll.
 
 use acp_core::{PodStatus, ToolStatus};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use cordata_view::key::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};

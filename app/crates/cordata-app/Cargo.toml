@@ -1,0 +1,35 @@
+[package]
+name = "cordata-app"
+description = "Cordata.app — the native macOS workspace for the Cordata agent harness and its orchestrator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "cordata-app"
+path = "src/main.rs"
+
+[dependencies]
+acp-core.workspace = true
+cordata-view.workspace = true
+cordata-theme.workspace = true
+gpui.workspace = true
+gpui_platform.workspace = true
+# The languages a coding agent's projects are written in — not all 35 grammars (each is a C library and a licence).
+gpui-component = { workspace = true, features = ["tree-sitter-bash", "tree-sitter-c", "tree-sitter-cpp", "tree-sitter-css", "tree-sitter-diff", "tree-sitter-go", "tree-sitter-html", "tree-sitter-java", "tree-sitter-javascript", "tree-sitter-make", "tree-sitter-markdown", "tree-sitter-markdown-inline", "tree-sitter-python", "tree-sitter-rust", "tree-sitter-sql", "tree-sitter-swift", "tree-sitter-toml", "tree-sitter-tsx", "tree-sitter-typescript", "tree-sitter-yaml"] }
+gpui-fps.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+gpui-component = { workspace = true, features = ["test-support"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSAccessibility", "NSAppearance", "NSGlassEffectView", "NSGraphics", "NSResponder", "NSView", "NSWindow", "NSWorkspace", "objc2-core-foundation"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry"] }
+raw-window-handle = "0.6"

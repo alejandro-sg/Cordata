@@ -1,0 +1,41 @@
+# cargo-deny for the native app (docs/app.md §3 D1 supply-chain controls). `cargo deny check` in app/.
+[graph]
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+all-features = false
+
+[licenses]
+# Permissive licences only. MPL-2.0 is file-level copyleft and is allowed for unmodified dependencies (option-ext via
+# dirs; cbindgen at build time); nothing of ours is ever copied into an MPL file.
+allow = [
+    "MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Zlib", "0BSD",
+    "Unicode-3.0", "Unlicense", "CC0-1.0", "BSL-1.0", "MPL-2.0",
+]
+# Allowed above but not present today; kept so a new dependency under them does not need a config change.
+unused-allowed-license = "allow"
+confidence-threshold = 0.9
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+# No GPL'd Zed editor crates may enter the graph (docs/app.md §1): only gpui-pre's Apache-2.0 re-publish.
+deny = [
+    { name = "editor" }, { name = "terminal_view" }, { name = "workspace" }, { name = "project" }, { name = "language" },
+    # No TLS or HTTP client stack in the app: it speaks to the daemon on loopback only.
+    { name = "openssl" }, { name = "openssl-sys" }, { name = "native-tls" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+[advisories]
+yanked = "warn"
+# "Unmaintained" notices on GPUI's own transitive dependencies (its font stack: rustybuzz, ttf-parser; instant, paste)
+# are for the gpui-pre upstream to act on, not a reason to fail this build; one on a crate *we* depend on directly
+# still fails. Vulnerabilities always fail.
+unmaintained = "workspace"

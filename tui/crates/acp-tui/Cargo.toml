@@ -7,6 +7,8 @@ rust-version.workspace = true
 
 [dependencies]
 acp-core.workspace = true
+cordata-view.workspace = true
+cordata-theme.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 crossterm.workspace = true

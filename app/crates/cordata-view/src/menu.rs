@@ -48,7 +48,7 @@ impl Menu {
 
 /// Usage text marks a required argument `<like this>` and an optional one `[like this]`; `[a | to <n>]` is optional
 /// even though it holds an angle bracket.
-pub(crate) fn requires_argument(hint: &str) -> bool {
+pub fn requires_argument(hint: &str) -> bool {
     let mut optional_depth = 0;
     for c in hint.chars() {
         match c {

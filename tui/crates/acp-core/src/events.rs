@@ -787,8 +787,8 @@ pub fn parse_harness(method: &str, params: &Value) -> Option<HarnessEvent> {
 #[derive(Debug)]
 pub enum AppEvent {
     Connected(SessionInfo),
-    /// History replayed by `session/load` (text only — the backend does not
-    /// replay tool calls). Followed by `ReplayComplete`.
+    /// History replayed by `session/load` (the text; its tool calls arrive as
+    /// `ToolCallStarted`/`ToolCallUpdated` tagged `_meta.cordata.replay`). Followed by `ReplayComplete`.
     UserText(String),
     AgentText(String),
     AgentThought(String),
@@ -976,8 +976,25 @@ pub fn translate_update(update: SessionUpdate) -> Vec<AppEvent> {
             }
             _ => Vec::new(),
         },
-        // Plan / available-commands / usage updates are never emitted by
-        // acp_server.py; ignoring them keeps new protocol variants harmless.
+        // ACP's own plan and usage, from any agent. Cordata's backend sends them beside `_cordata/tasklist` and
+        // `_cordata/context` (docs/app.md §6.1), so they land as the same events: replacing a checklist or a gauge with
+        // an identical one is a no-op, and an agent that only speaks plain ACP (Zed's agents, Claude's ACP adapter)
+        // still fills the checklist and the context gauge.
+        SessionUpdate::Plan(plan) => {
+            let items: Vec<Value> = plan
+                .entries
+                .iter()
+                .map(|entry| serde_json::json!({"content": entry.content, "status": serde_json::to_value(&entry.status).unwrap_or(Value::Null)}))
+                .collect();
+            vec![AppEvent::Harness(HarnessEvent::TaskList(serde_json::json!({"items": items, "native": true})))]
+        }
+        SessionUpdate::UsageUpdate(usage) => {
+            let pct = (usage.size > 0).then(|| usage.used as f64 / usage.size as f64);
+            // Cordata says whether the count is an estimate (no provider usage yet) in `_meta.cordata.estimated`.
+            let estimated = usage.meta.as_ref().and_then(|meta| meta.get("cordata")).and_then(|c| c.get("estimated")).and_then(Value::as_bool).unwrap_or(false);
+            vec![AppEvent::Harness(HarnessEvent::Context(serde_json::json!({"used": usage.used, "window": usage.size, "pct": pct, "estimated": estimated, "native": true})))]
+        }
+        // Available-commands updates and new protocol variants: ignored, harmlessly.
         _ => Vec::new(),
     }
 }
@@ -987,6 +1004,39 @@ mod laya_tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn native_plan_and_usage_become_the_checklist_and_the_gauge() {
+        let plan: SessionUpdate = serde_json::from_value(json!({
+            "sessionUpdate": "plan",
+            "entries": [
+                {"content": "read the code", "priority": "medium", "status": "completed"},
+                {"content": "write the fix", "priority": "high", "status": "in_progress"}
+            ]
+        }))
+        .unwrap();
+        match translate_update(plan).as_slice() {
+            [AppEvent::Harness(HarnessEvent::TaskList(value))] => {
+                assert_eq!(value["items"][1]["content"], "write the fix");
+                assert_eq!(value["items"][1]["status"], "in_progress");
+                assert_eq!(value["items"][0]["status"], "completed");
+            }
+            other => panic!("a plan is a checklist: {other:?}"),
+        }
+        let usage: SessionUpdate = serde_json::from_value(json!({
+            "sessionUpdate": "usage_update", "used": 50_000, "size": 200_000, "_meta": {"cordata": {"estimated": true}}
+        }))
+        .unwrap();
+        match translate_update(usage).as_slice() {
+            [AppEvent::Harness(HarnessEvent::Context(value))] => {
+                assert_eq!(value["used"], 50_000);
+                assert_eq!(value["window"], 200_000);
+                assert_eq!(value["pct"], 0.25);
+                assert_eq!(value["estimated"], true);
+            }
+            other => panic!("a usage update is the context gauge: {other:?}"),
+        }
+    }
 
     #[test]
     fn goal_context_and_checklist_events_parse_only_when_well_formed() {

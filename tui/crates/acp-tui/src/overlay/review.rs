@@ -5,7 +5,7 @@
 //! `n`/`N` a hunk, the wheel scrolls whatever is under it and a click on a file opens it. The data is one `git diff
 //! HEAD` run by the event loop (`Effect::Review`), so opening it never blocks a keypress.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use cordata_view::key::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};

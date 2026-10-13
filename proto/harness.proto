@@ -279,6 +279,20 @@ message InterventionRequest {
   string reason = 13;
   int64 requested_ms = 14;
   uint32 redactions = 15;       // how many secret-shaped spans were masked in this payload
+  // What the child offered, in its order: a plan card's build/edit/auto/keep planning, a question's answers. An answer
+  // names one of these (`InterventionDecision.option_id`) — never an id of the client's own.
+  repeated ApprovalOption options = 16;
+  string goal = 17;             // what the person asked this turn (redacted)
+  string said = 18;             // what the agent said just before the call (redacted)
+  string project = 19;          // the project folder
+  string tool_call_id = 20;     // ACP's tool call id, to tie the card to its tool card
+  string conversation = 21;     // the hub conversation's handle, when the session is one
+}
+
+message ApprovalOption {
+  string option_id = 1;
+  string name = 2;
+  string kind = 3;              // allow_once | allow_always | reject_once | reject_always
 }
 
 message PendingIntervention {
@@ -316,6 +330,9 @@ message InterventionDecision {
   bool approve = 2;
   bool isolate = 3;
   string note = 4;
+  // One of the request's `options` (a plan card's "approve → edit", a question's answer). When set it is the answer,
+  // and `approve` only says how the audit should read it.
+  string option_id = 5;
 }
 
 // Client → daemon.

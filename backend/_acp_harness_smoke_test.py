@@ -53,7 +53,6 @@ SESSIONS = ROOT / "sessions"
 SESSIONS.mkdir()
 agent_common.SESSIONS_DIR = SESSIONS
 acp_server.SESSIONS_DIR = SESSIONS
-acp_server._INDEX_PATH = SESSIONS / "index.json"
 agent_common.ensure_provider_ready = lambda: None
 acp_server._fetch_available_models = lambda: []
 prompt_security.laya_ready = lambda: True

@@ -69,7 +69,7 @@ logger = logging.getLogger(__name__)
 #: acp_server.py:72-74 documents the same hazard for the same reason.
 DEFAULT_NAME = "state.db"
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # How long a writer waits for another process's lock before giving up. WAL plus
 # append-only writes means this is only ever hit by a checkpoint or a burst of
@@ -183,7 +183,9 @@ CREATE TABLE IF NOT EXISTS quota_usage (
     cost_usd       REAL NOT NULL DEFAULT 0.0,
     is_error_limit INTEGER NOT NULL DEFAULT 0,
     requests       INTEGER NOT NULL DEFAULT 1,
-    reset_ts       REAL
+    reset_ts       REAL,
+    role           TEXT,
+    worker         TEXT
 );
 CREATE INDEX IF NOT EXISTS quota_usage_pool_ts ON quota_usage(pool_id, ts);
 CREATE INDEX IF NOT EXISTS quota_usage_session ON quota_usage(session_id);
@@ -221,7 +223,46 @@ CREATE TABLE IF NOT EXISTS orch_runs (
     record_json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS orch_runs_updated ON orch_runs(updated_ts);
+
+-- One row per conversation, written by the process that hosts it (acp_server.py). It replaced
+-- sessions/index.json, a JSON file every session process rewrote whole — two processes touching it at
+-- once lost one of the writes. `cwd_real` is the realpath (what projects are keyed by); `cwd_given` is
+-- what the client sent. `host_pid` is the lease: the process holding the conversation's one live writer
+-- (a Strands session has exactly one), so a second process opening it is told so instead of forking it.
+CREATE TABLE IF NOT EXISTS sessions (
+    session_id TEXT PRIMARY KEY,
+    cwd_real   TEXT NOT NULL,
+    cwd_given  TEXT,
+    title      TEXT,
+    mode       TEXT,
+    origin     TEXT,
+    created_ts REAL NOT NULL,
+    updated_ts REAL NOT NULL,
+    turns      INTEGER NOT NULL DEFAULT 0,
+    archived   INTEGER NOT NULL DEFAULT 0,
+    host_pid   INTEGER,
+    host_ts    REAL
+);
+CREATE INDEX IF NOT EXISTS sessions_updated     ON sessions(updated_ts);
+CREATE INDEX IF NOT EXISTS sessions_cwd_updated ON sessions(cwd_real, updated_ts);
 """
+
+#: Columns added to a table after it first shipped. `CREATE TABLE IF NOT EXISTS` never alters a table that is already
+#: there, so a ledger created by an older build gets them here — in the schema's one place, not lazily by a reader.
+_ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("quota_usage", "role", "TEXT"),
+    ("quota_usage", "worker", "TEXT"),
+)
+
+
+def _add_columns(conn: sqlite3.Connection) -> None:
+    for table, column, kind in _ADDED_COLUMNS:
+        have = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in have:
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+            except sqlite3.OperationalError:
+                pass  # another process added it between the check and the ALTER
 
 
 def path() -> Path:
@@ -316,6 +357,7 @@ def migrate(conn: sqlite3.Connection | None = None) -> None:
             _configure(conn)
         try:
             conn.executescript(_DDL)
+            _add_columns(conn)
             row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
             if row is None:
                 conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
@@ -543,3 +585,116 @@ def record_session_config(session_id: str, *, cwd: str | None, mode: str | None,
         )
     except Exception:
         logger.debug("state_store: config for %s not recorded", session_id, exc_info=True)
+
+
+# ------------------------------------------------------------------ sessions
+
+
+def touch_session(
+    session_id: str,
+    *,
+    cwd: str,
+    title: str | None = None,
+    mode: str | None = None,
+    origin: str | None = None,
+    turn: bool = False,
+) -> None:
+    """Record that a conversation was opened or used. One statement, so two processes touching the table at once both
+    land (the JSON index this replaces lost one of them). A title, once set, is kept unless a new one is given."""
+    now = time.time()
+    try:
+        connect().execute(
+            """INSERT INTO sessions (session_id, cwd_real, cwd_given, title, mode, origin, created_ts, updated_ts, turns)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(session_id) DO UPDATE SET
+                   cwd_real = excluded.cwd_real, cwd_given = excluded.cwd_given,
+                   title = COALESCE(excluded.title, sessions.title), mode = COALESCE(excluded.mode, sessions.mode),
+                   origin = COALESCE(sessions.origin, excluded.origin), updated_ts = excluded.updated_ts,
+                   turns = sessions.turns + ?""",
+            (session_id, os.path.realpath(cwd), cwd, title, mode, origin, now, now, int(turn), int(turn)),
+        )
+    except Exception:
+        logger.debug("state_store: session %s not recorded", session_id, exc_info=True)
+
+
+def list_sessions(*, cwd: str | None = None, limit: int = 50, before: float | None = None, archived: bool = False) -> list[dict[str, Any]]:
+    """Newest first. ``cwd`` matches by realpath; ``before`` (an ``updated_ts``) pages backwards."""
+    clauses, params = ["archived = ?"], [int(archived)]
+    if cwd is not None:
+        clauses.append("cwd_real = ?")
+        params.append(os.path.realpath(cwd))
+    if before is not None:
+        clauses.append("updated_ts < ?")
+        params.append(float(before))
+    params.append(max(1, int(limit)))
+    try:
+        rows = connect().execute(
+            f"SELECT * FROM sessions WHERE {' AND '.join(clauses)} ORDER BY updated_ts DESC LIMIT ?", params
+        ).fetchall()
+    except Exception:
+        logger.debug("state_store: sessions unreadable", exc_info=True)
+        return []
+    return [dict(row) for row in rows]
+
+
+def get_session(session_id: str) -> dict[str, Any] | None:
+    try:
+        row = connect().execute("SELECT * FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+    except Exception:
+        logger.debug("state_store: session %s unreadable", session_id, exc_info=True)
+        return None
+    return dict(row) if row else None
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # it exists; it is just not ours to signal
+    except OSError:
+        return False
+    return True
+
+
+def claim_session(session_id: str, *, cwd: str, pid: int | None = None) -> int | None:
+    """Take the lease on a conversation for this process. Returns ``None`` when it is ours (now or already), or the pid of
+    the live process that holds it — the caller refuses rather than run a second writer on one history. A lease held by
+    a process that is gone is taken over. The check and the take are one transaction, so two processes racing for the
+    same conversation cannot both win."""
+    pid = os.getpid() if pid is None else pid
+    now = time.time()
+    try:
+        conn = connect()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute("SELECT host_pid FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+            holder = row["host_pid"] if row else None
+            if holder and holder != pid and _alive(int(holder)):
+                conn.execute("ROLLBACK")
+                return int(holder)
+            conn.execute(
+                """INSERT INTO sessions (session_id, cwd_real, cwd_given, created_ts, updated_ts, host_pid, host_ts)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(session_id) DO UPDATE SET host_pid = excluded.host_pid, host_ts = excluded.host_ts""",
+                (session_id, os.path.realpath(cwd), cwd, now, now, pid, now),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    except Exception:
+        # A ledger that cannot be read must not be what stops a conversation from opening: the lease is a guard
+        # against a rare mistake, not a lock anything else depends on.
+        logger.debug("state_store: lease on %s not taken", session_id, exc_info=True)
+    return None
+
+
+def release_session(session_id: str, *, pid: int | None = None) -> None:
+    """Give the lease back — only if this process still holds it."""
+    pid = os.getpid() if pid is None else pid
+    try:
+        connect().execute("UPDATE sessions SET host_pid = NULL, host_ts = NULL WHERE session_id = ? AND host_pid = ?", (session_id, pid))
+    except Exception:
+        logger.debug("state_store: lease on %s not released", session_id, exc_info=True)

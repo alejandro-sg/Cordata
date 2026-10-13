@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crate::key::{KeyCode, KeyEvent};
 use serde_json::Value;
 
 use crate::app::{App, Effect, Message, sanitize};
@@ -47,7 +47,7 @@ fn tidy_text(text: &str) -> String {
 }
 
 /// The value a setting has when no file sets it.
-pub(crate) fn default_value(entry: &Entry) -> Value {
+pub fn default_value(entry: &Entry) -> Value {
     match entry.key {
         "permissions.defaultMode" => "build".into(),
         "temperature" => "balanced".into(),
@@ -138,7 +138,7 @@ impl App {
         self.apply_prefs(prefs);
     }
 
-    pub(crate) fn reload_settings(&mut self) {
+    pub fn reload_settings(&mut self) {
         if let Some(store) = &self.store {
             self.settings = store.load();
         }
@@ -151,7 +151,7 @@ impl App {
     }
 
     /// The settings problems worth telling the user about once, at connect.
-    pub(crate) fn settings_notices(&self) -> Vec<String> {
+    pub fn settings_notices(&self) -> Vec<String> {
         const SHOWN: usize = 4;
         let mut notices: Vec<String> = self
             .settings
@@ -201,7 +201,7 @@ impl App {
 
     // --------------------------------------------------------------- /config
 
-    pub(crate) fn run_config(&mut self, arg: Option<String>) -> Option<Effect> {
+    pub fn run_config(&mut self, arg: Option<String>) -> Option<Effect> {
         self.reload_settings();
         let Some(arg) = arg else {
             self.config = Some(ConfigPanel {
@@ -430,7 +430,7 @@ impl App {
         }
     }
 
-    pub(crate) fn on_key_config(&mut self, key: KeyEvent) -> Option<Effect> {
+    pub fn on_key_config(&mut self, key: KeyEvent) -> Option<Effect> {
         let rows = SCHEMA.len();
         let panel = self.config.as_mut()?;
         match key.code {
@@ -472,7 +472,7 @@ impl App {
 
     // ----------------------------------------------------------- /permissions
 
-    pub(crate) fn run_permissions(&mut self, arg: Option<String>) {
+    pub fn run_permissions(&mut self, arg: Option<String>) {
         self.reload_settings();
         let Some(arg) = arg else {
             self.show_permissions();
@@ -562,7 +562,7 @@ impl App {
 
     // ------------------------------------------------------- trust / memory
 
-    pub(crate) fn run_trust(&mut self) {
+    pub fn run_trust(&mut self) {
         let Some(store) = self.store() else { return };
         match store.trust() {
             Ok(path) => {
@@ -577,7 +577,7 @@ impl App {
         }
     }
 
-    pub(crate) fn run_memory(&mut self) {
+    pub fn run_memory(&mut self) {
         let Some(store) = self.store() else { return };
         let found = instruction_files(&store);
         if found.is_empty() {
@@ -598,7 +598,7 @@ impl App {
         self.info_msg(lines.join("\n"));
     }
 
-    pub(crate) fn run_init(&mut self) -> Option<Effect> {
+    pub fn run_init(&mut self) -> Option<Effect> {
         if !self.input_enabled_for_prompt() {
             return None;
         }
@@ -606,7 +606,7 @@ impl App {
         Some(self.begin_turn(INIT_PROMPT.to_owned()))
     }
 
-    pub(crate) fn run_status(&mut self) {
+    pub fn run_status(&mut self) {
         self.reload_settings();
         let settings: &Settings = &self.settings;
         let mut lines = Vec::new();
@@ -661,7 +661,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use acp_core::{AppEvent, ConfigChoice, ConfigOptionInfo, ModeInfo, SessionInfo};
-    use crossterm::event::KeyModifiers;
+    use crate::key::KeyModifiers;
 
     use super::*;
     use crate::app::Message;

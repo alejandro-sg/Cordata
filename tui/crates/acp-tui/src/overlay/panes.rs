@@ -7,7 +7,7 @@
 //! cycle modes (Tab), scroll history (PgUp/PgDn/Wheel), or toggle back to inline (F3).
 
 use acp_core::{PodStatus, ToolStatus};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+use cordata_view::key::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -561,7 +561,7 @@ mod tests {
     use acp_core::{AppEvent, ConfigChoice, ConfigOptionInfo, ModeInfo, SessionInfo};
 
     fn test_app() -> App {
-        let mut app = App::new();
+        let mut app = crate::overlay::new_app();
         app.on_event(AppEvent::Connected(SessionInfo {
             session_id: "abcdef12-3456".into(),
             cwd: "/proj".into(),
@@ -690,11 +690,11 @@ mod tests {
                 ..Default::default()
             },
         ];
-        app.run = Some(crate::run_board::RunBoard {
+        app.run = Some(cordata_view::run_board::RunBoard {
             run_id: "run-42".into(),
             state: "executing".into(),
             planned: Some(3),
-            steps: vec![crate::run_board::RunStep {
+            steps: vec![cordata_view::run_board::RunStep {
                 id: "s1".into(),
                 worker: "debugger".into(),
                 status: "done".into(),
@@ -704,6 +704,7 @@ mod tests {
                 duration_s: Some(2.5),
             }],
             handoff: Some("orchestrator → debugger (step 2 dispatched)".into()),
+            ..Default::default()
         });
         app.checklist = vec![crate::extras::TodoItem {
             content: "inspect failing unit test".into(),

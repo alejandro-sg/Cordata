@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import Callable, AsyncIterator
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any
@@ -155,13 +155,19 @@ class Worker(ABC):
     async def cancel(self, handle: str) -> bool: ...
 
 
-async def collect(stream: AsyncIterator[WorkerEvent]) -> tuple[list[WorkerEvent], WorkerResult]:
+async def collect(stream: AsyncIterator[WorkerEvent], on_event: Callable[[WorkerEvent], None] | None = None) -> tuple[list[WorkerEvent], WorkerResult]:
     """Drain a worker stream. Returns every event and the result the ``done`` event carried. A stream that ends
-    without one is itself a failure — reported as a result, never raised."""
+    without one is itself a failure — reported as a result, never raised. ``on_event`` sees each event as it arrives
+    (a front door's live view of the pod); a listener that raises is ignored."""
     events: list[WorkerEvent] = []
     result: WorkerResult | None = None
     async for event in stream:
         events.append(event)
+        if on_event is not None:
+            try:
+                on_event(event)
+            except Exception:
+                pass
         if event.event_type == "done" and event.result is not None:
             result = event.result
     if result is None:

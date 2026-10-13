@@ -11,9 +11,9 @@
 //! Running tasks stay until they finish; finished ones linger briefly so a fast
 //! task is still seen, then disappear (they never enter scrollback).
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use acp_core::{TaskInfo, TaskState};
+use acp_core::TaskState;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -22,22 +22,8 @@ use super::text::{display_width, fit_spans, truncate};
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const BAR_CELLS: usize = 20;
 const EIGHTHS: [&str; 8] = ["", "▏", "▎", "▍", "▌", "▋", "▊", "▉"];
-pub const LINGER: Duration = Duration::from_millis(2500);
+pub use cordata_view::view::TaskView;
 pub const MAX_ROWS: usize = 5;
-
-#[derive(Debug, Clone)]
-pub struct TaskView {
-    pub info: TaskInfo,
-    pub started: Instant,
-    pub finished: Option<Instant>,
-}
-
-impl TaskView {
-    pub fn visible(&self, now: Instant) -> bool {
-        self.finished
-            .is_none_or(|at| now.duration_since(at) < LINGER)
-    }
-}
 
 /// A bar of `cells` cells, smooth to an eighth of a cell.
 pub fn bar(fraction: f64, cells: usize) -> String {
@@ -129,6 +115,9 @@ pub fn lines(tasks: &[TaskView], width: u16, spinner: usize) -> Vec<Line<'static
 #[cfg(test)]
 mod tests {
     use super::*;
+    use acp_core::TaskInfo;
+    use cordata_view::view::LINGER;
+    use std::time::Duration;
 
     fn task(state: TaskState, done: f64, total: Option<f64>) -> TaskView {
         TaskView {

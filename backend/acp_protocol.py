@@ -108,6 +108,39 @@ def _extract_prompt_text(blocks: list) -> str:
             text = getattr(resource, "text", None)
             parts.append(f"[Attached: {uri}]\n{text}" if text is not None else f"[Attached binary resource: {uri}]")
     return "\n\n".join(part for part in parts if part)
+#: Image types a prompt may attach (what Strands' image block takes), and the largest one accepted.
+_IMAGE_FORMATS = {"image/png": "png", "image/jpeg": "jpeg", "image/jpg": "jpeg", "image/gif": "gif", "image/webp": "webp"}
+MAX_PROMPT_IMAGE_BYTES = 4 * 1024 * 1024
+
+
+def _prompt_images(blocks: list) -> tuple[list[dict], list[str]]:
+    """The images attached to a prompt (ACP ``image`` blocks), decoded and checked, as ``{"bytes", "format"}``; and a
+    reason for each one dropped. Built here from validated bytes — never by passing the client's dict through — so a
+    prompt can only ever add an image, not a forged tool call or any other block."""
+    import base64
+    import binascii
+
+    images: list[dict] = []
+    dropped: list[str] = []
+    for block in blocks or []:
+        if getattr(block, "type", None) != "image":
+            continue
+        fmt = _IMAGE_FORMATS.get(str(getattr(block, "mime_type", "") or "").lower())
+        if fmt is None:
+            dropped.append(f"an image of type {getattr(block, 'mime_type', '?')!r} (png, jpeg, gif or webp only)")
+            continue
+        try:
+            data = base64.b64decode(str(getattr(block, "data", "") or ""), validate=True)
+        except (binascii.Error, ValueError):
+            dropped.append("an image that did not decode")
+            continue
+        if not data or len(data) > MAX_PROMPT_IMAGE_BYTES:
+            dropped.append(f"an image of {len(data) // 1024} KiB (the limit is {MAX_PROMPT_IMAGE_BYTES // (1024 * 1024)} MiB)")
+            continue
+        images.append({"bytes": data, "format": fmt})
+    return images, dropped
+
+
 #: The longest single JSON-RPC line this child reads from its ACP client (see `_main`).
 STDIO_LINE_LIMIT = 32 * 1024 * 1024
 _SPECIALIST_CONTEXT_CHARS = 4000

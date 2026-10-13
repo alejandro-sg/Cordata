@@ -39,7 +39,6 @@ SESSIONS = ROOT / "sessions"
 SESSIONS.mkdir()
 agent_common.SESSIONS_DIR = SESSIONS
 acp_server.SESSIONS_DIR = SESSIONS
-acp_server._INDEX_PATH = SESSIONS / "index.json"
 acp_server._fetch_available_models = lambda: []
 _real_paths = plugin_host.mcp_config_paths
 plugin_host.mcp_config_paths = lambda cwd: [p for p in _real_paths(cwd) if p[0] != "backend"]

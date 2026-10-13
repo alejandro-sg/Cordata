@@ -7,7 +7,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 /// Files in the index; a monorepo beyond this is searched by its first files only.
 const MAX_INDEXED: usize = 60_000;
@@ -34,10 +34,9 @@ pub fn index(cwd: &Path) -> Vec<String> {
 }
 
 fn git_files(cwd: &Path) -> Option<Vec<String>> {
-    let output = Command::new("git")
+    // The repository's fsmonitor hook is its own code: listing files must not run it (`review::git`).
+    let output = crate::review::git(cwd)
         .args(["ls-files", "-z", "--cached", "--others", "--exclude-standard"])
-        .current_dir(cwd)
-        .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
         .ok()?;

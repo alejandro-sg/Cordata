@@ -46,7 +46,7 @@ class RecordingClient:
         return acp.schema.RequestPermissionResponse(outcome=outcome)
 
 
-async def run_case(label: str, decision: str, prompt_text: str, mode: str | None = None, cwd: str = "."):
+async def run_case(label: str, decision: str, prompt_text: str, mode: str | None = None, cwd: str = os.getcwd()):
     print(f"\n=== {label} ===")
     client = RecordingClient(decision=decision)
     async with acp.spawn_agent_process(lambda _agent: client, sys.executable, str(Path(__file__).parent.resolve() / "acp_server.py")) as (conn, proc):
@@ -126,7 +126,7 @@ async def test_config_option_change():
     client = RecordingClient()
     async with acp.spawn_agent_process(lambda _agent: client, sys.executable, str(Path(__file__).parent.resolve() / "acp_server.py")) as (conn, proc):
         await conn.initialize(protocol_version=acp.PROTOCOL_VERSION)
-        session = await conn.new_session(cwd=".")
+        session = await conn.new_session(cwd=os.getcwd())
         model_option = next(c for c in session.config_options if c.id == "model")
         other_model = next((v for v in [o.value for o in model_option.options] if v != model_option.current_value), None)
         print("current model ->", model_option.current_value, "switching to ->", other_model)

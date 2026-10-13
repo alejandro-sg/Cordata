@@ -29,6 +29,7 @@ different model family than every executor that touched the change, and nothing 
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import sqlite3
@@ -40,6 +41,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import checkpoints
+import secret_patterns
 import state_store
 
 from workers import TaskPacket, collect
@@ -105,6 +107,10 @@ class RunRecord:
     handoffs: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     history: list[dict[str, Any]] = field(default_factory=list)
+    #: The conversation that started it, when a front door did (Mission Control lists a session's runs).
+    session_id: str | None = None
+    #: The phase a person's pause stopped it in: a resume goes back there, not to EXECUTE.
+    resume_state: str | None = None
     created: float = field(default_factory=time.time)
     updated: float = field(default_factory=time.time)
 
@@ -253,6 +259,8 @@ class OrchestratorMachine:
         task_class: str | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         record: RunRecord | None = None,
+        controls: "Any | None" = None,
+        session_id: str | None = None,
     ) -> None:
         import os
 
@@ -264,8 +272,10 @@ class OrchestratorMachine:
         if record is None:
             from .dispatch import classify
 
-            record = RunRecord(run_id=run_id or f"run-{uuid.uuid4().hex[:10]}", goal=goal, cwd=self.project, task_class=task_class or classify(goal))
+            record = RunRecord(run_id=run_id or f"run-{uuid.uuid4().hex[:10]}", goal=goal, cwd=self.project, task_class=task_class or classify(goal), session_id=session_id)
         self.record = record
+        #: The person's pause/cancel requests (``control.Controls``), asked at every safe point; None: nobody can ask.
+        self.controls = controls
         self.plan: Plan | None = Plan.from_json(record.plan) if record.plan else None
         self._exec_families: set[str] = set()
         self._resume_packet: handoff.HandoffPacket | None = None
@@ -305,20 +315,50 @@ class OrchestratorMachine:
                     self._observe(role, candidate, ok=ok, final=True)
 
     def _emit(self, kind: str, **payload: Any) -> None:
+        event = {"kind": kind, "run_id": self.record.run_id, **payload}
         try:
-            self.on_event({"kind": kind, "run_id": self.record.run_id, **payload})
+            self.on_event(event)
         except Exception:
             logger.debug("orchestrator: event listener failed", exc_info=True)
+        if kind not in ("worker", "state", "usage"):
+            # Durable: dispatches, step results, handoffs, rollbacks, waves (states are already, as `orchestrator`;
+            # a worker's stream and the usage snapshots are too many and are in the run's events file).
+            state_store.append_event("orchestrator_event", json.loads(secret_patterns.scrub(json.dumps(event, default=str))[0]), session_id=self.record.run_id, source="orchestrator")
 
     def _emit_usage(self, _detail: dict[str, Any] | None = None) -> None:
-        """A ``usage`` event after a worker call: the run's spend by role and worker, and where every pool stands."""
+        """A ``usage`` event after a worker call: the run's spend per pod (worker × role) and in total, where every pool
+        stands (with its soft/hard lines), and the run's envelope — what Mission Control's gauges draw."""
         try:
-            pools = [{"pool_id": s.pool_id, "pct": s.pct, "used": s.used, "limit": s.limit} for s in self.ledger.states()]
-            totals = self.ledger.run_usage(self.record.run_id)
+            pools = [s.to_json() for s in self.ledger.states()]
+            rows = self.ledger.run_usage(self.record.run_id)
+            envelope = self.ledger.envelope(self.record.run_id, max_usd=self.config.max_usd, max_tokens=self.config.max_tokens).to_json()
         except Exception:
             logger.debug("orchestrator: could not read usage", exc_info=True)
             return
-        self._emit("usage", totals=totals, pools=pools)
+        totals = {
+            "tokens_in": sum(int(r.get("tokens_in") or 0) for r in rows),
+            "tokens_out": sum(int(r.get("tokens_out") or 0) for r in rows),
+            "cost_usd": round(sum(float(r.get("cost_usd") or 0.0) for r in rows), 4),
+            "calls": sum(int(r.get("calls") or 0) for r in rows),
+        }
+        self._emit("usage", pods=rows, totals=totals, pools=pools, envelope=envelope)
+
+    def _pool_id(self, candidate: Candidate) -> str | None:
+        try:
+            return self.ledger.pool_for(candidate.family, candidate.model).pool_id
+        except Exception:
+            return None
+
+    def worker_event(self, event: Any, *, role: str, worker: str, step_id: str, pool_id: str | None) -> None:
+        """One event from a worker's stream (what it is doing right now), for the pod that runs it. Masked; the raw line
+        and the final result stay out (the result is reported as ``step_result``)."""
+        if event.event_type == "done":
+            return
+        try:
+            payload = json.loads(secret_patterns.scrub(json.dumps(event.payload, default=str))[0])
+        except (TypeError, ValueError):
+            payload = {}
+        self._emit("worker", step_id=step_id, role=role, worker=worker, pool_id=pool_id, event_type=event.event_type, payload=payload, ts=event.ts)
 
     def _observe(self, role: str, candidate: Candidate, **outcome: Any) -> None:
         try:
@@ -352,8 +392,8 @@ class OrchestratorMachine:
             effort=candidate.effort,
             json_schema=schema,
         )
-        self._emit("dispatch", role=label, worker=candidate.key)
-        _, result = await collect(candidate.worker.run(task))
+        self._emit("dispatch", role=label, worker=candidate.key, pool_id=self._pool_id(candidate))
+        _, result = await collect(candidate.worker.run(task), on_event=lambda event: self.worker_event(event, role=label, worker=candidate.key, step_id=label, pool_id=self._pool_id(candidate)))
         self.ledger.record_result(session_id=self.record.run_id, step_id=label, family=candidate.family, model=candidate.model or result.model, result=result, role=label, worker=candidate.key)
         self.record.workers.setdefault(label, []).append(candidate.key)
         self._emit_usage()
@@ -443,6 +483,8 @@ class OrchestratorMachine:
             profile=self._profile(),
             max_parallel=self.config.max_parallel,
             on_usage=self._emit_usage,
+            controls=self.controls,
+            on_worker_event=self.worker_event,
             # A drift fix is the hard case — the plan was done and was not good enough — so it goes to the strongest
             # worker still allowed, not to whichever pool has the most room.
             strongest_first=recovering or steps is not None,
@@ -614,9 +656,74 @@ class OrchestratorMachine:
             packets = handoff.for_session(self.record.run_id)
             self._resume_packet = packets[-1] if packets else None
             self.record.reason = ""
-            self._transition("execute", resumed=True, handoff=self._resume_packet.handoff_id if self._resume_packet else None)
+            # A person's pause between phases goes back to that phase; a pause inside EXECUTE (quota, or a pause at a
+            # step) goes back to EXECUTE, which skips the steps already done.
+            back_to, self.record.resume_state = self.record.resume_state or "execute", None
+            self._transition(back_to, resumed=True, handoff=self._resume_packet.handoff_id if self._resume_packet else None)
+        watcher = asyncio.ensure_future(self._watch_controls()) if self.controls is not None else None
+        try:
+            return await self._loop()
+        except asyncio.CancelledError:
+            # Stopped from outside (the orchestrate tool's Stop, a session going away). The record used to be left at
+            # whatever phase it was in — "execute" forever — which nothing could tell from a run still working. The
+            # work stays where it is (nothing is restored: a cancel is not a verdict on it) and the state says so.
+            if self.record.state not in TERMINAL:
+                self.record.reason = self.record.reason or "cancelled — the run stopped where it was (its work is kept)"
+                try:
+                    self._transition("cancelled", reason=self.record.reason)
+                except Exception:
+                    logger.debug("orchestrator: could not record the cancel", exc_info=True)
+            raise
+        finally:
+            if watcher is not None:
+                watcher.cancel()
+
+    # ------------------------------------------------------------------ the person's controls
+
+    async def _watch_controls(self) -> None:
+        """Between safe points: notice a request to stop *now*, so the worker call in flight is stopped rather than
+        waited for. (A plain pause or cancel waits for the next safe point.)"""
+        while True:
+            await asyncio.sleep(0.5)
+            try:
+                self.controls.poll()
+            except Exception:
+                logger.debug("orchestrator: control poll failed", exc_info=True)
+
+    def _safe_point(self) -> bool:
+        """At the top of the loop, between phases: honour a pause or a cancel. True when the loop must stop."""
+        if self.controls is None:
+            return False
+        req = self.controls.pending()
+        if req is None:
+            return False
+        if req.kind == "pause":
+            self.record.resume_state = self.record.state
+            self.record.reason = "paused by the person"
+            self._emit("paused", reason="user_pause", state=self.record.state)
+            self._transition("paused", reason="user_pause", resume=self.record.resume_state, by=req.by or None)
+            self.controls.clear()
+            return True
+        self._cancel(req)
+        return True
+
+    def _cancel(self, req: Any) -> None:
+        """A person's cancel: terminal. The work stays unless they asked for it to go (``restore``), and then it is saved
+        as a patch first, exactly as a failed run's is."""
+        self.record.reason = "cancelled by the person"
+        restored = None
+        if getattr(req, "restore", False) and self.record.start_checkpoint:
+            self._keep_discarded("cancelled with restore")
+            restored = checkpoints.restore(self.project, self.record.start_checkpoint, session_id=self.record.run_id).get("ok")
+        self._transition("cancelled", reason=self.record.reason, restored=restored, by=getattr(req, "by", None) or None)
+        if self.controls is not None:
+            self.controls.clear()
+
+    async def _loop(self) -> RunRecord:
         feedback: list[str] = []
         while self.record.state not in TERMINAL and self.record.state != "paused":
+            if self._safe_point():
+                break
             state = self.record.state
             if self._envelope_left()[2]:
                 self.record.reason = "the plan's budget envelope is spent"
@@ -631,8 +738,14 @@ class OrchestratorMachine:
                 result = await self._execute()
                 if result.status == "completed":
                     self._transition("harden" if self.config.harden else "audit")
+                elif result.status == "cancelled" and self.controls is not None and self.controls.pending() is not None:
+                    self._cancel(self.controls.pending())
                 elif result.status in ("paused", "budget_exhausted", "cancelled"):
                     self.record.reason = result.reason
+                    if result.status == "paused" and result.reason == "paused by the person":
+                        self.record.resume_state = "execute"
+                        if self.controls is not None:
+                            self.controls.clear()
                     self._transition(result.status, reason=result.reason, handoff=result.last_packet.handoff_id if result.last_packet else None)
                 elif self.plan is not None and any(s.status == "completed" for s in self.plan.steps) and self.record.recoveries < self.config.max_step_recoveries:
                     # A step defeated every attempt, but the steps before it are done and good. Keep them: try the
@@ -722,25 +835,6 @@ class OrchestratorMachine:
         except Exception:
             logger.debug("orchestrator: could not save the work a restore discards", exc_info=True)
 
-    def _keep_discarded(self, why: str) -> None:
-        """Before the project goes back to the start of the run, write what is about to be thrown away to the run's
-        artifacts folder as a patch. A restore is the right answer to a plan that cannot be made to work, but it is
-        irreversible by design — and the first real multi-step run lost nine good steps to one bad one. Never raises."""
-        if not self.record.start_checkpoint:
-            return
-        try:
-            patch, stat = checkpoints.diff_since(self.project, self.record.start_checkpoint)
-            if not patch.strip():
-                return
-            target = artifacts_dir(self.record.run_id)
-            target.mkdir(parents=True, exist_ok=True)
-            name = f"discarded-{len(self.record.history):03d}.patch"
-            (target / name).write_text(f"# discarded by the orchestrator: {why}\n# {stat.strip().splitlines()[-1] if stat.strip() else ''}\n{patch}", encoding="utf-8")
-            (target / name).chmod(0o600)
-            self.record.warnings.append(f"work discarded by a restore ({why}) was saved to {target / name}")
-        except Exception:
-            logger.debug("orchestrator: could not save the work a restore discards", exc_info=True)
-
     def _replan_or_fail(self, reasons: list[str], why: str) -> None:
         self.record.rounds = 0
         if self.record.replans < self.config.max_replans:
@@ -766,12 +860,12 @@ class OrchestratorMachine:
         self._transition("failed", reason=reason, restored=restored)
 
 
-async def resume(run_id: str, dispatcher: Dispatcher, *, ledger: QuotaLedger | None = None, config: RunConfig | None = None, on_event: Callable[[dict[str, Any]], None] | None = None) -> RunRecord | None:
+async def resume(run_id: str, dispatcher: Dispatcher, *, ledger: QuotaLedger | None = None, config: RunConfig | None = None, on_event: Callable[[dict[str, Any]], None] | None = None, controls: Any | None = None) -> RunRecord | None:
     """Continue a paused (or interrupted, non-terminal) run from ``state.db``."""
     record = load(run_id)
     if record is None or record.state in TERMINAL:
         return record
-    machine = OrchestratorMachine(goal=record.goal, project=record.cwd, dispatcher=dispatcher, ledger=ledger, config=config, record=record, on_event=on_event)
+    machine = OrchestratorMachine(goal=record.goal, project=record.cwd, dispatcher=dispatcher, ledger=ledger, config=config, record=record, on_event=on_event, controls=controls)
     return await machine.run()
 
 

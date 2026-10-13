@@ -10,7 +10,7 @@ Three JSON files, lowest precedence first (a higher one wins on a conflict):
 Objects merge key by key; ``permissions.allow/ask/deny`` lists *accumulate* across
 files (so a project can add a deny without erasing the user's own rules); every
 other value is replaced. The acp-tui client reads and writes the same files
-(``tui/crates/acp-tui/src/settings.rs``) — ``docs/settings.md`` is the contract,
+(``app/crates/cordata-view/src/settings.rs``) — ``docs/settings.md`` is the contract,
 and both implementations are tested against ``tests/fixtures/settings``.
 
 What does NOT go in here: credentials. API keys live in the environment or the
@@ -224,9 +224,22 @@ SCHEMA: dict[str, tuple] = {
     "tui.thinking": ("enum", COLLAPSE),
     "tui.toolOutput": ("enum", COLLAPSE),
     "tui.showLaya": ("bool",),
+    # The native app's own preferences (docs/app.md §6.4). User file only (``USER_ONLY_PREFIXES``): how one person's
+    # window looks and behaves is not a repository's to decide.
+    "app.theme": ("enum", ("night", "high-contrast", "system")),
+    "app.density": ("enum", ("comfortable", "compact")),
+    "app.notifications": ("enum", ("all", "approvals", "off")),
+    "app.restoreWindows": ("bool",),
+    "app.showReasoning": ("bool",),
 }
 LIST_KEYS = tuple(f"permissions.{kind}" for kind in RULE_KINDS)
 USER_ONLY_KEYS = ("trustedProjects",)
+#: Whole groups read only from the user file. Mirrored in `app/crates/cordata-view/src/settings.rs` (`USER_ONLY_PREFIXES`).
+USER_ONLY_PREFIXES = ("app.",)
+
+
+def user_only(key: str) -> bool:
+    return key in USER_ONLY_KEYS or key.startswith(USER_ONLY_PREFIXES)
 
 #: Keys a repository must not be able to set for itself. Like `defaultMode:
 #: "auto"` and `selfHeal.autoApply`, they decide how much the harness protects
@@ -237,7 +250,7 @@ USER_ONLY_KEYS = ("trustedProjects",)
 #: a host the project names, `kg.sink` decides where graph rows are sent, and
 #: `checkpoints.enabled: false` would remove the undo that makes `auto` mode safe to leave on. Set
 #: from the user file, or from a project the user has `/trust`ed, they apply.
-#: Mirrored in `tui/crates/acp-tui/src/settings.rs` (`TRUST_GATED_KEYS`).
+#: Mirrored in `app/crates/cordata-view/src/settings.rs` (`TRUST_GATED_KEYS`).
 TRUST_GATED_KEYS = frozenset(
     {"vault.enabled", "vault.addr", "vault.vault", "vault.egressPolicy", "kg.sink", "claudeCode.maxBudgetUsd", "claudeCode.model", "claudeCode.effort", "context.coldTools", "context.toolOutputChars", "context.agedOutputChars", "context.offload", "context.webFetch", "context.maxSteps", "context.maxTurnUsage", "context.summaryModel", "context.skillSearch", "context.skillsListed", "checkpoints.enabled", "checkpoints.maxFileMb", "learning.promotion", "learning.optimizePrompts", "learning.bandit",
      # Laya's own lines: `callGuard: off` or a raised `riskDestroy` from a cloned repo would quietly remove the
@@ -403,10 +416,12 @@ def load(cwd: str | os.PathLike) -> Settings:
         ordered = [(k, v) for k, v in flat.items() if k not in LIST_KEYS]
         ordered += [(k, flat[k]) for k in LIST_KEYS if k in flat]
         for key, value in ordered:
-            if key in USER_ONLY_KEYS:
+            if user_only(key):
                 if scope != "user":
                     result.warnings.append(f"{where}: '{key}' is only read from the user file — ignored")
-                continue
+                    continue
+                if key in USER_ONLY_KEYS:
+                    continue  # trustedProjects is read by `_trusted`, not as a value
             if key in LIST_KEYS:
                 kind = key.rpartition(".")[2]
                 if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
@@ -520,6 +535,8 @@ def set_value(scope: str, key: str, value, cwd) -> Path:
         raise ValueError(warning)
     if key not in SCHEMA:
         raise ValueError(f"unknown setting '{key}'")
+    if user_only(key) and scope != "user":
+        raise ValueError(f"'{key}' is only read from the user file")
     path, data = _editable(scope, cwd)
     parts = key.split(".")
     node = data

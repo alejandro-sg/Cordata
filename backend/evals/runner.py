@@ -212,7 +212,6 @@ def sandbox(root: Path, *, live: bool = False, env: dict[str, str] | None = None
     saved = {
         "sessions_dir": agent_common.SESSIONS_DIR,
         "acp_sessions": acp_server.SESSIONS_DIR,
-        "index": acp_server._INDEX_PATH,
         "build_model": agent_common.build_model,
         "ensure": agent_common.ensure_provider_ready,
         "fetch": acp_server._fetch_available_models,
@@ -223,7 +222,6 @@ def sandbox(root: Path, *, live: bool = False, env: dict[str, str] | None = None
     }
     agent_common.SESSIONS_DIR = sessions
     acp_server.SESSIONS_DIR = sessions
-    acp_server._INDEX_PATH = sessions / "index.json"
     acp_server._fetch_available_models = lambda: []
     prompt_security.laya_ready = lambda: False  # no forward pass: the guard runs on its rules, deterministically
     real_paths = plugin_host.mcp_config_paths
@@ -235,7 +233,6 @@ def sandbox(root: Path, *, live: bool = False, env: dict[str, str] | None = None
     finally:
         agent_common.SESSIONS_DIR = saved["sessions_dir"]
         acp_server.SESSIONS_DIR = saved["acp_sessions"]
-        acp_server._INDEX_PATH = saved["index"]
         agent_common.build_model = saved["build_model"]
         agent_common.ensure_provider_ready = saved["ensure"]
         acp_server._fetch_available_models = saved["fetch"]

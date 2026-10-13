@@ -45,7 +45,6 @@ SESSIONS = ROOT / "sessions"
 SESSIONS.mkdir()
 agent_common.SESSIONS_DIR = SESSIONS
 acp_server.SESSIONS_DIR = SESSIONS
-acp_server._INDEX_PATH = SESSIONS / "index.json"
 acp_server._fetch_available_models = lambda: []  # the oMLX list; unused by this provider
 prompt_security.laya_ready = lambda: True
 _real_paths = plugin_host.mcp_config_paths

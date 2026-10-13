@@ -88,3 +88,26 @@ def preview(tool_name: str, tool_input: Any, cwd: str | None = None) -> list[tup
     except (patch_tool.PatchError, OSError, ValueError):
         return []
     return []
+
+
+def from_input(tool_name: str, tool_input: Any) -> list[tuple[str, str | None, str]]:
+    """What an edit call *said* it would change, from its input alone — never the disk. For replaying an old turn,
+    where the file has moved on since and ``preview`` would diff the wrong thing. A ``str_replace`` gives the replaced
+    fragment (old → new), a write or a create the new content (old unknown); a patch is not reconstructed (its raw
+    input is shown instead). ``[(path as given, old or None, new)]``."""
+    if not isinstance(tool_input, dict):
+        return []
+    path = tool_input.get("path")
+    if not isinstance(path, str) or not path:
+        return []
+    if tool_name == "file_write" and isinstance(tool_input.get("content"), str):
+        return [(path, None, tool_input["content"])]
+    if tool_name == "editor":
+        command = tool_input.get("command")
+        if command == "create" and isinstance(tool_input.get("file_text"), str):
+            return [(path, None, tool_input["file_text"])]
+        if command == "str_replace" and isinstance(tool_input.get("old_str"), str):
+            return [(path, tool_input["old_str"], str(tool_input.get("new_str") or ""))]
+        if command == "insert" and isinstance(tool_input.get("new_str"), str):
+            return [(path, "", tool_input["new_str"])]
+    return []

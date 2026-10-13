@@ -162,6 +162,37 @@ pub const SCHEMA: &[Entry] = &[
         applies: Applies::Now,
         help: "show Laya's triage lines",
     },
+    // The native app's own preferences (user file only, `USER_ONLY_PREFIXES`).
+    Entry {
+        key: "app.theme",
+        kind: Kind::Enum(&["night", "high-contrast", "system"]),
+        applies: Applies::Now,
+        help: "Cordata.app's palette (system follows Increase Contrast)",
+    },
+    Entry {
+        key: "app.density",
+        kind: Kind::Enum(&["comfortable", "compact"]),
+        applies: Applies::Now,
+        help: "Cordata.app's spacing",
+    },
+    Entry {
+        key: "app.notifications",
+        kind: Kind::Enum(&["all", "approvals", "off"]),
+        applies: Applies::Now,
+        help: "which events Cordata.app notifies about",
+    },
+    Entry {
+        key: "app.restoreWindows",
+        kind: Kind::Bool,
+        applies: Applies::NextSession,
+        help: "reopen Cordata.app's sessions on launch",
+    },
+    Entry {
+        key: "app.showReasoning",
+        kind: Kind::Bool,
+        applies: Applies::Now,
+        help: "Cordata.app shows reasoning in full",
+    },
     Entry {
         key: "laya.mode",
         kind: Kind::Enum(&["off", "shadow", "route"]),
@@ -642,6 +673,9 @@ pub const BUILTIN_DENY: [&str; 3] = [
 static SECRET_KEY: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)(api[_-]?key|token|secret|password|passwd|credential)").unwrap()
 });
+/// Setting groups read only from the user file — mirrors `USER_ONLY_PREFIXES` in `backend/settings_store.py`.
+pub const USER_ONLY_PREFIXES: &[&str] = &["app."];
+
 /// Keys a repository must not set for itself — see `TRUST_GATED_KEYS` in
 /// `backend/settings_store.py`, which this mirrors (the shared fixture holds
 /// both readers to it).
@@ -962,12 +996,14 @@ impl Store {
             }
 
             for (key, value) in ordered {
+                let user_only = key == "trustedProjects" || USER_ONLY_PREFIXES.iter().any(|prefix| key.starts_with(prefix));
+                if user_only && scope != Scope::User {
+                    result.warnings.push(format!(
+                        "{location}: '{key}' is only read from the user file — ignored"
+                    ));
+                    continue;
+                }
                 if key == "trustedProjects" {
-                    if scope != Scope::User {
-                        result.warnings.push(format!(
-                            "{location}: '{key}' is only read from the user file — ignored"
-                        ));
-                    }
                     continue;
                 }
                 if let Some(kind) = RuleKind::ALL
@@ -1110,6 +1146,9 @@ impl Store {
         if entry(key).is_none() {
             return Err(format!("unknown setting '{key}'"));
         }
+        if scope != Scope::User && USER_ONLY_PREFIXES.iter().any(|prefix| key.starts_with(prefix)) {
+            return Err(format!("'{key}' is only read from the user file"));
+        }
         if let Some(value) = &value {
             check(key, value, scope.name())?;
         }
@@ -1236,7 +1275,7 @@ mod tests {
     use super::*;
 
     fn fixture_store() -> Store {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/settings");
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../tui/fixtures/settings");
         Store {
             user_dir: root.join("home"),
             cwd: root.join("project"),
@@ -1281,7 +1320,7 @@ mod tests {
         let expected: Value = serde_json::from_str(
             &fs::read_to_string(
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../fixtures/settings/expected.json"),
+                    .join("../../../tui/fixtures/settings/expected.json"),
             )
             .unwrap(),
         )

@@ -1,4 +1,4 @@
-.PHONY: phase12-test gate-live setup up down restart status logs daemon daemon-install daemon-uninstall daemon-status deploy-mini deploy-mini-frontend deploy-mini-backend tui tui-build tui-test lab lab-demo lab-build lab-test lab-live lab-menubar lab-menubar-selftest lab-menubar-deck-selftest lab-menubar-demo lab-menubar-app proto evals evals-validate learning-test laya-test laya-export laya-eval stress tui-cloud tui-lab stress-cloud key check-key discord-key laya-watch settings install-cli cli secrets hooks
+.PHONY: app app-run app-test app-check app-selftest phase12-test gate-live setup up down restart status logs daemon daemon-install daemon-uninstall daemon-status deploy-mini deploy-mini-frontend deploy-mini-backend tui tui-build tui-test lab lab-demo lab-build lab-test lab-live lab-menubar lab-menubar-selftest lab-menubar-deck-selftest lab-menubar-demo lab-menubar-app proto evals evals-validate learning-test laya-test laya-export laya-eval stress tui-cloud tui-lab stress-cloud key check-key discord-key laya-watch settings install-cli cli secrets hooks
 
 setup:
 	@scripts/setup.sh
@@ -42,6 +42,31 @@ daemon-install:
 
 daemon-uninstall:
 	@scripts/daemon.sh uninstall
+
+# Cordata.app, the native workspace (app/, docs/app.md). `app` builds, signs and self-tests the bundle into
+# app/target/Cordata.app (SIGN_IDENTITY="Cordata Local" keeps macOS privacy grants across rebuilds; INSTALL=1 copies it
+# to ~/Applications); `app-run` runs it from the tree against the daemon's hub (ARGS="--transport stdio" for a child).
+app:
+	@scripts/package-app.sh $(if $(INSTALL),--install,)
+
+app-run:
+	@cd app && cargo run -q -p cordata-app -- $(ARGS)
+
+# The shared state (cordata-view, also the terminal's), the palette's WCAG checks, the app's headless tests.
+app-test:
+	@cd app && cargo test --workspace --features cordata-view/crossterm
+
+# A scripted turn through the real window against acp-core's fake agent: connect, stream, approve, finish.
+app-selftest:
+	@cd app && cargo build -q -p cordata-app && ACP_TUI_BACKEND_ROOT=$(CURDIR) CORDATA_APP_SERVER_SCRIPT=$(CURDIR)/tui/crates/acp-core/tests/fixtures/fake_agent.py \
+		target/debug/cordata-app --transport stdio --prompt "harness" --selftest
+
+# Lints and the supply chain: clippy (warnings are errors), cargo-deny (licences, bans, sources, advisories) and the
+# proof that the gpui-pre crates are zed@93d7456 (network once).
+app-check:
+	@cd app && cargo clippy --workspace --all-targets -- -D warnings
+	@cd app && cargo deny check
+	@app/scripts/verify-gpui-snapshot.sh
 
 # Rust ACP clients (tui/) — see tui/README.md.
 tui:

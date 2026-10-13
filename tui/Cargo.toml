@@ -34,3 +34,7 @@ vt100 = "0.16"
 # compile is not worth two build configurations to keep correct.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "io-std", "signal", "net"] }
 acp-core = { path = "crates/acp-core" }
+# The front-end state shared with the native app (app/crates/cordata-view); `crossterm` adds the event conversions.
+cordata-view = { path = "../app/crates/cordata-view", features = ["crossterm"] }
+# The colour roles, shared with the native app (app/crates/cordata-theme).
+cordata-theme = { path = "../app/crates/cordata-theme" }

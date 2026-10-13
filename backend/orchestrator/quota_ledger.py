@@ -176,17 +176,9 @@ _migrated_paths: set[str] = set()
 
 
 def migrate(conn: sqlite3.Connection | None = None) -> None:
-    """Guarded migration for quota_usage: add role and worker columns, ignoring sqlite3.OperationalError."""
-    if conn is None:
-        conn = state_store.connect()
-    try:
-        conn.execute("ALTER TABLE quota_usage ADD COLUMN role TEXT")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        conn.execute("ALTER TABLE quota_usage ADD COLUMN worker TEXT")
-    except sqlite3.OperationalError:
-        pass
+    """``quota_usage.role``/``.worker`` used to be added here, lazily; they are part of ``state_store``'s schema now
+    (``_ADDED_COLUMNS``), so any connection has them. Kept so an older caller that migrates explicitly still works."""
+    state_store._add_columns(conn if conn is not None else state_store.connect())
 
 
 def _ensure_columns(conn: sqlite3.Connection) -> None:

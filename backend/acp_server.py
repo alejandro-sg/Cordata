@@ -43,6 +43,8 @@ The agentic harness on top (docs/agentic-harness.md), per session:
 """
 
 import asyncio
+import atexit
+import calendar
 import json
 import logging
 import os
@@ -62,6 +64,7 @@ import context_diet
 import context_offload
 import goal as goal_module
 import session_extras
+import session_history
 import session_store
 import task_tool
 import ask_user
@@ -88,6 +91,8 @@ import reflect
 import settings as app_settings
 import settings_store
 import specialists
+import secret_guard
+import secret_patterns
 import state_store
 import orchestrate_tool
 import trace_store
@@ -131,6 +136,7 @@ from acp_protocol import (  # noqa: E402,F401
     _SpecialistProgress,
     _recent_context,
     _extract_prompt_text,
+    _prompt_images,
     _ProtocolStdout,
     _protect_protocol_stdout,
     STDIO_LINE_LIMIT,
@@ -301,33 +307,126 @@ def _checkpoint_path(session_id: str) -> Path:
     return SESSIONS_DIR / f"session_{session_id}.checkpoint.json"
 
 
-_INDEX_PATH = SESSIONS_DIR / "index.json"
-_INDEX_LOCK = threading.Lock()
+#: Conversations per ``session/list`` page.
+LIST_PAGE = 50
 
 
 def _read_index() -> dict:
+    """The legacy ``sessions/index.json`` (id -> cwd / title / updatedAt), read-only now: conversations are recorded in
+    ``state.db``'s ``sessions`` table (``state_store.touch_session``), and this file only fills in the ones from before."""
     try:
-        data = json.loads(_INDEX_PATH.read_text(encoding="utf-8"))
+        data = json.loads((SESSIONS_DIR / "index.json").read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
 
 
-def _touch_index(session_id: str, cwd: str, title: str | None = None) -> None:
-    """sessions/index.json: id -> cwd / title / updatedAt, for session/list."""
-    with _INDEX_LOCK:
-        data = _read_index()
-        entry = data.get(session_id, {})
-        entry.update({"cwd": cwd, "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
-        if title:
-            entry["title"] = title
-        data[session_id] = entry
-        try:
-            tmp = _INDEX_PATH.with_suffix(".tmp")
-            tmp.write_text(json.dumps(data, indent=1), encoding="utf-8")
-            os.replace(tmp, _INDEX_PATH)
-        except OSError:
-            pass
+def _touch_index(session_id: str, cwd: str, title: str | None = None, *, turn: bool = False) -> None:
+    state_store.touch_session(session_id, cwd=cwd, title=title, turn=turn)
+
+
+def _iso(ts: float | None) -> str | None:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts)) if ts else None
+
+
+def _require_absolute(cwd: str) -> str:
+    """ACP says a session's cwd is an absolute path. A relative one means "wherever this process happens to be", which is
+    how 174 conversations ended up listed under ".": refused, so the client sends what it means."""
+    if not cwd or not os.path.isabs(cwd):
+        raise acp.RequestError.invalid_params({"error": f"cwd must be an absolute path, not {cwd!r}"})
+    return cwd
+
+
+def _plan_update(items: list) -> object:
+    """A checklist (``task_tool``) as ACP's ``plan`` update."""
+    entries = []
+    for item in items:
+        if not isinstance(item, dict) or not item.get("content"):
+            continue
+        status = str(item.get("status") or "pending")
+        entries.append(acp.plan_entry(str(item["content"]), status=status if status in ("pending", "in_progress", "completed") else "pending"))
+    return acp.update_plan(entries)
+
+
+def _lsp_diagnostics(cwd: str, path: str, text) -> dict:
+    """Diagnostics for one file of the project (``text``: its unsaved contents), as the editor draws them."""
+    root = os.path.realpath(cwd)
+    target = os.path.realpath(os.path.join(root, path))
+    if not target.startswith(root + os.sep):
+        return {"ok": False, "reason": "outside the project"}
+    if not lsp_bridge.folder_trusted(root):
+        return {"ok": False, "reason": "language servers start only in a trusted folder", "needs": "trust"}
+    manager = lsp_bridge.manager_for(root)
+    if manager.spec_for(target) is None:
+        return {"ok": True, "path": target, "diagnostics": [], "server": None}
+    try:
+        if isinstance(text, str):
+            client = manager.client_for(target)
+            diagnostics = client.check_text(target, text) if client is not None else []
+        else:
+            diagnostics, client = manager.diagnostics(target)
+    except Exception as error:  # a server that dies mid-request is a missing squiggle, not a failed turn
+        return {"ok": False, "reason": f"language server error: {error}"}
+    rows = []
+    for item in diagnostics or []:
+        rng = item.get("range") or {}
+        rows.append({
+            "start": rng.get("start") or {"line": 0, "character": 0},
+            "end": rng.get("end") or rng.get("start") or {"line": 0, "character": 0},
+            "severity": int(item.get("severity") or 1),
+            "message": secret_patterns.scrub(str(item.get("message") or ""))[0][:1000],
+            "source": item.get("source"),
+        })
+    return {"ok": True, "path": target, "diagnostics": rows, "server": getattr(getattr(client, "spec", None), "name", None) if client is not None else None}
+
+
+def _project_settings(cwd: str) -> dict:
+    """The project's own settings file, flattened (``.cordata/settings.json``), whatever trust does with it."""
+    try:
+        data = json.loads(settings_store.settings_path("project", cwd).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    out: dict = {}
+
+    def walk(prefix: str, node) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                walk(f"{prefix}.{key}" if prefix else key, value)
+        else:
+            out[prefix] = node
+
+    walk("", data)
+    return out
+
+
+def _events_size(run_id: str) -> int:
+    """Where a run's events file ends now: a resumed run's watcher starts there, not at events already shown."""
+    try:
+        from orchestrator.control import run_dir
+
+        return (run_dir(run_id) / "events.ndjson").stat().st_size
+    except OSError:
+        return 0
+
+
+def _vision_model_configured() -> bool:
+    try:
+        return bool(str(settings_store.current(os.getcwd()).get("capture.visionModel") or "").strip())
+    except Exception:
+        return False
+
+
+#: Conversations whose lease this process holds (``state_store.claim_session``); given back at exit.
+_LEASED: set[str] = set()
+
+
+def _release_leases() -> None:
+    for session_id in list(_LEASED):
+        state_store.release_session(session_id)
+    _LEASED.clear()
+
+
+atexit.register(_release_leases)
 
 
 _PLUGIN_HOSTS: dict[tuple[str, bool], PluginHost] = {}
@@ -413,16 +512,33 @@ class CordataAcpAgent:
         self._last_session: str | None = None
         #: session -> the goal being pursued across turns (``goal.py``, ``/goal``).
         self._goals: dict[str, goal_module.Goal] = {}
+        #: Sessions with a ``session/prompt`` in flight. One at a time: a second one used to reset the first turn's
+        #: recorder, checkpoint, cancel flag and stream handle before Strands refused it, leaving Stop unable to stop.
+        self._busy: set[str] = set()
+        #: (session, run) pairs whose events are being forwarded (`_watch_run`).
+        self._watching: set[tuple[str, str]] = set()
+        #: The client asks the person before `auto`/`edit` and says so (`initialize`).
+        self._confirm_modes = False
 
     def on_connect(self, conn: acp.Client) -> None:
         self._conn = conn
 
     async def initialize(self, protocol_version: int, **kwargs) -> acp.InitializeResponse:
+        # A client that declares `clientCapabilities._meta.cordata.confirmModes` promises to ask the person before it
+        # switches to `auto` or `edit`, and says so with `_meta.cordata.confirmed` — from then on a switch without it is
+        # refused (docs/app.md §6.4). Clients that declare nothing (Zed, older terminals) are unchanged.
+        capabilities = kwargs.get("client_capabilities")
+        meta = (getattr(capabilities, "field_meta", None) or {}) if capabilities is not None else {}
+        self._confirm_modes = bool(((meta or {}).get("cordata") or {}).get("confirmModes"))
         return acp.InitializeResponse(
             protocolVersion=acp.PROTOCOL_VERSION,
             agentCapabilities=acp.schema.AgentCapabilities(
                 load_session=True,
                 session_capabilities=acp.schema.SessionCapabilities(list=acp.schema.SessionListCapabilities()),
+                # Embedded resources are inlined (`_extract_prompt_text`); images only when a vision model is configured
+                # (`capture.visionModel`, the same gate as the menu bar's screenshot) — advertising them otherwise would
+                # invite an attachment the turn then has to refuse.
+                prompt_capabilities=acp.schema.PromptCapabilities(image=_vision_model_configured(), embedded_context=True),
             ),
         )
 
@@ -442,10 +558,46 @@ class CordataAcpAgent:
 
         loop.call_soon_threadsafe(lambda: loop.create_task(send()))
 
+    def _send_update(self, session_id: str, update) -> None:
+        """Thread-safe: schedule one ``session/update`` on the ACP loop (the harness's events arrive on tool threads)."""
+        loop, conn = self._loop, self._conn
+        if loop is None or conn is None or loop.is_closed():
+            return
+
+        async def send() -> None:
+            try:
+                await conn.session_update(session_id=session_id, update=update)
+            except Exception:
+                logging.getLogger(__name__).debug("session/update not delivered", exc_info=True)
+
+        loop.call_soon_threadsafe(lambda: loop.create_task(send()))
+
     def _forward_event(self, kind: str, payload: dict) -> None:
         if "sessionId" not in payload and self._last_session:
             payload = {**payload, "sessionId": self._last_session}
         self._send_ext(f"cordata/{kind}", payload)
+        if kind == "tasklist" and payload.get("sessionId"):
+            # ACP's own plan, so any client shows the checklist (Zed's plan view); `_cordata/tasklist` stays for ours.
+            self._send_update(str(payload["sessionId"]), _plan_update(payload.get("items") or []))
+
+    def _usage_update(self, session_id: str, state: "_Session") -> None:
+        """ACP ``usage_update``: the context window's fill, for any client's gauge. Skipped when the window is unknown
+        (ACP needs a size). Token counts and the estimate flag ride in ``_meta.cordata``; no money here — only the
+        orchestrator's pools have a price, and they report it themselves."""
+        try:
+            snapshot = session_extras.context_snapshot(state.agent)
+            if not snapshot.get("window"):
+                return
+            tokens_in, tokens_out = self._tokens_used(state)
+            update = acp.schema.UsageUpdate(
+                used=int(snapshot["used"]),
+                size=int(snapshot["window"]),
+                session_update="usage_update",
+                field_meta={"cordata": {"pct": snapshot.get("pct"), "estimated": bool(snapshot.get("estimated")), "messages": snapshot.get("messages"), "tokensIn": tokens_in, "tokensOut": tokens_out}},
+            )
+            self._send_update(session_id, update)
+        except Exception:
+            logging.getLogger(__name__).debug("usage update failed", exc_info=True)
 
     def _laya_notifier(self, session_id: str):
         """A thread-safe callback that forwards Laya's live triage events to the
@@ -469,10 +621,23 @@ class CordataAcpAgent:
         """``_build_session`` for a request from a client. A setup problem a person can fix (no model key, an unreachable
         provider) is raised as a JSON-RPC error that *carries its message*; left alone it reaches the client as
         "Internal error" and the reason is only in this process's log."""
+        holder = state_store.claim_session(session_id, cwd=cwd)
+        if holder is not None:
+            raise acp.RequestError(
+                -32000,
+                f"This conversation is open in another process (pid {holder}); a second copy would fork its history. "
+                "Attach through the daemon, or close the other one first.",
+                {"error": "session_leased", "pid": holder},
+            )
+        _LEASED.add(session_id)
         try:
             return self._build_session(session_id, cwd)
-        except RuntimeError as error:
-            raise acp.RequestError(-32000, str(error), {"error": str(error)}) from error
+        except BaseException as error:
+            _LEASED.discard(session_id)
+            state_store.release_session(session_id)
+            if isinstance(error, RuntimeError):
+                raise acp.RequestError(-32000, str(error), {"error": str(error)}) from error
+            raise
 
     def _build_session(self, session_id: str, cwd: str) -> _Session:
         # Process-wide, not per-agent: strands_tools' file_read/file_write/
@@ -703,7 +868,8 @@ class CordataAcpAgent:
 
     async def new_session(self, cwd: str, **kwargs) -> acp.NewSessionResponse:
         session_id = str(uuid.uuid4())
-        state = self._open_session(session_id, cwd)
+        state = self._open_session(session_id, _require_absolute(cwd))
+        _touch_index(session_id, cwd)
         return acp.NewSessionResponse(
             sessionId=session_id,
             modes=acp.schema.SessionModeState(current_mode_id=state.handler.mode, available_modes=_MODES),
@@ -715,11 +881,16 @@ class CordataAcpAgent:
         # conversation hub runs one child per conversation and lets a second front door (a
         # terminal) load it while it is live — possibly mid-turn. Rebuilding would replace the
         # running agent with last turn's snapshot under it. Its history is replayed from memory.
-        state = self._sessions.get(session_id) or self._open_session(session_id, cwd)
+        attached = session_id in self._sessions
+        state = self._sessions.get(session_id) or self._open_session(session_id, _require_absolute(cwd))
 
         if self._conn is not None:
             for update in _replay_history(state.agent.messages):
                 await self._conn.session_update(session_id=session_id, update=update)
+            checklist = task_tool.restore(session_id)
+            if checklist:
+                await self._conn.session_update(session_id=session_id, update=_plan_update(checklist))
+            self._usage_update(session_id, state)
             checkpoint = _checkpoint_path(session_id)
             if checkpoint.exists():
                 try:
@@ -748,7 +919,9 @@ class CordataAcpAgent:
             # The child that was blocked on the prompt is gone, so the request
             # will never arrive again — the ledger row is all that is left of
             # it, and saying so beats a resume that silently drops the question.
-            pending = state_store.pending_interventions(session_id)
+            # Only when this process has just rebuilt the session: one it already hosts may be parked on one of these
+            # right now (a second front door attaching mid-turn), and that approval is live, not stale.
+            pending = [] if attached else state_store.pending_interventions(session_id)
             if pending:
                 asked = "\n".join(
                     f"  · {row.get('tool') or 'a tool'}"
@@ -764,6 +937,10 @@ class CordataAcpAgent:
                         f"{asked}\nSend the request again to be asked a second time.]\n"
                     ),
                 )
+                # Said once. Left staged they were announced again on every load, forever, and counted as waiting
+                # for an answer by every front door that lists pending approvals.
+                for row in pending:
+                    state_store.resolve_intervention(str(row.get("id")), "expired", decided_by="load_session", note="its process ended before it was answered")
             if state.handler.vault is not None and state.handler.vault.blocks_egress:
                 # Worth saying at resume rather than only at the first refusal:
                 # the model can do a lot of work before it wants the network,
@@ -789,14 +966,44 @@ class CordataAcpAgent:
         )
 
     async def list_sessions(self, cwd: str | None = None, cursor: str | None = None, **kwargs) -> acp.schema.ListSessionsResponse:
-        index = _read_index()
-        rows = [
-            acp.schema.SessionInfo(session_id=sid, cwd=meta.get("cwd", ""), title=meta.get("title"), updated_at=meta.get("updatedAt"))
-            for sid, meta in index.items()
-            if session_store.exists(sid, SESSIONS_DIR) and (cwd is None or os.path.realpath(meta.get("cwd", "")) == os.path.realpath(cwd))
-        ]
-        rows.sort(key=lambda r: r.updated_at or "", reverse=True)
-        return acp.schema.ListSessionsResponse(sessions=rows[:50])
+        """Newest first, ``LIST_PAGE`` at a time; ``nextCursor`` is the last row's position, so a client pages back through
+        all of them (this used to stop at 50 and ignore the cursor). Rows come from ``state.db``; conversations from before
+        it are filled in from the legacy ``sessions/index.json``."""
+        try:
+            offset = max(0, int(cursor)) if cursor else 0
+        except ValueError:
+            raise acp.RequestError.invalid_params({"error": f"unknown cursor {cursor!r}"}) from None
+        wanted = os.path.realpath(cwd) if cwd else None
+        #: id -> (updated, cwd as given, title)
+        rows: dict[str, tuple[float, str, str | None]] = {}
+        for row in state_store.list_sessions(cwd=cwd, limit=100_000):
+            rows[row["session_id"]] = (float(row.get("updated_ts") or 0.0), row.get("cwd_given") or row["cwd_real"], row.get("title"))
+        for sid, meta in _read_index().items():
+            if sid in rows or not isinstance(meta, dict):
+                continue
+            given = str(meta.get("cwd") or "")
+            if wanted is not None and (not os.path.isabs(given) or os.path.realpath(given) != wanted):
+                continue
+            try:
+                updated = float(calendar.timegm(time.strptime(str(meta.get("updatedAt")), "%Y-%m-%dT%H:%M:%SZ")))
+            except (TypeError, ValueError):
+                updated = 0.0
+            rows[sid] = (updated, given, meta.get("title"))
+        ordered = sorted(((sid, *rest) for sid, rest in rows.items() if session_store.exists(sid, SESSIONS_DIR)), key=lambda r: (r[1], r[0]), reverse=True)
+        page = ordered[offset : offset + LIST_PAGE]
+        more = offset + LIST_PAGE < len(ordered)
+        return acp.schema.ListSessionsResponse(
+            sessions=[acp.schema.SessionInfo(session_id=sid, cwd=given, title=title, updated_at=_iso(updated)) for sid, updated, given, title in page],
+            next_cursor=str(offset + LIST_PAGE) if more else None,
+        )
+
+    def _resolve(self, session_id: str | None) -> tuple[str | None, "_Session | None"]:
+        """``_known`` plus the id this process holds the session under — what ``_goals``, ``_streaming`` and the ledger
+        are keyed by. ``(session_id, None)`` when there is nothing to resolve to."""
+        state = self._known(session_id) if session_id else (self._sessions.get(self._last_session) if self._last_session else None)
+        if state is None:
+            return session_id, None
+        return next((sid for sid, s in self._sessions.items() if s is state), session_id), state
 
     def _known(self, session_id: str) -> "_Session | None":
         """The session this id names — or, for an id this process never minted, the one it is hosting.
@@ -815,9 +1022,16 @@ class CordataAcpAgent:
         session_id = next((sid for sid, s in self._sessions.items() if s is state), session_id)
         if state is None or mode_id not in _MODE_IDS:
             return None
+        if mode_id in ("auto", "edit") and mode_id != state.handler.mode:
+            confirmed = bool((((kwargs.get("field_meta") or {}).get("cordata")) or {}).get("confirmed"))
+            if self._confirm_modes and not confirmed:
+                raise acp.RequestError.invalid_params({"error": f"switching to {mode_id} needs the person's confirmation", "needs": "confirm_mode"})
+            state_store.append_event("mode", {"from": state.handler.mode, "to": mode_id, "confirmed": confirmed, "via": "acp"}, session_id=session_id, source="acp_server")
         if mode_id != state.handler.mode:
             state.adaptive_hold = mode_advisor.HOLD_TURNS  # the person chose: adaptive mode keeps out of the way for a while
         state.handler.mode = mode_id
+        # Every client on this session hears it — the one that asked included, so all of them read the same stream.
+        self._send_update(session_id, acp.schema.CurrentModeUpdate(current_mode_id=mode_id, session_update="current_mode_update"))
         # ACP has no push for a client-initiated change, so another front end watching this
         # session (the Lab) would never learn of it: publish a snapshot, which carries the mode.
         lab = lab_module.get()
@@ -833,9 +1047,13 @@ class CordataAcpAgent:
             _apply_model(state.agent, value)
         elif config_id == "temperature" and isinstance(value, str):
             _apply_temperature(state.agent, value)
-        return acp.schema.SetSessionConfigOptionResponse(config_options=_config_options(state.agent))
+        options = _config_options(state.agent)
+        owner = next((sid for sid, s in self._sessions.items() if s is state), session_id)
+        self._send_update(owner, acp.schema.ConfigOptionUpdate(config_options=options, session_update="config_option_update"))
+        return acp.schema.SetSessionConfigOptionResponse(config_options=options)
 
     async def cancel(self, session_id: str, **kwargs) -> None:
+        session_id = self._resolve(session_id)[0] or session_id
         self._cancelled.add(session_id)
         # Strands' own cancellation (docs: agent-loop → Cancellation): the loop stops at its next checkpoint — before the
         # next model call, before the next tool — with a `cancelled` result, and a tool that polls
@@ -855,8 +1073,9 @@ class CordataAcpAgent:
         """``_cordata/*`` requests from acp-tui: plugins, LSP, Laya stats,
         self-heal state. Unknown methods raise (JSON-RPC method-not-found)."""
         name = method.removeprefix("_").removeprefix("cordata/")
-        session_id = params.get("sessionId") or self._last_session
-        state = self._sessions.get(session_id) if session_id else None
+        # Resolved like the mode switch: a front door under the daemon knows the daemon's id for this child, not the
+        # one ``new_session`` minted here, and used to get "no such session" from every method below.
+        session_id, state = self._resolve(params.get("sessionId") or self._last_session)
         cwd = state.cwd if state else os.getcwd()
         if name == "plugins/list":
             host = state.plugins if state else _plugin_host(cwd, set())
@@ -874,12 +1093,36 @@ class CordataAcpAgent:
             return {"plugins": host.status(), "warnings": host.warnings}
         if name == "lsp/status":
             manager = lsp_bridge.manager_for(cwd)
-            return {"servers": manager.status(), "enabled": manager.enabled}
+            return {"servers": manager.status(), "enabled": manager.enabled, "trusted": lsp_bridge.folder_trusted(cwd)}
+        if name == "lsp/diagnostics":
+            # The editor's squiggles, from the same trust-gated language servers the agent's tools use (one set of
+            # servers per project; none starts in an untrusted folder). `text` checks unsaved contents without writing.
+            return await run_blocking(_lsp_diagnostics, cwd, str(params.get("path") or ""), params.get("text"))
         if name == "orchestrator/status":
             # Quota pools, recent runs and handoffs, read from the ledger — no model call (orchestrator/status.py).
             from orchestrator.status import status_data
 
             return await run_blocking(status_data, cwd)
+        if name.startswith("orchestrator/"):
+            return await self._orchestrator_control(name.removeprefix("orchestrator/"), params, session_id, state, cwd)
+        if name.startswith("settings/") or name.startswith("trust/"):
+            return await self._settings_control(name, params, session_id, state, str(params.get("cwd") or cwd))
+        if name == "doctor":
+            from orchestrator import doctor
+
+            checks = await run_blocking(doctor.run_checks, os.path.realpath(str(params.get("cwd") or cwd)))
+            return {"checks": [check.to_json() for check in checks]}
+        if name == "auto/readiness":
+            return await run_blocking(self._auto_readiness, state, str(params.get("cwd") or cwd))
+        if name.startswith("artifacts/"):
+            from orchestrator import control
+
+            run_id = str(params.get("runId") or "")
+            if name == "artifacts/list":
+                return {"runId": run_id, "artifacts": await run_blocking(control.artifacts_list, run_id)}
+            if name == "artifacts/read":
+                return await run_blocking(lambda: control.artifacts_read(run_id, str(params.get("name") or ""), offset=int(params.get("offset") or 0), limit=int(params.get("limit") or control.READ_LIMIT)))
+            raise acp.RequestError.method_not_found(method)
         if name == "context/usage":
             return session_extras.context_snapshot(state.agent) if state else {"used": 0, "window": None, "pct": None, "messages": 0, "estimated": True}
         if name == "context/compact":
@@ -892,7 +1135,15 @@ class CordataAcpAgent:
         if name == "goal/clear":
             return {"cleared": self._clear_goal(session_id, "cleared by the person") if session_id else False}
         if name == "tasks/list":
-            return {"items": task_tool.current(session_id) if session_id else []}
+            return {"items": task_tool.restore(session_id) if session_id else []}
+        if name == "session/history":
+            # A page of a conversation's history, newest first, read from its snapshot — no agent is built for it, so
+            # this answers for a conversation no process is running too (`session_history.page`).
+            wanted = str(params.get("sessionId") or session_id or "")
+            if not wanted:
+                raise acp.RequestError.invalid_params({"error": "session/history needs a sessionId"})
+            cursor = params.get("cursor")
+            return session_history.page(wanted, SESSIONS_DIR, cursor=int(cursor) if cursor is not None else None, limit=int(params.get("limit") or session_history.PAGE_DEFAULT), kind_of=_tool_kind)
         if name == "laya/stats":
             router = _router()
             return {
@@ -932,6 +1183,218 @@ class CordataAcpAgent:
             memory = await run_blocking(fix_memory.stats, cwd) if config.memory else None
             return {"episodes": episodes, "config": config.__dict__, "memory": memory}
         raise acp.RequestError.method_not_found(method)
+
+    async def _orchestrator_control(self, action: str, params: dict, session_id: str | None, state: "_Session | None", cwd: str) -> dict:
+        """Mission Control's requests (docs/app.md §6.2). A run started here is a detached process (it outlives this
+        session, and the daemon reaping it); its events are forwarded to this session as ``_cordata/orchestrator`` while
+        it runs, and any front door catches up from its events file. Every change is audited before it takes effect."""
+        from orchestrator import control
+
+        run_id = str(params.get("runId") or "")
+        if action == "runs":
+            states = params.get("states")
+            return {"runs": await run_blocking(lambda: control.list_runs(cwd=str(params.get("cwd") or cwd), session_id=params.get("sessionId") if params.get("mine") else None, states=list(states) if isinstance(states, list) else None, limit=int(params.get("limit") or 30), before=params.get("before")))}
+        if action == "show":
+            shown = await run_blocking(control.show_run, run_id)
+            return shown if shown is not None else {"ok": False, "reason": f"no run {run_id}"}
+        if action == "events":
+            return await run_blocking(lambda: control.read_events(run_id, int(params.get("offset") or 0), int(params.get("limit") or 500)))
+        if action == "watch":
+            self._watch_run(session_id, run_id, int(params.get("offset") or 0))
+            return {"ok": True, "runId": run_id}
+        if action in ("pause", "cancel"):
+            now, restore = bool(params.get("now")), bool(params.get("restore")) and action == "cancel"
+            state_store.append_event("orchestrator_control", {"action": action, "run_id": run_id, "now": now, "restore": restore}, session_id=session_id, source="acp_server")
+            return await run_blocking(lambda: control.request(run_id, action, now=now, restore=restore, by="person"))
+        if action == "resume":
+            direct = bool(params.get("allowDirect"))
+            if direct and not params.get("confirmed"):
+                return {"ok": False, "reason": "direct network access needs the person's confirmation (a trust card), not just a flag", "needs": "confirm_direct"}
+            state_store.append_event("orchestrator_control", {"action": "resume", "run_id": run_id, "allow_direct": direct}, session_id=session_id, source="acp_server")
+            result = await run_blocking(lambda: control.resume_run(run_id, session_id=session_id, allow_direct=direct))
+            if result.get("ok"):
+                self._watch_run(session_id, run_id, _events_size(run_id))
+            return result
+        if action == "start":
+            # `start` does not pass through the Strands approval handler (no tool call asks for it), so the gates that
+            # handler would apply are applied here.
+            goal = str(params.get("goal") or "").strip()
+            if not goal:
+                return {"ok": False, "reason": "a run needs a goal"}
+            if state is not None and state.handler.mode == "plan":
+                return {"ok": False, "reason": "plan mode runs nothing — leave plan mode (approve a plan) to start a run"}
+            target = os.path.realpath(str(params.get("cwd") or cwd))
+            if state is not None and target != os.path.realpath(state.cwd):
+                return {"ok": False, "reason": "a run starts in this session's project"}
+            direct = bool(params.get("allowDirect"))
+            if direct and not params.get("confirmed"):
+                # Coding CLIs never get direct network access by a flag alone: the vault fails closed unless the person
+                # has said so on a trust card.
+                return {"ok": False, "reason": "direct network access needs the person's confirmation (a trust card), not just a flag", "needs": "confirm_direct"}
+            options = {k: params.get(k) for k in ("workers", "maxUsd", "maxParallel", "research", "harden", "conformance", "tier2", "dispatch") if params.get(k) is not None}
+            options["allowDirect"] = direct
+            run_id = control.new_run_id()
+            state_store.append_event("orchestrator_control", {"action": "start", "run_id": run_id, "goal": secret_patterns.scrub(goal)[0][:300], "options": options}, session_id=session_id, source="acp_server")
+            result = await run_blocking(lambda: control.spawn_run(goal, target, session_id=session_id, run_id=run_id, options=options))
+            if result.get("ok"):
+                self._watch_run(session_id, run_id, 0)
+            return result
+        raise acp.RequestError.method_not_found(f"_cordata/orchestrator/{action}")
+
+    async def _settings_control(self, name: str, params: dict, session_id: str | None, state: "_Session | None", cwd: str) -> dict:
+        """The settings and trust a front door shows and edits (docs/app.md §6.4) — through `settings_store`, so the
+        validation, the trust gate and the user-only groups are the backend's one implementation, not a third copy.
+        Every write is audited. `trust/grant` exists only here (an ext method): no tool can call it, so the model cannot
+        trust a folder for itself, and it takes the person's `confirmed: true` (the trust card's answer)."""
+        cwd = os.path.realpath(cwd)
+        if name == "settings/get":
+            loaded = await run_blocking(settings_store.current, cwd)
+            return {
+                "cwd": cwd,
+                "trusted": loaded.trusted,
+                "values": loaded.values,
+                "sources": loaded.sources,
+                "rules": [{"kind": r.kind, "text": r.text, "scope": r.scope, "active": r.active} for r in loaded.rules],
+                "warnings": loaded.warnings,
+                "paths": loaded.paths,
+            }
+        if name == "settings/schema":
+            return {
+                "keys": [
+                    {"key": key, "kind": spec[0], "args": list(spec[1:]) if len(spec) > 1 else [], "trustGated": key in settings_store.TRUST_GATED_KEYS, "userOnly": settings_store.user_only(key)}
+                    for key, spec in settings_store.SCHEMA.items()
+                ],
+                "ruleKinds": list(settings_store.RULE_KINDS),
+            }
+        if name == "settings/set":
+            scope, key, value = str(params.get("scope") or "user"), str(params.get("key") or ""), params.get("value")
+            if scope not in settings_store.SCOPES:
+                return {"ok": False, "reason": f"scope must be one of {', '.join(settings_store.SCOPES)}"}
+            try:
+                path = await run_blocking(settings_store.set_value, scope, key, value, cwd)
+            except ValueError as error:
+                return {"ok": False, "reason": str(error)}
+            state_store.append_event("settings", {"action": "set", "scope": scope, "key": key, "value": value if not isinstance(value, str) else value[:200]}, session_id=session_id, source="acp_server")
+            loaded = settings_store.current(cwd)
+            applied = loaded.sources.get(key) == scope or (value is None and key not in loaded.sources)
+            return {"ok": True, "path": str(path), "applied": applied, "warnings": [w for w in loaded.warnings if key in w]}
+        if name == "settings/rules/add":
+            kind, rule, scope = str(params.get("kind") or ""), str(params.get("rule") or ""), str(params.get("scope") or "user")
+            try:
+                path = await run_blocking(settings_store.add_rule, kind, rule, scope, cwd)
+            except ValueError as error:
+                return {"ok": False, "reason": str(error)}
+            state_store.append_event("settings", {"action": "rule_add", "kind": kind, "rule": rule[:200], "scope": scope}, session_id=session_id, source="acp_server")
+            return {"ok": True, "path": str(path)}
+        if name == "settings/rules/remove":
+            rule = str(params.get("rule") or "")
+            changed = await run_blocking(settings_store.remove_rule, rule, cwd)
+            state_store.append_event("settings", {"action": "rule_remove", "rule": rule[:200]}, session_id=session_id, source="acp_server")
+            return {"ok": bool(changed), "paths": [str(p) for p in changed]}
+        if name == "trust/status":
+            return await run_blocking(self._trust_status, state, cwd)
+        if name == "trust/grant":
+            if not params.get("confirmed"):
+                return {"ok": False, "reason": "trusting a folder is the person's decision — answer the trust card", "needs": "confirm_trust"}
+            state_store.append_event("trust", {"action": "grant", "cwd": cwd}, session_id=session_id, source="acp_server")
+            path = await run_blocking(settings_store.trust_project, cwd)
+            if state is not None and os.path.realpath(state.cwd) == cwd:
+                # What trust unlocks (project MCP servers, allow rules, gated keys) applies from now on.
+                await run_blocking(state.plugins.discover)
+            return {"ok": True, "path": str(path), "trusted": settings_store.current(cwd).trusted}
+        raise acp.RequestError.method_not_found(f"_cordata/{name}")
+
+    @staticmethod
+    def _trust_status(state: "_Session | None", cwd: str) -> dict:
+        """What trusting this folder would turn on, so the card shows it before the person decides: the settings and
+        allow rules the project sets that are ignored now, the project MCP servers held back (their exact commands), and
+        the instruction files the agent reads."""
+        loaded = settings_store.current(cwd)
+        ignored = [w for w in loaded.warnings if "not trusted" in w]
+        host = state.plugins if state is not None and os.path.realpath(state.cwd) == cwd else _plugin_host(cwd, set())
+        blocked = []
+        for row in host.status():
+            spec = getattr(host, "_specs", {}).get(row["name"])
+            # Held back: a project's server in an untrusted folder, whether or not anything tried to start it yet.
+            if spec is None or not (row.get("status") == "blocked" or (spec.needs_trust and not loaded.trusted and row.get("status") != "running")):
+                continue
+            config = spec.config or {}
+            blocked.append({
+                "name": row["name"],
+                "source": row.get("source"),
+                "file": spec.path,
+                "command": config.get("command") or config.get("url"),
+                "args": [str(a) for a in config.get("args") or []],
+                "envKeys": sorted((config.get("env") or {}).keys()),
+                "reason": row.get("error") or "folder not trusted",
+            })
+        project_values = {key: value for key, value in _project_settings(cwd).items()}
+        return {
+            "cwd": cwd,
+            "trusted": loaded.trusted,
+            "ignored": ignored,
+            "blockedPlugins": blocked,
+            "instructions": [{"scope": scope, "path": str(path)} for scope, path in settings_store.instruction_files(cwd)],
+            "gatedKeys": sorted(k for k in project_values if k in settings_store.TRUST_GATED_KEYS or k in ("permissions.defaultMode", "selfHeal.autoApply")),
+            "projectSettings": {k: v for k, v in project_values.items() if k in ("permissions.defaultMode", "selfHeal.autoApply", "preflight.tests")},
+            "allowRules": [r.text for r in loaded.rules if r.kind == "allow" and r.scope in ("project", "local")],
+        }
+
+    def _auto_readiness(self, state: "_Session | None", cwd: str) -> dict:
+        """Before `auto`: what will still protect the project (docs/app.md §6.4) — so a confirmation card states it."""
+        cwd = os.path.realpath(cwd)
+        loaded = settings_store.current(cwd)
+        unviable = checkpoints._unviable(cwd)
+        enabled = bool(loaded.get("checkpoints.enabled", True))
+        vault = state.handler.vault if state is not None else None
+        return {
+            "cwd": cwd,
+            "checkpoints": {"enabled": enabled, "viable": unviable is None, "reason": unviable},
+            "guard": {"callGuard": loaded.get("laya.callGuard", "on") != "off", "riskDestroy": loaded.get("laya.riskDestroy")},
+            "vault": {"enabled": bool(vault and getattr(vault, "enabled", False)), "blocksEgress": bool(vault and getattr(vault, "blocks_egress", False)), "reason": getattr(vault, "reason", None) if vault else None},
+            "trusted": loaded.trusted,
+            "denyRules": [r.text for r in loaded.rules if r.kind == "deny" and r.active],
+            "stillAsks": ["calls Laya rates destructive", "anything a deny rule names", "pulling a model"],
+            "ready": enabled and unviable is None,
+        }
+
+    def _watch_run(self, session_id: str | None, run_id: str, offset: int) -> None:
+        """Forward a run's events to this session's client while it runs (a thread tailing its events file). Ends when
+        the run reaches a terminal or paused state and its file has been read to the end."""
+        from orchestrator import control
+
+        if not session_id or not run_id:
+            return
+        key = (session_id, run_id)
+        if key in self._watching:
+            return
+        self._watching.add(key)
+
+        def run() -> None:
+            position, idle = offset, 0
+            try:
+                while True:
+                    batch = control.read_events(run_id, position, 200)
+                    position = batch["next"]
+                    for event in batch["events"]:
+                        forwarded = orchestrate_tool._forwardable(event) if isinstance(event, dict) else None
+                        if forwarded is not None:
+                            self._send_ext("cordata/orchestrator", {"sessionId": session_id, **forwarded})
+                    if batch["events"]:
+                        idle = 0
+                        continue
+                    record_state = (control.show_run(run_id) or {}).get("live")
+                    if record_state in ("done", "failed", "budget_exhausted", "cancelled", "paused", "interrupted"):
+                        idle += 1
+                        if idle >= 3:
+                            return
+                    time.sleep(0.5)
+            except Exception:
+                logging.getLogger(__name__).debug("watching run %s failed", run_id, exc_info=True)
+            finally:
+                self._watching.discard(key)
+
+        threading.Thread(target=run, name=f"watch-{run_id}", daemon=True).start()
 
     async def _skills_control(self, action: str, params: dict, cwd: str) -> dict:
         """``skills/list`` · ``skills/show`` · ``skills/promote`` · ``skills/reject`` · ``skills/retire``: the learned skills
@@ -990,6 +1453,16 @@ class CordataAcpAgent:
             return {"ok": False, "reason": "no such session"}
         if action == "list":
             return session_store.listing(state.agent, SESSIONS_DIR, int(params.get("limit") or 15))
+        if action == "fork":
+            # A new conversation from this one as it stood before turn `turn` (or at `checkpoint`, or now). Files are not
+            # touched, and the source keeps running: only its snapshots are read.
+            turn = params.get("turn")
+            result = session_history.fork(session_id, SESSIONS_DIR, checkpoint=str(params.get("checkpoint") or "") or None, turn=int(turn) if turn else None)
+            if result.get("ok"):
+                title = state_store.get_session(session_id) or {}
+                state_store.touch_session(result["sessionId"], cwd=state.cwd, title=f"fork of {title.get('title') or session_id[:8]}", origin="fork")
+                state_store.append_event("conversation_fork", {"from": session_id, "to": result["sessionId"], "turn": turn, "checkpoint": params.get("checkpoint")}, session_id=session_id, source="session_history")
+            return result
         if action != "rewind":
             raise acp.RequestError.method_not_found(f"_cordata/conversation/{action}")
         if session_id in self._streaming or outcomes.active(session_id) is not None:
@@ -1003,6 +1476,7 @@ class CordataAcpAgent:
             audit = {"turn": result.get("turn"), "now": result.get("now"), "forgot": len(result.get("forgot") or []), "restored": result.get("to"), "undo_with": result.get("undo_with")}
             state_store.append_event("conversation_rewind", audit, session_id=session_id, source="session_store")
             self._send_ext("cordata/conversation", {"sessionId": session_id, "event": "rewound", "now": result.get("now"), "forgot": result.get("forgot") or []})
+            self._usage_update(session_id, state)
         return result
 
     async def _lab_control(self, action: str, params: dict, session_id: str | None) -> dict:
@@ -1061,6 +1535,7 @@ class CordataAcpAgent:
         if result.get("ok"):
             state_store.append_event("conversation_compact", {"before": result["before"], "after": result["after"], "focus": bool(focus)}, session_id=session_id, source="session_extras")
             self._send_ext("cordata/context", {"sessionId": session_id, **result["after"]})
+            self._usage_update(session_id, state)
         return result
 
     async def _aside(self, state: "_Session | None", question: str) -> dict:
@@ -1092,6 +1567,25 @@ class CordataAcpAgent:
         goal.state, goal.reason = "stopped", reason
         self._announce_goal(session_id, goal, "stopped")
         return True
+
+    async def _attached_images(self, session_id: str, state: "_Session", prompt: list) -> dict | None:
+        """Images attached to the prompt (a pasted screenshot, a dragged file in the app) as a vision turn — the same
+        gate and the same detour as the menu bar's screenshot: the model named by ``capture.visionModel``, local unless
+        ``capture.screenshotCloud``, the image stripped from the history when the turn ends. ``None`` (and the person
+        told why) when there are none or they cannot be sent."""
+        images, dropped = _prompt_images(prompt)
+        for reason in dropped:
+            await self._say(session_id, f"[Not attached: {reason}.]\n")
+        if not images:
+            return None
+        preferences = settings_store.current(state.cwd)
+        model = str(preferences.get(os_context.VISION_KEY) or "").strip()
+        cloud_ok = bool(preferences.get("capture.screenshotCloud", False))
+        allowed, why = os_context.screenshot_plan(True, cloud_ok, model)
+        if not allowed:
+            await self._say(session_id, f"[{(why or 'the image was not attached').replace('screenshot', 'image')}.]\n")
+            return None
+        return {"bytes": images[0]["bytes"], "format": images[0]["format"], "images": images, "model": model, "cloud_ok": cloud_ok, "app": "the attached image"}
 
     async def _say(self, session_id: str, text: str) -> None:
         if self._conn is not None:
@@ -1139,6 +1633,11 @@ class CordataAcpAgent:
                 lambda: goal_module.evaluate(goal, cwd=state.cwd, messages=list(state.agent.messages), ask=lambda prompt: session_extras.one_shot("You are a strict judge. Output only the requested JSON.", prompt))
             )
             goal.reason = verdict.reason
+            if session_id in self._cancelled:
+                # Stop was pressed while the judge was deciding: nothing was streaming to cancel, so it is honoured here.
+                goal.state, goal.reason = "stopped", "cancelled by the person"
+                self._announce_goal(session_id, goal, "stopped")
+                return acp.PromptResponse(stopReason="cancelled")
             if verdict.met:
                 goal.state = "met"
                 self._announce_goal(session_id, goal, "met")
@@ -1881,19 +2380,35 @@ class CordataAcpAgent:
         threading.Thread(target=run, name="learn-from-turn", daemon=True).start()
 
     async def prompt(self, session_id: str, prompt: list, **kwargs) -> acp.PromptResponse:
-        """The client's prompt: one turn — or, under ``/goal``, as many as it takes (``goal.py``)."""
-        text = _extract_prompt_text(prompt)
-        if goal_module.is_command(text):
-            kickoff = await self._goal_command(session_id, text)
-            if kickoff is None:
-                return acp.PromptResponse(stopReason="end_turn")
-            prompt = kickoff
+        """The client's prompt: one turn — or, under ``/goal``, as many as it takes (``goal.py``).
+
+        One at a time per session. A second prompt while one is running is refused here, before it touches anything:
+        the running turn's recorder, checkpoint, cancel flag and stream handle all belong to it."""
+        if session_id in self._busy:
+            raise acp.RequestError(
+                -32000,
+                "A turn is already running in this session. Stop it first, or send this after it finishes.",
+                {"error": "busy", "sessionId": session_id},
+            )
+        self._busy.add(session_id)
         try:
-            response = await self._turn(session_id, prompt, **kwargs)
-        except asyncio.CancelledError:
-            self._stop_goal(session_id, "the turn was cancelled")
-            raise
-        return await self._pursue_goal(session_id, response, **kwargs)
+            # A cancel that arrived while nothing ran is spent here, once, rather than at the start of every turn: a goal's
+            # follow-up turn must not wipe out a Stop pressed while its judge was deciding.
+            self._cancelled.discard(session_id)
+            text = _extract_prompt_text(prompt)
+            if goal_module.is_command(text):
+                kickoff = await self._goal_command(session_id, text)
+                if kickoff is None:
+                    return acp.PromptResponse(stopReason="end_turn")
+                prompt = kickoff
+            try:
+                response = await self._turn(session_id, prompt, **kwargs)
+            except asyncio.CancelledError:
+                self._stop_goal(session_id, "the turn was cancelled")
+                raise
+            return await self._pursue_goal(session_id, response, **kwargs)
+        finally:
+            self._busy.discard(session_id)
 
     async def _turn(self, session_id: str, prompt: list, **kwargs) -> acp.PromptResponse:
         """One turn, recorded: the person's prompt to the stop reason becomes one outcome record
@@ -1918,6 +2433,12 @@ class CordataAcpAgent:
         try:
             response = await self._prompt(session_id, prompt, **kwargs)
             stop = str(getattr(response, "stop_reason", None) or "end_turn")
+            try:
+                after = self._tokens_used(state)
+                spent_in, spent_out = max(0, after[0] - tokens_before[0]), max(0, after[1] - tokens_before[1])
+                response.usage = acp.schema.Usage(input_tokens=spent_in, output_tokens=spent_out, total_tokens=spent_in + spent_out)
+            except Exception:
+                logging.getLogger(__name__).debug("turn usage not attached", exc_info=True)
             return response
         except asyncio.CancelledError:
             stop = "cancelled"
@@ -1932,6 +2453,8 @@ class CordataAcpAgent:
                         # The project as the turn left it: the other end of "what did this turn change?",
                         # and the baseline against which a later edit by the person is recognised.
                         recorder.checkpoint_end(checkpoints.take(state.cwd, kind="end", session_id=session_id, turn=recorder.id).id)
+                        if recorder.first_checkpoint:
+                            self._announce_diff(session_id, state.cwd, recorder.id, recorder.first_checkpoint)
                     after = self._tokens_used(state)
                     recorder.usage(max(0, after[0] - tokens_before[0]), max(0, after[1] - tokens_before[1]))
                     finished = outcomes.finish(session_id, stop, heal_episodes=list(state.heal.episodes.values()))
@@ -1939,6 +2462,32 @@ class CordataAcpAgent:
                         self._learn_from(finished, state)
                 except Exception:
                     logging.getLogger(__name__).debug("outcomes: could not finish a turn", exc_info=True)
+
+    #: Characters of one turn's diff sent as ``_cordata/diff``; the rest is in the checkpoint store (``checkpoints/*``).
+    DIFF_EVENT_CHARS = 400_000
+
+    def _announce_diff(self, session_id: str, cwd: str, turn: str, before: str) -> None:
+        """What the turn changed, as ``_cordata/diff``: the daemon keeps the latest few (``Supervisor._tap_diff``) and serves
+        them to ``GetDiff`` and the Lab's diff review, which until now only a test fixture ever fed. Computed off the event
+        loop; masked here like every other diff body that leaves this process; never raises."""
+
+        def run() -> None:
+            try:
+                patch, stat = checkpoints.diff_since(cwd, before, max_chars=self.DIFF_EVENT_CHARS)
+                if not patch.strip():
+                    return
+                truncated = patch.rstrip().endswith("(diff truncated)")
+                patch = secret_guard.redact(secret_patterns.scrub(patch)[0])
+                files = list(dict.fromkeys(line[6:] for line in patch.splitlines() if line.startswith("+++ b/")))
+                files += [line[6:] for line in patch.splitlines() if line.startswith("--- a/") and line[6:] not in files]
+                self._send_ext(
+                    "cordata/diff",
+                    {"sessionId": session_id, "id": f"{session_id}/{turn}", "source": "turn", "turn": turn, "files": files, "unified": patch, "stat": stat, "truncated": truncated, "lines": patch.count("\n")},
+                )
+            except Exception:
+                logging.getLogger(__name__).debug("turn diff announcement failed", exc_info=True)
+
+        threading.Thread(target=run, name="turn-diff", daemon=True).start()
 
     def _announce_turn(self, session_id: str, state: "_Session", started: float, tokens_before: tuple[int, int], stop: str) -> None:
         """What the turn cost, as ``_cordata/turn``: a front door that cannot see tokens (the Discord
@@ -1958,6 +2507,7 @@ class CordataAcpAgent:
                 },
             )
             self._send_ext("cordata/context", {"sessionId": session_id, **session_extras.context_snapshot(state.agent)})
+            self._usage_update(session_id, state)
         except Exception:
             logging.getLogger(__name__).debug("turn announcement failed", exc_info=True)
 
@@ -1981,11 +2531,10 @@ class CordataAcpAgent:
                 session_id=session_id,
                 update=acp.schema.SessionInfoUpdate(title=title, session_update="session_info_update"),
             )
-            _touch_index(session_id, state.cwd, title)
+            _touch_index(session_id, state.cwd, title, turn=True)
         else:
-            _touch_index(session_id, state.cwd)
+            _touch_index(session_id, state.cwd, turn=True)
 
-        self._cancelled.discard(session_id)
         if text.strip() and not _is_resume(text):
             lab = lab_module.get()
             if lab.session_id == session_id:
@@ -2017,13 +2566,15 @@ class CordataAcpAgent:
             # A screenshot from the menu bar: this turn runs on the vision model with the image beside
             # the person's words, and skips the router — a specialist or the team would never see it.
             vision = os_context.vision_turn(os_context.pending(session_id))
+            if vision is None:
+                vision = await self._attached_images(session_id, state, prompt)
             if vision is not None:
                 restore, why = _model_for_vision(agent, vision)
                 if restore is None:
                     os_context.not_sent(session_id, why or "the screenshot was not sent")
                     vision = None
                 else:
-                    agent_input = [{"text": text}, os_context.image_block(vision)]
+                    agent_input = [{"text": text}, *[os_context.image_block({**vision, **image}) for image in vision.get("images") or [vision]]]
             decision = None if vision is not None else await self._decide(state, text)
             self._adapt_mode(session_id, state, text, decision)
             if decision is not None:

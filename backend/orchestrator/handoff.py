@@ -25,7 +25,7 @@ import state_store
 
 logger = logging.getLogger(__name__)
 
-REASONS = ("quota_soft_limit_reached", "quota_hard_limit_reached", "provider_rate_limit", "worker_failed", "worker_unavailable")
+REASONS = ("quota_soft_limit_reached", "quota_hard_limit_reached", "provider_rate_limit", "worker_failed", "worker_unavailable", "user_pause")
 MAX_PATCH_CHARS = 30_000
 MAX_LIST = 40
 MAX_ITEM_CHARS = 600

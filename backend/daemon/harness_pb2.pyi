@@ -337,7 +337,7 @@ class MemoryHit(_message.Message):
     def __init__(self, pod: _Optional[str] = ..., source: _Optional[str] = ..., query: _Optional[str] = ..., count: _Optional[int] = ..., hits: _Optional[_Iterable[_Union[MemoryHitEntry, _Mapping]]] = ..., ts_ms: _Optional[int] = ...) -> None: ...
 
 class InterventionRequest(_message.Message):
-    __slots__ = ("intervention_id", "session_id", "pod", "tool", "kind", "command", "diff", "input_json", "risk_score", "risk_confidence", "risk_band", "armed", "reason", "requested_ms", "redactions")
+    __slots__ = ("intervention_id", "session_id", "pod", "tool", "kind", "command", "diff", "input_json", "risk_score", "risk_confidence", "risk_band", "armed", "reason", "requested_ms", "redactions", "options", "goal", "said", "project", "tool_call_id", "conversation")
     INTERVENTION_ID_FIELD_NUMBER: _ClassVar[int]
     SESSION_ID_FIELD_NUMBER: _ClassVar[int]
     POD_FIELD_NUMBER: _ClassVar[int]
@@ -353,6 +353,12 @@ class InterventionRequest(_message.Message):
     REASON_FIELD_NUMBER: _ClassVar[int]
     REQUESTED_MS_FIELD_NUMBER: _ClassVar[int]
     REDACTIONS_FIELD_NUMBER: _ClassVar[int]
+    OPTIONS_FIELD_NUMBER: _ClassVar[int]
+    GOAL_FIELD_NUMBER: _ClassVar[int]
+    SAID_FIELD_NUMBER: _ClassVar[int]
+    PROJECT_FIELD_NUMBER: _ClassVar[int]
+    TOOL_CALL_ID_FIELD_NUMBER: _ClassVar[int]
+    CONVERSATION_FIELD_NUMBER: _ClassVar[int]
     intervention_id: str
     session_id: str
     pod: str
@@ -368,7 +374,23 @@ class InterventionRequest(_message.Message):
     reason: str
     requested_ms: int
     redactions: int
-    def __init__(self, intervention_id: _Optional[str] = ..., session_id: _Optional[str] = ..., pod: _Optional[str] = ..., tool: _Optional[str] = ..., kind: _Optional[_Union[PayloadKind, str]] = ..., command: _Optional[str] = ..., diff: _Optional[str] = ..., input_json: _Optional[str] = ..., risk_score: _Optional[float] = ..., risk_confidence: _Optional[float] = ..., risk_band: _Optional[str] = ..., armed: _Optional[bool] = ..., reason: _Optional[str] = ..., requested_ms: _Optional[int] = ..., redactions: _Optional[int] = ...) -> None: ...
+    options: _containers.RepeatedCompositeFieldContainer[ApprovalOption]
+    goal: str
+    said: str
+    project: str
+    tool_call_id: str
+    conversation: str
+    def __init__(self, intervention_id: _Optional[str] = ..., session_id: _Optional[str] = ..., pod: _Optional[str] = ..., tool: _Optional[str] = ..., kind: _Optional[_Union[PayloadKind, str]] = ..., command: _Optional[str] = ..., diff: _Optional[str] = ..., input_json: _Optional[str] = ..., risk_score: _Optional[float] = ..., risk_confidence: _Optional[float] = ..., risk_band: _Optional[str] = ..., armed: _Optional[bool] = ..., reason: _Optional[str] = ..., requested_ms: _Optional[int] = ..., redactions: _Optional[int] = ..., options: _Optional[_Iterable[_Union[ApprovalOption, _Mapping]]] = ..., goal: _Optional[str] = ..., said: _Optional[str] = ..., project: _Optional[str] = ..., tool_call_id: _Optional[str] = ..., conversation: _Optional[str] = ...) -> None: ...
+
+class ApprovalOption(_message.Message):
+    __slots__ = ("option_id", "name", "kind")
+    OPTION_ID_FIELD_NUMBER: _ClassVar[int]
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    KIND_FIELD_NUMBER: _ClassVar[int]
+    option_id: str
+    name: str
+    kind: str
+    def __init__(self, option_id: _Optional[str] = ..., name: _Optional[str] = ..., kind: _Optional[str] = ...) -> None: ...
 
 class PendingIntervention(_message.Message):
     __slots__ = ("request",)
@@ -409,16 +431,18 @@ class InterventionHello(_message.Message):
     def __init__(self, client: _Optional[str] = ...) -> None: ...
 
 class InterventionDecision(_message.Message):
-    __slots__ = ("intervention_id", "approve", "isolate", "note")
+    __slots__ = ("intervention_id", "approve", "isolate", "note", "option_id")
     INTERVENTION_ID_FIELD_NUMBER: _ClassVar[int]
     APPROVE_FIELD_NUMBER: _ClassVar[int]
     ISOLATE_FIELD_NUMBER: _ClassVar[int]
     NOTE_FIELD_NUMBER: _ClassVar[int]
+    OPTION_ID_FIELD_NUMBER: _ClassVar[int]
     intervention_id: str
     approve: bool
     isolate: bool
     note: str
-    def __init__(self, intervention_id: _Optional[str] = ..., approve: _Optional[bool] = ..., isolate: _Optional[bool] = ..., note: _Optional[str] = ...) -> None: ...
+    option_id: str
+    def __init__(self, intervention_id: _Optional[str] = ..., approve: _Optional[bool] = ..., isolate: _Optional[bool] = ..., note: _Optional[str] = ..., option_id: _Optional[str] = ...) -> None: ...
 
 class InterventionReply(_message.Message):
     __slots__ = ("hello", "decision")

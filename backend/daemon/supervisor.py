@@ -148,6 +148,8 @@ class Supervisor:
         self._sessions: dict[str, Session] = {}
         self._entrypoint = entrypoint or default_entrypoint
         self._subscribers: dict[str, asyncio.Queue[str]] = {}
+        #: session → read-only watchers (`watch_session`): a second front door seeing what the driving one sees.
+        self._observers: dict[str, set[asyncio.Queue[str]]] = {}
         self._lab_watchers: set[asyncio.Queue[dict[str, Any]]] = set()
         self._listeners: dict[str, list[Callable[[dict[str, Any]], None]]] = {}
         self._call_ids = itertools.count(1)
@@ -199,6 +201,34 @@ class Supervisor:
 
     def unwatch_lab(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
         self._lab_watchers.discard(queue)
+
+    OBSERVER_QUEUE_LIMIT = 512
+
+    def watch_session(self, session_id: str) -> asyncio.Queue[str]:
+        """A read-only feed of everything the session's child says — transcript, tool calls, approvals asked, mode and
+        plan changes — for any number of watchers. It never claims the session (the driver keeps it), never sees the
+        daemon's own calls, and a slow watcher loses its oldest lines, not the driver's."""
+        queue: asyncio.Queue[str] = asyncio.Queue(maxsize=self.OBSERVER_QUEUE_LIMIT)
+        self._observers.setdefault(session_id, set()).add(queue)
+        return queue
+
+    def unwatch_session(self, session_id: str, queue: asyncio.Queue[str]) -> None:
+        watchers = self._observers.get(session_id)
+        if watchers is not None:
+            watchers.discard(queue)
+            if not watchers:
+                self._observers.pop(session_id, None)
+
+    def _fan_out(self, session_id: str, line: str) -> None:
+        for queue in list(self._observers.get(session_id, ())):
+            try:
+                queue.put_nowait(line)
+            except asyncio.QueueFull:
+                try:
+                    queue.get_nowait()
+                    queue.put_nowait(line)
+                except (asyncio.QueueEmpty, asyncio.QueueFull):
+                    pass
 
     def lab_states(self) -> dict[str, dict[str, Any]]:
         return {sid: session.lab for sid, session in self._sessions.items() if session.lab is not None}
@@ -417,7 +447,7 @@ class Supervisor:
         # prompt Discord had settled was forwarded to a child that had already moved on.)
         return session.answered.get(key) in (None, "tui")
 
-    async def answer_permission(self, session_id: str, key: str, approve: bool, *, decided_by: str = "gui", always: bool = False, note: str = "") -> PendingPermission:
+    async def answer_permission(self, session_id: str, key: str, approve: bool, *, decided_by: str = "gui", always: bool = False, note: str = "", option_id: str | None = None) -> PendingPermission:
         """Relay a human's choice into the paused ACP request, as the child's own client would.
 
         Raises ``LookupError`` when there is nothing pending under that id (already answered by
@@ -441,10 +471,17 @@ class Supervisor:
         if session is None or key not in session.pending:
             raise LookupError(f"no pending permission {key!r} in session {session_id!r}")
         pending = session.pending[key]
-        wanted = ("allow_always" if always else "allow_once") if approve else "reject_once"
-        option = next((o for o in pending.options if o.get("kind") == wanted), None)
-        if option is None or not option.get("optionId"):
-            raise ValueError(f"the session offered no {wanted} option")
+        if option_id:
+            # A named option (a plan card's "approve → edit", a question's answer): only one the child offered.
+            option = next((o for o in pending.options if o.get("optionId") == option_id), None)
+            if option is None:
+                raise ValueError(f"the session offered no option {option_id!r}")
+            approve = str(option.get("kind", "")).startswith("allow") or option_id.startswith("approve")
+        else:
+            wanted = ("allow_always" if always else "allow_once") if approve else "reject_once"
+            option = next((o for o in pending.options if o.get("kind") == wanted), None)
+            if option is None or not option.get("optionId"):
+                raise ValueError(f"the session offered no {wanted} option")
         response = {
             "jsonrpc": "2.0",
             "id": pending.request_id,
@@ -623,6 +660,8 @@ class Supervisor:
         owner = self._sessions.get(session_id)
         if owner is not None and owner.calls and self.DAEMON_ID_PREFIX in line and self._tap_call_response(owner, line):
             return
+        if session_id in self._observers:
+            self._fan_out(session_id, line)
         queue = self._subscribers.get(session_id)
         if queue is None:
             session = self._sessions.get(session_id)

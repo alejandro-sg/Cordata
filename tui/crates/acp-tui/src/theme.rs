@@ -65,23 +65,26 @@ fn detect(env: impl Fn(&str) -> Option<String>) -> Level {
     Level::Ansi
 }
 
-/// The palette: what each semantic colour is, as RGB. `None` for colours the theme leaves alone.
+/// The palette: what each semantic colour is, as RGB — read from `cordata-theme`, the one token source the native app
+/// uses too. `None` for colours the theme leaves alone.
 fn palette(color: Color) -> Option<(u8, u8, u8)> {
-    Some(match color {
+    use cordata_theme::{NIGHT, Role};
+    let role = match color {
         // accent — the one colour that means "Cordata": sodium-vapour amber
-        Color::Cyan | Color::LightCyan => (255, 158, 61),
+        Color::Cyan | Color::LightCyan => Role::Accent,
         // the second voice: agents, the orchestrator, untrusted content — electric teal
-        Color::Magenta | Color::LightMagenta => (72, 214, 224),
-        Color::Yellow | Color::LightYellow => (255, 214, 130),
-        Color::Green | Color::LightGreen => (118, 222, 186),
-        Color::Red | Color::LightRed => (255, 96, 74),
-        Color::Blue | Color::LightBlue => (116, 160, 214),
+        Color::Magenta | Color::LightMagenta => Role::Agent,
+        Color::Yellow | Color::LightYellow => Role::Attention,
+        Color::Green | Color::LightGreen => Role::Ok,
+        Color::Red | Color::LightRed => Role::Danger,
+        Color::Blue | Color::LightBlue => Role::Info,
         // secondary text, and the dimmest text that is still readable
-        Color::Gray => (170, 180, 190),
-        Color::DarkGray => (96, 108, 122),
-        Color::White => (238, 241, 245),
+        Color::Gray => Role::TextSecondary,
+        Color::DarkGray => Role::TextDim,
+        Color::White => Role::Text,
         _ => return None,
-    })
+    };
+    Some(NIGHT.get(role).tuple())
 }
 
 /// The nearest xterm-256 colour for an RGB value: the 6×6×6 cube or the grey ramp, whichever is closer.

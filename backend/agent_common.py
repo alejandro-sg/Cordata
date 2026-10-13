@@ -175,10 +175,12 @@ os.environ.setdefault("STRANDS_NON_INTERACTIVE", "true")
 
 BACKEND_DIR = Path(__file__).parent.resolve()
 WORKSPACE_DIR = BACKEND_DIR / "workspace"
-SESSIONS_DIR = BACKEND_DIR / "sessions"
+#: Where conversations are persisted. `CORDATA_SESSIONS_DIR` moves them out of the checkout: a packaged app runs
+#: this backend from a read-only bundle, and a scratch `CORDATA_HOME` for a test should not share the real ones.
+SESSIONS_DIR = Path(os.environ["CORDATA_SESSIONS_DIR"]).expanduser().resolve() if os.environ.get("CORDATA_SESSIONS_DIR") else BACKEND_DIR / "sessions"
 SKILLS_GENERATED_DIR = BACKEND_DIR / "skills_generated"
 WORKSPACE_DIR.mkdir(exist_ok=True)
-SESSIONS_DIR.mkdir(exist_ok=True)
+SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 # A relative sys.path entry ('' or '.', from `python -m` or PYTHONPATH=.) means "the directory we started in";
 # pin it to that directory before moving, or every bare-module import after the chdir looks in workspace/ instead.
 sys.path[:] = [os.path.abspath(entry) if not os.path.isabs(entry) else entry for entry in sys.path]

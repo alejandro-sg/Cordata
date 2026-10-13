@@ -225,14 +225,14 @@ Deliberate behaviours worth knowing:
   checked between streamed events and the server is parked on your permission
   request, so cancelling then would do nothing. Answer the request first.
   *Rejecting a tool call does not abort the turn* — the model sees the denial and continues.
-- **Mode colours are risk-ordered:** plan = green (nothing runs), build = yellow
-  (dangerous tools ask), auto = red (nothing asks).
+- **Mode colours are risk-ordered:** plan = green (nothing runs), build = amber
+  (dangerous tools ask), edit = gold (edits run, commands ask), auto = red (nothing asks).
+  The colours come from `app/crates/cordata-theme`, shared with the native app.
 - **Ctrl+M can't be the model key in most terminals** (it is byte-identical to
   Enter), hence Ctrl+O.
-- **`--resume`** shows text history only (the backend doesn't replay tool calls)
-  and comes back in your default mode (`build` unless `permissions.defaultMode` says otherwise); a divider
-  says so. The protocol has no session listing, so you need the id (printed when you quit, shown in the
-  banner, and in `backend/sessions/session_<id>/`).
+- **`--resume`** replays the conversation — prompts, replies and every tool call with its result (an edit as the
+  diff it made) — and comes back in your default mode (`build` unless `permissions.defaultMode` says otherwise); a
+  divider says so. `-c` continues the folder's newest session; `/sessions` lists them.
 - **Untrusted output**: results the backend wraps in `<<<UNTRUSTED_TOOL_OUTPUT>>>`
   (http_request, agent_memory reads, MCP tools) get a magenta double-line card
   labelled `⚠ UNTRUSTED CONTENT`. All agent text is stripped of terminal escape

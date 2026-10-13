@@ -14,7 +14,7 @@ mod palette;
 pub mod panes;
 mod review;
 
-use crossterm::event::{KeyEvent, MouseEvent};
+use cordata_view::key::{KeyEvent, MouseEvent};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -25,52 +25,18 @@ pub use palette::Palette;
 pub use panes::PanesView;
 pub use review::Review;
 
-use crate::app::{App, Effect};
+use crate::app::App;
 use crate::ui::footer::mode_color;
 use crate::ui::hud;
 use crate::ui::text::{display_width, truncate};
 
-/// Which overlay to open (what a palette entry or a key asks for).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Kind {
-    Palette,
-    Hud,
-    Review,
-    Panes,
-}
+pub use cordata_view::overlay::{Kind, Outcome};
 
 pub enum Overlay {
     Palette(Palette),
     Hud(Dashboard),
     Review(Review),
     Panes(PanesView),
-}
-
-/// What an overlay asks the app to do after an input.
-#[derive(Default)]
-pub struct Outcome {
-    pub close: bool,
-    pub effect: Option<Effect>,
-    /// Close this overlay and open another.
-    pub open: Option<Kind>,
-}
-
-impl Outcome {
-    pub fn stay() -> Self {
-        Self::default()
-    }
-
-    pub fn stay_with(effect: Option<Effect>) -> Self {
-        Self { close: false, effect, open: None }
-    }
-
-    pub fn close(effect: Option<Effect>) -> Self {
-        Self { close: true, effect, open: None }
-    }
-
-    pub fn switch(kind: Kind) -> Self {
-        Self { close: true, effect: None, open: Some(kind) }
-    }
 }
 
 impl Overlay {
@@ -211,6 +177,51 @@ pub(crate) fn contains(rect: Rect, column: u16, row: u16) -> bool {
     column >= rect.x && column < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
 }
 
+/// The terminal's overlays, for the shared state to open (`App::overlay_factory`).
+pub fn factory(kind: Kind, app: &App) -> Option<cordata_view::overlay::Overlay> {
+    Some(Box::new(Overlay::new(kind, app)))
+}
+
+/// The terminal's `App`: the shared state with this front end's overlays installed.
+pub fn new_app() -> App {
+    let mut app = App::new();
+    app.overlay_factory = factory;
+    app
+}
+
+impl cordata_view::overlay::View for Overlay {
+    fn kind(&self) -> Kind {
+        Overlay::kind(self)
+    }
+
+    fn on_key(&mut self, app: &mut App, key: KeyEvent) -> Outcome {
+        Overlay::on_key(self, app, key)
+    }
+
+    fn on_mouse(&mut self, app: &mut App, mouse: MouseEvent) -> Outcome {
+        Overlay::on_mouse(self, app, mouse)
+    }
+
+    fn review_loaded(&mut self, outcome: &crate::shell::Outcome) {
+        if let Overlay::Review(review) = self {
+            review.load(outcome);
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+/// The open overlay as the terminal's own type (every overlay the terminal opens is one).
+pub fn concrete(overlay: &mut cordata_view::overlay::Overlay) -> Option<&mut Overlay> {
+    overlay.as_any_mut().downcast_mut::<Overlay>()
+}
+
 /// `CORDATA_DUMP_DIR=/some/dir cargo test dump_screens -- --ignored` writes each screen as ANSI text, for looking at the
 /// real thing (or turning into a picture) without driving a terminal.
 #[cfg(test)]
@@ -267,13 +278,13 @@ mod dump {
 #[cfg(test)]
 pub(crate) mod testing {
     use acp_core::{AppEvent, ConfigChoice, ConfigOptionInfo, ModeInfo, SessionInfo};
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use cordata_view::key::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
     use ratatui::buffer::Buffer;
 
     use crate::app::App;
 
     pub fn app() -> App {
-        let mut app = App::new();
+        let mut app = crate::overlay::new_app();
         let mode = |id: &str, description: &str| ModeInfo { id: id.into(), name: id.into(), description: Some(description.into()) };
         app.on_event(AppEvent::Connected(SessionInfo {
             session_id: "abcdef12-3456".into(),

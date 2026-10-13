@@ -100,6 +100,23 @@ jobs:
           python _observer_smoke_test.py
           python _laya_call_guard_smoke_test.py
           python _settings_schema_parity_smoke_test.py
+          # The ten backend defects a native front door hits first (docs/app.md B0): busy guard, daemon ids, the sessions
+          # table and its lease, a cancel during a goal, a cancelled run, the turn diff, stranded approvals, the schema.
+          python _backend_hardening_smoke_test.py
+          # The session surface a native front door reads (B1): ACP plan and usage, replay with tool calls, history pages,
+          # forks, mode/config echo, attached images.
+          python _session_surface_smoke_test.py
+          # Orchestrator runs a front door can steer (B2): detached runs, pause/resume/cancel at safe points, per-pod
+          # events and usage, bounded artifact reads, the daemon's run endpoints.
+          python _orchestrator_control_smoke_test.py
+          # The daemon's surface for the app (B3): daemon.json written atomically, /projects with worktrees, /history,
+          # the read-only observer role, approval options over gRPC.
+          python _daemon_surface_smoke_test.py
+          # Settings and trust through the server (B4): app.* user-only, settings/*, trust cards, auto readiness, and
+          # auto/edit confirmations from clients that promise to ask.
+          python _settings_trust_smoke_test.py
+          # The editor surface for the app (P3): trust-gated diagnostics on unsaved text, confinement, lsp/status.
+          python _editor_surface_smoke_test.py
           # Phase 11/12 (system_audit_report.md): the audit's security and memory fixes, code navigation (search,
           # outlines, the large-file hook), preflight (edits checked before anyone is asked), rejection memory, and
           # environment awareness (MCP discovery and resources, the profiler, adaptive effort). Hermetic: scripted
@@ -128,3 +145,33 @@ jobs:
           python _os_context_smoke_test.py
           python _grpc_bridge_smoke_test.py
           python _vision_turn_smoke_test.py
+
+  # The Rust clients: the terminal (tui/) and the native app (app/), which share cordata-view and cordata-theme.
+  # macOS runners: the app is Metal/AppKit (GPUI builds with the Command Line Tools' runtime shaders).
+  rust:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            tui
+            app
+      - name: Terminal (acp-core, acp-tui, acp-stress)
+        working-directory: tui
+        run: cargo test --workspace
+      - name: Shared state, palette and app (headless)
+        working-directory: app
+        run: cargo test --workspace --features cordata-view/crossterm
+      - name: Clippy (app)
+        working-directory: app
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Supply chain (licences, bans, sources, advisories)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: app/Cargo.toml
+      - name: gpui-pre is zed@93d7456
+        run: app/scripts/verify-gpui-snapshot.sh

@@ -193,14 +193,11 @@ pub fn lines(info: &HealInfo, width: u16, expanded: bool) -> Vec<Line<'static>> 
     out
 }
 
-/// Phases that are worth a transcript block (others are progress bars).
-pub fn is_shown(phase: &str) -> bool {
-    !matches!(phase, "diagnosing" | "verifying")
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cordata_view::view::is_shown;
 
     fn plain(lines: &[Line<'_>]) -> Vec<String> {
         lines

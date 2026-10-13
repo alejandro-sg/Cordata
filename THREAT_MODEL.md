@@ -1005,6 +1005,46 @@ Both are now denied (`sub_agent_common`, `_laya_call_guard_smoke_test.py`).
   authenticated by `event.source` identity, never by `event.origin` (it
   always reads the literal string `"null"`).
 
+## The native app (Cordata.app, `app/`)
+
+A third front door beside the terminal and Discord, built on GPUI (docs/app.md). It is a *client*: it never hosts the
+agent, never holds a model key, and changes nothing the daemon or `acp_server.py` enforce.
+
+**What it may reach.** The daemon on loopback, with the token from `~/.cordata/daemon.json` (read fresh on every
+connect — the file is rewritten in place at daemon start), or a private `acp_server.py` child over stdio when run from
+a checkout. No other network: the dependency graph carries no TLS or HTTP client (`app/deny.toml` bans them), and
+`cargo deny` + `app/scripts/verify-gpui-snapshot.sh` run in CI. The token is never logged, never put in a URL other
+than the WebSocket handshake (acp-core redacts it from `Debug`), never shown, never handed to a web view.
+
+**What it draws.** Everything an agent or a tool produced is untrusted: every string passes through
+`cordata_view::shown` (terminal escapes and control characters stripped, then the credential table that
+`backend/secret_patterns.py` and `proto/fixtures/redact_cases.json` define) before layout — the third masking layer,
+after the child's and the daemon's, so "a key is never drawn" holds even if those two miss. Lines are cut at 400
+characters before layout (a 2 MB single-line diff exists). Output the backend marked untrusted is edged in teal and
+labelled on its card. Markdown is rendered natively (no HTML, no scripts, no remote images).
+
+**What it may decide.** Only what a person decides, and only tighter than the child offered:
+* an approval card shows exactly the options the child sent (ACP's `request_permission`) and answers one of them;
+  dropping the window denies (acp-core drops the decision sender → reject);
+* the mode cycle (Shift+Tab) skips `auto` — leaving plan is an answer to a plan card, and `auto` is a deliberate pick
+  (B4 adds the server-side `confirmed:true` requirement for clients that declare it);
+* a stale approval from a process that died is announced once and closed out (`load_session`), never answerable.
+
+**Process and signing.** The UI thread only draws; I/O runs on a two-thread tokio runtime. The bundle is signed with
+the hardened runtime and an *empty* entitlements file (`app/assets/Cordata.entitlements`): no JIT, no unsigned
+executable memory, no library-validation exemption, no DYLD variables, no Apple Events, no microphone (voice is a
+separate helper, later). `app/scripts/check-bundle.sh` fails the build if the signed entitlements differ from that file
+or if the binary loads anything but system libraries. Ad-hoc signing by default; a self-signed identity
+(`SIGN_IDENTITY`) only changes how long macOS privacy grants last, not what the app may do.
+
+**Deep links.** `cordata://` is registered so `cordata://session/<id>` and `cordata://run/<id>` can open a view; a link
+may only *navigate* — it never sends a prompt, answers an approval, changes a mode or runs a command (whitelisted
+verbs, P5).
+
+**Not yet (tracked in docs/app.md):** the editor's language servers (only in trusted folders, P3), the terminal pane
+(P4), screen capture and voice helpers (separate TCC-disclaimed processes, P5–P6), the settings and trust cards'
+server-side methods (B4).
+
 ## Known gaps
 
 Acknowledged, not fixed:

@@ -382,6 +382,11 @@ class Recorder:
     def checkpointed(self) -> bool:
         return bool(self._checkpoints.get("taken"))
 
+    @property
+    def first_checkpoint(self) -> str | None:
+        """The snapshot taken before this turn's first change: the "before" of the turn's diff."""
+        return self._checkpoints.get("first")
+
     def set_route(self, route: dict[str, Any] | None) -> None:
         with self._lock:
             self.route = route

@@ -151,6 +151,8 @@ class StepExecutor:
         max_parallel: int = 3,
         on_usage: Callable[[dict[str, Any]], None] | None = None,
         strongest_first: bool = False,
+        controls: Any | None = None,
+        on_worker_event: Callable[..., None] | None = None,
     ) -> None:
         self.run_id = run_id
         self.project = project
@@ -171,6 +173,14 @@ class StepExecutor:
         self.profile = dict(profile or {})
         self.max_parallel = max(1, int(max_parallel))
         self.on_usage = on_usage
+        #: The person's pause/cancel (``control.Controls``): asked before each worker call and between waves; a request to
+        #: stop *now* stops the calls in flight (``_stop_inflight``).
+        self.controls = controls
+        self.on_worker_event = on_worker_event
+        #: task id → the worker running it, while it runs.
+        self._inflight: dict[str, Worker] = {}
+        if controls is not None:
+            controls.on_now = self._stop_inflight
 
     # ------------------------------------------------------------------ choosing
 
@@ -214,6 +224,32 @@ class StepExecutor:
         except Exception:
             logger.debug("executor: event listener failed", exc_info=True)
 
+    # ------------------------------------------------------------------ the person's controls
+
+    def _stop_inflight(self) -> None:
+        """Stop every worker call in flight (a request to pause or cancel *now*): each worker kills its process group and
+        reports ``cancelled``; the step is rolled back and the request is honoured where that result lands."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        for task_id, worker in list(self._inflight.items()):
+            loop.create_task(worker.cancel(task_id))
+
+    def _requested(self) -> str | None:
+        """``pause`` or ``cancel`` when the person asked for one (a safe point is where this is asked)."""
+        if self.controls is None:
+            return None
+        req = self.controls.pending()
+        return req.kind if req is not None else None
+
+    def _user_pause(self, index: int, step: Step, ctx: _StepContext, out: ExecResult, failures: list[str]) -> str:
+        packet = self._packet(index, step, "user_pause", ctx.current, None, failures, keep=False)
+        ctx.last_packet = out.last_packet = packet
+        self._fail(ctx, out, "paused by the person")
+        self._emit("paused", step_id=step.step_id, handoff_id=packet.handoff_id, reason="user_pause")
+        return "paused"
+
     # ------------------------------------------------------------------ the loop
 
     async def run(self) -> ExecResult:
@@ -240,6 +276,12 @@ class StepExecutor:
             done = {s.step_id for s in self.plan.steps if s.status in ("completed", "skipped")}
             pending = [s for s in self.plan.steps if s.status not in ("completed", "skipped")]
             if not pending:
+                return out
+            asked = self._requested()
+            if asked is not None:
+                # Between waves: nothing runs, so the request is honoured as it stands.
+                out.status = "paused" if asked == "pause" else "cancelled"
+                out.reason = "paused by the person" if asked == "pause" else "cancelled by the person"
                 return out
             wave = form_wave(pending, done, self.max_parallel)
             if not wave:
@@ -296,6 +338,14 @@ class StepExecutor:
         failures: list[str] = []
         excluded: set[str] = set()
         while True:
+            asked = self._requested()
+            if asked == "pause":
+                step.status = "pending" if step.status == "running" else step.status
+                return self._user_pause(index, step, ctx, out, failures)
+            if asked == "cancel":
+                step.status = "pending" if step.status == "running" else step.status
+                self._fail(ctx, out, "cancelled by the person")
+                return "cancelled"
             envelope = self._envelope()
             if envelope.exhausted:
                 step.status = "failed" if step.status == "running" else step.status
@@ -336,8 +386,14 @@ class StepExecutor:
                 checkpoint_hash=step.checkpoint_hash,
                 handoff_context=ctx.packet.context() if ctx.packet else None,
             )
-            self._emit("step_dispatch", step_id=step.step_id, worker=candidate.key, complexity=step.complexity, budget_usd=budget_usd, budget_tokens=task.budget_tokens, handoff=ctx.packet.handoff_id if ctx.packet else None)
-            _, result = await collect(candidate.worker.run(task))
+            pool_id = self.ledger.pool_for(candidate.family, candidate.model).pool_id
+            self._emit("step_dispatch", step_id=step.step_id, worker=candidate.key, pool_id=pool_id, complexity=step.complexity, budget_usd=budget_usd, budget_tokens=task.budget_tokens, handoff=ctx.packet.handoff_id if ctx.packet else None)
+            listener = (lambda event, step_id=step.step_id, key=candidate.key, pool=pool_id: self.on_worker_event(event, role="execute", worker=key, step_id=step_id, pool_id=pool)) if self.on_worker_event else None
+            self._inflight[task.task_id] = candidate.worker
+            try:
+                _, result = await collect(candidate.worker.run(task), on_event=listener)
+            finally:
+                self._inflight.pop(task.task_id, None)
             self._record(step, candidate, result)
             if ctx.sibling_scope:
                 result.out_of_scope = [p for p in result.out_of_scope if not scope_mod.matches(p, ctx.sibling_scope, self.project)]
@@ -362,8 +418,12 @@ class StepExecutor:
                 return "completed"
             if result.status == "cancelled":
                 self._rollback(step, ctx.scoped)
+                if self._requested() == "pause":
+                    # Stopped mid-call for a pause: the step goes back to pending and runs again on resume.
+                    step.status = "pending"
+                    return self._user_pause(index, step, ctx, out, failures)
                 step.status = "failed"
-                self._fail(ctx, out, "cancelled")
+                self._fail(ctx, out, "cancelled by the person" if self._requested() == "cancel" else "cancelled")
                 return "cancelled"
             if result.status == "quota_limit":
                 reason = "provider_rate_limit" if result.rate_limited else "quota_hard_limit_reached"

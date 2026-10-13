@@ -92,16 +92,30 @@ async def _run(args: argparse.Namespace) -> int:
         run_config.conformance = False
     if args.no_research:
         run_config.research = False
+    if getattr(args, "research", False):
+        run_config.research = True
 
     show = _printer(args.json)
 
-    machine = OrchestratorMachine(goal=args.goal, project=cwd, dispatcher=dispatcher, ledger=ledger, config=run_config, on_event=show)
+    run_id = args.run_id or None
+    machine = OrchestratorMachine(goal=args.goal, project=cwd, dispatcher=dispatcher, ledger=ledger, config=run_config, on_event=show, run_id=run_id, session_id=args.session_id, controls=_controls(run_id))
     record = await machine.run()
     if not args.json:
         print(f"\n{record.run_id}: {record.state}" + (f" — {record.reason}" if record.reason else ""))
         for warning in record.warnings:
             print(f"  warning: {warning}")
     return 0 if record.state == "done" else 1
+
+
+def _controls(run_id: str | None):
+    """The run's control file (``control.Controls``): how a front door that did not start this process pauses or
+    cancels it. A run started without an id (a terminal ``cordata run``) gets one from the machine; its file is created
+    lazily, so Ctrl+C is still how a terminal stops it."""
+    from .control import Controls, run_dir
+
+    if not run_id:
+        return Controls(None)
+    return Controls(run_dir(run_id) / "control.ndjson")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -123,6 +137,9 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--no-conformance", action="store_true", help="skip the conformance check against the goal after audit")
     run.add_argument("--no-tier2", action="store_true", help="skip the residual LLM review in audit")
     run.add_argument("--json", action="store_true", help="stream NDJSON events instead of terminal formatting")
+    run.add_argument("--research", action="store_true", help="write a research brief before planning (orchestrator.research)")
+    run.add_argument("--run-id", help="the run's id (a front door that starts a run picks it, to watch it before it starts)")
+    run.add_argument("--session-id", help="the conversation that started the run (Mission Control lists a session's runs)")
     status = sub.add_parser("status", help="pool headroom, recent runs and handoffs")
     status.add_argument("--json", action="store_true")
     show = sub.add_parser("show", help="show one run's plan, history, and audit")
@@ -211,7 +228,7 @@ def main(argv: list[str] | None = None) -> int:
         run_config = config.run_config(prefs)
         if args.max_usd is not None:
             run_config.max_usd = args.max_usd
-        done = asyncio.run(resume_run(args.run_id, config.dispatcher(prefs, ledger=ledger, project=record.cwd), ledger=ledger, config=run_config, on_event=_printer(args.json)))
+        done = asyncio.run(resume_run(args.run_id, config.dispatcher(prefs, ledger=ledger, project=record.cwd), ledger=ledger, config=run_config, on_event=_printer(args.json), controls=_controls(args.run_id)))
         print(f"{done.run_id}: {done.state}" + (f" — {done.reason}" if done.reason else ""))
         return 0 if done.state == "done" else 1
     if args.cmd == "replay":

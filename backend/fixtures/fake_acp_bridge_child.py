@@ -8,7 +8,7 @@ its working directory, so a test can assert what actually reached the child:
   ------------------------------------------------------------------------------------
   bridge/lab      {seq,status,count,delay_ms}  emits ``count`` Lab state frames, seq..seq+count-1,
                                             ``delay_ms`` apart (default: back to back)
-  bridge/permit   {tool,input,meta,id}      emits a ``session/request_permission`` request and
+  bridge/permit   {tool,input,meta,id,options} emits a ``session/request_permission`` request and
                                             then waits (logging whatever answers it)
   bridge/diff     {id,lines}                emits a ``_cordata/diff`` event
   bridge/memory   {event}                   emits a ``_cordata/memory`` event
@@ -107,7 +107,7 @@ for line in sys.stdin:
                 "params": {
                     "sessionId": params.get("sessionId"),
                     "toolCall": {"toolCallId": "tc-1", "title": "Run " + params.get("tool", "shell"), "kind": params.get("kind", "execute"), "rawInput": params.get("input")},
-                    "options": [
+                    "options": params.get("options") or [
                         {"optionId": "allow", "name": "Allow", "kind": "allow_once"},
                         {"optionId": "allow_always", "name": "Always allow", "kind": "allow_always"},
                         {"optionId": "reject", "name": "Reject", "kind": "reject_once"},

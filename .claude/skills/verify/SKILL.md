@@ -12,8 +12,9 @@ mkdir -p $VER/home $VER/proj
 CORDATA_HOME=$VER/home backend/.venv/bin/python -m daemon.main --port 8790 --grpc-port 8791
 ```
 
-`CORDATA_HOME` isolates *everything* (token, state.db, settings) — no need for
-`CORDATA_DAEMON_CONFIG`. Ports 8790/8791 avoid clobbering a real daemon on 8765/8766.
+`CORDATA_HOME` isolates the token, state.db and settings — but **not the pid lock**: it lives at
+`<repo>/.dev/daemon.pid`, so with the real daemon running a scratch one refuses ("daemon already running").
+Add `CORDATA_DAEMON_PID=$VER/daemon.pid`. Ports 8790/8791 avoid clobbering a real daemon on 8765/8766.
 The token lands at `$VER/home/daemon.json`, mode 0600.
 
 To exercise a *live session* without a model, point the daemon at the repo's own fake child
@@ -69,3 +70,19 @@ sqlite3 $VER/home/state.db "select kind, count(*) from events group by kind;"
 
 The daemon's ledger (`state.db` → `events`) is the ground truth for whether a GUI action landed:
 kinds `gui` (approve/reject/isolate/knob/unload_memory), `ingest`, `response`.
+
+## The native app (app/)
+
+`make app-selftest` drives the real window through one scripted turn against acp-core's fake agent (stdio):
+connect, stream, approve, finish, print a `SELFTEST …` line. Against the isolated daemon's hub instead (what a
+Finder launch does — no checkout, cwd `/`):
+
+```bash
+CORDATA_ACP_ENTRYPOINT="$PWD/backend/.venv/bin/python $PWD/tui/crates/acp-core/tests/fixtures/fake_agent.py"   # for the daemon
+cd / && CORDATA_DAEMON_CONFIG=$VER/home/daemon.json app/target/Cordata.app/Contents/MacOS/cordata-app \
+  --cwd $VER/proj --conversation new --prompt "shell:echo hi" --selftest
+```
+
+Prompts the fake agent understands: `pong`, `thought`, `shell:<cmd>` (an approval), `harness` (Laya, tasks, an
+edit approval, self-heal), `long`, `slow`, `untrusted`. Screenshots: `screencapture -x out.png` works from this
+shell; an occluded window draws no frames (the self-test is driven by state, not frames).

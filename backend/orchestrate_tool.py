@@ -27,6 +27,9 @@ from typing import Any
 from strands import tool
 from strands.types.tools import ToolContext
 
+import json
+import time
+import secret_patterns
 import harness_events
 
 logger = logging.getLogger(__name__)
@@ -155,7 +158,9 @@ async def run_orchestration(goal: str, *, workers: str | None = None, max_usd: f
             line = _line(event)
             if line:
                 queue.put_nowait(line)
-        harness_events.emit("orchestrator", {k: v for k, v in event.items() if k in ("kind", "run_id", "state", "step_id", "worker", "status", "reason", "from_worker", "to_worker", "handoff_id", "plan_id", "steps", "verdict", "planner", "role", "cost_usd", "tokens_in", "tokens_out", "duration_s")})
+        forwarded = _forwardable(event)
+        if forwarded is not None:
+            harness_events.emit("orchestrator", forwarded)
 
     machine = OrchestratorMachine(goal=goal, project=rt.cwd(), dispatcher=dispatcher, ledger=ledger, config=run_config, on_event=on_event)
     task = asyncio.ensure_future(machine.run())
@@ -173,6 +178,7 @@ async def run_orchestration(goal: str, *, workers: str | None = None, max_usd: f
     try:
         record = await task
     except asyncio.CancelledError:
+        # The machine has recorded the run as ``cancelled`` on its way out (``OrchestratorMachine.run``).
         record = machine.record
         record.reason = "cancelled by the person — the run stopped where it was (its record is kept)"
     except Exception as error:  # a crash in the machine is a result, not a dead turn
@@ -181,6 +187,27 @@ async def run_orchestration(goal: str, *, workers: str | None = None, max_usd: f
         return
     text, data = summary(record)
     yield {"status": "success" if data["ok"] else "error", "content": [{"text": text}, {"json": data}]}
+
+
+#: Worker stream events worth a front door's live pod view; text and progress chunks are sampled (``_forwardable``).
+_WORKER_KEEP = ("init", "tool_use", "tool_result", "error", "quota")
+_worker_seen: dict[str, float] = {}
+
+
+def _forwardable(event: dict[str, Any]) -> dict[str, Any] | None:
+    """An orchestrator event as a front door gets it: every field (Mission Control needs the totals, pools, envelope,
+    files and errors a key whitelist used to drop), masked. A worker's own stream is sampled — its tool calls and
+    errors always, its text at most twice a second per pod — so a chatty CLI cannot flood the session."""
+    if event.get("kind") == "worker" and event.get("event_type") not in _WORKER_KEEP:
+        key = f"{event.get('run_id')}/{event.get('step_id')}/{event.get('worker')}"
+        now = time.monotonic()
+        if now - _worker_seen.get(key, 0.0) < 0.5:
+            return None
+        _worker_seen[key] = now
+    try:
+        return json.loads(secret_patterns.scrub(json.dumps(event, default=str))[0])
+    except (TypeError, ValueError):
+        return None
 
 
 @tool(context=True)

@@ -532,7 +532,7 @@ async fn command_loop(client: Client, inbox: &Inbox, commands: &mut mpsc::Receiv
     while let Some(command) = commands.recv().await {
         match command {
             Command::Decide { intervention_id, approve, isolate, note } => {
-                let reply = InterventionReply { reply: Some(intervention_reply::Reply::Decision(InterventionDecision { intervention_id, approve, isolate, note })) };
+                let reply = InterventionReply { reply: Some(intervention_reply::Reply::Decision(InterventionDecision { intervention_id, approve, isolate, note, ..Default::default() })) };
                 if decisions.try_send(reply).is_err() {
                     counters.commands_failed.fetch_add(1, Ordering::Relaxed);
                     inbox.push_event(ClientEvent::Reply(Reply::Failed { what: "decision".into(), error: "could not be delivered; the agent is still waiting".into() }));

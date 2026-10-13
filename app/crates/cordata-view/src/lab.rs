@@ -20,7 +20,7 @@
 //! | Esc, F2        | collapse the inspector, then close                           |
 
 use acp_core::{LabPod, LabState, PodStatus};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crate::key::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::{Value, json};
 
 use crate::app::Effect;

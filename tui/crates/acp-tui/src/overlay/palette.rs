@@ -5,7 +5,7 @@
 //! grouped, and what is already in force (the mode, the model) wears `◉`. A command that needs an argument is not
 //! run: it is put in the prompt box, ready to be completed.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use cordata_view::key::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
