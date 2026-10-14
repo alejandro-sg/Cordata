@@ -88,6 +88,7 @@ pub enum Confirm {
     Trust,
     SignOut,
     ResetPrefs,
+    ClearHistory,
 }
 
 actions!(
@@ -283,6 +284,22 @@ pub fn now_secs() -> f64 {
 }
 
 /// The harness's state folder.
+/// What the settings say after clearing history: what went, and what was kept and why.
+fn clear_notice(cleared: &acp_core::hub::Cleared) -> String {
+    let plural = |n: u64, one: &str, many: &str| if n == 1 { format!("1 {one}") } else { format!("{n} {many}") };
+    let mut notice = if cleared.conversations == 0 && cleared.histories == 0 {
+        "There was no history to delete.".to_owned()
+    } else {
+        format!("Deleted {} and {}.", plural(cleared.conversations, "conversation", "conversations"), plural(cleared.histories, "saved history", "saved histories"))
+    };
+    if !cleared.kept.is_empty() {
+        let names: Vec<String> = cleared.kept.iter().take(3).map(|c| if c.title.trim().is_empty() { c.handle.clone() } else { format!("“{}”", c.title.trim()) }).collect();
+        let more = cleared.kept.len().saturating_sub(names.len());
+        notice.push_str(&format!(" Kept {} in use ({}{}): stop or close {} and clear again.", cleared.kept.len(), names.join(", "), if more > 0 { format!(" and {more} more") } else { String::new() }, if cleared.kept.len() == 1 { "it" } else { "them" }));
+    }
+    notice
+}
+
 pub fn cordata_home() -> PathBuf {
     std::env::var_os("CORDATA_HOME").map(PathBuf::from).unwrap_or_else(|| std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join(".cordata"))
 }
@@ -440,11 +457,25 @@ impl Workspace {
         this
     }
 
-    /// ⌃⌥Space from anywhere: the window comes forward with the composer focused.
-    fn watch_hotkey(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// The quick-ask combination (prefs are normalised on load, so this parses).
+    pub(crate) fn quick_ask_combo(&self) -> crate::platform::Combo {
+        crate::platform::Combo::parse(&self.prefs.quick_ask_key).unwrap_or_else(|_| crate::platform::Combo::parse("ctrl-alt-space").expect("the default parses"))
+    }
+
+    /// Bind (or unbind) the hotkey as the prefs say. False when another app holds the combination.
+    pub(crate) fn apply_hotkey(&self) -> bool {
         // Never from a test run: a global hotkey belongs to the installed app.
-        if !cfg!(test) && self.prefs.quick_ask_hotkey && !crate::platform::set_hotkey(true) {
-            eprintln!("cordata: ⌃⌥Space is taken by another app; quick ask is off");
+        if cfg!(test) {
+            return true;
+        }
+        let combo = self.quick_ask_combo();
+        crate::platform::set_hotkey(self.prefs.quick_ask_hotkey.then_some(&combo))
+    }
+
+    /// The quick-ask hotkey from anywhere: the window comes forward with the composer focused.
+    fn watch_hotkey(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.apply_hotkey() {
+            eprintln!("cordata: {} is taken by another app; quick ask is off", self.quick_ask_combo().label);
         }
         cx.spawn_in(window, async move |this, cx| {
             loop {
@@ -1299,6 +1330,7 @@ impl Workspace {
                 }
                 self.api_key_masked = crate::keychain::masked();
             }
+            Confirm::ClearHistory => self.clear_history(cx),
             Confirm::ResetPrefs => {
                 let recents = std::mem::take(&mut self.prefs.recents);
                 self.prefs = Prefs { recents: if self.prefs.recents.is_empty() { Vec::new() } else { recents }, ..Prefs::default() };
@@ -1329,6 +1361,11 @@ impl Workspace {
                 )
             }
             Some(Confirm::SignOut) => ("Sign out?", "The API key is removed from the Keychain. A running backend keeps its key until it restarts.".into(), "Sign out"),
+            Some(Confirm::ClearHistory) => (
+                "Delete all conversation history?",
+                "Every conversation in every project is deleted from this Mac, with its saved history and checkpoints. This cannot be undone. Conversations that are running, waiting on you, or open in a terminal are kept. The approvals ledger is kept.".into(),
+                "Delete history",
+            ),
             Some(Confirm::ResetPrefs) => ("Reset all settings?", "Theme, layout, sending and notification choices go back to their defaults. Harness settings files are not touched.".into(), "Reset"),
             None => ("", String::new(), ""),
         };
@@ -1696,6 +1733,32 @@ impl Workspace {
             });
         })
         .detach();
+    }
+
+    /// Settings → Advanced → Clear conversation history, after the confirm dialog.
+    fn clear_history(&mut self, cx: &mut Context<Self>) {
+        let BackendTransport::Hub { daemon, .. } = &self.connection.transport else {
+            self.settings_view.set_notice("History lives with the daemon; connect through it to clear it.".into(), true);
+            return;
+        };
+        let daemon = daemon.clone();
+        self.settings_view.set_notice("Deleting conversation history…".into(), false);
+        let job = cx.global::<Runtime>().0.spawn(async move { acp_core::hub::clear_history(&daemon, None).await });
+        cx.spawn(async move |this, cx| {
+            let result = job.await;
+            let _ = this.update(cx, |this, cx| {
+                let (notice, error) = match result {
+                    Ok(Ok(cleared)) => (clear_notice(&cleared), false),
+                    Ok(Err(error)) => (format!("History was not cleared: {error}"), true),
+                    Err(_) => ("History was not cleared: the request did not finish.".into(), true),
+                };
+                this.settings_view.set_notice(notice, error);
+                this.refresh_listing(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     pub(super) fn archive(&mut self, handle: String, cx: &mut Context<Self>) {
@@ -2133,7 +2196,7 @@ pub fn bind_keys(cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use super::{age, door_glyph};
+    use super::{age, clear_notice, door_glyph};
 
     #[test]
     fn ages_read_at_a_glance() {
@@ -2142,6 +2205,18 @@ mod tests {
         assert_eq!(age(7200.0), "2h");
         assert_eq!(age(3.0 * 86_400.0), "3d");
         assert_eq!(door_glyph("discord"), "◆ ");
+    }
+
+    #[test]
+    fn clearing_history_says_what_went_and_what_stayed() {
+        let parse = |v: serde_json::Value| serde_json::from_value::<acp_core::hub::Cleared>(v).unwrap();
+        assert_eq!(clear_notice(&parse(serde_json::json!({ "conversations": 0, "histories": 0 }))), "There was no history to delete.");
+        assert_eq!(clear_notice(&parse(serde_json::json!({ "conversations": 1, "histories": 1, "kept": [] }))), "Deleted 1 conversation and 1 saved history.");
+        let kept = parse(serde_json::json!({
+            "conversations": 4, "histories": 6,
+            "kept": [{ "handle": "c1", "title": "Billing", "cwd": "/p" }, { "handle": "c2", "title": " ", "cwd": "/p" }]
+        }));
+        assert_eq!(clear_notice(&kept), "Deleted 4 conversations and 6 saved histories. Kept 2 in use (“Billing”, c2): stop or close them and clear again.");
     }
 }
 

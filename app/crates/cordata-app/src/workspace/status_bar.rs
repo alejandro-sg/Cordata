@@ -44,12 +44,31 @@ impl Workspace {
             .when_some(self.esc_hint(), |bar, hint| bar.child(div().text_color(c(tk.amber)).child(hint)))
             .when_some(view.hint.clone(), |bar, hint| bar.child(div().min_w_0().truncate().text_color(c(tk.text_muted)).child(SharedString::from(shown(&hint)))))
             .child(div().flex_1())
+            .when_some(self.cost_estimate(cx), |bar, (cost, tip)| bar.child(div().id("session-cost").flex().items_center().gap(px(6.)).tooltip(ui::tip(SharedString::from(tip))).child(label("cost")).child(div().text_color(c(tk.text_secondary)).child(SharedString::from(cost)))))
             .child(div().flex().items_center().gap(px(6.)).child(ui::dot(kind, cx).size(px(t::DOT_SMALL))).child(div().text_color(c(if kind == Dot::Amber { tk.amber } else { tk.text_muted })).child(SharedString::from(health))))
             .into_any_element()
     }
 }
 
 impl Workspace {
+    /// The session's cost at its model's list price, and what the estimate leaves out. `None` when it is turned off, or
+    /// the model has no price (local and subscription models): no number is better than a made-up one.
+    fn cost_estimate(&self, cx: &Context<Self>) -> Option<(String, String)> {
+        if !self.prefs.show_cost {
+            return None;
+        }
+        let view = &self.session.read(cx).view;
+        let model = view.config("model").map(|o| o.current_value.clone()).unwrap_or_default();
+        let (tokens_in, tokens_out) = view.session_tokens;
+        let cost = crate::pricing::estimate(&model, tokens_in, tokens_out, &self.prefs.prices)?;
+        let (input, output) = crate::pricing::price(&model, &self.prefs.prices)?;
+        let tip = format!(
+            "Estimated: this session's tokens at {model}'s list price (${input}/${output} per million in/out). Cache discounts, \
+             earlier models in the conversation and your plan are not counted. Change prices under [prices] in prefs.toml."
+        );
+        Some((crate::pricing::dollars(cost), tip))
+    }
+
     /// When the harness compacts, from `context.autoCompact` (unset: Strands' 70%).
     fn compaction_note(&self) -> String {
         match self.settings_view.values.get("context.autoCompact").and_then(|v| v.as_str()) {

@@ -449,6 +449,35 @@ def create_app(port: int = DEFAULT_PORT) -> FastAPI:
             raise HTTPException(status_code=404, detail="no such conversation")
         return row
 
+    @app.post("/conversations/clear")
+    async def clear_conversations(payload: dict, x_daemon_token: str | None = Header(default=None)) -> dict[str, Any]:
+        """Delete conversation history for good (`{"confirm": true}`, optionally `"cwd"` for one project): every
+        conversation's agent is stopped, its record dropped, and its saved history removed from disk — including
+        conversations a door never registered with the hub (a terminal's own sessions). One that is mid-turn, waiting on
+        an approval, or open in a terminal is kept and named. The event ledger (what ran, what was approved) stays."""
+        authorised(x_daemon_token)
+        if payload.get("confirm") is not True:
+            raise HTTPException(status_code=400, detail='clearing history deletes it for good; send {"confirm": true}')
+        import session_history  # noqa: PLC0415
+        import state_store  # noqa: PLC0415
+
+        cwd = str(payload.get("cwd") or "") or None
+        forgotten, kept = await state.chats.forget_all(cwd=cwd, keep=set(state._subscribers))
+        # A session a live process holds (a terminal's own agent) is left out by `idle_session_ids` already.
+        held = {conv.acp_id for conv in kept if conv.acp_id}
+        ids = ({conv.acp_id for conv in forgotten if conv.acp_id} | set(await asyncio.to_thread(state_store.idle_session_ids, cwd=cwd))) - held
+        sessions_dir = os.environ.get("CORDATA_SESSIONS_DIR") or str(Path(__file__).resolve().parent.parent / "sessions")
+
+        def wipe() -> int:
+            ordered = sorted(ids)
+            removed = sum(1 for sid in ordered if session_history.remove(sid, sessions_dir))
+            state_store.forget_sessions(ordered)
+            return removed
+
+        removed = await asyncio.to_thread(wipe)
+        logger.info("daemon: cleared %d conversations and %d saved histories (kept %d)", len(forgotten), removed, len(kept))
+        return {"conversations": len(forgotten), "histories": removed, "kept": [conv.row() for conv in kept]}
+
     @app.get("/conversations/search")
     async def search_conversations(q: str, cwd: str | None = None, limit: int = 20, x_daemon_token: str | None = Header(default=None)) -> dict[str, Any]:
         """Full-text search of conversations (the person's and the assistant's words, not tool output), newest first:

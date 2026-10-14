@@ -86,7 +86,11 @@ pub enum Select {
     MaxTokens,
     CodeFont,
     CompletionModel,
+    QuickAskKey,
 }
+
+/// Its keys are the person's choice, shown live rather than from this table.
+const QUICK_ASK_SHORTCUT: &str = "Quick ask, from any app";
 
 /// The read-only shortcut reference.
 pub const SHORTCUTS: [(&str, &str); 16] = [
@@ -103,7 +107,7 @@ pub const SHORTCUTS: [(&str, &str); 16] = [
     ("Stop the run", "esc esc"),
     ("Cycle permission mode", "⇧Tab"),
     ("Start mission run", "⌘↵"),
-    ("Quick ask, from any app", "⌃⌥Space"),
+    (QUICK_ASK_SHORTCUT, "⌃⌥Space"),
     ("Find a file", "⌘P"),
     ("Save the open file", "⌘S"),
 ];
@@ -183,7 +187,16 @@ impl Workspace {
             Section::Customize => self.customize_rows(cx),
             Section::Automations => self.automation_rows(cx),
             Section::Appearance => self.appearance_rows(cx),
-            Section::Shortcuts => SHORTCUTS.iter().map(|(label, keys)| setting_row(label, "", ui::keycap(*keys, cx).into_any_element(), cx)).collect(),
+            Section::Shortcuts => {
+                let quick_ask = self.quick_ask_combo().label;
+                SHORTCUTS
+                    .iter()
+                    .map(|(label, keys)| {
+                        let keys: SharedString = if *label == QUICK_ASK_SHORTCUT { quick_ask.clone().into() } else { (*keys).into() };
+                        setting_row(label, "", ui::keycap(keys, cx).into_any_element(), cx)
+                    })
+                    .collect()
+            }
             Section::Connections => self.connection_rows(cx),
             Section::Account => self.account_rows(cx),
             Section::Advanced => self.advanced_rows(cx),
@@ -356,6 +369,7 @@ impl Workspace {
             Select::MaxTokens if value.is_empty() => "16384".into(),
             Select::CodeFont => format!("{value} px"),
             Select::CompletionModel if value.is_empty() => "off".into(),
+            Select::QuickAskKey => crate::platform::Combo::parse(value).map(|c| c.label).unwrap_or_else(|_| value.into()),
             _ if value.is_empty() => "—".into(),
             _ => value.into(),
         }
@@ -376,6 +390,16 @@ impl Workspace {
             Select::CodeFont => {
                 self.prefs.code_font_size = value.parse().unwrap_or(13.0);
                 self.save_prefs(cx);
+            }
+            Select::QuickAskKey => {
+                let before = std::mem::replace(&mut self.prefs.quick_ask_key, value);
+                if self.apply_hotkey() {
+                    self.save_prefs(cx);
+                } else {
+                    let taken = self.quick_ask_combo().label;
+                    self.prefs.quick_ask_key = before;
+                    self.settings_view.set_notice(format!("{taken} is taken by another app; kept {}.", self.quick_ask_combo().label), true);
+                }
             }
             Select::CompletionModel => {
                 self.prefs.completion_model = value;
@@ -425,14 +449,26 @@ impl Workspace {
         let hotkey = self.toggle("quick-ask", self.prefs.quick_ask_hotkey, "Quick ask hotkey", |this, on, cx| {
             this.prefs.quick_ask_hotkey = on;
             this.save_prefs(cx);
-            if !crate::platform::set_hotkey(on) && on {
-                this.settings_view.set_notice("⌃⌥Space is taken by another app.".into(), true);
+            if !this.apply_hotkey() {
+                this.settings_view.set_notice(format!("{} is taken by another app.", this.quick_ask_combo().label), true);
             }
         }, cx);
+        let combo = self.quick_ask_combo();
+        let mut keys: Vec<(String, String)> = crate::platform::COMBO_PRESETS.iter().filter_map(|p| crate::platform::Combo::parse(p).ok().map(|c| ((*p).to_owned(), c.label))).collect();
+        if !crate::platform::COMBO_PRESETS.contains(&self.prefs.quick_ask_key.as_str()) {
+            keys.insert(0, (self.prefs.quick_ask_key.clone(), combo.label.clone()));
+        }
+        let key = self.select(Select::QuickAskKey, &self.prefs.quick_ask_key.clone(), keys, cx);
+        let cost = self.toggle("show-cost", self.prefs.show_cost, "Show session cost", |this, on, cx| {
+            this.prefs.show_cost = on;
+            this.save_prefs(cx);
+        }, cx);
+        let quick_ask = div().flex().items_center().gap(px(8.)).child(key).child(hotkey).into_any_element();
         vec![
             setting_row("Open on launch", "What the window shows when Cordata starts.", launch, cx),
-            setting_row("Quick ask (⌃⌥Space)", "From any app: bring Cordata forward with the composer ready.", hotkey, cx),
+            setting_row("Quick ask", "From any app: bring Cordata forward with the composer ready. Any other combination can go in prefs.toml as quick_ask_key (e.g. \"cmd-alt-j\").", quick_ask, cx),
             setting_row("Send message with", "The other key adds a new line.", send, cx),
+            setting_row("Show session cost", "An estimate in the status bar: Claude models at Anthropic's list price; local models show none. Add or change a price under [prices] in prefs.toml (dollars per million tokens, [in, out]).", cost, cx),
             sub_heading("notifications", cx),
             setting_row("Notify when approval is needed", "A system notification when a command waits for you and the window is in the back.", notify, cx),
             setting_row("Sound on completion", "A short sound when a turn finishes.", sound, cx),
@@ -602,6 +638,14 @@ impl Workspace {
         ]
     }
 
+    fn clear_history_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        let button = ui::button("clear-history", "Clear…", Kind::Danger, cx);
+        if !matches!(self.connection.transport, acp_core::BackendTransport::Hub { .. }) {
+            return button.opacity(0.5).cursor_default().tooltip(ui::tip("History lives with the daemon; connect through it to clear it")).into_any_element();
+        }
+        button.on_click(cx.listener(|this, _, window, cx| this.ask_confirm(Confirm::ClearHistory, window, cx))).into_any_element()
+    }
+
     fn advanced_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let diag = self.toggle("diagnostics", self.prefs.share_diagnostics, "Share anonymous diagnostics", |this, on, cx| {
             this.prefs.share_diagnostics = on;
@@ -610,7 +654,7 @@ impl Workspace {
         vec![
             setting_row("Logs folder", "The harness's state, trajectories and logs (~/.cordata).", ui::button("open-logs", "Reveal in Finder", Kind::Outline, cx).on_click(cx.listener(|_, _, _, cx| cx.reveal_path(&super::cordata_home()))).into_any_element(), cx),
             setting_row("Share anonymous diagnostics", "Nothing is sent today; this records your choice for when it exists.", diag, cx),
-            setting_row("Clear conversation history", "Not available yet: the hub has no delete hook. Remove ~/.cordata/sessions by hand if you must.", ui::button("clear-history", "Clear…", Kind::Danger, cx).opacity(0.5).cursor_default().into_any_element(), cx),
+            setting_row("Clear conversation history", "Deletes every conversation and its saved history from this Mac, in every project. Running ones are kept.", self.clear_history_button(cx), cx),
             setting_row("Reset all settings", "Restores this window's preferences (theme, layout, recents). Harness settings files are untouched.", ui::button("reset-prefs", "Reset…", Kind::Danger, cx).on_click(cx.listener(|this, _, window, cx| this.ask_confirm(Confirm::ResetPrefs, window, cx))).into_any_element(), cx),
             sub_heading("harness", cx),
             div().pt(px(8.)).h(px(520.)).child(self.settings_panel(cx)).into_any_element(),

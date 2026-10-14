@@ -382,6 +382,32 @@ class Chats:
         self._save()
         return conv.row()
 
+    async def forget_all(self, *, cwd: str | None = None, keep: set[str] | frozenset[str] = frozenset()) -> tuple[list[Conversation], list[Conversation]]:
+        """Forget conversations (in `cwd`, or all): stop their agents and drop them from the registry. One that is mid-turn,
+        waiting on an approval, or whose agent is in `keep` (a terminal is attached) stays. Returns (forgotten, kept);
+        the history on disk is the caller's to delete — it knows where the sessions live."""
+        target = None
+        if cwd:
+            try:
+                target = resolve_dir(cwd)
+            except ChatError:
+                target = cwd
+        forgotten: list[Conversation] = []
+        kept: list[Conversation] = []
+        for conv in list(self._convs.values()):
+            if target is not None and conv.cwd != target:
+                continue
+            if conv.busy or conv.external_turn or self._waiting(conv) or (conv.daemon_id and conv.daemon_id in keep):
+                kept.append(conv)
+                continue
+            await self._reap(conv)
+            self._convs.pop(conv.key, None)
+            forgotten.append(conv)
+        gone = {conv.key for conv in forgotten}
+        self._aliases = {alias: key for alias, key in self._aliases.items() if key not in gone}
+        self._save()
+        return forgotten, kept
+
     def rows(self, cwd: str | None = None, limit: int = 20, *, archived: bool = False) -> list[dict[str, Any]]:
         """Conversations, newest first, for a door's picker (the archived ones only when asked for)."""
         target = None

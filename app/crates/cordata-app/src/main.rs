@@ -11,6 +11,7 @@ mod keychain;
 mod mission;
 mod platform;
 mod prefs;
+mod pricing;
 mod session;
 mod theme;
 mod transcript;

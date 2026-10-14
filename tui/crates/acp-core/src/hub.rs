@@ -139,6 +139,27 @@ pub async fn archive(config: &DaemonConfig, handle: &str, archived: bool) -> Res
     serde_json::from_value(value).map_err(|error| Error::DaemonUnreachable(format!("the daemon's answer was not a conversation: {error}")))
 }
 
+/// What `clear_history` did: how many conversations and saved histories went, and the ones kept because they were in
+/// use (mid-turn, waiting on an approval, or open in a terminal).
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct Cleared {
+    pub conversations: u64,
+    pub histories: u64,
+    #[serde(default)]
+    pub kept: Vec<Conversation>,
+}
+
+/// Delete conversation history for good — in `cwd` when given, else everywhere. The daemon refuses without the
+/// confirmation flag, which this sends: ask the person first.
+pub async fn clear_history(config: &DaemonConfig, cwd: Option<&Path>) -> Result<Cleared> {
+    let mut body = serde_json::json!({ "confirm": true });
+    if let Some(cwd) = cwd {
+        body["cwd"] = serde_json::json!(cwd.display().to_string());
+    }
+    let value = request(config, "POST", "/conversations/clear", Some(&body), OPEN_TIMEOUT).await?;
+    serde_json::from_value(value).map_err(|error| Error::DaemonUnreachable(format!("the daemon's answer was not understood: {error}")))
+}
+
 /// Full-text search of conversations (titles, then what was said), newest first — in `cwd` when given.
 pub async fn search(config: &DaemonConfig, query: &str, cwd: Option<&Path>) -> Result<Vec<SearchHit>> {
     let mut path = format!("/conversations/search?q={}", crate::config::percent_encode(query));

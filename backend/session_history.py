@@ -48,6 +48,26 @@ def history_dir(session_id: str, base: str | Path) -> Path:
     return snapshot_path(session_id, base).parent / "immutable_history"
 
 
+def remove(session_id: str, base: str | Path) -> bool:
+    """Delete a conversation from disk — the snapshot with its checkpoints, the legacy directory, the legacy checkpoint
+    file. True when anything was there. An id that is not a plain name is refused rather than joined into a path."""
+    import shutil  # noqa: PLC0415
+
+    if not session_id or not all(ch.isalnum() or ch in "-_" for ch in session_id):
+        return False
+    root = Path(base)
+    found = False
+    for directory in (root / SNAPSHOT_ROOT / session_id, root / f"session_{session_id}"):
+        if directory.is_dir() and not directory.is_symlink():
+            shutil.rmtree(directory)
+            found = True
+    legacy_checkpoint = root / f"session_{session_id}.checkpoint.json"
+    if legacy_checkpoint.is_file():
+        legacy_checkpoint.unlink()
+        found = True
+    return found
+
+
 def _masked(text: str) -> str:
     return secret_patterns.scrub(text)[0]
 

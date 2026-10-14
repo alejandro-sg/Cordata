@@ -698,3 +698,41 @@ def release_session(session_id: str, *, pid: int | None = None) -> None:
         connect().execute("UPDATE sessions SET host_pid = NULL, host_ts = NULL WHERE session_id = ? AND host_pid = ?", (session_id, pid))
     except Exception:
         logger.debug("state_store: lease on %s not released", session_id, exc_info=True)
+
+
+def idle_session_ids(*, cwd: str | None = None) -> list[str]:
+    """Every recorded conversation no live process holds (archived ones included) — what "clear history" may forget."""
+    clauses, params = [], []
+    if cwd is not None:
+        clauses.append("cwd_real = ?")
+        params.append(os.path.realpath(cwd))
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    try:
+        rows = connect().execute(f"SELECT session_id, host_pid FROM sessions {where}", params).fetchall()
+    except Exception:
+        logger.debug("state_store: sessions unreadable", exc_info=True)
+        return []
+    return [row["session_id"] for row in rows if not (row["host_pid"] and _alive(int(row["host_pid"])))]
+
+
+def forget_sessions(session_ids: list[str]) -> int:
+    """Drop conversations' rows — the session, its config history, its checkpoints. The event ledger is kept: it is the
+    audit trail of what was run and approved, not the conversation. Returns how many sessions were known."""
+    if not session_ids:
+        return 0
+    marks = ",".join("?" * len(session_ids))
+    try:
+        conn = connect()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            known = conn.execute(f"DELETE FROM sessions WHERE session_id IN ({marks})", session_ids).rowcount
+            conn.execute(f"DELETE FROM session_config WHERE session_id IN ({marks})", session_ids)
+            conn.execute(f"DELETE FROM checkpoints WHERE session_id IN ({marks})", session_ids)
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    except Exception:
+        logger.warning("state_store: could not forget %d sessions", len(session_ids), exc_info=True)
+        return 0
+    return int(known)
