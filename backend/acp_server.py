@@ -1149,6 +1149,19 @@ class CordataAcpAgent:
                 return str(_Agent(model=model, system_prompt=git_message.SYSTEM, callback_handler=None, tools=[])(prompt))
 
             return await run_blocking(git_message.commit_message, cwd, generate)
+        if name == "edit/inline":
+            # ⌘I in the app's editor (inline_edit.py): the session's model rewrites a selection by an instruction.
+            import inline_edit  # noqa: PLC0415
+            from strands import Agent as _Agent  # noqa: PLC0415
+
+            if state is None:
+                return {"ok": False, "reason": "no session"}
+            model = state.agent.model
+
+            def generate_edit(prompt: str) -> str:
+                return str(_Agent(model=model, system_prompt=inline_edit.SYSTEM, callback_handler=None, tools=[])(prompt))
+
+            return await run_blocking(inline_edit.edit, params, generate_edit)
         if name == "steer":
             # A note for the running turn (steering.py): reaches the agent at its next model call.
             steer = self._steering.get(session_id or "")
