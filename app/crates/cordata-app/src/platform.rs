@@ -1,5 +1,5 @@
-//! The few macOS things GPUI does not reach: the system's accessibility display flags, and Liquid Glass behind the
-//! window (docs/app.md §4b). Everything else is GPUI's.
+//! The few macOS things GPUI does not reach: the system's accessibility display flags, sounds and notifications.
+//! (docs/app.md §4b). Everything else is GPUI's.
 
 /// The system's display preferences, read once at launch (System Settings → Accessibility → Display).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -37,36 +37,30 @@ impl Display {
 
 impl gpui::Global for Display {}
 
-/// Put Liquid Glass behind the window's content: an `NSGlassEffectView` added as a *sibling* below GPUI's view (the
-/// place GPUI itself uses for its blur), never by reparenting GPUI's view. The window must be created `Transparent`;
-/// whatever GPUI paints opaque covers the glass, so only the rail — painted translucent — shows it. Returns whether
-/// glass went in (macOS 26+, and not with Reduce Transparency).
+/// A system sound by name (`Glass`, `Ping`…), for a finished turn. Silent where there is none.
 #[cfg(target_os = "macos")]
-pub fn install_glass(window: &gpui::Window) -> bool {
-    use objc2_app_kit::{NSAutoresizingMaskOptions, NSGlassEffectView, NSGlassEffectViewStyle, NSView, NSWindowOrderingMode};
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-
-    // The class is looked up before any typed call: messaging a class this macOS lacks is undefined behaviour.
-    if objc2::runtime::AnyClass::get(c"NSGlassEffectView").is_none() {
-        return false;
+pub fn play_sound(name: &str) {
+    use objc2_app_kit::NSSound;
+    use objc2_foundation::NSString;
+    if let Some(sound) = NSSound::soundNamed(&NSString::from_str(name)) {
+        sound.play();
     }
-    let Some(mtm) = objc2::MainThreadMarker::new() else { return false };
-    let Ok(handle) = <gpui::Window as HasWindowHandle>::window_handle(window) else { return false };
-    let RawWindowHandle::AppKit(handle) = handle.as_raw() else { return false };
-    // SAFETY: the live NSView of the window being built, borrowed for these calls only (never retained or released
-    // here); the glass class was checked above.
-    unsafe {
-        let view = &*(handle.ns_view.as_ptr() as *const NSView);
-        let Some(container) = view.superview() else { return false };
-        let glass = NSGlassEffectView::initWithFrame(<NSGlassEffectView as objc2::MainThreadOnly>::alloc(mtm), container.bounds());
-        glass.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable);
-        glass.setStyle(NSGlassEffectViewStyle::Regular);
-        container.addSubview_positioned_relativeTo(&glass, NSWindowOrderingMode::Below, Some(view));
-    }
-    true
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn install_glass(_window: &gpui::Window) -> bool {
-    false
+pub fn play_sound(_name: &str) {}
+
+/// A system notification. Only fixed text from the app is ever passed (never model or tool output), and it goes
+/// through argv to AppleScript's `on run`, never spliced into the script, so nothing in it is code.
+#[cfg(target_os = "macos")]
+pub fn notify(title: &'static str, body: &'static str) {
+    let _ = std::process::Command::new("/usr/bin/osascript")
+        .args(["-e", "on run argv", "-e", "display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run", title, body])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
 }
+
+#[cfg(not(target_os = "macos"))]
+pub fn notify(_title: &'static str, _body: &'static str) {}

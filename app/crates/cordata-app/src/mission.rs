@@ -11,7 +11,7 @@ use cordata_theme::{Role, segbar};
 use cordata_view::run_board::{PoolGauge, RunBoard};
 use cordata_view::shown;
 use gpui::prelude::FluentBuilder as _;
-use gpui::{AnyElement, App, Div, InteractiveElement as _, IntoElement, ParentElement, SharedString, Styled, div, px, relative};
+use gpui::{AnyElement, App, Div, IntoElement, ParentElement, SharedString, Styled, div, px, relative};
 use serde_json::Value;
 
 use crate::hud;
@@ -86,7 +86,7 @@ impl Mission {
         self.can("canCancel")
     }
 
-    fn step_name(&self, id: &str) -> Option<String> {
+    pub fn step_name(&self, id: &str) -> Option<String> {
         self.detail.as_ref()?.get("steps")?.as_array()?.iter().find(|s| s.get("step_id").and_then(Value::as_str) == Some(id))?.get("name")?.as_str().map(str::to_owned)
     }
 
@@ -110,22 +110,6 @@ pub fn state_role(state: &str) -> Role {
         "pending" | "" => Role::TextDim,
         _ => Role::Accent,
     }
-}
-
-pub fn run_row(run: &Value, cx: &App) -> Div {
-    let text = |k: &str| run.get(k).and_then(Value::as_str).unwrap_or_default().to_owned();
-    let live = text("live");
-    div()
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .px(px(6.))
-        .py(px(4.))
-        .rounded(px(2.))
-        .hover(|this| this.bg(tint(cx, Role::Accent, 0.06)))
-        .child(hud::dot(Some(state_role(&live)), cx))
-        .child(div().flex_1().text_xs().text_color(color(cx, Role::TextSecondary)).truncate().child(SharedString::from(shown(&text("goal")))))
-        .child(div().text_xs().text_color(color(cx, state_role(&live))).child(SharedString::from(live)))
 }
 
 /// A pool's gauge: the fill, and ticks at its soft and hard lines.

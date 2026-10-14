@@ -980,8 +980,11 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "raw-window-handle",
+ "security-framework",
+ "serde",
  "serde_json",
  "tokio",
+ "toml 0.8.23",
 ]
 
 [[package]]

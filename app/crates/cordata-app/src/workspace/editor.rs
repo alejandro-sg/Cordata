@@ -557,13 +557,7 @@ impl Workspace {
 
     pub(super) fn editor_panel(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(buffer) = self.files.active() else {
-            return div()
-                .flex()
-                .flex_col()
-                .gap(px(8.))
-                .text_xs()
-                .text_color(color(cx, Role::TextDim))
-                .child("No file open. Pick one in Files (⌘P), or click a hunk in Review.")
+            return crate::ui::empty("no file open", "Pick one in Files (⌘P), or click a hunk in Review.", cx)
                 .when_some(self.files.notice.clone(), |el, notice| el.child(div().text_color(color(cx, Role::Attention)).child(SharedString::from(shown(&notice)))))
                 .into_any_element();
         };
@@ -662,32 +656,6 @@ impl Workspace {
             )
             .child(div().text_xs().text_color(color(cx, if buffer.errors > 0 { Role::Danger } else { Role::TextDim })).child(SharedString::from(self.files.servers.clone().unwrap_or_else(|| "checking…".into()))))
             .into_any_element()
-    }
-
-    pub(super) fn dock_label(&self, tab: DockTab) -> String {
-        match tab {
-            DockTab::Mission => "mission".into(),
-            DockTab::Files => "files".into(),
-            DockTab::Editor => match (self.files.buffers.len(), self.files.dirty()) {
-                (0, _) => "editor".into(),
-                (n, 0) => format!("editor {n}"),
-                (n, _) => format!("editor {n}●"),
-            },
-            DockTab::Review => match self.review.hunks() {
-                0 => "review".into(),
-                n => format!("review {n}"),
-            },
-            DockTab::Terminal => "terminal".into(),
-            DockTab::Browser => "browser".into(),
-            DockTab::Models => "models".into(),
-            DockTab::Settings => {
-                if self.settings_view.trusted {
-                    "settings".into()
-                } else {
-                    "settings ⚠".into()
-                }
-            }
-        }
     }
 
     #[cfg(test)]

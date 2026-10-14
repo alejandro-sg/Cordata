@@ -253,8 +253,8 @@ fn component_theme(t: &Tokens, p: &Palette, sans: &str, mono: &str) -> ThemeConf
         "font.size": tokens::TEXT_BODY,
         "mono_font.family": mono,
         "mono_font.size": tokens::TEXT_UI,
-        "radius": tokens::RADIUS_CONTROL,
-        "radius.lg": tokens::RADIUS_CARD,
+        "radius": tokens::RADIUS_CONTROL as usize,
+        "radius.lg": tokens::RADIUS_CARD as usize,
         "shadow": false,
         "colors": colors,
     });

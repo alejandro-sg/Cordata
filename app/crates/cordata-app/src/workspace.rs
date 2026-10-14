@@ -1,38 +1,48 @@
-//! The window (docs/app.md §4): the rail on the left (project, open sessions, the project's other conversations, what
-//! needs you), the conversation in the centre (transcript, the approval card, the composer with its `/` and `@` menus,
-//! the gauges), the dock on the right (Mission Control, the task list, the goal).
+//! The window (the "Cordata Harness" reference design): the sidebar on the left (project, open conversations, the
+//! project's other conversations), the conversation in the centre (header, transcript, the approval card, the
+//! composer), the side panel on the right (Mission Control, files, editor, review, terminal, …), the status bar
+//! across the bottom, and the overlays above it all (the command palette, the project picker, settings).
 //!
-//! Several sessions can be open at once, one shown; each is its own ACP connection (the backend is one process per
-//! session). Keys follow the terminal's: Esc stops a turn, Shift+Tab cycles the mode, ⌘N opens a session, ⌘W closes
-//! one, ⌘[ and ⌘] switch, ⌘K opens the command menu, ⌘L focuses the composer.
+//! Several sessions can be open at once, one shown; each is its own ACP connection. Keys: ⌘K palette, ⌘O project,
+//! ⌘N new, ⌘1–9 switch, ⌘\ side panel, ⌃` terminal, ⌘, settings, ⇧Tab mode, esc deny / close, esc esc stop.
+//! The rendering lives in the submodules; this file holds the state and the behaviour.
 
-use std::collections::HashSet;
-use std::path::PathBuf;
-use std::time::Duration;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use acp_core::{ApprovalDecision, BackendTransport};
-use cordata_theme::{Role, mode_role, tracked};
-use cordata_view::app::{ConnState, PendingPermission, SwitchTarget};
-use cordata_view::shown;
+use cordata_theme::tokens as t;
+use cordata_view::app::{ConnState, SwitchTarget};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, AppContext as _, ClickEvent, Context, Entity, EntityId, InteractiveElement as _, IntoElement, KeyDownEvent, ListAlignment, ListState, ParentElement, Render,
-    SharedString, StatefulInteractiveElement as _, Styled, Subscription, Window, actions, div, list, px, relative,
+    AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, EntityId, InteractiveElement as _, IntoElement, KeyDownEvent, ListAlignment, ListState, ParentElement, Render, SharedString,
+    StatefulInteractiveElement as _, Styled, Subscription, Window, actions, div, list, px,
 };
-use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::input::{InputEvent, InputState, TextareaState};
+use serde_json::Value;
 
 use crate::hud;
 use crate::mission::{self, Mission};
 use crate::platform::Display;
+use crate::prefs::{self, Prefs};
 use crate::session::{Connection, Row, Runtime, Session, SessionEvent, Target, WindowRequest};
-use crate::theme::{color, tint};
+use crate::theme::{c, ca, line, tk};
+use crate::transcript::{self, GroupEdge};
+use crate::ui::{self, Dot, Kind};
 
 mod browser;
+mod conversation;
 mod editor;
 mod models;
+mod palette;
+mod picker;
 mod review;
+mod settings_modal;
 mod settings_view;
+mod side_panel;
+mod sidebar;
+mod status_bar;
 mod terminal;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -45,7 +55,24 @@ pub enum DockTab {
     Terminal,
     Browser,
     Models,
+}
+
+/// What floats over the window; the last one is on top and esc closes it first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Overlay {
+    Palette,
+    Picker,
     Settings,
+    Clone,
+    Confirm,
+}
+
+/// A destructive or trust-changing action waiting for a yes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Confirm {
+    Trust,
+    SignOut,
+    ResetPrefs,
 }
 
 actions!(
@@ -59,6 +86,12 @@ actions!(
         NextSession,
         PrevSession,
         CommandMenu,
+        OpenPalette,
+        SwitchProject,
+        TogglePanel,
+        ToggleTerminal,
+        OpenSettings,
+        StartMission,
         ToggleThoughts,
         ToggleTools,
         Help,
@@ -69,19 +102,33 @@ actions!(
         ShowTerminal,
         ShowBrowser,
         ShowModels,
-        ShowSettings,
         OpenFiles,
         SaveFile,
+        SwitchTo1,
+        SwitchTo2,
+        SwitchTo3,
+        SwitchTo4,
+        SwitchTo5,
+        SwitchTo6,
+        SwitchTo7,
+        SwitchTo8,
+        SwitchTo9,
     ]
 );
 
-const RAIL_WIDTH: f32 = 248.;
-const DOCK_WIDTH: f32 = 320.;
-const DOCK_WIDTH_WIDE: f32 = 560.;
 /// How many of the newest blocks are re-measured when anything changes (a streaming reply, a tool card updating).
 const REMEASURE_TAIL: usize = 8;
-/// How often the rail re-reads the project's conversations.
+/// How often the sidebar re-reads the project's conversations.
 const LISTING_EVERY: Duration = Duration::from_secs(15);
+/// Two presses of esc this close together stop the run.
+const DOUBLE_ESC: Duration = Duration::from_millis(700);
+/// A dropped connection is opened again on its own this many times (with growing waits) before it waits for Retry.
+const AUTO_RECONNECTS: u32 = 4;
+
+pub(super) const PLUGINS_TAG: &str = "gui-plugins";
+pub(super) const PLUGIN_TOGGLE_TAG: &str = "gui-plugin-toggle";
+pub(super) const TRUST_LIST_TAG: &str = "gui-trust-list";
+pub(super) const TRUST_REVOKE_TAG: &str = "gui-trust-revoke";
 
 pub struct Workspace {
     connection: Connection,
@@ -90,29 +137,35 @@ pub struct Workspace {
     sessions: Vec<Entity<Session>>,
     pub(super) session: Entity<Session>,
     subscriptions: Vec<(EntityId, Vec<Subscription>)>,
-    composer: Entity<InputState>,
+    composer: Entity<TextareaState>,
+    composer_placeholder: &'static str,
     transcript: ListState,
     /// (session, messages, version) last laid out.
     seen: (EntityId, usize, u64),
-    /// Tool cards opened to their full result.
+    /// Tool rows opened to their output.
     expanded: HashSet<String>,
     /// The project's conversations (the hub's, or the saved stdio sessions).
     listing: Vec<Row>,
     listing_error: Option<String>,
+    /// The hub answered the last listing, and how fast.
+    hub_ok: Option<bool>,
+    hub_latency: Option<Duration>,
     model_menu: bool,
     /// `w` on an approval card: the next Enter sends the composer's text as the answer (the reason, or one's own words).
     saying: bool,
-    /// Mission Control's state (the dock).
+    /// Mission Control's state (the side panel).
     mission: Mission,
-    /// The dock's "start a run" box.
-    goal_input: Entity<InputState>,
-    /// Ticks of the dock's poll (runs list every few, the selected run every one).
+    /// Mission Control's goal box.
+    goal_input: Entity<TextareaState>,
+    /// Ticks of Mission Control's poll (runs list every few, the selected run every one).
     mission_tick: u64,
     /// `--run GOAL`: started once the session connects.
     start_run: Option<String>,
     display: Display,
-    glass: bool,
     pub(super) dock_tab: DockTab,
+    /// The side panel is shown (the person's choice, or the width's default).
+    pub(super) panel_open: bool,
+    overflow_open: bool,
     pub(super) files: editor::Files,
     pub(super) file_filter: Entity<InputState>,
     pub(super) review: review::Review,
@@ -120,6 +173,38 @@ pub struct Workspace {
     pub(super) browser_view: browser::BrowserView,
     pub(super) models_view: models::ModelsView,
     pub(super) settings_view: settings_view::SettingsView,
+    /// The window's own preferences.
+    pub(super) prefs: Prefs,
+    overlays: Vec<Overlay>,
+    confirm: Option<Confirm>,
+    palette_input: Entity<InputState>,
+    palette_ix: usize,
+    picker_input: Entity<InputState>,
+    picker_ix: usize,
+    picker_note: Option<(String, bool)>,
+    clone_url: Entity<InputState>,
+    clone_dest: Entity<InputState>,
+    clone_note: Option<(String, bool)>,
+    settings_section: settings_modal::Section,
+    open_select: Option<settings_modal::Select>,
+    api_key_input: Entity<InputState>,
+    api_key_masked: Option<String>,
+    allow_input: Entity<InputState>,
+    adding_allow: bool,
+    /// The MCP servers (`_cordata/plugins/list`).
+    plugins: Vec<Value>,
+    /// Every trusted folder (`_cordata/trust/list`).
+    trusted_projects: Vec<String>,
+    /// Focus for the settings modal and the confirm dialog (their keys).
+    settings_focus: gpui::FocusHandle,
+    /// The first esc of a possible double press.
+    esc_at: Option<Instant>,
+    /// Whether each session was mid-turn when last seen (a finished turn plays the completion sound).
+    turn_seen: HashMap<EntityId, bool>,
+    /// Sessions whose settings were loaded once connected.
+    loaded: HashSet<EntityId>,
+    /// Automatic reconnects tried for the shown session.
+    reconnects: u32,
     /// `--selftest`: answer every approval with Allow and quit with a summary once the first turn ends.
     selftest: Option<SelfTest>,
     _subscriptions: Vec<Subscription>,
@@ -132,10 +217,10 @@ pub struct Launch {
     pub prompt: Option<String>,
     /// `--run`: an orchestrator run started once connected.
     pub run: Option<String>,
-    /// Liquid Glass went in behind the window.
-    pub glass: bool,
     /// `--selftest` with a prompt or a run: drive it to its end and quit with a summary.
     pub selftest: bool,
+    /// Open the project picker first (Settings → Open on launch).
+    pub picker: bool,
 }
 
 #[derive(Default)]
@@ -145,21 +230,78 @@ struct SelfTest {
     started: bool,
 }
 
+/// `~/x` for a path under the home folder.
+pub fn tilde(path: &Path) -> String {
+    let text = path.display().to_string();
+    match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() && text.starts_with(&home) => format!("~{}", &text[home.len()..]),
+        _ => text,
+    }
+}
+
+pub fn now_secs() -> f64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or_default()
+}
+
+/// The harness's state folder.
+pub fn cordata_home() -> PathBuf {
+    std::env::var_os("CORDATA_HOME").map(PathBuf::from).unwrap_or_else(|| std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join(".cordata"))
+}
+
 impl Workspace {
     pub fn new(connection: Connection, cwd: PathBuf, launch: Launch, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let Launch { prompt: initial_prompt, run: start_run, glass, selftest } = launch;
-        let composer = cx.new(|cx| InputState::new(window, cx).placeholder("Ask Cordata…   / commands · @ files · ! shell"));
+        let Launch { prompt: initial_prompt, run: start_run, selftest, picker } = launch;
+        let prefs = cx.try_global::<Prefs>().cloned().unwrap_or_default();
+        let composer = cx.new(|cx| TextareaState::new(window, cx).auto_grow(2, 10).submit_on_enter(prefs.send_with != "cmd-enter").placeholder("Ask Cordata…"));
         let display = cx.try_global::<Display>().copied().unwrap_or_default();
         let first = cx.new(|cx| Session::start(&connection, Target::Default, cwd.clone(), initial_prompt, cx));
-        let goal_input = cx.new(|cx| InputState::new(window, cx).placeholder("A multi-step goal for the orchestrator…"));
+        let goal_input = cx.new(|cx| TextareaState::new(window, cx).rows(3).placeholder("A multi-step goal for the orchestrator…"));
         let file_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter files…"));
+        let palette_input = cx.new(|cx| InputState::new(window, cx).placeholder("Type a command or search conversations…"));
+        let picker_input = cx.new(|cx| InputState::new(window, cx).placeholder("Search projects or paste a path…"));
+        let clone_url = cx.new(|cx| InputState::new(window, cx).placeholder("https://github.com/owner/repo.git"));
+        let clone_dest = cx.new(|cx| InputState::new(window, cx).placeholder("~/Development"));
+        let api_key_input = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("sk-ant-…"));
+        let allow_input = cx.new(|cx| InputState::new(window, cx).placeholder("pnpm test"));
         let terminal = terminal::Terminal::new(window, cx);
         let browser_view = browser::BrowserView::new(window, cx);
         let models_view = models::ModelsView::new(window, cx);
         let settings_view = settings_view::SettingsView::new(window, cx);
-        let composer_subscription = cx.subscribe_in(&composer, window, Self::on_composer);
-        let file_filter_subscription = cx.subscribe_in(&file_filter, window, Self::on_file_filter);
+        let subscriptions = vec![
+            cx.subscribe_in(&composer, window, Self::on_composer),
+            cx.subscribe_in(&file_filter, window, Self::on_file_filter),
+            cx.subscribe_in(&palette_input, window, |this: &mut Self, _, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.palette_ix = 0;
+                    cx.notify();
+                }
+            }),
+            cx.subscribe_in(&picker_input, window, |this: &mut Self, _, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.picker_ix = 0;
+                    cx.notify();
+                }
+            }),
+            cx.subscribe_in(&allow_input, window, |this: &mut Self, _, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::PressEnter { .. }) {
+                    this.add_allowed_command(window, cx);
+                }
+            }),
+            // ⌘↵ in the goal box starts the run.
+            cx.subscribe_in(&goal_input, window, |this: &mut Self, _, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::PressEnter { secondary: true, .. }) {
+                    this.start_mission(&StartMission, window, cx);
+                }
+            }),
+            cx.subscribe_in(&api_key_input, window, |this: &mut Self, _, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::PressEnter { .. }) {
+                    this.save_api_key(window, cx);
+                }
+            }),
+        ];
         composer.update(cx, |state, cx| state.focus(window, cx));
+        let width = window.viewport_size().width.as_f32();
+        let panel_open = prefs.panel_open.unwrap_or(width >= t::PANEL_AUTO_COLLAPSE_W);
         let mut this = Self {
             connection,
             cwd,
@@ -167,11 +309,14 @@ impl Workspace {
             session: first.clone(),
             subscriptions: Vec::new(),
             composer,
+            composer_placeholder: "Ask Cordata…",
             transcript: ListState::new(0, ListAlignment::Bottom, px(1200.)),
             seen: (first.entity_id(), 0, 0),
             expanded: HashSet::new(),
             listing: Vec::new(),
             listing_error: None,
+            hub_ok: None,
+            hub_latency: None,
             model_menu: false,
             saying: false,
             mission: Mission::default(),
@@ -179,8 +324,9 @@ impl Workspace {
             mission_tick: 0,
             start_run,
             display,
-            glass,
             dock_tab: DockTab::default(),
+            panel_open,
+            overflow_open: false,
             files: editor::Files::default(),
             file_filter,
             review: review::Review::default(),
@@ -188,16 +334,50 @@ impl Workspace {
             browser_view,
             models_view,
             settings_view,
+            prefs,
+            overlays: Vec::new(),
+            confirm: None,
+            palette_input,
+            palette_ix: 0,
+            picker_input,
+            picker_ix: 0,
+            picker_note: None,
+            clone_url,
+            clone_dest,
+            clone_note: None,
+            settings_section: settings_modal::Section::default(),
+            open_select: None,
+            api_key_input,
+            api_key_masked: None,
+            allow_input,
+            adding_allow: false,
+            plugins: Vec::new(),
+            trusted_projects: Vec::new(),
+            settings_focus: cx.focus_handle(),
+            esc_at: None,
+            turn_seen: HashMap::new(),
+            loaded: HashSet::new(),
+            reconnects: 0,
             selftest: selftest.then(SelfTest::default),
-            _subscriptions: vec![composer_subscription, file_filter_subscription],
+            _subscriptions: subscriptions,
         };
+        let cwd = this.cwd.clone();
+        this.prefs.touch_recent(&cwd, prefs::now());
+        this.prefs.save();
         this.adopt(first, window, cx);
         this.schedule_listing(cx);
         this.schedule_mission(cx);
         this.load_tree(cx);
         this.load_review(cx);
         this.load_settings_data(cx);
+        if picker {
+            this.open_overlay(Overlay::Picker, window, cx);
+        }
         this
+    }
+
+    pub(super) fn project_name(&self) -> String {
+        self.cwd.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| self.cwd.display().to_string())
     }
 
     // -------------------------------------------------------------------------------------------- sessions
@@ -206,9 +386,11 @@ impl Workspace {
     fn adopt(&mut self, session: Entity<Session>, window: &mut Window, cx: &mut Context<Self>) {
         let id = session.entity_id();
         let subs = vec![
-            cx.observe(&session, move |this, observed, cx| {
+            cx.observe_in(&session, window, move |this, observed, window, cx| {
+                this.sound_and_notify(&observed, window, cx);
                 if observed.entity_id() == this.session.entity_id() {
                     this.step_selftest(cx);
+                    this.maybe_auto_reconnect(window, cx);
                 }
                 cx.notify();
             }),
@@ -228,7 +410,10 @@ impl Workspace {
         self.show(session, cx);
     }
 
-    fn show(&mut self, session: Entity<Session>, cx: &mut Context<Self>) {
+    pub(super) fn show(&mut self, session: Entity<Session>, cx: &mut Context<Self>) {
+        if session.entity_id() != self.session.entity_id() {
+            self.reconnects = 0;
+        }
         self.session = session;
         self.model_menu = false;
         let len = self.session.read(cx).view.messages.len();
@@ -237,7 +422,7 @@ impl Workspace {
         cx.notify();
     }
 
-    fn open(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
         // Already open: show it rather than attach a second client (the daemon allows one driver per conversation).
         if let Some(existing) = self.sessions.iter().find(|s| matches_target(s.read(cx), &target)).cloned() {
             self.show(existing, cx);
@@ -290,7 +475,7 @@ impl Workspace {
     }
 
     /// A dropped connection, opened again on the same conversation (by id over stdio, by handle on the hub).
-    fn reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let old = self.session.read(cx);
         let target = match (&self.connection.transport, old.session_id(), &old.target) {
             (BackendTransport::Hub { .. }, _, target) => match old.hub_handle() {
@@ -396,6 +581,25 @@ impl Workspace {
             }
             settings_view::TRUST_STATUS_TAG => {
                 self.settings_view.take_trust_status(&value);
+                let (cwd, trusted) = (self.cwd.clone(), self.settings_view.trusted);
+                if self.prefs.set_trusted(&cwd, trusted) {
+                    self.prefs.save();
+                }
+            }
+            PLUGINS_TAG => self.plugins = value.get("plugins").and_then(|p| p.as_array()).cloned().unwrap_or_default(),
+            PLUGIN_TOGGLE_TAG => self.load_plugins(cx),
+            TRUST_LIST_TAG => self.trusted_projects = value.get("projects").and_then(|p| p.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default(),
+            TRUST_REVOKE_TAG => {
+                let ok = value.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false);
+                if ok {
+                    self.settings_view.set_notice("Trust revoked.".into(), false);
+                    self.load_settings_data(cx);
+                    self.load_trusted_projects(cx);
+                } else {
+                    let reason = value.get("reason").and_then(serde_json::Value::as_str).unwrap_or("Revoking trust failed");
+                    self.settings_view.set_notice(reason.to_owned(), true);
+                    self.load_settings_data(cx);
+                }
             }
             settings_view::SETTINGS_GET_TAG => {
                 self.settings_view.take_settings_get(&value);
@@ -414,6 +618,10 @@ impl Workspace {
                 if ok {
                     self.settings_view.set_notice("Folder trust granted successfully.".into(), false);
                     self.settings_view.trusted = true;
+                    let cwd = self.cwd.clone();
+                    if self.prefs.set_trusted(&cwd, true) {
+                        self.prefs.save();
+                    }
                     self.session.update(cx, |s, _| s.view.settings.trusted = true);
                     self.load_settings_data(cx);
                 } else {
@@ -459,13 +667,13 @@ impl Workspace {
         cx.notify();
     }
 
-    fn select_run(&mut self, run_id: Option<String>, cx: &mut Context<Self>) {
+    pub(super) fn select_run(&mut self, run_id: Option<String>, cx: &mut Context<Self>) {
         self.mission.select(run_id);
         self.poll_mission(cx);
         cx.notify();
     }
 
-    fn control_run(&mut self, cmd: &str, extra: serde_json::Value, cx: &mut Context<Self>) {
+    pub(super) fn control_run(&mut self, cmd: &str, extra: serde_json::Value, cx: &mut Context<Self>) {
         let Some(run_id) = self.mission.selected.clone() else { return };
         let mut params = serde_json::json!({ "runId": run_id });
         if let (Some(target), Some(more)) = (params.as_object_mut(), extra.as_object()) {
@@ -476,7 +684,7 @@ impl Workspace {
         cx.notify();
     }
 
-    fn start_run(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn start_run(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let goal = self.goal_input.read(cx).value().trim().to_owned();
         if goal.is_empty() {
             return;
@@ -487,87 +695,9 @@ impl Workspace {
         cx.notify();
     }
 
-    fn open_artifact(&mut self, name: String, cx: &mut Context<Self>) {
+    pub(super) fn open_artifact(&mut self, name: String, cx: &mut Context<Self>) {
         let Some(run_id) = self.mission.selected.clone() else { return };
         self.session.read(cx).request("_cordata/artifacts/read", serde_json::json!({ "runId": run_id, "name": name }), mission::ARTIFACT_TAG);
-    }
-
-    fn mission_panel(&self, cx: &mut Context<Self>) -> AnyElement {
-        if let Some((name, text)) = &self.mission.artifact {
-            return div()
-                .flex()
-                .flex_col()
-                .gap(px(6.))
-                .child(div().flex().items_center().child(div().flex_1().text_xs().text_color(color(cx, Role::Accent)).child(SharedString::from(name.clone()))).child(Button::new("close-artifact").label("Close").ghost().on_click(cx.listener(|this, _, _, cx| {
-                    this.mission.artifact = None;
-                    cx.notify();
-                }))))
-                .child(div().id("artifact-text").max_h(px(560.)).overflow_y_scroll().text_xs().font_family(crate::theme::mono(cx)).text_color(color(cx, Role::TextSecondary)).child(SharedString::from(shown(text))))
-                .into_any_element();
-        }
-        if self.mission.selected.is_some() {
-            let mut buttons: Vec<AnyElement> = vec![Button::new("runs-back").label("← Runs").ghost().on_click(cx.listener(|this, _, _, cx| this.select_run(None, cx))).into_any_element()];
-            if self.mission.can_pause() {
-                buttons.push(Button::new("run-pause").label("Pause").on_click(cx.listener(|this, _, _, cx| this.control_run("pause", serde_json::json!({}), cx))).into_any_element());
-            }
-            if self.mission.can_resume() {
-                buttons.push(Button::new("run-resume").label("Resume").primary().on_click(cx.listener(|this, _, _, cx| this.control_run("resume", serde_json::json!({}), cx))).into_any_element());
-            }
-            if self.mission.can_cancel() {
-                buttons.push(Button::new("run-cancel").label("Cancel").danger().on_click(cx.listener(|this, _, _, cx| this.control_run("cancel", serde_json::json!({ "now": true }), cx))).into_any_element());
-            }
-            let artifacts: Vec<AnyElement> = self
-                .mission
-                .artifacts()
-                .into_iter()
-                .enumerate()
-                .map(|(index, name)| {
-                    let open = name.clone();
-                    div()
-                        .id(("artifact", index))
-                        .cursor_pointer()
-                        .text_xs()
-                        .text_color(color(cx, Role::Agent))
-                        .hover(|this| this.text_color(color(cx, Role::Accent)))
-                        .child(SharedString::from(format!("▤ {name}")))
-                        .on_click(cx.listener(move |this, _, _, cx| this.open_artifact(open.clone(), cx)))
-                        .into_any_element()
-                })
-                .collect();
-            return div()
-                .flex()
-                .flex_col()
-                .gap(px(10.))
-                .child(div().flex().flex_wrap().gap(px(6.)).children(buttons))
-                .child(mission::run_detail(&self.mission, cx))
-                .when(!artifacts.is_empty(), |this| this.child(hud::label("artifacts", cx)).child(div().flex().flex_col().gap(px(3.)).children(artifacts)))
-                .into_any_element();
-        }
-        let rows: Vec<AnyElement> = self
-            .mission
-            .runs
-            .iter()
-            .enumerate()
-            .map(|(index, run)| {
-                let run_id = run.get("runId").and_then(|v| v.as_str()).unwrap_or_default().to_owned();
-                div().id(("run-row", index)).cursor_pointer().on_click(cx.listener(move |this, _, _, cx| this.select_run(Some(run_id.clone()), cx))).child(mission::run_row(run, cx)).into_any_element()
-            })
-            .collect();
-        let live_here = self.session.read(cx).view.run.as_ref().filter(|r| r.is_live()).map(|r| r.run_id.clone());
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(8.))
-            .when_some(live_here, |this, run_id| {
-                this.child(Button::new("follow-live").label(SharedString::from(format!("Follow {run_id}"))).primary().on_click(cx.listener(move |this, _, _, cx| this.select_run(Some(run_id.clone()), cx))))
-            })
-            .child(div().p(px(2.)).rounded(px(3.)).border_1().border_color(color(cx, Role::Hairline)).child(Input::new(&self.goal_input).appearance(false)))
-            .child(Button::new("start-run").label("Start run").on_click(cx.listener(|this, _, window, cx| this.start_run(window, cx))))
-            .when_some(self.mission.notice.clone(), |this, notice| this.child(div().text_xs().text_color(color(cx, Role::Attention)).child(SharedString::from(shown(&notice)))))
-            .child(hud::label("runs in this project", cx))
-            .when(rows.is_empty(), |this| this.child(div().text_xs().text_color(color(cx, Role::TextDim)).child("No runs yet. Start one above, or ask for a multi-step change.")))
-            .children(rows)
-            .into_any_element()
     }
 
     // -------------------------------------------------------------------------------------------- the listing
@@ -584,14 +714,23 @@ impl Workspace {
         .detach();
     }
 
-    fn refresh_listing(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn refresh_listing(&mut self, cx: &mut Context<Self>) {
         match &self.connection.transport {
             BackendTransport::Hub { daemon, .. } => {
                 let (daemon, cwd) = (daemon.clone(), self.cwd.clone());
-                let job = cx.global::<Runtime>().0.spawn(async move { acp_core::hub::list(&daemon, Some(&cwd)).await });
+                let job = cx.global::<Runtime>().0.spawn(async move {
+                    let started = std::time::Instant::now();
+                    let result = acp_core::hub::list(&daemon, Some(&cwd)).await;
+                    (result, started.elapsed())
+                });
                 cx.spawn(async move |this, cx| {
-                    let result = job.await;
+                    let joined = job.await;
                     let _ = this.update(cx, |this, cx| {
+                        let result = joined.map(|(result, took)| {
+                            this.hub_latency = Some(took);
+                            this.hub_ok = Some(result.is_ok());
+                            result
+                        });
                         match result {
                             Ok(Ok(rows)) => {
                                 this.listing = rows
@@ -676,22 +815,51 @@ impl Workspace {
 
     // -------------------------------------------------------------------------------------------- actions
 
-    fn stop(&mut self, _: &StopTurn, _: &mut Window, cx: &mut Context<Self>) {
-        if self.model_menu {
+    /// esc: the topmost overlay or menu closes first; then an approval is denied; then, pressed twice, the run stops.
+    fn stop(&mut self, _: &StopTurn, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(top) = self.top_overlay() {
+            self.close_overlay(top, window, cx);
+            return;
+        }
+        if self.model_menu || self.overflow_open {
             self.model_menu = false;
+            self.overflow_open = false;
             cx.notify();
             return;
         }
-        self.session.update(cx, |session, cx| {
-            if session.view.menu.is_some() {
-                session.menu_dismiss(cx);
-            } else if session.view.turn_active {
-                session.cancel(cx);
+        if self.session.read(cx).view.menu.is_some() {
+            self.session.update(cx, |session, cx| session.menu_dismiss(cx));
+            return;
+        }
+        if self.saying {
+            self.saying = false;
+            cx.notify();
+            return;
+        }
+        if !self.session.read(cx).view.pending.is_empty() {
+            self.session.update(cx, |session, cx| session.answer(ApprovalDecision::Reject, cx));
+            return;
+        }
+        if self.session.read(cx).view.turn_active {
+            match self.esc_at {
+                Some(at) if at.elapsed() < DOUBLE_ESC => {
+                    self.esc_at = None;
+                    self.session.update(cx, |session, cx| session.cancel(cx));
+                }
+                _ => {
+                    self.esc_at = Some(Instant::now());
+                    cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(DOUBLE_ESC).await;
+                        let _ = this.update(cx, |_, cx| cx.notify());
+                    })
+                    .detach();
+                }
             }
-        });
+            cx.notify();
+        }
     }
 
-    fn cycle_mode(&mut self, _: &CycleMode, _: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn cycle_mode(&mut self, _: &CycleMode, _: &mut Window, cx: &mut Context<Self>) {
         self.session.update(cx, |session, cx| {
             let modes: Vec<String> = session.view.modes.iter().map(|m| m.id.clone()).collect();
             if modes.is_empty() {
@@ -709,7 +877,7 @@ impl Workspace {
         self.composer.update(cx, |state, cx| state.focus(window, cx));
     }
 
-    fn new_session(&mut self, _: &NewSession, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn new_session(&mut self, _: &NewSession, window: &mut Window, cx: &mut Context<Self>) {
         self.open(self.new_target(), window, cx);
     }
 
@@ -737,8 +905,8 @@ impl Workspace {
         self.switch_dock(DockTab::Review, cx);
     }
 
-    fn show_terminal_action(&mut self, _: &ShowTerminal, _: &mut Window, cx: &mut Context<Self>) {
-        self.switch_dock(DockTab::Terminal, cx);
+    fn show_terminal_action(&mut self, _: &ShowTerminal, window: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_terminal(&ToggleTerminal, window, cx);
     }
 
     fn show_browser_action(&mut self, _: &ShowBrowser, _: &mut Window, cx: &mut Context<Self>) {
@@ -747,10 +915,6 @@ impl Workspace {
 
     fn show_models_action(&mut self, _: &ShowModels, _: &mut Window, cx: &mut Context<Self>) {
         self.switch_dock(DockTab::Models, cx);
-    }
-
-    fn show_settings_action(&mut self, _: &ShowSettings, _: &mut Window, cx: &mut Context<Self>) {
-        self.switch_dock(DockTab::Settings, cx);
     }
 
     fn open_files_action(&mut self, _: &OpenFiles, window: &mut Window, cx: &mut Context<Self>) {
@@ -764,23 +928,19 @@ impl Workspace {
 
     pub(super) fn switch_dock(&mut self, tab: DockTab, cx: &mut Context<Self>) {
         self.dock_tab = tab;
+        self.overflow_open = false;
+        if !self.panel_open {
+            self.set_panel(true, cx);
+        }
         match tab {
             DockTab::Files => self.load_tree(cx),
             DockTab::Review => self.load_review(cx),
-            DockTab::Settings => self.load_settings_data(cx),
             DockTab::Models => {
                 self.session.read(cx).request("_cordata/ollama/status", serde_json::json!({}), models::OLLAMA_STATUS_TAG);
             }
             _ => {}
         }
         cx.notify();
-    }
-
-    fn dock_width(&self) -> f32 {
-        match self.dock_tab {
-            DockTab::Mission | DockTab::Files => DOCK_WIDTH,
-            DockTab::Editor | DockTab::Review | DockTab::Terminal | DockTab::Browser | DockTab::Models | DockTab::Settings => DOCK_WIDTH_WIDE,
-        }
     }
 
     fn next_session(&mut self, _: &NextSession, _: &mut Window, cx: &mut Context<Self>) {
@@ -819,36 +979,34 @@ impl Workspace {
 
     // -------------------------------------------------------------------------------------------- the composer
 
-    fn on_composer(&mut self, input: &Entity<InputState>, event: &InputEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_composer(&mut self, input: &Entity<TextareaState>, event: &InputEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
             InputEvent::Change => {
                 let text = input.read(cx).value().to_string();
                 self.session.update(cx, |session, cx| session.mirror_input(&text, cx));
             }
-            InputEvent::PressEnter { shift: false, .. } if self.saying => {
-                let text = input.read(cx).value().to_string();
-                self.saying = false;
-                input.update(cx, |state, cx| {
-                    state.set_value("", window, cx);
-                    state.set_placeholder("Ask Cordata…   / commands · @ files · ! shell", window, cx);
-                });
-                if !text.trim().is_empty() {
-                    self.session.update(cx, |session, cx| session.answer(ApprovalDecision::Say(text), cx));
-                }
-            }
-            InputEvent::PressEnter { shift: false, .. } => {
+            InputEvent::PressEnter { secondary, shift: false } => {
+                let enter_sends = self.prefs.send_with != "cmd-enter";
                 let has_menu = self.session.read(cx).view.menu.is_some();
-                if has_menu {
+                if has_menu && !*secondary {
                     let text = self.session.update(cx, |session, cx| session.menu_accept(true, cx));
                     input.update(cx, |state, cx| state.set_value(text, window, cx));
                     return;
                 }
-                let text = input.read(cx).value().to_string();
-                if text.trim().is_empty() {
+                // ↵ sends (⇧↵ is a newline), or with ⌘↵ chosen in Settings, ⌘↵ sends and ↵ is a newline.
+                if enter_sends == *secondary {
                     return;
                 }
-                input.update(cx, |state, cx| state.set_value("", window, cx));
-                self.session.update(cx, |session, cx| session.submit(&text, cx));
+                if self.saying {
+                    let text = input.read(cx).value().trim_end_matches('\n').to_string();
+                    self.saying = false;
+                    input.update(cx, |state, cx| state.set_value("", window, cx));
+                    if !text.trim().is_empty() {
+                        self.session.update(cx, |session, cx| session.answer(ApprovalDecision::Say(text), cx));
+                    }
+                    return;
+                }
+                self.send_composer(window, cx);
             }
             _ => {}
         }
@@ -873,7 +1031,6 @@ impl Workspace {
                 "r" | "n" | "k" => Some(ApprovalDecision::Reject),
                 "w" => {
                     self.saying = true;
-                    self.composer.update(cx, |state, cx| state.set_placeholder("Say why (or answer in your own words) — Enter sends, Esc goes back", window, cx));
                     cx.stop_propagation();
                     cx.notify();
                     return;
@@ -886,9 +1043,9 @@ impl Workspace {
                 return;
             }
         }
-        if self.saying && event.keystroke.key == "escape" {
-            self.saying = false;
-            self.composer.update(cx, |state, cx| state.set_placeholder("Ask Cordata…   / commands · @ files · ! shell", window, cx));
+        // ↵ on an empty composer answers the card: allow once.
+        if pending && empty && !self.saying && !plan && event.keystroke.key == "enter" && !event.keystroke.modifiers.modified() {
+            self.session.update(cx, |session, cx| session.answer(ApprovalDecision::Allow, cx));
             cx.stop_propagation();
             return;
         }
@@ -916,543 +1073,507 @@ impl Workspace {
         cx.stop_propagation();
     }
 
-    fn menu(&self, cx: &App) -> Option<AnyElement> {
-        let menu = self.session.read(cx).view.menu.as_ref()?;
-        let rows = menu.items.iter().enumerate().take(cordata_view::menu::MAX_ROWS + 3).map(|(index, item)| {
-            let selected = index == menu.selected;
-            div()
-                .flex()
-                .gap(px(10.))
-                .px(px(10.))
-                .py(px(3.))
-                .rounded(px(2.))
-                .when(selected, |this| this.bg(tint(cx, Role::Accent, 0.16)))
-                .child(div().w(px(150.)).font_family(crate::theme::mono(cx)).text_sm().text_color(color(cx, if selected { Role::Accent } else { Role::Text })).child(SharedString::from(item.label.clone())))
-                .child(div().text_xs().text_color(color(cx, Role::TextDim)).child(SharedString::from(item.hint.clone())))
-                .child(div().flex_1().text_xs().text_color(color(cx, Role::TextSecondary)).truncate().child(SharedString::from(item.detail.clone())))
-        });
-        Some(
-            div()
-                .id("composer-menu")
-                .role(gpui::Role::ListBox)
-                .aria_label("Suggestions")
-                .mx(px(16.))
-                .mb(px(4.))
-                .p(px(4.))
-                .rounded(px(4.))
-                .border_1()
-                .border_color(color(cx, Role::Hairline))
-                .bg(color(cx, Role::Raised))
-                .children(rows)
-                .child(div().px(px(10.)).pt(px(2.)).text_xs().text_color(color(cx, Role::TextDim)).child("↑↓ choose · Tab complete · Enter run · Esc close"))
-                .into_any_element(),
-        )
-    }
+    // -------------------------------------------------------------------------------------------- overlays
 
-    // -------------------------------------------------------------------------------------------- the rail
-
-    fn rail(&self, cx: &mut Context<Self>) -> AnyElement {
-        let session = self.session.read(cx);
-        let view = &session.view;
-        let project = self.cwd.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| self.cwd.display().to_string());
-        let branch = view.branch.clone();
-        let ground = if self.glass { tint(cx, Role::Surface, 0.55) } else { color(cx, Role::Surface) };
-        let waiting: usize = self.sessions.iter().map(|s| s.read(cx).view.pending.len()).sum();
-
-        let open_rows: Vec<AnyElement> = self
-            .sessions
-            .iter()
-            .enumerate()
-            .map(|(index, entity)| {
-                let s = entity.read(cx);
-                let (dot, state) = state_of(&s.view);
-                let shown_now = entity.entity_id() == self.session.entity_id();
-                let title = s.view.title.clone().unwrap_or_else(|| "New conversation".into());
-                let target = entity.clone();
-                div()
-                    .id(("open-session", index))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .px(px(8.))
-                    .py(px(6.))
-                    .rounded(px(3.))
-                    .cursor_pointer()
-                    .when(shown_now, |this| this.bg(tint(cx, Role::Accent, 0.10)).border_l_2().border_color(color(cx, Role::Accent)))
-                    .hover(|this| this.bg(tint(cx, Role::Accent, 0.06)))
-                    .on_click(cx.listener(move |this, _, _, cx| this.show(target.clone(), cx)))
-                    .child(hud::dot(Some(dot), cx))
-                    .child(div().flex_1().text_sm().text_color(color(cx, Role::Text)).truncate().child(SharedString::from(shown(&title))))
-                    .child(div().text_xs().text_color(color(cx, Role::TextDim)).child(SharedString::from(format!("{state} · ⌘{}", index + 1))))
-                    .into_any_element()
-            })
-            .collect();
-
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or_default();
-        let recent_rows: Vec<AnyElement> = self
-            .listing
-            .iter()
-            .filter(|row| !self.sessions.iter().any(|s| matches_target(s.read(cx), &row.target)))
-            .take(12)
-            .enumerate()
-            .map(|(index, row)| {
-                let target = row.target.clone();
-                div()
-                    .id(("recent", index))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .px(px(8.))
-                    .py(px(4.))
-                    .rounded(px(3.))
-                    .cursor_pointer()
-                    .hover(|this| this.bg(tint(cx, Role::Accent, 0.06)))
-                    .on_click(cx.listener(move |this, _, window, cx| this.open(target.clone(), window, cx)))
-                    .child(hud::dot(Some(if row.busy { Role::Accent } else if row.live { Role::Ok } else { Role::Hairline }), cx))
-                    .child(div().flex_1().text_sm().text_color(color(cx, Role::TextSecondary)).truncate().child(SharedString::from(shown(&row.title))))
-                    .child(div().text_xs().text_color(color(cx, if row.origin == "discord" { Role::Agent } else { Role::TextDim })).child(SharedString::from(format!("{}{}", door_glyph(&row.origin), age(now - row.when)))))
-                    .into_any_element()
-            })
-            .collect();
-
-        div()
-            .id("rail")
-            .role(gpui::Role::Navigation)
-            .aria_label("Projects and sessions")
-            .w(px(RAIL_WIDTH))
-            .h_full()
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .gap(px(14.))
-            .pt(px(48.))
-            .px(px(12.))
-            .bg(ground)
-            .border_r_1()
-            .border_color(color(cx, Role::Hairline))
-            .child(div().px(px(2.)).child(hud::bracket_title("Cordata", cx)))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(4.))
-                    .px(px(2.))
-                    .child(hud::label("project", cx))
-                    .child(div().text_sm().text_color(color(cx, Role::Text)).child(SharedString::from(project)))
-                    .when_some(branch, |this, branch| this.child(div().text_xs().text_color(color(cx, Role::Agent)).child(SharedString::from(format!("⎇ {branch}")))))
-                    .child({
-                        let trusted = self.settings_view.trusted;
-                        div()
-                            .id("rail-trust-status")
-                            .cursor_pointer()
-                            .text_xs()
-                            .font_family(crate::theme::mono(cx))
-                            .text_color(color(cx, if trusted { Role::Ok } else { Role::Attention }))
-                            .child(if trusted { "✓ trusted" } else { "⚠ untrusted" })
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.switch_dock(DockTab::Settings, cx);
-                            }))
-                    }),
-            )
-            .when(waiting > 0, |this| {
-                this.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(4.))
-                        .px(px(2.))
-                        .child(hud::label("needs you", cx))
-                        .child(div().text_sm().text_color(color(cx, Role::Attention)).child(SharedString::from(format!("{waiting} approval{} waiting", if waiting == 1 { "" } else { "s" })))),
-                )
-            })
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.))
-                    .child(div().flex().items_center().px(px(2.)).child(div().flex_1().child(hud::label("open", cx))).child(Button::new("new-session").label("+ New").ghost().on_click(cx.listener(|this, _, window, cx| this.new_session(&NewSession, window, cx)))))
-                    .children(open_rows),
-            )
-            .child(
-                div()
-                    .id("recent-list")
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.))
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .child(div().px(px(2.)).child(hud::label("recent", cx)))
-                    .children(recent_rows)
-                    .when_some(self.listing_error.clone(), |this, error| this.child(div().px(px(2.)).text_xs().text_color(color(cx, Role::Danger)).child(SharedString::from(shown(&error))))),
-            )
-            .child(div().pb(px(12.)).px(px(2.)).text_xs().text_color(color(cx, Role::TextDim)).child(SharedString::from(format!("via {}", session.transport))))
-            .into_any_element()
-    }
-
-    // -------------------------------------------------------------------------------------------- centre
-
-    fn header(&self, cx: &mut Context<Self>) -> AnyElement {
-        let view = &self.session.read(cx).view;
-        let mode = view.pending_mode.clone().unwrap_or_else(|| view.mode.clone());
-        let model = view.config("model").map(|option| option.current_name().to_owned());
-        div()
-            .flex()
-            .items_center()
-            .gap(px(10.))
-            .h(px(40.))
-            .px(px(16.))
-            .border_b_1()
-            .border_color(color(cx, Role::Hairline))
-            .child(div().flex_1().text_sm().text_color(color(cx, Role::TextSecondary)).truncate().child(SharedString::from(shown(view.title.as_deref().unwrap_or("")))))
-            .when_some(model, |this, model| {
-                this.child(
-                    div()
-                        .id("model-picker")
-                        .role(gpui::Role::Button)
-                        .aria_label("Model")
-                        .cursor_pointer()
-                        .px(px(6.))
-                        .py(px(2.))
-                        .rounded(px(2.))
-                        .hover(|this| this.bg(tint(cx, Role::Accent, 0.08)))
-                        .text_xs()
-                        .text_color(color(cx, Role::TextSecondary))
-                        .child(SharedString::from(format!("{model} ▾")))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.model_menu = !this.model_menu;
-                            cx.notify();
-                        })),
-                )
-            })
-            .when(!mode.is_empty(), |this| {
-                this.child(
-                    div()
-                        .id("mode-pill")
-                        .role(gpui::Role::Button)
-                        .aria_label(SharedString::from(format!("Mode: {mode}. Shift+Tab to change")))
-                        .cursor_pointer()
-                        .on_click(cx.listener(|this, _, window, cx| this.cycle_mode(&CycleMode, window, cx)))
-                        .child(hud::pill(&mode, mode_role(&mode), cx)),
-                )
-            })
-            .into_any_element()
-    }
-
-    fn model_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if !self.model_menu {
-            return None;
-        }
-        let option = self.session.read(cx).view.config("model")?.clone();
-        let rows = option.choices.iter().enumerate().map(|(index, choice)| {
-            let current = choice.value == option.current_value;
-            let value = choice.value.clone();
-            div()
-                .id(("model", index))
-                .px(px(10.))
-                .py(px(4.))
-                .rounded(px(2.))
-                .cursor_pointer()
-                .text_sm()
-                .text_color(color(cx, if current { Role::Accent } else { Role::Text }))
-                .hover(|this| this.bg(tint(cx, Role::Accent, 0.10)))
-                .child(SharedString::from(format!("{} {}", if current { "●" } else { " " }, shown(&choice.name))))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    let value = value.clone();
-                    this.model_menu = false;
-                    this.session.update(cx, |session, cx| session.set_config("model", &value, cx));
-                }))
-        });
-        Some(
-            div()
-                .id("model-menu")
-                .role(gpui::Role::Menu)
-                .aria_label("Models")
-                .absolute()
-                .top(px(48.))
-                .right(px(16.))
-                .w(px(300.))
-                .max_h(px(420.))
-                .overflow_y_scroll()
-                .p(px(4.))
-                .rounded(px(4.))
-                .border_1()
-                .border_color(color(cx, Role::Hairline))
-                .bg(color(cx, Role::Raised))
-                .children(rows)
-                .into_any_element(),
-        )
-    }
-
-    /// The connection is gone: the transcript stays (it is what was said), the composer is useless, and one click opens
-    /// the same conversation again.
-    fn banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let ConnState::Closed { error } = &self.session.read(cx).view.conn else { return None };
-        let why = error.clone().unwrap_or_else(|| "the session ended".into());
-        Some(
-            div()
-                .id("stale-banner")
-                .role(gpui::Role::Alert)
-                .flex()
-                .items_center()
-                .gap(px(10.))
-                .mx(px(16.))
-                .mb(px(8.))
-                .px(px(12.))
-                .py(px(8.))
-                .rounded(px(4.))
-                .border_1()
-                .border_color(color(cx, Role::Danger))
-                .bg(tint(cx, Role::Danger, 0.08))
-                .child(hud::pill("disconnected", Role::Danger, cx))
-                .child(div().flex_1().text_sm().text_color(color(cx, Role::TextSecondary)).child(SharedString::from(shown(&why))))
-                .child(Button::new("reconnect").label("Reconnect").primary().on_click(cx.listener(|this, _, window, cx| this.reconnect(window, cx))))
-                .into_any_element(),
-        )
-    }
-
-    fn approval_card(&self, pending: &PendingPermission, cx: &App) -> AnyElement {
-        let info = &pending.info;
-        let summary = info.raw_input.as_ref().and_then(|input| cordata_view::view::summarize_input(input, false)).unwrap_or_default();
-        let session = self.session.clone();
-        let answer = move |decision: ApprovalDecision| {
-            let session = session.clone();
-            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                let decision = decision.clone();
-                session.update(cx, |session, cx| session.answer(decision, cx));
-            }
-        };
-        let (title, buttons): (String, Vec<AnyElement>) = match info.tool_name.as_str() {
-            "present_plan" => (
-                "The plan is ready".into(),
-                [("approve_build", "Build", true), ("approve_edit", "Edit", false), ("approve_auto", "Auto", false)]
-                    .into_iter()
-                    .filter(|(id, ..)| info.option(id).is_some())
-                    .map(|(id, label, primary)| {
-                        let button = Button::new(SharedString::from(id)).label(label).on_click(answer(ApprovalDecision::Choose(id.into())));
-                        if primary { button.primary().into_any_element() } else { button.into_any_element() }
-                    })
-                    .chain([Button::new("keep-planning").label("Keep planning").ghost().on_click(answer(ApprovalDecision::Reject)).into_any_element()])
-                    .collect(),
-            ),
-            "ask_user" => (
-                info.raw_input.as_ref().and_then(|input| input.get("question")).and_then(|q| q.as_str()).unwrap_or("The agent has a question").to_owned(),
-                cordata_view::view::ask_choices(info)
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, choice)| Button::new(SharedString::from(format!("choice-{index}"))).label(SharedString::from(format!("{} {}", index + 1, shown(&choice.name)))).on_click(answer(ApprovalDecision::Choose(choice.id.clone()))).into_any_element())
-                    .chain([Button::new("skip").label("Skip").ghost().on_click(answer(ApprovalDecision::Reject)).into_any_element()])
-                    .collect(),
-            ),
-            _ => (
-                format!("Allow {}?", info.tool_name),
-                [
-                    Some(Button::new("allow").label("Allow").primary().on_click(answer(ApprovalDecision::Allow)).into_any_element()),
-                    info.always_label.as_ref().map(|label| Button::new("always").label(SharedString::from(format!("Always: {}", shown(label)))).on_click(answer(ApprovalDecision::AllowAlways)).into_any_element()),
-                    Some(Button::new("reject").label("Reject").danger().on_click(answer(ApprovalDecision::Reject)).into_any_element()),
-                ]
-                .into_iter()
-                .flatten()
-                .collect(),
-            ),
-        };
-        let untrusted = info.untrusted_source;
-        div()
-            .id("approval")
-            .role(gpui::Role::Dialog)
-            .aria_label("Approval")
-            .mx(px(16.))
-            .mb(px(8.))
-            .rounded(px(4.))
-            .border_1()
-            .border_color(color(cx, Role::Attention))
-            .bg(tint(cx, Role::Attention, 0.06))
-            .p(px(12.))
-            .flex()
-            .flex_col()
-            .gap(px(8.))
-            .child(div().flex().items_center().gap(px(8.)).child(hud::pill("needs you", Role::Attention, cx)).child(div().text_sm().font_weight(gpui::FontWeight::SEMIBOLD).text_color(color(cx, Role::Text)).child(SharedString::from(shown(&title)))))
-            .when(!summary.is_empty(), |this| {
-                this.child(
-                    div()
-                        .p(px(8.))
-                        .rounded(px(3.))
-                        .bg(color(cx, Role::Surface))
-                        .font_family(crate::theme::mono(cx))
-                        .text_xs()
-                        .text_color(color(cx, if untrusted { Role::Agent } else { Role::TextSecondary }))
-                        .child(SharedString::from(shown(&summary))),
-                )
-            })
-            .child(div().flex().flex_wrap().gap(px(8.)).children(buttons))
-            .into_any_element()
-    }
-
-    fn footer(&self, cx: &App) -> AnyElement {
-        let view = &self.session.read(cx).view;
-        let context = view.context.as_ref();
-        let (fraction, value) = match context {
-            Some(gauge) => (gauge.pct, match gauge.window {
-                Some(window) => format!("{}k / {}k", gauge.used / 1000, window / 1000),
-                None => format!("{}k", gauge.used / 1000),
-            }),
-            None => (None, "—".into()),
-        };
-        let (tokens_in, tokens_out) = view.session_tokens;
-        div()
-            .flex()
-            .items_center()
-            .gap(px(18.))
-            .h(px(28.))
-            .px(px(16.))
-            .border_t_1()
-            .border_color(color(cx, Role::Hairline))
-            .child(hud::gauge("context", fraction, &value, cx))
-            .child(div().text_xs().text_color(color(cx, Role::TextDim)).child(SharedString::from(format!("{} {}k in · {}k out", tracked("tokens"), tokens_in / 1000, tokens_out / 1000))))
-            .child(div().flex_1())
-            .when(view.turn_active, |this| this.child(div().text_xs().text_color(color(cx, Role::Accent)).child(SharedString::from(format!("● working · {} tool{} · Esc stops", view.turn_tools, if view.turn_tools == 1 { "" } else { "s" })))))
-            .when_some(view.hint.clone(), |this, hint| this.child(div().text_xs().text_color(color(cx, Role::Attention)).child(SharedString::from(shown(&hint)))))
-            .into_any_element()
-    }
-
-    // ------------------------------------------------------------------------------------------------ the dock
-
-    fn dock(&self, cx: &mut Context<Self>) -> AnyElement {
-        const TABS: [DockTab; 8] = [DockTab::Mission, DockTab::Files, DockTab::Editor, DockTab::Review, DockTab::Terminal, DockTab::Browser, DockTab::Models, DockTab::Settings];
-        let tab_buttons = div()
-            .id("dock-tabs")
-            .flex()
-            .items_center()
-            .gap(px(4.))
-            .border_b_1()
-            .border_color(color(cx, Role::Hairline))
-            .pb(px(8.))
-            .children(TABS.iter().map(|&tab| {
-                let selected = self.dock_tab == tab;
-                let label = self.dock_label(tab);
-                div()
-                    .id(("dock-tab", tab as usize))
-                    .px(px(6.))
-                    .py(px(2.))
-                    .rounded(px(2.))
-                    .cursor_pointer()
-                    .text_xs()
-                    .font_family(crate::theme::mono(cx))
-                    .text_color(color(cx, if selected { Role::Accent } else { Role::TextSecondary }))
-                    .when(selected, |el| el.bg(tint(cx, Role::Accent, 0.1)))
-                    .hover(|el| el.text_color(color(cx, Role::Text)))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.switch_dock(tab, cx);
-                    }))
-                    .child(SharedString::from(label))
-            }));
-
-        let body: AnyElement = match self.dock_tab {
-            DockTab::Mission => {
-                let mission = self.mission_panel(cx);
-                let view = &self.session.read(cx).view;
-                let checklist = (!view.checklist.is_empty()).then(|| {
-                    div().flex().flex_col().gap(px(3.)).children(view.checklist.iter().map(|item| {
-                        let (glyph, role) = match item.status {
-                            cordata_view::extras::TodoStatus::Completed => ("☑", Role::Ok),
-                            cordata_view::extras::TodoStatus::InProgress => ("◐", Role::Accent),
-                            cordata_view::extras::TodoStatus::Pending => ("☐", Role::TextDim),
-                        };
-                        div().flex().gap(px(6.)).text_xs().child(div().text_color(color(cx, role)).child(glyph)).child(div().text_color(color(cx, Role::TextSecondary)).child(SharedString::from(shown(&item.content))))
-                    }))
+    pub(super) fn open_overlay(&mut self, overlay: Overlay, window: &mut Window, cx: &mut Context<Self>) {
+        self.model_menu = false;
+        self.overflow_open = false;
+        self.overlays.retain(|o| *o != overlay);
+        self.overlays.push(overlay);
+        match overlay {
+            Overlay::Palette => {
+                self.palette_ix = 0;
+                self.palette_input.update(cx, |s, cx| {
+                    s.set_value("", window, cx);
+                    s.focus(window, cx);
                 });
+            }
+            Overlay::Picker => {
+                self.picker_ix = 0;
+                self.picker_note = None;
+                self.picker_input.update(cx, |s, cx| {
+                    s.set_value("", window, cx);
+                    s.focus(window, cx);
+                });
+            }
+            Overlay::Clone => {
+                self.reset_clone_sheet(window, cx);
+                self.clone_url.update(cx, |s, cx| s.focus(window, cx));
+            }
+            Overlay::Settings => {
+                self.open_select = None;
+                self.load_settings_data(cx);
+                self.on_settings_section(cx);
+                window.focus(&self.settings_focus, cx);
+            }
+            Overlay::Confirm => window.focus(&self.settings_focus, cx),
+        }
+        cx.notify();
+    }
+
+    pub(super) fn close_overlay(&mut self, overlay: Overlay, window: &mut Window, cx: &mut Context<Self>) {
+        self.overlays.retain(|o| *o != overlay);
+        if overlay == Overlay::Confirm {
+            self.confirm = None;
+        }
+        self.focus_top(window, cx);
+        cx.notify();
+    }
+
+    /// Focus what is on top: the overlay's input, or the composer when nothing floats.
+    fn focus_top(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.top_overlay() {
+            Some(Overlay::Palette) => self.palette_input.update(cx, |s, cx| s.focus(window, cx)),
+            Some(Overlay::Picker) => self.picker_input.update(cx, |s, cx| s.focus(window, cx)),
+            Some(Overlay::Clone) => self.clone_url.update(cx, |s, cx| s.focus(window, cx)),
+            Some(Overlay::Settings | Overlay::Confirm) => window.focus(&self.settings_focus, cx),
+            None => self.composer.update(cx, |s, cx| s.focus(window, cx)),
+        }
+    }
+
+    fn top_overlay(&self) -> Option<Overlay> {
+        self.overlays.last().copied()
+    }
+
+    pub(super) fn ask_confirm(&mut self, what: Confirm, window: &mut Window, cx: &mut Context<Self>) {
+        self.confirm = Some(what);
+        self.open_overlay(Overlay::Confirm, window, cx);
+    }
+
+    fn confirmed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(what) = self.confirm.take() else { return };
+        self.close_overlay(Overlay::Confirm, window, cx);
+        match what {
+            Confirm::Trust => self.grant_trust(cx),
+            Confirm::SignOut => {
+                match crate::keychain::forget() {
+                    Ok(()) => self.settings_view.set_notice("Signed out: the key is gone from the Keychain.".into(), false),
+                    Err(error) => self.settings_view.set_notice(error, true),
+                }
+                self.api_key_masked = crate::keychain::masked();
+            }
+            Confirm::ResetPrefs => {
+                let recents = std::mem::take(&mut self.prefs.recents);
+                self.prefs = Prefs { recents: if self.prefs.recents.is_empty() { Vec::new() } else { recents }, ..Prefs::default() };
+                self.prefs.touch_recent(&self.cwd.clone(), prefs::now());
+                self.prefs.save();
+                cx.set_global(self.prefs.clone());
+                crate::theme::set_theme(&self.prefs.theme, cx);
+                self.apply_send_with(cx);
+                self.settings_view.set_notice("This window's preferences are back to their defaults.".into(), false);
+            }
+        }
+        cx.notify();
+    }
+
+    fn confirm_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
+        let tk = tk(cx);
+        let (title, body, yes): (&str, String, &str) = match self.confirm.as_ref() {
+            Some(Confirm::Trust) => {
+                let blocked = self.settings_view.blocked_plugins.len();
+                let ignored = self.settings_view.ignored_warnings.len();
+                (
+                    "Trust this project?",
+                    format!(
+                        "{} will be able to apply its own settings and allow rules ({ignored} held back now) and start its MCP servers ({blocked} held back now). Trust only folders whose contents you know.",
+                        self.project_name()
+                    ),
+                    "Trust project",
+                )
+            }
+            Some(Confirm::SignOut) => ("Sign out?", "The API key is removed from the Keychain. A running backend keeps its key until it restarts.".into(), "Sign out"),
+            Some(Confirm::ResetPrefs) => ("Reset all settings?", "Theme, layout, sending and notification choices go back to their defaults. Harness settings files are not touched.".into(), "Reset"),
+            None => ("", String::new(), ""),
+        };
+        let danger = !matches!(self.confirm, Some(Confirm::Trust));
+        div()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
                 div()
-                    .id("mission-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
+                    .id("confirm")
+                    .role(gpui::Role::AlertDialog)
+                    .aria_label(SharedString::from(title.to_owned()))
+                    .track_focus(&self.settings_focus)
+                    .key_context("Confirm")
+                    .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| match event.keystroke.key.as_str() {
+                        "escape" => {
+                            this.close_overlay(Overlay::Confirm, window, cx);
+                            cx.stop_propagation();
+                        }
+                        "enter" => {
+                            this.confirmed(window, cx);
+                            cx.stop_propagation();
+                        }
+                        _ => {}
+                    }))
+                    .w(px(420.))
                     .flex()
                     .flex_col()
                     .gap(px(12.))
-                    .pb(px(12.))
-                    .child(hud::frame("mission control", mission, cx))
-                    .when_some(checklist, |this, list| this.child(hud::frame("tasks", list, cx)))
-                    .when_some(view.goal.as_ref(), |this, goal| this.child(hud::frame("goal", div().text_xs().text_color(color(cx, Role::TextSecondary)).child(SharedString::from(shown(&goal.condition))), cx)))
-                    .into_any_element()
-            }
-            DockTab::Files => editor::pane("files", self.files_panel(cx), cx),
-            DockTab::Editor => self.editor_panel(cx),
-            DockTab::Review => self.review_panel(cx),
-            DockTab::Terminal => editor::pane("terminal", self.terminal_panel(cx), cx),
-            DockTab::Browser => editor::pane("browser agent", self.browser_panel(cx), cx),
-            DockTab::Models => editor::pane("models & voice", self.models_panel(cx), cx),
-            DockTab::Settings => editor::pane("settings & trust", self.settings_panel(cx), cx),
-        };
-
-        div()
-            .id("dock")
-            .role(gpui::Role::Complementary)
-            .aria_label("Dock")
-            .w(px(self.dock_width()))
-            .h_full()
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .gap(px(10.))
-            .pt(px(48.))
-            .px(px(12.))
-            .bg(color(cx, Role::Ground))
-            .border_l_1()
-            .border_color(color(cx, Role::Hairline))
-            .child(tab_buttons)
-            .child(div().flex_1().min_h_0().child(body))
+                    .p(px(20.))
+                    .rounded(px(t::RADIUS_MODAL))
+                    .bg(c(tk.bg_input))
+                    .border_1()
+                    .border_color(line(cx, t::LINE_CONTROL_STRONG))
+                    .shadow(crate::theme::modal_shadow(cx))
+                    .child(div().text_size(px(t::TEXT_SETTINGS_TITLE)).font_weight(gpui::FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(title))
+                    .child(div().text_size(px(t::TEXT_UI)).line_height(gpui::relative(1.5)).text_color(c(tk.text_secondary)).child(SharedString::from(body)))
+                    .child(
+                        div()
+                            .flex()
+                            .justify_end()
+                            .gap(px(8.))
+                            .pt(px(4.))
+                            .child(ui::button("confirm-no", "Cancel  esc", Kind::Ghost, cx).on_click(cx.listener(|this, _, window, cx| this.close_overlay(Overlay::Confirm, window, cx))))
+                            .child(ui::button("confirm-yes", SharedString::from(format!("{yes}  ↵")), if danger { Kind::Danger } else { Kind::Primary }, cx).on_click(cx.listener(|this, _, window, cx| this.confirmed(window, cx)))),
+                    ),
+            )
             .into_any_element()
     }
-}
 
+    // -------------------------------------------------------------------------------------------- panel, project, trust
+
+    pub(super) fn set_panel(&mut self, open: bool, cx: &mut Context<Self>) {
+        if self.panel_open != open {
+            self.panel_open = open;
+            self.prefs.panel_open = Some(open);
+            self.prefs.save();
+        }
+        cx.notify();
+    }
+
+    pub(super) fn toggle_panel(&mut self, _: &TogglePanel, window: &mut Window, cx: &mut Context<Self>) {
+        let open = !self.panel_open;
+        self.set_panel(open, cx);
+        if !open {
+            // Focus may have been inside the panel: keys must still reach the window.
+            self.composer.update(cx, |s, cx| s.focus(window, cx));
+        }
+    }
+
+    pub(super) fn toggle_terminal(&mut self, _: &ToggleTerminal, window: &mut Window, cx: &mut Context<Self>) {
+        if self.panel_open && self.dock_tab == DockTab::Terminal {
+            self.set_panel(false, cx);
+            self.composer.update(cx, |s, cx| s.focus(window, cx));
+        } else {
+            self.set_panel(true, cx);
+            self.switch_dock(DockTab::Terminal, cx);
+        }
+    }
+
+    fn open_palette(&mut self, _: &OpenPalette, window: &mut Window, cx: &mut Context<Self>) {
+        if self.top_overlay() == Some(Overlay::Palette) {
+            self.close_overlay(Overlay::Palette, window, cx);
+        } else {
+            self.open_overlay(Overlay::Palette, window, cx);
+        }
+    }
+
+    fn switch_project_action(&mut self, _: &SwitchProject, window: &mut Window, cx: &mut Context<Self>) {
+        // ⌘O again inside the picker is its "Open folder…".
+        if self.top_overlay() == Some(Overlay::Picker) {
+            self.choose_folder(window, cx);
+        } else {
+            self.open_overlay(Overlay::Picker, window, cx);
+        }
+    }
+
+    fn open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_overlay(Overlay::Settings, window, cx);
+    }
+
+    fn start_mission(&mut self, _: &StartMission, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_panel(true, cx);
+        self.dock_tab = DockTab::Mission;
+        self.start_run(window, cx);
+    }
+
+    /// Open a folder as the project: new conversations run there, the panes follow, it goes first in the recents.
+    pub(super) fn switch_project(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let path = match path.canonicalize() {
+            Ok(path) if path.is_dir() => path,
+            _ => {
+                self.picker_note = Some((format!("{} is not a folder.", tilde(&path)), true));
+                cx.notify();
+                return;
+            }
+        };
+        self.overlays.retain(|o| !matches!(o, Overlay::Picker | Overlay::Clone));
+        if path == self.cwd {
+            cx.notify();
+            return;
+        }
+        self.cwd = path.clone();
+        self.prefs.touch_recent(&path, prefs::now());
+        self.prefs.save();
+        self.listing.clear();
+        self.listing_error = None;
+        self.settings_view.trusted = false;
+        self.mission = Mission::default();
+        self.files = editor::Files::default();
+        self.review = review::Review::default();
+        let target = self.new_target();
+        let (connection, cwd) = (self.connection.clone(), self.cwd.clone());
+        let session = cx.new(|cx| Session::start(&connection, target, cwd, None, cx));
+        self.adopt(session, window, cx);
+        self.refresh_listing(cx);
+        self.load_tree(cx);
+        self.load_review(cx);
+        self.composer.update(cx, |s, cx| s.focus(window, cx));
+        cx.notify();
+    }
+
+    /// "Trust project": the person's decision, after seeing what it turns on.
+    pub(super) fn ask_trust(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.session.read(cx).request("_cordata/trust/status", serde_json::json!({}), settings_view::TRUST_STATUS_TAG);
+        self.ask_confirm(Confirm::Trust, window, cx);
+    }
+
+    /// Revoke trust for `path` (this project when `None`).
+    pub(super) fn revoke_trust(&mut self, path: Option<String>, cx: &mut Context<Self>) {
+        let path = path.unwrap_or_else(|| self.cwd.display().to_string());
+        self.session.read(cx).request("_cordata/trust/revoke", serde_json::json!({ "path": path }), TRUST_REVOKE_TAG);
+        if Path::new(&path) == self.cwd {
+            self.settings_view.trusted = false;
+        }
+        self.trusted_projects.retain(|p| *p != path);
+        if self.prefs.set_trusted(Path::new(&path), false) {
+            self.prefs.save();
+        }
+        cx.notify();
+    }
+
+    pub(super) fn load_plugins(&mut self, cx: &mut Context<Self>) {
+        self.session.read(cx).request("_cordata/plugins/list", serde_json::json!({}), PLUGINS_TAG);
+    }
+
+    pub(super) fn load_trusted_projects(&mut self, cx: &mut Context<Self>) {
+        self.session.read(cx).request("_cordata/trust/list", serde_json::json!({}), TRUST_LIST_TAG);
+    }
+
+    /// The hub's address, as the person would recognise it.
+    pub(super) fn endpoint(&self) -> String {
+        match &self.connection.transport {
+            BackendTransport::Hub { daemon, .. } => format!("{daemon:?}").trim_matches('"').to_owned(),
+            BackendTransport::Stdio => "stdio (a private backend from this checkout)".into(),
+            #[allow(unreachable_patterns)]
+            other => format!("{other:?}"),
+        }
+    }
+
+    /// The sidebar footer and status bar: is the connection well?
+    pub(super) fn connection_status(&self, cx: &App) -> (Dot, String) {
+        let session = self.session.read(cx);
+        match (&session.view.conn, self.hub_ok) {
+            (ConnState::Connecting, _) => (Dot::Hollow, "connecting…".into()),
+            (ConnState::Closed { .. }, _) | (_, Some(false)) => (Dot::Amber, "reconnecting…".into()),
+            _ => (Dot::Ok, format!("via {}", session.transport)),
+        }
+    }
+
+    pub(super) fn hub_health(&self, cx: &App) -> (Dot, String) {
+        let (dot, text) = self.connection_status(cx);
+        match (dot, self.hub_latency, &self.connection.transport) {
+            (Dot::Ok, Some(latency), BackendTransport::Hub { .. }) => (Dot::Ok, format!("hub · {}ms", latency.as_millis())),
+            (Dot::Ok, _, BackendTransport::Hub { .. }) => (Dot::Ok, "hub".into()),
+            (Dot::Ok, ..) => (Dot::Ok, self.session.read(cx).transport.to_owned()),
+            _ => (dot, text),
+        }
+    }
+
+    // -------------------------------------------------------------------------------------------- composer helpers
+
+    pub(super) fn insert_trigger(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.composer.read(cx).value().to_string();
+        let next = if text.is_empty() || text.ends_with(char::is_whitespace) { format!("{text}{key}") } else { format!("{text} {key}") };
+        self.composer.update(cx, |s, cx| {
+            s.set_value(next.clone(), window, cx);
+            s.focus(window, cx);
+        });
+        self.session.update(cx, |session, cx| session.mirror_input(&next, cx));
+    }
+
+    pub(super) fn send_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.composer.read(cx).value().trim_end_matches('\n').to_string();
+        if text.trim().is_empty() {
+            return;
+        }
+        self.composer.update(cx, |state, cx| state.set_value("", window, cx));
+        self.session.update(cx, |session, cx| session.submit(&text, cx));
+    }
+
+    pub(super) fn copy_last_reply(&mut self, cx: &mut Context<Self>) {
+        let last = self.session.read(cx).view.messages.iter().rev().find_map(|m| match m {
+            cordata_view::app::Message::Agent(text) if !text.trim().is_empty() => Some(cordata_view::shown(text)),
+            _ => None,
+        });
+        if let Some(text) = last {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
+
+    /// The send key from the preferences: ↵ (⇧↵ newline) or ⌘↵ (↵ newline).
+    pub(super) fn apply_send_with(&mut self, cx: &mut Context<Self>) {
+        let enter_sends = self.prefs.send_with != "cmd-enter";
+        self.composer.update(cx, |s, cx| s.set_submit_on_enter(enter_sends, cx));
+    }
+
+    /// The status bar's "press esc again" hint, while the first press is fresh.
+    pub(super) fn esc_hint(&self) -> Option<&'static str> {
+        self.esc_at.filter(|at| at.elapsed() < DOUBLE_ESC).map(|_| "esc again stops the run")
+    }
+
+    fn switch_slot(&mut self, n: usize, cx: &mut Context<Self>) {
+        if n <= self.sessions.len() {
+            self.switch(SwitchTarget::Slot(n), cx);
+        }
+    }
+
+    fn sound_and_notify(&mut self, session: &Entity<Session>, window: &mut Window, cx: &mut Context<Self>) {
+        let id = session.entity_id();
+        let (active, pending, connected) = {
+            let view = &session.read(cx).view;
+            (view.turn_active, !view.pending.is_empty(), matches!(view.conn, ConnState::Connected))
+        };
+        let was = self.turn_seen.insert(id, active).unwrap_or(false);
+        if was && !active && self.prefs.sound_on_completion {
+            crate::platform::play_sound("Glass");
+        }
+        if connected && self.loaded.insert(id) && id == self.session.entity_id() {
+            self.reconnects = 0;
+            self.load_settings_data(cx);
+            self.load_plugins(cx);
+        }
+        if pending && self.prefs.notify_approval && !window.is_window_active() {
+            crate::platform::notify("Cordata needs you", "A command is waiting for your approval.");
+        }
+    }
+
+    /// A closed session tries again on its own a few times, waiting longer each time; then Retry is the person's.
+    fn maybe_auto_reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let closed = matches!(self.session.read(cx).view.conn, ConnState::Closed { .. });
+        if !closed || self.reconnects >= AUTO_RECONNECTS || self.connection.problem.is_some() || self.selftest.is_some() {
+            return;
+        }
+        self.reconnects += 1;
+        let wait = Duration::from_secs(2u64.pow(self.reconnects));
+        let id = self.session.entity_id();
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(wait).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.session.entity_id() == id && matches!(this.session.read(cx).view.conn, ConnState::Closed { .. }) {
+                    let tries = this.reconnects;
+                    this.reconnect(window, cx);
+                    this.reconnects = tries;
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn overlay_layer(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.overlays.is_empty() {
+            return None;
+        }
+        let tk = tk(cx);
+        // A scrim under modals; the picker is a popover and keeps the window visible.
+        let modal = self.overlays.iter().any(|o| matches!(o, Overlay::Palette | Overlay::Settings | Overlay::Clone | Overlay::Confirm));
+        let mut layer = div().id("overlays").absolute().inset_0().when(modal, |l| l.bg(ca(tk.bg_window, t::SCRIM))).occlude();
+        for overlay in &self.overlays {
+            let element = match overlay {
+                Overlay::Palette => self.palette(window, cx),
+                Overlay::Picker => self.picker(window, cx),
+                Overlay::Settings => self.settings_modal(window, cx),
+                Overlay::Clone => self.clone_sheet(cx),
+                Overlay::Confirm => self.confirm_dialog(cx),
+            };
+            layer = layer.child(div().absolute().inset_0().child(element));
+        }
+        Some(layer.into_any_element())
+    }
+}
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.poll_disk(window, cx);
         self.sync_transcript(cx);
+        let placeholder = self.placeholder(cx);
+        if placeholder != self.composer_placeholder {
+            self.composer_placeholder = placeholder;
+            self.composer.update(cx, |s, cx| s.set_placeholder(placeholder, window, cx));
+        }
+        let tk = tk(cx);
+        let size = window.viewport_size();
+        let window_w = size.width.as_f32();
+        let panel_w = if self.panel_open { side_panel::panel_width(self.dock_tab, window_w) } else { 0. };
+        let column_w = (window_w - t::SIDEBAR_W - panel_w).max(0.);
         let session = self.session.clone();
         let expanded = self.expanded.clone();
         let thoughts = session.read(cx).view.thoughts_expanded;
+        let has_conversation = session.read(cx).view.messages.iter().any(transcript::is_conversation);
         let this = cx.entity().downgrade();
-        let transcript = list(self.transcript.clone(), move |ix, _window, cx| {
+        let transcript_list = list(self.transcript.clone(), move |ix, _window, cx| {
             let view = &session.read(cx).view;
             let Some(message) = view.messages.get(ix) else { return div().into_any_element() };
+            let is_tool = |m: Option<&cordata_view::app::Message>| matches!(m, Some(cordata_view::app::Message::Tool(_)));
+            let edge = GroupEdge { first: ix == 0 || !is_tool(view.messages.get(ix - 1)), last: !is_tool(view.messages.get(ix + 1)) };
             let (card_id, is_thought) = match message {
                 cordata_view::app::Message::Tool(card) => (Some(card.id.clone()), false),
                 cordata_view::app::Message::Thought(_) => (None, true),
                 _ => (None, false),
             };
-            let expand = view.expand_tools || card_id.as_ref().is_some_and(|id| expanded.contains(id));
+            let open = view.expand_tools || card_id.as_ref().is_some_and(|id| expanded.contains(id));
             let (this, session) = (this.clone(), session.clone());
             div()
-                .id(("block", ix))
-                .px(px(20.))
-                .when(card_id.is_some() || is_thought, |el| el.cursor_pointer())
-                .on_click(move |_, _, cx| {
-                    if let Some(id) = &card_id {
-                        let id = id.clone();
-                        let _ = this.update(cx, |this, cx| {
-                            if !this.expanded.remove(&id) {
-                                this.expanded.insert(id);
+                .w_full()
+                .flex()
+                .justify_center()
+                .px(px(24.))
+                .child(
+                    div()
+                        .id(("block", ix))
+                        .w_full()
+                        .max_w(px(t::CONTENT_MAX_W))
+                        .when(card_id.is_some() || is_thought, |el| el.cursor_pointer())
+                        .on_click(move |_, _, cx| {
+                            if let Some(id) = &card_id {
+                                let id = id.clone();
+                                let _ = this.update(cx, |this, cx| {
+                                    if !this.expanded.remove(&id) {
+                                        this.expanded.insert(id);
+                                    }
+                                    // The row's height changes: lay it out again.
+                                    this.transcript.splice(ix..ix + 1, 1);
+                                    cx.notify();
+                                });
+                            } else if is_thought {
+                                session.update(cx, |session, cx| session.toggle_thoughts(cx));
                             }
-                            // The card's height changes: lay it out again.
-                            this.transcript.splice(ix..ix + 1, 1);
-                            cx.notify();
-                        });
-                    } else if is_thought {
-                        session.update(cx, |session, cx| session.toggle_thoughts(cx));
-                    }
-                })
-                .child(crate::transcript::block(message, ix, expand, thoughts, cx))
+                        })
+                        .child(transcript::block(message, ix, edge, open, thoughts, cx)),
+                )
                 .into_any_element()
         })
         .size_full();
         let pending = self.session.clone().read(cx).view.pending.front().map(|pending| self.approval_card(pending, cx));
-        let banner = self.banner(cx);
-        let menu = self.menu(cx);
+        let actions_row = self.post_reply_actions(cx);
+        let menu = self.slash_menu(cx);
         let model_menu = self.model_menu(cx);
-        let rail = self.rail(cx);
-        let header = self.header(cx);
+        let sidebar = self.sidebar(cx);
+        let header = self.header(column_w, cx);
+        let composer = self.composer(cx);
+        let status_bar = self.status_bar(cx);
+        let panel = self.panel_open.then(|| self.side_panel(window_w, cx));
+        let overlays = self.overlay_layer(window, cx);
+        let haze = self.prefs.haze && self.display.atmosphere();
+        let body: AnyElement = if has_conversation {
+            div().id("transcript").role(gpui::Role::Log).aria_label("Transcript").flex_1().min_h_0().child(transcript_list).into_any_element()
+        } else {
+            div().flex_1().min_h_0().child(self.empty_state(cx)).into_any_element()
+        };
 
         div()
             .id("workspace")
@@ -1465,6 +1586,12 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::next_session))
             .on_action(cx.listener(Self::prev_session))
             .on_action(cx.listener(Self::command_menu))
+            .on_action(cx.listener(Self::open_palette))
+            .on_action(cx.listener(Self::switch_project_action))
+            .on_action(cx.listener(Self::toggle_panel))
+            .on_action(cx.listener(Self::toggle_terminal))
+            .on_action(cx.listener(Self::open_settings))
+            .on_action(cx.listener(Self::start_mission))
             .on_action(cx.listener(Self::toggle_thoughts))
             .on_action(cx.listener(Self::toggle_tools))
             .on_action(cx.listener(Self::help))
@@ -1475,71 +1602,64 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::show_terminal_action))
             .on_action(cx.listener(Self::show_browser_action))
             .on_action(cx.listener(Self::show_models_action))
-            .on_action(cx.listener(Self::show_settings_action))
             .on_action(cx.listener(Self::open_files_action))
             .on_action(cx.listener(Self::save_file_action))
+            .on_action(cx.listener(|this, _: &SwitchTo1, _, cx| this.switch_slot(1, cx)))
+            .on_action(cx.listener(|this, _: &SwitchTo2, _, cx| this.switch_slot(2, cx)))
+            .on_action(cx.listener(|this, _: &SwitchTo3, _, cx| this.switch_slot(3, cx)))
+            .on_action(cx.listener(|this, _: &SwitchTo4, _, cx| this.switch_slot(4, cx)))
+            .on_action(cx.listener(|this, _: &SwitchTo5, _, cx| this.switch_slot(5, cx)))
+            .on_action(cx.listener(|this, _: &SwitchTo6, _, cx| this.switch_slot(6, cx)))
+            .on_action(cx.listener(|this, _: &SwitchTo7, _, cx| this.switch_slot(7, cx)))
+            .on_action(cx.listener(|this, _: &SwitchTo8, _, cx| this.switch_slot(8, cx)))
+            .on_action(cx.listener(|this, _: &SwitchTo9, _, cx| this.switch_slot(9, cx)))
             .size_full()
             .relative()
+            .flex()
+            .flex_col()
+            .bg(c(tk.bg_window))
             .font_family(crate::theme::sans(cx))
-            .text_color(color(cx, Role::Text))
-            .when(!self.glass, |this| this.child(hud::haze(self.display.atmosphere(), cx)))
+            .text_color(c(tk.text_body))
             .child(
                 div()
-                    .absolute()
-                    .inset_0()
                     .flex()
-                    .child(rail)
+                    .flex_1()
+                    .min_h_0()
+                    .child(sidebar)
                     .child(
                         div()
+                            .id("conversation")
                             .flex_1()
                             .h_full()
                             .min_w_0()
                             .relative()
                             .flex()
                             .flex_col()
-                            .when(self.glass, |this| this.child(div().absolute().inset_0().child(hud::haze(self.display.atmosphere(), cx))))
-                            .pt(px(8.))
+                            .bg(c(tk.bg_main))
+                            .child(hud::haze(haze, cx))
                             .child(header)
-                            .child(div().id("transcript").role(gpui::Role::Log).aria_label("Transcript").flex_1().min_h_0().child(transcript))
-                            .children(banner)
-                            .children(pending)
-                            .children(menu)
+                            .child(body)
                             .child(
                                 div()
-                                    .id("composer")
-                                    .role(gpui::Role::Group)
-                                    .aria_label("Composer")
-                                    .capture_key_down(cx.listener(Self::composer_keys))
-                                    .mx(px(16.))
-                                    .mb(px(8.))
-                                    .p(px(2.))
-                                    .rounded(px(4.))
-                                    .border_1()
-                                    .border_color(color(cx, Role::Accent))
-                                    .bg(color(cx, Role::Surface))
-                                    .child(Input::new(&self.composer).appearance(false)),
+                                    .w_full()
+                                    .flex()
+                                    .justify_center()
+                                    .px(px(24.))
+                                    .pb(px(16.))
+                                    .child(div().w_full().max_w(px(t::CONTENT_MAX_W)).flex().flex_col().children(actions_row).children(pending).children(menu).child(composer)),
                             )
-                            .child(self.footer(cx))
                             .children(model_menu),
                     )
-                    .child(self.dock(cx)),
+                    .children(panel),
             )
-            .child(div().absolute().bottom(px(36.)).right(px(self.dock_width() + 12.)).w(relative(0.)).when(std::env::var_os("CORDATA_FPS").is_some(), |this| this.child(gpui_fps::fps_monitor(window, cx))))
+            .child(status_bar)
+            .children(overlays)
+            .child(div().absolute().bottom(px(36.)).right(px(panel_w + 12.)).when(std::env::var_os("CORDATA_FPS").is_some(), |this| this.child(gpui_fps::fps_monitor(window, cx))))
     }
 }
 
-fn state_of(view: &cordata_view::app::App) -> (Role, &'static str) {
-    match (&view.conn, view.turn_active, view.pending.is_empty()) {
-        (ConnState::Connecting, ..) => (Role::TextDim, "connecting"),
-        (ConnState::Closed { .. }, ..) => (Role::Danger, "closed"),
-        (_, _, false) => (Role::Attention, "needs you"),
-        (_, true, _) => (Role::Accent, "running"),
-        _ => (Role::Ok, "idle"),
-    }
-}
-
-/// Is this open session the conversation a rail row names?
-fn matches_target(session: &Session, target: &Target) -> bool {
+/// Is this open session the conversation a sidebar row names?
+pub(super) fn matches_target(session: &Session, target: &Target) -> bool {
     match target {
         Target::Default => false,
         Target::Conversation(handle) => matches!(&session.target, Target::Conversation(h) if h == handle) || session.hub_handle().as_deref() == Some(handle.as_str()),
@@ -1547,7 +1667,7 @@ fn matches_target(session: &Session, target: &Target) -> bool {
     }
 }
 
-fn door_glyph(origin: &str) -> &'static str {
+pub(super) fn door_glyph(origin: &str) -> &'static str {
     match origin {
         "discord" => "◆ ",
         "menubar" => "◇ ",
@@ -1557,7 +1677,7 @@ fn door_glyph(origin: &str) -> &'static str {
 }
 
 /// `3m`, `2h`, `4d`.
-fn age(seconds: f64) -> String {
+pub(super) fn age(seconds: f64) -> String {
     let s = seconds.max(0.0) as u64;
     match s {
         0..60 => "now".into(),
@@ -1578,20 +1698,31 @@ pub fn bind_keys(cx: &mut App) {
         gpui::KeyBinding::new("cmd-w", CloseSession, Some("CordataEditor")),
         gpui::KeyBinding::new("cmd-]", NextSession, Some("Workspace")),
         gpui::KeyBinding::new("cmd-[", PrevSession, Some("Workspace")),
-        gpui::KeyBinding::new("cmd-k", CommandMenu, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-k", OpenPalette, Some("Workspace")),
         gpui::KeyBinding::new("ctrl-k", CommandMenu, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-o", SwitchProject, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-\\", TogglePanel, Some("Workspace")),
+        gpui::KeyBinding::new("ctrl-`", ToggleTerminal, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-,", OpenSettings, Some("Workspace")),
         gpui::KeyBinding::new("ctrl-r", ToggleThoughts, Some("Workspace")),
         gpui::KeyBinding::new("ctrl-e", ToggleTools, Some("Workspace")),
         gpui::KeyBinding::new("f1", Help, Some("Workspace")),
-        gpui::KeyBinding::new("cmd-1", ShowMission, Some("Workspace")),
-        gpui::KeyBinding::new("cmd-2", ShowFiles, Some("Workspace")),
-        gpui::KeyBinding::new("cmd-3", ShowEditor, Some("Workspace")),
-        gpui::KeyBinding::new("cmd-4", ShowReview, Some("Workspace")),
-        gpui::KeyBinding::new("cmd-5", ShowSettings, Some("Workspace")),
-        gpui::KeyBinding::new("cmd-6", ShowTerminal, Some("Workspace")),
-        gpui::KeyBinding::new("cmd-7", ShowBrowser, Some("Workspace")),
-        gpui::KeyBinding::new("cmd-8", ShowModels, Some("Workspace")),
-        gpui::KeyBinding::new("cmd-,", ShowSettings, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-1", SwitchTo1, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-2", SwitchTo2, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-3", SwitchTo3, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-4", SwitchTo4, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-5", SwitchTo5, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-6", SwitchTo6, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-7", SwitchTo7, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-8", SwitchTo8, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-9", SwitchTo9, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-alt-1", ShowMission, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-alt-2", ShowFiles, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-alt-3", ShowEditor, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-alt-4", ShowReview, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-alt-5", ShowTerminal, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-alt-6", ShowBrowser, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-alt-7", ShowModels, Some("Workspace")),
         gpui::KeyBinding::new("cmd-p", OpenFiles, Some("Workspace")),
         gpui::KeyBinding::new("cmd-s", SaveFile, Some("Workspace")),
         gpui::KeyBinding::new("cmd-s", SaveFile, Some("CordataEditor")),
@@ -1628,9 +1759,14 @@ mod window_tests {
     }
 
     fn workspace(cx: &mut TestAppContext) -> (gpui::Entity<Workspace>, &mut VisualTestContext) {
+        // Never the person's own preferences file.
+        let prefs_dir = std::env::temp_dir().join(format!("cordata-prefs-test-{}", std::process::id()));
+        // SAFETY: set before any thread of this test reads it; every test sets the same value.
+        unsafe { std::env::set_var("CORDATA_APP_PREFS_DIR", &prefs_dir) };
         cx.update(|cx| {
             gpui_component::init(cx);
             crate::theme::install(false, "2049", cx);
+            cx.set_global(crate::prefs::Prefs::default());
             super::bind_keys(cx);
         });
         let (view, cx) = cx.add_window_view(|window, cx| Workspace::new(offline(), std::env::temp_dir(), super::Launch::default(), window, cx));
@@ -1729,49 +1865,119 @@ mod window_tests {
     }
 
     #[gpui::test]
-    fn dock_tabs_and_keys_switch_dock(cx: &mut TestAppContext) {
+    fn side_panel_tabs_and_keys(cx: &mut TestAppContext) {
         let (view, cx) = workspace(cx);
         assert_eq!(view.read_with(cx, |this, _| this.dock_tab), super::DockTab::Mission);
-
-        cx.simulate_keystrokes("cmd-2");
+        for (keys, tab) in [
+            ("cmd-alt-2", super::DockTab::Files),
+            ("cmd-alt-3", super::DockTab::Editor),
+            ("cmd-alt-4", super::DockTab::Review),
+            ("cmd-alt-6", super::DockTab::Browser),
+            ("cmd-alt-7", super::DockTab::Models),
+            ("cmd-alt-1", super::DockTab::Mission),
+            ("cmd-p", super::DockTab::Files),
+        ] {
+            cx.simulate_keystrokes(keys);
+            cx.run_until_parked();
+            assert_eq!(view.read_with(cx, |this, _| this.dock_tab), tab, "{keys}");
+            assert!(view.read_with(cx, |this, _| this.panel_open), "{keys} opens the panel");
+        }
+        cx.simulate_keystrokes("cmd-\\");
         cx.run_until_parked();
-        assert_eq!(view.read_with(cx, |this, _| this.dock_tab), super::DockTab::Files);
-
-        cx.simulate_keystrokes("cmd-3");
+        assert!(!view.read_with(cx, |this, _| this.panel_open), "⌘\\ hides the panel");
+        assert_eq!(view.read_with(cx, |this, _| this.prefs.panel_open), Some(false), "…and the choice is kept");
+        cx.simulate_keystrokes("ctrl-`");
         cx.run_until_parked();
-        assert_eq!(view.read_with(cx, |this, _| this.dock_tab), super::DockTab::Editor);
-
-        cx.simulate_keystrokes("cmd-4");
+        assert_eq!(view.read_with(cx, |this, _| (this.panel_open, this.dock_tab)), (true, super::DockTab::Terminal), "⌃` shows the terminal");
+        cx.simulate_keystrokes("ctrl-`");
         cx.run_until_parked();
-        assert_eq!(view.read_with(cx, |this, _| this.dock_tab), super::DockTab::Review);
+        assert!(!view.read_with(cx, |this, _| this.panel_open), "…and again hides it");
+    }
 
-        cx.simulate_keystrokes("cmd-5");
-        cx.run_until_parked();
-        assert_eq!(view.read_with(cx, |this, _| this.dock_tab), super::DockTab::Settings);
-
-        cx.simulate_keystrokes("cmd-1");
-        cx.run_until_parked();
-        assert_eq!(view.read_with(cx, |this, _| this.dock_tab), super::DockTab::Mission);
-
+    #[gpui::test]
+    fn overlays_open_from_keys_and_esc_closes_the_top_one_first(cx: &mut TestAppContext) {
+        let (view, cx) = workspace(cx);
         cx.simulate_keystrokes("cmd-,");
         cx.run_until_parked();
-        assert_eq!(view.read_with(cx, |this, _| this.dock_tab), super::DockTab::Settings);
-
-        cx.simulate_keystrokes("cmd-6");
+        assert_eq!(view.read_with(cx, |this, _| this.overlays.clone()), vec![super::Overlay::Settings]);
+        view.update_in(cx, |this, window, cx| this.open_overlay(super::Overlay::Palette, window, cx));
         cx.run_until_parked();
-        assert_eq!(view.read_with(cx, |this, _| this.dock_tab), super::DockTab::Terminal);
-
-        cx.simulate_keystrokes("cmd-7");
+        cx.simulate_keystrokes("escape");
         cx.run_until_parked();
-        assert_eq!(view.read_with(cx, |this, _| this.dock_tab), super::DockTab::Browser);
-
-        cx.simulate_keystrokes("cmd-8");
+        assert_eq!(view.read_with(cx, |this, _| this.overlays.clone()), vec![super::Overlay::Settings], "esc closes the palette, not settings");
+        cx.simulate_keystrokes("escape");
         cx.run_until_parked();
-        assert_eq!(view.read_with(cx, |this, _| this.dock_tab), super::DockTab::Models);
-
-        cx.simulate_keystrokes("cmd-p");
+        assert!(view.read_with(cx, |this, _| this.overlays.is_empty()));
+        cx.simulate_keystrokes("cmd-o");
         cx.run_until_parked();
-        assert_eq!(view.read_with(cx, |this, _| this.dock_tab), super::DockTab::Files);
+        assert_eq!(view.read_with(cx, |this, _| this.overlays.clone()), vec![super::Overlay::Picker], "⌘O opens the project picker");
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        cx.simulate_keystrokes("cmd-k");
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |this, _| this.overlays.clone()), vec![super::Overlay::Palette], "⌘K opens the palette");
+    }
+
+    #[gpui::test]
+    fn the_palette_filters_and_runs_with_the_keyboard(cx: &mut TestAppContext) {
+        let (view, cx) = workspace(cx);
+        cx.simulate_keystrokes("cmd-k");
+        cx.run_until_parked();
+        cx.simulate_input("toggle side");
+        cx.run_until_parked();
+        let first = view.read_with(cx, |this, cx| this.palette_matches(cx).first().map(|i| i.label.clone()));
+        assert_eq!(first.as_deref(), Some("Toggle side panel"));
+        let before = view.read_with(cx, |this, _| this.panel_open);
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |this, _| this.panel_open), !before, "↵ runs the first match");
+        assert!(view.read_with(cx, |this, _| this.overlays.is_empty()), "…and closes the palette");
+    }
+
+    #[gpui::test]
+    fn the_picker_opens_a_pasted_path_as_the_project(cx: &mut TestAppContext) {
+        let (view, cx) = workspace(cx);
+        let dir = tempfile_dir().join("picked");
+        std::fs::create_dir_all(&dir).unwrap();
+        cx.simulate_keystrokes("cmd-o");
+        cx.run_until_parked();
+        cx.simulate_input(&dir.display().to_string());
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        let (cwd, recent, sessions) = view.read_with(cx, |this, _| (this.cwd.clone(), this.prefs.recents.first().map(|r| (r.path.clone(), r.trusted)), this.sessions.len()));
+        assert_eq!(cwd, dir.canonicalize().unwrap());
+        assert_eq!(recent, Some((cwd.clone(), false)), "first in the recents, untrusted");
+        assert_eq!(sessions, 2, "a conversation opens in the new project");
+        assert!(view.read_with(cx, |this, _| this.overlays.is_empty()));
+    }
+
+    #[gpui::test]
+    fn conversations_switch_with_cmd_digits(cx: &mut TestAppContext) {
+        let (view, cx) = workspace(cx);
+        cx.simulate_keystrokes("cmd-n");
+        cx.run_until_parked();
+        cx.simulate_keystrokes("cmd-1");
+        cx.run_until_parked();
+        assert!(view.read_with(cx, |this, _| this.session.entity_id() == this.sessions[0].entity_id()));
+        cx.simulate_keystrokes("cmd-2");
+        cx.run_until_parked();
+        assert!(view.read_with(cx, |this, _| this.session.entity_id() == this.sessions[1].entity_id()));
+        cx.simulate_keystrokes("cmd-9");
+        cx.run_until_parked();
+        assert!(view.read_with(cx, |this, _| this.session.entity_id() == this.sessions[1].entity_id()), "a slot with no conversation does nothing");
+    }
+
+    #[gpui::test]
+    fn enter_allows_and_esc_denies_an_approval(cx: &mut TestAppContext) {
+        let (view, cx) = workspace(cx);
+        let mut rx = ask(&view, cx, "shell");
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(rx.try_recv().ok(), Some(acp_core::ApprovalDecision::Allow), "↵ on an empty composer allows once");
+        let mut rx = ask(&view, cx, "shell");
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert_eq!(rx.try_recv().ok(), Some(acp_core::ApprovalDecision::Reject), "esc denies");
     }
 
     #[gpui::test]
@@ -1850,7 +2056,9 @@ mod window_tests {
     }
 
     fn tempfile_dir() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("cordata-test-{}", std::process::id()));
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("cordata-test-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.canonicalize().unwrap()

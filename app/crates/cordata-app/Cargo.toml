@@ -22,6 +22,9 @@ gpui-component = { workspace = true, features = ["tree-sitter-bash", "tree-sitte
 gpui-fps.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
+serde.workspace = true
+# The window's own preferences file (prefs.toml in Application Support).
+toml = "0.8"
 tokio.workspace = true
 
 [dev-dependencies]
@@ -30,6 +33,8 @@ gpui-component = { workspace = true, features = ["test-support"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSAccessibility", "NSAppearance", "NSGlassEffectView", "NSGraphics", "NSResponder", "NSView", "NSWindow", "NSWorkspace", "objc2-core-foundation"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSAccessibility", "NSAppearance", "NSGlassEffectView", "NSGraphics", "NSResponder", "NSSound", "NSView", "NSWindow", "NSWorkspace", "objc2-core-foundation"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry", "NSString"] }
 raw-window-handle = "0.6"
+# The API key lives in the login Keychain only (the backend reads the same item at start).
+security-framework = "3"

@@ -7,11 +7,14 @@
 //! checkout with `--transport stdio`. The UI thread only draws; I/O runs on a tokio runtime (`session.rs`).
 
 mod hud;
+mod keychain;
 mod mission;
 mod platform;
+mod prefs;
 mod session;
 mod theme;
 mod transcript;
+mod ui;
 mod workspace;
 
 use std::path::PathBuf;
@@ -33,16 +36,19 @@ struct Args {
     /// `--run GOAL`: start an orchestrator run once connected, and follow it in Mission Control.
     run: Option<String>,
     selftest: bool,
+    /// A folder was named (`--cwd`, a path argument, `open -a Cordata dir`).
+    cwd_given: bool,
 }
 
 fn parse_args() -> Args {
-    let mut args = Args { cwd: default_cwd(), conversation: "latest".into(), prefer: Prefer::Hub, prompt: None, run: None, selftest: false };
+    let mut args = Args { cwd: default_cwd(), conversation: "latest".into(), prefer: Prefer::Hub, prompt: None, run: None, selftest: false, cwd_given: false };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--cwd" => {
                 if let Some(dir) = it.next() {
                     args.cwd = std::fs::canonicalize(&dir).unwrap_or_else(|_| PathBuf::from(dir));
+                    args.cwd_given = true;
                 }
             }
             "--conversation" => args.conversation = it.next().unwrap_or_else(|| "latest".into()),
@@ -52,9 +58,20 @@ fn parse_args() -> Args {
             "--selftest" => args.selftest = true,
             other if other.starts_with("cordata://") => parse_cordata_url(other, &mut args),
             // A bundle opened by `open -a Cordata dir` (or `cordata .`) gets the folder as its one argument.
-            other if !other.starts_with('-') => args.cwd = std::fs::canonicalize(other).unwrap_or_else(|_| PathBuf::from(other)),
+            other if !other.starts_with('-') => {
+                args.cwd = std::fs::canonicalize(other).unwrap_or_else(|_| PathBuf::from(other));
+                args.cwd_given = true;
+            }
             _ => {}
         }
+    }
+    // Started from a shell inside a folder (not Finder's `/`, not home): that folder is the project.
+    if !args.cwd_given
+        && let Ok(dir) = std::env::current_dir()
+        && dir != std::path::Path::new("/")
+        && std::env::var_os("HOME").is_none_or(|home| dir != std::path::Path::new(&home))
+    {
+        args.cwd_given = true;
     }
     args
 }
@@ -91,7 +108,7 @@ fn default_cwd() -> PathBuf {
 }
 
 fn main() {
-    let args = parse_args();
+    let mut args = parse_args();
     let runtime = match Runtime::new() {
         Ok(runtime) => runtime,
         Err(error) => {
@@ -100,32 +117,50 @@ fn main() {
         }
     };
     let display = Display::read();
+    let prefs = prefs::Prefs::load();
+    // No folder on the command line: the preference decides (the last project, home, or the picker over home).
+    let mut open_picker = false;
+    if !args.cwd_given {
+        match prefs.open_on_launch.as_str() {
+            "last" => {
+                if let Some(last) = prefs.last_project().filter(|p| p.is_dir()) {
+                    args.cwd = last.to_path_buf();
+                }
+            }
+            "picker" => open_picker = true,
+            _ => {}
+        }
+    }
     let connection = Connection::discover(args.prefer, &args.conversation);
 
     gpui_platform::application().run(move |cx: &mut App| {
         cx.set_global(runtime);
         cx.set_global(display);
+        cx.set_global(prefs.clone());
         gpui_component::init(cx);
-        theme::install(display.increase_contrast, "2049", cx);
+        theme::install(display.increase_contrast, &prefs.theme, cx);
         workspace::bind_keys(cx);
 
-        let glass_wanted = !display.reduce_transparency;
-        let bounds = Bounds::centered(None, size(px(1440.), px(900.)), cx);
+        // `CORDATA_APP_WINDOW=1280x800`: the size to open at (layout checks at fixed widths).
+        let (w, h) = std::env::var("CORDATA_APP_WINDOW")
+            .ok()
+            .and_then(|v| v.split_once('x').and_then(|(w, h)| Some((w.trim().parse::<f32>().ok()?, h.trim().parse::<f32>().ok()?))))
+            .unwrap_or((1440., 900.));
+        let bounds = Bounds::centered(None, size(px(w), px(h)), cx);
         let window = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(size(px(980.), px(600.))),
-                titlebar: Some(TitlebarOptions { title: Some(SharedString::from("Cordata")), appears_transparent: true, traffic_light_position: Some(point(px(16.), px(16.))) }),
-                window_background: if glass_wanted { WindowBackgroundAppearance::Transparent } else { WindowBackgroundAppearance::Opaque },
+                window_min_size: Some(size(px(cordata_theme::tokens::MIN_WINDOW_W), px(cordata_theme::tokens::MIN_WINDOW_H))),
+                titlebar: Some(TitlebarOptions { title: Some(SharedString::from("Cordata")), appears_transparent: true, traffic_light_position: Some(point(px(18.), px(19.))) }),
+                window_background: WindowBackgroundAppearance::Opaque,
                 app_id: Some("dev.cordata.app".into()),
                 ..Default::default()
             },
             |window, cx| {
-                let glass = glass_wanted && platform::install_glass(window);
                 let view = cx.new(|cx| Workspace::new(
                     connection.clone(),
                     args.cwd.clone(),
-                    workspace::Launch { prompt: args.prompt.clone(), run: args.run.clone(), glass, selftest: args.selftest && (args.prompt.is_some() || args.run.is_some()) },
+                    workspace::Launch { prompt: args.prompt.clone(), run: args.run.clone(), selftest: args.selftest && (args.prompt.is_some() || args.run.is_some()), picker: open_picker },
                     window,
                     cx,
                 ));
@@ -173,6 +208,7 @@ mod tests {
             prompt: None,
             run: None,
             selftest: false,
+            cwd_given: false,
         };
 
         parse_cordata_url("cordata://session/sess-abc-123", &mut args);

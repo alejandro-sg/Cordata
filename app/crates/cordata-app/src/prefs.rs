@@ -1,0 +1,200 @@
+//! The window's own preferences: how it looks and behaves, the recent projects, whether the side panel is open.
+//! `~/Library/Application Support/Cordata/prefs.toml`, written atomically and readable only by its owner.
+//!
+//! What the harness itself decides (the model, permission rules, trusted folders) is not here: those live in the
+//! backend's settings files and are changed through `_cordata/settings/*` and `_cordata/trust/*`. Secrets are never
+//! here either — the API key is in the Keychain (`keychain.rs`).
+
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+/// How many recent projects are kept.
+pub const RECENTS_CAP: usize = 20;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Prefs {
+    /// The person's choice for the side panel; `None` follows the window width.
+    pub panel_open: Option<bool>,
+    /// `2049` · `graphite` · `dim`.
+    pub theme: String,
+    pub haze: bool,
+    /// `compact` · `comfortable`.
+    pub density: String,
+    pub code_font_size: f32,
+    /// `enter` (↵ sends, ⇧↵ newline) · `cmd-enter` (⌘↵ sends, ↵ newline).
+    pub send_with: String,
+    /// `last` (the last project) · `home` · `picker` (open the project picker).
+    pub open_on_launch: String,
+    pub notify_approval: bool,
+    pub sound_on_completion: bool,
+    pub share_diagnostics: bool,
+    /// Most recent first.
+    pub recents: Vec<RecentProject>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecentProject {
+    pub path: PathBuf,
+    /// Seconds since the epoch.
+    pub opened: u64,
+    /// The trust last seen for it (the backend is the authority; this colours the picker's dot).
+    #[serde(default)]
+    pub trusted: bool,
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Self {
+            panel_open: None,
+            theme: "2049".into(),
+            haze: true,
+            density: "comfortable".into(),
+            code_font_size: 13.0,
+            send_with: "enter".into(),
+            open_on_launch: "last".into(),
+            notify_approval: true,
+            sound_on_completion: false,
+            share_diagnostics: false,
+            recents: Vec::new(),
+        }
+    }
+}
+
+impl gpui::Global for Prefs {}
+
+pub fn path() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("CORDATA_APP_PREFS_DIR") {
+        return Some(PathBuf::from(dir).join("prefs.toml"));
+    }
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Application Support/Cordata/prefs.toml"))
+}
+
+impl Prefs {
+    /// The saved preferences, or the defaults (a missing or damaged file is not an error worth a dialog).
+    pub fn load() -> Self {
+        path().map(|p| Self::load_from(&p)).unwrap_or_default()
+    }
+
+    pub fn load_from(path: &Path) -> Self {
+        let Ok(text) = std::fs::read_to_string(path) else { return Self::default() };
+        match toml::from_str::<Prefs>(&text) {
+            Ok(mut prefs) => {
+                prefs.normalise();
+                prefs
+            }
+            Err(error) => {
+                eprintln!("cordata: {} did not parse ({error}); using defaults", path.display());
+                Self::default()
+            }
+        }
+    }
+
+    pub fn save(&self) {
+        if let Some(p) = path()
+            && let Err(error) = self.save_to(&p)
+        {
+            eprintln!("cordata: could not save {} ({error})", p.display());
+        }
+    }
+
+    /// Write to a temporary file beside it and rename over: a crash never leaves half a file.
+    pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
+        let text = toml::to_string_pretty(self).map_err(std::io::Error::other)?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        // A name of its own: two writers never rename each other's half-written file.
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or_default();
+        let tmp = path.with_extension(format!("toml.{}.{nanos}.tmp", std::process::id()));
+        std::fs::write(&tmp, text)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+        }
+        std::fs::rename(&tmp, path)
+    }
+
+    fn normalise(&mut self) {
+        let fallback = Self::default();
+        if !matches!(self.theme.as_str(), "2049" | "graphite" | "dim") {
+            self.theme = fallback.theme;
+        }
+        if !matches!(self.density.as_str(), "compact" | "comfortable") {
+            self.density = fallback.density;
+        }
+        if !matches!(self.send_with.as_str(), "enter" | "cmd-enter") {
+            self.send_with = fallback.send_with;
+        }
+        if !matches!(self.open_on_launch.as_str(), "last" | "home" | "picker") {
+            self.open_on_launch = fallback.open_on_launch;
+        }
+        self.code_font_size = self.code_font_size.clamp(10.0, 20.0);
+        self.recents.truncate(RECENTS_CAP);
+    }
+
+    /// Put `path` first in the recents (new folders arrive untrusted until the backend says otherwise).
+    pub fn touch_recent(&mut self, path: &Path, now: u64) {
+        let trusted = self.recents.iter().find(|r| r.path == path).is_some_and(|r| r.trusted);
+        self.recents.retain(|r| r.path != path);
+        self.recents.insert(0, RecentProject { path: path.to_path_buf(), opened: now, trusted });
+        self.recents.truncate(RECENTS_CAP);
+    }
+
+    pub fn set_trusted(&mut self, path: &Path, trusted: bool) -> bool {
+        match self.recents.iter_mut().find(|r| r.path == path) {
+            Some(row) if row.trusted != trusted => {
+                row.trusted = trusted;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn last_project(&self) -> Option<&Path> {
+        self.recents.first().map(|r| r.path.as_path())
+    }
+}
+
+pub fn now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn round_trips_and_repairs_bad_values() {
+        let dir = std::env::temp_dir().join(format!("cordata-prefs-{}", std::process::id()));
+        let file = dir.join("prefs.toml");
+        let mut prefs = Prefs { theme: "dim".into(), panel_open: Some(false), ..Prefs::default() };
+        prefs.touch_recent(Path::new("/tmp/a"), 1);
+        prefs.save_to(&file).unwrap();
+        assert_eq!(Prefs::load_from(&file), prefs);
+        std::fs::write(&file, "theme = \"neon\"\ncode_font_size = 99.0\n").unwrap();
+        let repaired = Prefs::load_from(&file);
+        assert_eq!(repaired.theme, "2049");
+        assert_eq!(repaired.code_font_size, 20.0);
+        std::fs::write(&file, "not toml at all [").unwrap();
+        assert_eq!(Prefs::load_from(&file), Prefs::default());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn recents_are_most_recent_first_capped_and_keep_trust() {
+        let mut prefs = Prefs::default();
+        for i in 0..25 {
+            prefs.touch_recent(&PathBuf::from(format!("/p/{i}")), i);
+        }
+        assert_eq!(prefs.recents.len(), RECENTS_CAP);
+        assert_eq!(prefs.recents[0].path, PathBuf::from("/p/24"));
+        assert!(prefs.set_trusted(Path::new("/p/20"), true));
+        prefs.touch_recent(Path::new("/p/20"), 99);
+        assert_eq!(prefs.recents[0].path, PathBuf::from("/p/20"));
+        assert!(prefs.recents[0].trusted, "touching keeps the trust seen");
+        assert_eq!(prefs.recents.iter().filter(|r| r.path == Path::new("/p/20")).count(), 1);
+    }
+}

@@ -1,59 +1,98 @@
-//! The conversation's blocks (docs/app.md §4 "Center"): the person, the assistant's markdown, reasoning, tool cards,
-//! notices, errors. One function per `Message` kind; every string goes through `cordata_view::shown` (escapes
-//! stripped, credentials masked) before it is laid out. Teal marks what an agent or a tool produced; amber is ours.
+//! The conversation's blocks: the person's message as a right-aligned bubble, the assistant's markdown under a
+//! `◆ CORDATA` label, consecutive tool calls as one bordered group with a row per call (status, verb, target, meta;
+//! a click opens the output), reasoning, notices and errors. Every string goes through `cordata_view::shown`
+//! (escapes stripped, credentials masked) before it is laid out.
 
 use acp_core::ToolStatus;
-use cordata_theme::{Role, tracked};
+use cordata_theme::tokens as t;
 use cordata_view::app::{Message, ToolCard};
 use cordata_view::shown;
 use gpui::prelude::FluentBuilder as _;
-use gpui::{AnyElement, App, IntoElement, ParentElement, SharedString, Styled, div, px};
-use gpui_component::text::TextView;
+use gpui::{AnyElement, App, FontWeight, IntoElement, ParentElement, SharedString, Styled, div, px, relative};
+use gpui_component::text::{TextView, TextViewStyle};
 
 use crate::hud;
-use crate::theme::{color, tint};
+use crate::theme::{amber, c, line, mono, teal, tk};
+use crate::ui;
 
-/// Rows of a tool's result shown before "… N more lines".
-const RESULT_PREVIEW_LINES: usize = 8;
+/// Rows of a tool's result shown when it is opened, before "… N more lines".
+const RESULT_PREVIEW_LINES: usize = 40;
 /// A line longer than this is cut when drawn: a 2 MB single-line diff must not be laid out whole.
 const MAX_LINE_CHARS: usize = 400;
 
-pub fn block(message: &Message, ix: usize, expand_tools: bool, show_thoughts: bool, cx: &App) -> AnyElement {
+/// Where a tool row sits in its group (consecutive tool calls share one border).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GroupEdge {
+    pub first: bool,
+    pub last: bool,
+}
+
+pub fn block(message: &Message, ix: usize, edge: GroupEdge, expanded: bool, show_thoughts: bool, cx: &App) -> AnyElement {
     match message {
         Message::User(text) => user(text, cx),
         Message::Agent(text) => assistant(text, ix, cx),
         Message::Thought(text) => thought(text, show_thoughts, cx),
-        Message::Tool(card) => tool(card, expand_tools, cx),
-        Message::Info(text) => notice(text, Role::TextSecondary, cx),
-        Message::Error(text) => notice(text, Role::Danger, cx),
-        Message::Divider(label) => hud::divider(&shown(label), cx).into_any_element(),
-        Message::Diff(text) => code(text, Some(Role::Agent), cx),
-        Message::Welcome(info) => welcome(info, cx),
-        Message::Help => notice("⌘K commands · / slash commands · @ files · ! shell · Esc stops a turn", Role::TextSecondary, cx),
+        Message::Tool(card) => tool(card, edge, expanded, cx),
+        Message::Info(text) => notice(text, tk(cx).text_muted, cx),
+        Message::Error(text) => notice(text, tk(cx).danger, cx),
+        Message::Divider(label) => div().py(px(8.)).child(hud::divider(&shown(label), cx)).into_any_element(),
+        Message::Diff(text) => div().py(px(6.)).child(ui::code_block(SharedString::from(cut_lines(text)), cx)).into_any_element(),
+        Message::Welcome(_) => div().into_any_element(),
+        Message::Help => notice("⌘K palette · / commands · @ files · ! shell · Esc stops a turn", tk(cx).text_muted, cx),
         Message::Laya(decision) => {
             let route = decision.route.as_deref().unwrap_or("—");
-            notice(&format!("◆ laya → {route}  ({:.0}%)", decision.route_confidence * 100.0), Role::Info, cx)
+            notice(&format!("◆ laya → {route}  ({:.0}%)", decision.route_confidence * 100.0), tk(cx).info, cx)
         }
         Message::LayaOutcome(_) => div().into_any_element(),
-        Message::Heal(info) => notice(&format!("self-heal · {}{}", info.phase, info.root_cause.as_deref().map(|c| format!(" — {c}")).unwrap_or_default()), Role::Attention, cx),
+        Message::Heal(info) => notice(&format!("self-heal · {}{}", info.phase, info.root_cause.as_deref().map(|c| format!(" — {c}")).unwrap_or_default()), tk(cx).amber, cx),
     }
 }
 
+/// Whether a message is part of a conversation (the empty state shows while there are none).
+pub fn is_conversation(message: &Message) -> bool {
+    matches!(message, Message::User(_) | Message::Agent(_) | Message::Tool(_) | Message::Thought(_) | Message::Diff(_))
+}
+
 fn user(text: &str, cx: &App) -> AnyElement {
+    let tk = tk(cx);
     div()
+        .w_full()
         .flex()
-        .gap(px(10.))
-        .py(px(6.))
-        .child(div().w(px(2.)).flex_shrink_0().bg(color(cx, Role::Accent)))
-        .child(div().flex_1().text_color(color(cx, Role::Text)).child(SharedString::from(shown(text))))
+        .justify_end()
+        .py(px(10.))
+        .child(
+            div()
+                .max_w(relative(0.8))
+                .px(px(14.))
+                .py(px(10.))
+                .rounded(px(t::RADIUS_POPOVER))
+                .bg(line(cx, t::FILL_FAINT * 1.6))
+                .border_1()
+                .border_color(line(cx, t::LINE_DEFAULT))
+                .text_size(px(t::TEXT_BODY))
+                .line_height(relative(t::LINE_HEIGHT_BODY))
+                .text_color(c(tk.text_body))
+                .child(SharedString::from(shown(text))),
+        )
         .into_any_element()
 }
 
 fn assistant(text: &str, ix: usize, cx: &App) -> AnyElement {
+    let tk = tk(cx);
     div()
-        .py(px(4.))
-        .text_color(color(cx, Role::Text))
-        .child(TextView::markdown(("agent", ix), SharedString::from(shown(text))).selectable(true))
+        .py(px(10.))
+        .flex()
+        .flex_col()
+        .gap(px(8.))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(ui::diamond(cx))
+                .child(div().font_family(mono(cx)).text_size(px(t::TEXT_LABEL)).font_weight(FontWeight::MEDIUM).text_color(c(tk.amber)).child(SharedString::from(t::tracked_text("cordata", t::Tracking::Label, true)))),
+        )
+        .child(div().text_size(px(t::TEXT_BODY)).line_height(relative(t::LINE_HEIGHT_BODY)).text_color(c(tk.text_body)).child(TextView::markdown(("agent", ix), SharedString::from(shown(text))).selectable(true).style(TextViewStyle::default().inline_code(gpui::HighlightStyle { color: Some(c(tk.amber_soft)), background_color: Some(amber(cx, t::AMBER_FILL_MID)), ..Default::default() }))))
         .into_any_element()
 }
 
@@ -61,122 +100,136 @@ fn thought(text: &str, expanded: bool, cx: &App) -> AnyElement {
     let text = shown(text);
     let first = text.lines().find(|line| !line.trim().is_empty()).unwrap_or("").to_owned();
     div()
-        .py(px(2.))
-        .text_sm()
+        .py(px(4.))
+        .text_size(px(t::TEXT_UI))
         .italic()
-        .text_color(color(cx, Role::TextDim))
+        .text_color(c(tk(cx).text_muted))
         .child(SharedString::from(if expanded { format!("∴ {text}") } else { format!("∴ {first}") }))
         .into_any_element()
 }
 
-fn notice(text: &str, role: Role, cx: &App) -> AnyElement {
-    div().py(px(3.)).text_sm().text_color(color(cx, role)).child(SharedString::from(shown(text))).into_any_element()
+fn notice(text: &str, ink: cordata_theme::Rgb, _cx: &App) -> AnyElement {
+    div().py(px(4.)).text_size(px(t::TEXT_UI)).text_color(c(ink)).child(SharedString::from(shown(text))).into_any_element()
 }
 
-fn code(text: &str, edge: Option<Role>, cx: &App) -> AnyElement {
-    let body: String = shown(text).lines().map(cut).collect::<Vec<_>>().join("\n");
-    div()
-        .my(px(4.))
-        .p(px(8.))
-        .rounded(px(3.))
-        .bg(color(cx, Role::Surface))
-        .border_l_2()
-        .border_color(color(cx, edge.unwrap_or(Role::Hairline)))
-        .font_family(crate::theme::mono(cx))
-        .text_xs()
-        .text_color(color(cx, Role::TextSecondary))
-        .child(SharedString::from(body))
-        .into_any_element()
-}
-
-fn welcome(info: &acp_core::SessionInfo, cx: &App) -> AnyElement {
-    div()
-        .py(px(8.))
-        .flex()
-        .flex_col()
-        .gap(px(4.))
-        .child(hud::bracket_title("Cordata", cx))
-        .child(
-            div()
-                .text_xs()
-                .text_color(color(cx, Role::TextDim))
-                .child(SharedString::from(format!("{} · {} · session {}", shown(&info.cwd), info.transport, info.session_id.chars().take(8).collect::<String>()))),
-        )
-        .into_any_element()
-}
-
-fn status(status: ToolStatus) -> (&'static str, Role) {
-    match status {
-        ToolStatus::Pending => ("○", Role::TextDim),
-        ToolStatus::InProgress => ("◐", Role::Accent),
-        ToolStatus::Completed => ("●", Role::Ok),
-        ToolStatus::Failed => ("✕", Role::Danger),
+/// The verb a tool row shows (`read` · `edit` · `run` · …), fixed width so the targets line up.
+pub fn verb(name: &str) -> &'static str {
+    let name = name.rsplit("__").next().unwrap_or(name).to_ascii_lowercase();
+    match name.as_str() {
+        n if n.contains("read") || n == "view" || n == "cat" => "read",
+        n if n.contains("edit") || n.contains("write") || n.contains("patch") || n.contains("replace") => "edit",
+        n if n.contains("shell") || n.contains("bash") || n.contains("exec") || n.contains("run") || n.contains("command") => "run",
+        n if n.contains("search") || n.contains("grep") || n.contains("glob") || n.contains("find") => "search",
+        n if n.contains("fetch") || n.contains("http") || n.contains("web") || n.contains("browse") => "fetch",
+        n if n.contains("todo") || n.contains("plan") || n.contains("task") => "plan",
+        _ => "call",
     }
 }
 
-/// A tool card: the attribution header (what ran, from which tool or MCP server), what it was asked to do, and what
-/// came back. Output the backend marked untrusted is edged in teal and labelled — it is data, not instructions.
-fn tool(card: &ToolCard, expand: bool, cx: &App) -> AnyElement {
-    let (glyph, role) = status(card.status);
-    let summary = card.raw_input.as_ref().and_then(|input| cordata_view::view::summarize_input(input, matches!(card.name.as_str(), "local_swarm" | "local_graph")));
-    let (server, name) = attribution(&card.name);
-    let result = shown(&card.content);
-    let lines: Vec<&str> = result.lines().collect();
-    let shown_lines = if expand { lines.len() } else { lines.len().min(RESULT_PREVIEW_LINES) };
-    let more = lines.len().saturating_sub(shown_lines);
-    let untrusted = card.untrusted || card.untrusted_source;
-    let edge = if untrusted { Role::Agent } else { Role::Hairline };
+/// The thing a tool acted on: a path, a command, a URL — from its input; else the tool's own name.
+pub fn target(card: &ToolCard) -> String {
+    let input = card.raw_input.as_ref();
+    let field = |k: &str| input.and_then(|i| i.get(k)).and_then(|v| v.as_str()).map(str::to_owned);
+    field("path")
+        .or_else(|| field("file_path"))
+        .or_else(|| field("command"))
+        .or_else(|| field("url"))
+        .or_else(|| field("pattern"))
+        .or_else(|| field("query"))
+        .or_else(|| card.raw_input.as_ref().and_then(|i| cordata_view::view::summarize_input(i, false)))
+        .unwrap_or_else(|| attribution(&card.name).1.to_owned())
+}
 
+/// What a row says on the right: `+12 −3`, a line count, a test result, the file count.
+fn meta_of(card: &ToolCard) -> String {
+    if !card.diffs.is_empty() {
+        let (mut add, mut del) = (0usize, 0usize);
+        for diff in &card.diffs {
+            let old = diff.old_text.as_deref().map_or(0, |t| t.lines().count());
+            let new = diff.new_text.lines().count();
+            if new >= old {
+                add += new - old;
+            } else {
+                del += old - new;
+            }
+        }
+        return if card.diffs.len() > 1 { format!("{} files · +{add} −{del}", card.diffs.len()) } else { format!("+{add} −{del}") };
+    }
+    let content = &card.content;
+    let lower = content.to_ascii_lowercase();
+    if let Some(line) = content.lines().rev().find(|l| {
+        let l = l.to_ascii_lowercase();
+        (l.contains("passed") || l.contains("failed")) && l.len() < 80
+    }) {
+        return line.trim().trim_matches('=').trim().to_owned();
+    }
+    if lower.is_empty() {
+        return String::new();
+    }
+    let n = content.lines().count();
+    format!("{n} line{}", if n == 1 { "" } else { "s" })
+}
+
+fn tool(card: &ToolCard, edge: GroupEdge, expanded: bool, cx: &App) -> AnyElement {
+    let tk = tk(cx);
+    let (mark, ink) = match card.status {
+        ToolStatus::Completed => ("✓", tk.teal),
+        ToolStatus::Failed => ("✕", tk.danger),
+        ToolStatus::InProgress => ("◆", tk.amber),
+        ToolStatus::Pending => ("◆", tk.amber_dim),
+    };
+    let untrusted = card.untrusted || card.untrusted_source;
+    let (server, _) = attribution(&card.name);
+    let radius = px(t::RADIUS_CARD);
+    let body = expanded.then(|| {
+        let result = shown(&card.content);
+        let lines: Vec<&str> = result.lines().collect();
+        let shown_lines = lines.len().min(RESULT_PREVIEW_LINES);
+        let more = lines.len().saturating_sub(shown_lines);
+        let text = lines[..shown_lines].iter().map(|line| cut(line)).collect::<Vec<_>>().join("\n");
+        let progress = (!card.progress.is_empty() && matches!(card.status, ToolStatus::InProgress)).then(|| shown(&card.progress));
+        div()
+            .px(px(12.))
+            .pb(px(10.))
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .when_some(progress, |d, p| d.child(div().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.teal)).child(SharedString::from(p))))
+            .when(!text.is_empty(), |d| d.child(ui::code_block(SharedString::from(text), cx)))
+            .when(more > 0, |d| d.child(ui::meta(SharedString::from(format!("… {more} more lines (Ctrl+E shows everything)")), cx)))
+    });
     div()
-        .my(px(4.))
-        .rounded(px(3.))
-        .border_1()
-        .border_color(tint(cx, edge, if untrusted { 0.55 } else { 1.0 }))
-        .bg(color(cx, Role::Surface))
+        .when(edge.first, |d| d.mt(px(6.)))
+        .when(edge.last, |d| d.mb(px(6.)))
+        .border_l_1()
+        .border_r_1()
+        .border_color(if untrusted { teal(cx, t::TEAL_BORDER) } else { line(cx, t::LINE_DEFAULT) })
+        .when(edge.first, |d| d.border_t_1().rounded_tl(radius).rounded_tr(radius))
+        .when(edge.last, |d| d.border_b_1().rounded_bl(radius).rounded_br(radius))
+        .when(!edge.first, |d| d.border_t_1().border_color(line(cx, t::LINE_SUBTLE)))
+        .bg(line(cx, t::FILL_FAINT))
         .child(
             div()
                 .flex()
                 .items_center()
-                .gap(px(8.))
-                .px(px(10.))
-                .py(px(5.))
-                .border_b_1()
-                .border_color(color(cx, Role::Hairline))
-                .child(div().text_color(color(cx, role)).child(glyph))
-                .when_some(server, |this, server| this.child(div().text_xs().text_color(color(cx, Role::Agent)).child(SharedString::from(tracked(server)))))
-                .child(div().text_sm().font_weight(gpui::FontWeight::SEMIBOLD).text_color(color(cx, Role::Text)).child(SharedString::from(name.to_owned())))
-                .when(untrusted, |this| this.child(hud::pill("untrusted", Role::Agent, cx)))
-                .when(!card.diffs.is_empty(), |this| this.child(div().text_xs().text_color(color(cx, Role::Attention)).child(SharedString::from(format!("{} file{}", card.diffs.len(), if card.diffs.len() == 1 { "" } else { "s" })))))
-                .child(div().flex_1())
-                .when_some(card.p_ok, |this, p| this.child(div().text_xs().text_color(color(cx, Role::TextDim)).child(SharedString::from(format!("p(ok) {:.0}%", p * 100.0))))),
+                .gap(px(10.))
+                .h(px(32.))
+                .px(px(12.))
+                .font_family(mono(cx))
+                .text_size(px(t::TEXT_SMALL))
+                .child(div().w(px(12.)).flex_shrink_0().text_color(c(ink)).child(mark))
+                .child(div().w(px(48.)).flex_shrink_0().text_color(c(tk.text_muted)).child(verb(&card.name)))
+                .when_some(server, |d, server| d.child(ui::badge(server, ui::Tone::Teal, cx)))
+                .child(div().flex_1().min_w_0().truncate().text_color(c(tk.text_body)).child(SharedString::from(cut(&shown(&target(card))))))
+                .when(untrusted, |d| d.child(ui::badge("untrusted", ui::Tone::Teal, cx)))
+                .child(div().flex_shrink_0().whitespace_nowrap().text_color(c(if card.status == ToolStatus::Failed { tk.danger } else { tk.text_faint })).child(SharedString::from(meta_of(card))))
+                .child(div().flex_shrink_0().text_color(c(tk.text_faint)).child(if expanded { "⌃" } else { "⌄" })),
         )
-        .when_some(summary, |this, summary| {
-            this.child(div().px(px(10.)).py(px(4.)).font_family(crate::theme::mono(cx)).text_xs().text_color(color(cx, Role::TextSecondary)).child(SharedString::from(cut(&summary))))
-        })
-        .when(!card.progress.is_empty() && matches!(card.status, ToolStatus::InProgress), |this| {
-            let tail: Vec<&str> = card.progress.lines().rev().take(3).collect();
-            this.child(div().px(px(10.)).pb(px(4.)).text_xs().text_color(color(cx, Role::Agent)).child(SharedString::from(shown(&tail.into_iter().rev().collect::<Vec<_>>().join("\n")))))
-        })
-        .when(shown_lines > 0, |this| {
-            let body = lines[..shown_lines].iter().map(|line| cut(line)).collect::<Vec<_>>().join("\n");
-            this.child(
-                div()
-                    .px(px(10.))
-                    .py(px(6.))
-                    .border_t_1()
-                    .border_color(color(cx, Role::Hairline))
-                    .font_family(crate::theme::mono(cx))
-                    .text_xs()
-                    .text_color(color(cx, Role::TextSecondary))
-                    .child(SharedString::from(body))
-                    .when(more > 0, |this| this.child(div().pt(px(2.)).text_color(color(cx, Role::TextDim)).child(SharedString::from(format!("… {more} more lines"))))),
-            )
-        })
+        .children(body)
         .into_any_element()
 }
 
-/// `mcp__github__create_issue` → (`github`, `create_issue`): which server a tool came from, shown on its card (the
-/// Gemini "tool attribution header"). A built-in tool has no server.
+/// `mcp__github__create_issue` → (`github`, `create_issue`): which server a tool came from. A built-in has none.
 fn attribution(name: &str) -> (Option<&str>, &str) {
     if let Some(rest) = name.strip_prefix("mcp__")
         && let Some((server, tool)) = rest.split_once("__")
@@ -196,6 +249,10 @@ fn cut(line: &str) -> String {
     }
 }
 
+fn cut_lines(text: &str) -> String {
+    shown(text).lines().map(cut).collect::<Vec<_>>().join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,5 +269,14 @@ mod tests {
         let line = "x".repeat(2_000_000);
         let out = cut(&line);
         assert!(out.chars().count() <= MAX_LINE_CHARS + 2);
+    }
+
+    #[test]
+    fn verbs_read_at_a_glance() {
+        assert_eq!(verb("file_read"), "read");
+        assert_eq!(verb("edit_file"), "edit");
+        assert_eq!(verb("shell"), "run");
+        assert_eq!(verb("mcp__github__search_code"), "search");
+        assert_eq!(verb("frobnicate"), "call");
     }
 }

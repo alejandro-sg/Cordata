@@ -1,116 +1,118 @@
-//! The HUD vocabulary, in GPUI (docs/app.md §4b): pills `▐ PLAN ▌`, segmented gauges `▰▰▱▱`, the bracketed title
-//! `⌜ C O R D A T A ⌝`, hairline frames `┌╴// TITLE ──┐`, and the haze — all from what GPUI paints (quads, two-stop
-//! linear gradients, borders). Colour is never the only signal: every pill says its word.
+//! The HUD vocabulary the panes share, on the design tokens: badges for modes and states, the context gauge, framed
+//! cards with a `// TITLE` heading, turn dividers, the haze. Colour is never the only signal: every badge says its word.
 
-use cordata_theme::{Role, segbar, tracked};
+use cordata_theme::Role;
+use cordata_theme::tokens::{self as t, HAZE_AMBER, HAZE_TEAL, Tracking, tracked_text};
 use gpui::prelude::FluentBuilder as _;
-use gpui::{AnyElement, App, Div, IntoElement, ParentElement, SharedString, Styled, div, linear_color_stop, linear_gradient, px};
+use gpui::{AnyElement, App, Div, IntoElement, ParentElement, SharedString, Styled, div, linear_color_stop, linear_gradient, px, relative, rgb};
 
-use crate::theme::{color, tint};
+use crate::theme::{c, color, line, mono, tk};
+use crate::ui;
 
-/// `▐ PLAN ▌` — a mode, a state, a risk band: the word in tracked caps on a tinted plate, edged in its colour.
+/// A mode, a state, a risk band: the word as a badge in its role's tint.
 pub fn pill(label: &str, role: Role, cx: &App) -> Div {
+    let tone = match role {
+        Role::Accent | Role::Attention => ui::Tone::Amber,
+        Role::Agent | Role::Ok => ui::Tone::Teal,
+        Role::Danger => ui::Tone::Danger,
+        _ => ui::Tone::Neutral,
+    };
+    ui::badge(label, tone, cx)
+}
+
+/// `⌜CORDATA⌝`: 12px mono, wide tracking, amber; the brackets in the dim amber.
+pub fn bracket_title(text: &str, cx: &App) -> Div {
+    let tk = tk(cx);
     div()
         .flex()
         .items_center()
-        .gap(px(4.))
-        .px(px(6.))
-        .py(px(1.))
-        .rounded(px(2.))
-        .border_1()
-        .border_color(tint(cx, role, 0.65))
-        .bg(tint(cx, role, 0.12))
-        .text_color(color(cx, role))
-        .text_xs()
-        .font_weight(gpui::FontWeight::SEMIBOLD)
-        .child(SharedString::from(format!("▐ {} ▌", label.to_uppercase())))
+        .whitespace_nowrap()
+        .font_family(mono(cx))
+        .text_size(px(t::TEXT_LOGO))
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .child(div().text_color(c(tk.amber_dim)).child("⌜"))
+        .child(div().text_color(c(tk.amber)).child(SharedString::from(tracked_text(text, Tracking::Logo, true))))
+        .child(div().text_color(c(tk.amber_dim)).child("⌝"))
 }
 
-/// `⌜ C O R D A T A ⌝`.
-pub fn bracket_title(text: &str, cx: &App) -> Div {
-    div().text_color(color(cx, Role::Accent)).text_sm().font_weight(gpui::FontWeight::BOLD).child(SharedString::from(format!("⌜ {} ⌝", tracked(text))))
-}
-
-/// A gauge: label, `▰▰▰▱▱`, value. The role follows the level (calm, attention past `warn`, danger past `alarm`).
+/// The context gauge: label, an 80×3 bar (amber fill = share used), the value.
 pub fn gauge(label: &str, fraction: Option<f64>, value: &str, cx: &App) -> Div {
-    let role = match fraction {
-        Some(f) if f >= 0.9 => Role::Danger,
-        Some(f) if f >= 0.75 => Role::Attention,
-        Some(_) => Role::Accent,
-        None => Role::TextDim,
+    let tk = tk(cx);
+    let fill = match fraction {
+        Some(f) if f >= 0.9 => tk.danger,
+        _ => tk.amber,
     };
     div()
         .flex()
         .items_center()
-        .gap(px(6.))
-        .text_xs()
-        .child(div().text_color(color(cx, Role::TextDim)).child(SharedString::from(tracked(label))))
-        .child(div().text_color(color(cx, role)).child(SharedString::from(segbar(fraction.unwrap_or(0.0), 8))))
-        .child(div().text_color(color(cx, Role::TextSecondary)).child(SharedString::from(value.to_owned())))
+        .gap(px(8.))
+        .whitespace_nowrap()
+        .font_family(mono(cx))
+        .text_size(px(t::TEXT_STATUS))
+        .child(div().text_color(c(tk.text_label)).child(SharedString::from(tracked_text(label, Tracking::Label, true))))
+        .child(
+            div()
+                .relative()
+                .w(px(t::CONTEXT_BAR_W))
+                .h(px(t::CONTEXT_BAR_H))
+                .rounded_full()
+                .bg(line(cx, t::LINE_CONTROL_STRONG))
+                .child(div().absolute().top_0().bottom_0().left_0().rounded_full().w(relative(fraction.unwrap_or(0.0).clamp(0.0, 1.0) as f32)).bg(c(fill))),
+        )
+        .child(div().text_color(c(tk.text_secondary)).child(SharedString::from(value.to_owned())))
 }
 
-/// A hairline-framed panel with a `// TITLE` header.
+/// A card with a `// TITLE` heading.
 pub fn frame(title: &str, body: impl IntoElement, cx: &App) -> Div {
     div()
         .flex()
         .flex_col()
+        .rounded(px(t::RADIUS_CARD))
         .border_1()
-        .border_color(color(cx, Role::Hairline))
-        .rounded(px(3.))
-        .bg(color(cx, Role::Surface))
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .px(px(10.))
-                .py(px(5.))
-                .border_b_1()
-                .border_color(color(cx, Role::Hairline))
-                .text_xs()
-                .text_color(color(cx, Role::TextDim))
-                .child(SharedString::from(format!("// {}", tracked(title)))),
-        )
-        .child(div().p(px(10.)).child(body))
+        .border_color(line(cx, t::LINE_DEFAULT))
+        .bg(line(cx, t::FILL_FAINT))
+        .child(div().flex().items_center().px(px(12.)).py(px(10.)).border_b_1().border_color(line(cx, t::LINE_SUBTLE)).child(ui::heading(title, cx)))
+        .child(div().p(px(12.)).child(body))
 }
 
 /// A thin rule with a label in it, between turns: `── 14:02 · turn 3 ──`.
 pub fn divider(label: &str, cx: &App) -> Div {
-    let line = || div().flex_1().h(px(1.)).bg(color(cx, Role::Hairline));
-    div()
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .py(px(6.))
-        .child(line())
-        .child(div().text_xs().text_color(color(cx, Role::TextDim)).child(SharedString::from(label.to_owned())))
-        .child(line())
+    let rule = || div().flex_1().h(px(1.)).bg(line(cx, t::LINE_SUBTLE));
+    div().flex().items_center().gap(px(8.)).py(px(6.)).child(rule()).child(ui::meta(SharedString::from(label.to_owned()), cx)).child(rule())
 }
 
-/// The haze behind everything: sodium amber rising from the bottom-left, teal falling from the top-right, each a
-/// two-stop gradient at a few percent — volumetric light without a shader. Plain ground when `atmosphere` is off
-/// (Reduce Transparency / Reduce Motion).
-pub fn haze(atmosphere: bool, cx: &App) -> AnyElement {
-    let ground = color(cx, Role::Ground);
-    if !atmosphere {
-        return div().absolute().inset_0().bg(ground).into_any_element();
-    }
-    let transparent = tint(cx, Role::Ground, 0.0);
+/// The ambient haze over the conversation column: sodium amber rising from the bottom-left, teal falling from the
+/// top-right, each fading out by 60%. GPUI paints linear gradients only, so the reference's radial ellipses are two
+/// angled linear washes. Non-interactive; plain ground when off (the setting, Reduce Transparency, Reduce Motion).
+pub fn haze(on: bool, cx: &App) -> AnyElement {
+    let ground = c(tk(cx).bg_main);
+    let wash = |(hex, alpha): (u32, f32)| {
+        let mut colour: gpui::Hsla = rgb(hex).into();
+        colour.a = alpha;
+        colour
+    };
+    let clear = |(hex, _): (u32, f32)| {
+        let mut colour: gpui::Hsla = rgb(hex).into();
+        colour.a = 0.;
+        colour
+    };
     div()
         .absolute()
         .inset_0()
         .bg(ground)
-        .child(div().absolute().inset_0().bg(linear_gradient(35., linear_color_stop(tint(cx, Role::Accent, 0.07), 0.0), linear_color_stop(transparent, 0.55))))
-        .child(div().absolute().inset_0().bg(linear_gradient(215., linear_color_stop(tint(cx, Role::Agent, 0.06), 0.0), linear_color_stop(transparent, 0.5))))
+        .when(on, |this| {
+            this.child(div().absolute().inset_0().bg(linear_gradient(35., linear_color_stop(wash(HAZE_AMBER), 0.0), linear_color_stop(clear(HAZE_AMBER), 0.6))))
+                .child(div().absolute().inset_0().bg(linear_gradient(215., linear_color_stop(wash(HAZE_TEAL), 0.0), linear_color_stop(clear(HAZE_TEAL), 0.6))))
+        })
         .into_any_element()
 }
 
-/// A small caps label, as used over every section of the rail and the dock.
+/// A section label (older panes).
 pub fn label(text: &str, cx: &App) -> Div {
-    div().text_xs().text_color(color(cx, Role::TextDim)).child(SharedString::from(tracked(text)))
+    ui::section_label(text, cx)
 }
 
-/// `when` for a role: the attention dot on a session row (running, needs you, done).
+/// A status dot in a role's colour (older panes).
 pub fn dot(role: Option<Role>, cx: &App) -> Div {
-    div().w(px(6.)).h(px(6.)).rounded_full().when_some(role, |this, role| this.bg(color(cx, role)))
+    div().flex_shrink_0().w(px(t::DOT)).h(px(t::DOT)).rounded_full().when_some(role, |this, role| this.bg(color(cx, role)))
 }

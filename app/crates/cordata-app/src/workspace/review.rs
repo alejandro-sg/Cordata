@@ -30,6 +30,11 @@ impl Review {
     pub fn hunks(&self) -> usize {
         self.files.iter().map(|f| f.hunks.len()).sum()
     }
+
+    /// Changed files waiting for review (tracked and new).
+    pub fn file_count(&self) -> usize {
+        self.files.len() + self.untracked.len()
+    }
 }
 
 impl Workspace {
