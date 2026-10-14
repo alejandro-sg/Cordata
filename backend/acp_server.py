@@ -1135,6 +1135,20 @@ class CordataAcpAgent:
             return session_extras.context_snapshot(state.agent) if state else {"used": 0, "window": None, "pct": None, "messages": 0, "estimated": True}
         if name == "context/compact":
             return await self._compact(session_id, state, str(params.get("focus") or ""))
+        if name == "git/commit_message":
+            # A commit message for this project's changes (git_message.py): fast tier if configured, else this session's model.
+            import agent_common  # noqa: PLC0415
+            import git_message  # noqa: PLC0415
+            from strands import Agent as _Agent  # noqa: PLC0415
+
+            model = agent_common._fast_model() or (state.agent.model if state is not None else None)
+            if model is None:
+                return {"ok": False, "reason": "no model is available"}
+
+            def generate(prompt: str) -> str:
+                return str(_Agent(model=model, system_prompt=git_message.SYSTEM, callback_handler=None, tools=[])(prompt))
+
+            return await run_blocking(git_message.commit_message, cwd, generate)
         if name == "steer":
             # A note for the running turn (steering.py): reaches the agent at its next model call.
             steer = self._steering.get(session_id or "")
