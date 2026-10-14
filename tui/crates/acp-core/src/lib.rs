@@ -21,5 +21,5 @@ pub use events::{
     ToolCallPatch, ToolKind, ToolStatus, parse_harness, parse_laya,
 };
 pub use permission::{ApprovalDecision, ChoiceKind, PermissionChoice, PermissionInfo, Unwrapped, unwrap_untrusted};
-pub use session::{SessionHandle, SessionOptions};
+pub use session::{Attachment, SessionHandle, SessionOptions};
 pub use transport::{BackendTransport, WsTransport};

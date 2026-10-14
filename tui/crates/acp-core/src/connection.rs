@@ -21,7 +21,8 @@ use agent_client_protocol::schema::v1::{
     CancelNotification, ContentBlock, InitializeRequest, PermissionOptionKind, PromptRequest,
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     SelectedPermissionOutcome, SessionConfigOptionValue, SessionNotification,
-    SetSessionConfigOptionRequest, SetSessionModeRequest, TextContent,
+    SetSessionConfigOptionRequest, SetSessionModeRequest, TextContent, ImageContent, EmbeddedResource,
+    EmbeddedResourceResource, TextResourceContents,
 };
 use agent_client_protocol::util::MatchDispatch;
 use agent_client_protocol::{
@@ -265,6 +266,18 @@ async fn latest_session(connection: &ConnectionTo<Agent>, cwd: &std::path::Path)
         .map(str::to_owned)
 }
 
+/// The prompt's content blocks: the text, then each attachment (images as `image`, files as embedded resources).
+fn prompt_blocks(text: String, attachments: Vec<crate::session::Attachment>) -> Vec<ContentBlock> {
+    let mut blocks = vec![ContentBlock::Text(TextContent::new(text))];
+    for attachment in attachments {
+        blocks.push(match attachment {
+            crate::session::Attachment::Image { mime, data_base64 } => ContentBlock::Image(ImageContent::new(data_base64, mime)),
+            crate::session::Attachment::Text { uri, text } => ContentBlock::Resource(EmbeddedResource::new(EmbeddedResourceResource::TextResourceContents(TextResourceContents::new(text, uri)))),
+        });
+    }
+    blocks
+}
+
 fn dispatch_command(
     command: Command,
     connection: &ConnectionTo<Agent>,
@@ -274,12 +287,9 @@ fn dispatch_command(
     events: &Events,
 ) -> Result<(), agent_client_protocol::Error> {
     match command {
-        Command::Prompt(text) => {
+        Command::Prompt(text, attachments) => {
             let turn_tx = turn_tx.clone();
-            let request = PromptRequest::new(
-                session_id.clone(),
-                vec![ContentBlock::Text(TextContent::new(text))],
-            );
+            let request = PromptRequest::new(session_id.clone(), prompt_blocks(text, attachments));
             connection
                 .send_request(request)
                 .on_receiving_result(async move |result| {

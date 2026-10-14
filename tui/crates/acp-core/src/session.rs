@@ -38,9 +38,18 @@ pub struct SessionOptions {
     pub hub_handle: Option<String>,
 }
 
+/// Something sent with a prompt: an image (a pasted screenshot, a dropped picture) or a file's text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Attachment {
+    /// Base64-encoded image bytes and their MIME type.
+    Image { mime: String, data_base64: String },
+    /// A text file, embedded as an ACP resource (`file://` URI).
+    Text { uri: String, text: String },
+}
+
 #[derive(Debug)]
 pub(crate) enum Command {
-    Prompt(String),
+    Prompt(String, Vec<Attachment>),
     Cancel,
     SetMode(String),
     SetConfigOption {
@@ -86,7 +95,12 @@ impl SessionHandle {
     }
 
     pub fn send_prompt(&self, text: impl Into<String>) -> Result<()> {
-        self.send(Command::Prompt(text.into()))
+        self.send(Command::Prompt(text.into(), Vec::new()))
+    }
+
+    /// A prompt with images and files: the text first, then one content block per attachment.
+    pub fn send_prompt_with(&self, text: impl Into<String>, attachments: Vec<Attachment>) -> Result<()> {
+        self.send(Command::Prompt(text.into(), attachments))
     }
 
     /// `session/cancel`. Only stops a running turn, and only between streamed

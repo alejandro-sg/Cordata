@@ -50,6 +50,20 @@ pub struct Conversation {
     pub turn_origin: String,
     #[serde(default)]
     pub acp_session_id: String,
+    /// Hidden from the lists (still found by search, and opened by handle).
+    #[serde(default)]
+    pub archived: bool,
+}
+
+/// A conversation that matched a search, and where: `title`, `user` or `assistant`.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct SearchHit {
+    #[serde(flatten)]
+    pub conversation: Conversation,
+    #[serde(default)]
+    pub snippet: String,
+    #[serde(default, rename = "where")]
+    pub found_in: String,
 }
 
 impl Conversation {
@@ -92,6 +106,14 @@ pub async fn open(config: &DaemonConfig, reference: &str, cwd: &Path) -> Result<
     serde_json::from_value(value).map_err(|error| Error::DaemonUnreachable(format!("the daemon's answer was not a conversation: {error}")))
 }
 
+/// A new hub conversation for an existing ACP session (a fork made with `_cordata/conversation/fork`): its agent
+/// loads that session instead of starting fresh.
+pub async fn adopt(config: &DaemonConfig, session_id: &str, cwd: &Path, title: &str) -> Result<Conversation> {
+    let body = serde_json::json!({ "conversation": "new", "cwd": cwd.display().to_string(), "origin": "app", "adopt": session_id, "title": title });
+    let value = request(config, "POST", "/conversations", Some(&body), OPEN_TIMEOUT).await?;
+    serde_json::from_value(value).map_err(|error| Error::DaemonUnreachable(format!("the daemon's answer was not a conversation: {error}")))
+}
+
 /// Conversations, newest first — in `cwd` when given.
 pub async fn list(config: &DaemonConfig, cwd: Option<&Path>) -> Result<Vec<Conversation>> {
     let path = match cwd {
@@ -101,6 +123,31 @@ pub async fn list(config: &DaemonConfig, cwd: Option<&Path>) -> Result<Vec<Conve
     let value = request(config, "GET", &path, None, LIST_TIMEOUT).await?;
     let rows = value.get("conversations").cloned().unwrap_or_default();
     serde_json::from_value(rows).map_err(|error| Error::DaemonUnreachable(format!("the daemon's list was not understood: {error}")))
+}
+
+/// Rename a conversation (one line; the daemon trims and masks it).
+pub async fn rename(config: &DaemonConfig, handle: &str, title: &str) -> Result<Conversation> {
+    let path = format!("/conversations/{}/rename", crate::config::percent_encode(handle));
+    let value = request(config, "POST", &path, Some(&serde_json::json!({ "title": title })), LIST_TIMEOUT).await?;
+    serde_json::from_value(value).map_err(|error| Error::DaemonUnreachable(format!("the daemon's answer was not a conversation: {error}")))
+}
+
+/// Archive a conversation (hide it from the lists) or bring it back. Nothing is deleted.
+pub async fn archive(config: &DaemonConfig, handle: &str, archived: bool) -> Result<Conversation> {
+    let path = format!("/conversations/{}/archive", crate::config::percent_encode(handle));
+    let value = request(config, "POST", &path, Some(&serde_json::json!({ "archived": archived })), LIST_TIMEOUT).await?;
+    serde_json::from_value(value).map_err(|error| Error::DaemonUnreachable(format!("the daemon's answer was not a conversation: {error}")))
+}
+
+/// Full-text search of conversations (titles, then what was said), newest first — in `cwd` when given.
+pub async fn search(config: &DaemonConfig, query: &str, cwd: Option<&Path>) -> Result<Vec<SearchHit>> {
+    let mut path = format!("/conversations/search?q={}", crate::config::percent_encode(query));
+    if let Some(cwd) = cwd {
+        path.push_str(&format!("&cwd={}", crate::config::percent_encode(&cwd.display().to_string())));
+    }
+    let value = request(config, "GET", &path, None, LIST_TIMEOUT).await?;
+    let rows = value.get("results").cloned().unwrap_or_default();
+    serde_json::from_value(rows).map_err(|error| Error::DaemonUnreachable(format!("the daemon's search was not understood: {error}")))
 }
 
 /// Is a daemon answering on its port? A connect, not a request: what `--transport auto` asks before
@@ -204,9 +251,22 @@ mod tests {
             busy: true,
             turn_origin: "menubar".into(),
             acp_session_id: "s".into(),
+            archived: false,
         };
         let line = row.summary(1000.0 + 7200.0);
         assert!(line.starts_with("c3f9a1e  fix the flaky test"), "{line}");
         assert!(line.contains("3 turns, 2h ago, opened from Discord · running a turn from the menu bar"), "{line}");
+    }
+
+    #[test]
+    fn search_hits_flatten_the_conversation_and_say_where() {
+        let hit: SearchHit = serde_json::from_value(serde_json::json!({
+            "handle": "c1", "title": "Billing", "cwd": "/p", "archived": true, "snippet": "…migrate the billing…", "where": "user"
+        }))
+        .unwrap();
+        assert_eq!(hit.conversation.handle, "c1");
+        assert!(hit.conversation.archived);
+        assert_eq!(hit.found_in, "user");
+        assert_eq!(hit.snippet, "…migrate the billing…");
     }
 }
