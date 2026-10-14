@@ -318,27 +318,27 @@ fn agent_handoff_lines(app: &App, width: usize) -> Vec<Vec<Span<'static>>> {
     }
 
     // 2. Active Thinking / Reasoning stream
-    if app.turn_active {
-        if let Some(Message::Thought(text)) = app.messages.last() {
-            let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
-            let room = width.saturating_sub(14);
-            rows.push(vec![
-                Span::styled("  · thinking: ", Style::new().fg(Color::Cyan)),
-                Span::styled(truncate(&one_line, room), Style::new().fg(Color::Gray).add_modifier(Modifier::ITALIC)),
-            ]);
-        }
+    if app.turn_active
+        && let Some(Message::Thought(text)) = app.messages.last()
+    {
+        let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let room = width.saturating_sub(14);
+        rows.push(vec![
+            Span::styled("  · thinking: ", Style::new().fg(Color::Cyan)),
+            Span::styled(truncate(&one_line, room), Style::new().fg(Color::Gray).add_modifier(Modifier::ITALIC)),
+        ]);
     }
 
     // 3. Live Agent Handoffs
     let mut has_handoff = false;
-    if let Some(run) = &app.run {
-        if let Some(handoff) = &run.handoff {
-            rows.push(vec![
-                Span::styled("⇄ ", Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-                Span::styled(truncate(handoff, width.saturating_sub(3)), Style::new().fg(Color::Yellow)),
-            ]);
-            has_handoff = true;
-        }
+    if let Some(run) = &app.run
+        && let Some(handoff) = &run.handoff
+    {
+        rows.push(vec![
+            Span::styled("⇄ ", Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(truncate(handoff, width.saturating_sub(3)), Style::new().fg(Color::Yellow)),
+        ]);
+        has_handoff = true;
     }
     for link in app.lab.state.links.iter().take(2) {
         let (arrow, color) = if link.active {
@@ -356,17 +356,17 @@ fn agent_handoff_lines(app: &App, width: usize) -> Vec<Vec<Span<'static>>> {
         has_handoff = true;
     }
     for msg in app.messages.iter().rev().take(10) {
-        if let Message::Tool(card) = msg {
-            if crate::ui::team::is_team_tool(&card.name) {
-                let rows_team = crate::ui::team::parse(&card.progress);
-                for team_row in rows_team.into_iter().rev().take(1) {
-                    if let crate::ui::team::TeamRow::Handoff { from, to, message } = team_row {
-                        rows.push(vec![
-                            Span::styled(format!("⇄ {from} → {to}: "), Style::new().fg(Color::Magenta)),
-                            Span::styled(truncate(&message, width.saturating_sub(from.len() + to.len() + 6)), dim()),
-                        ]);
-                        has_handoff = true;
-                    }
+        if let Message::Tool(card) = msg
+            && crate::ui::team::is_team_tool(&card.name)
+        {
+            let rows_team = crate::ui::team::parse(&card.progress);
+            for team_row in rows_team.into_iter().rev().take(1) {
+                if let crate::ui::team::TeamRow::Handoff { from, to, message } = team_row {
+                    rows.push(vec![
+                        Span::styled(format!("⇄ {from} → {to}: "), Style::new().fg(Color::Magenta)),
+                        Span::styled(truncate(&message, width.saturating_sub(from.len() + to.len() + 6)), dim()),
+                    ]);
+                    has_handoff = true;
                 }
             }
         }
