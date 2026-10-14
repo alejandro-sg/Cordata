@@ -214,7 +214,7 @@ pub fn run_detail(mission: &Mission, cx: &App) -> AnyElement {
                 if pod.cost_usd > 0.0 { format!(" · ${:.3}", pod.cost_usd) } else { String::new() }
             ))))
             .when_some(pod.activity.clone().filter(|_| pod.busy), |this, activity| {
-                this.child(div().text_xs().font_family(cordata_theme::fonts::MONO).text_color(color(cx, Role::Agent)).truncate().child(SharedString::from(format!("{} {}", pod.step.clone().unwrap_or_default(), shown(&activity)))))
+                this.child(div().text_xs().font_family(crate::theme::mono(cx)).text_color(color(cx, Role::Agent)).truncate().child(SharedString::from(format!("{} {}", pod.step.clone().unwrap_or_default(), shown(&activity)))))
             })
             .when_some(pool, |this, pool| this.child(pool_gauge(pool, cx)))
     });
@@ -234,7 +234,7 @@ pub fn run_detail(mission: &Mission, cx: &App) -> AnyElement {
                 .flex_col()
                 .gap(px(4.))
                 .child(div().flex().items_center().gap(px(8.)).child(hud::pill(&live, state_role(&live), cx)).child(div().text_xs().text_color(color(cx, Role::TextDim)).child(SharedString::from(mission.selected.clone().unwrap_or_default()))))
-                .when(!board.steps.is_empty() || board.planned.is_some(), |this| this.child(div().text_xs().font_family(cordata_theme::fonts::MONO).text_color(color(cx, Role::Accent)).child(SharedString::from(progress(board)))))
+                .when(!board.steps.is_empty() || board.planned.is_some(), |this| this.child(div().text_xs().font_family(crate::theme::mono(cx)).text_color(color(cx, Role::Accent)).child(SharedString::from(progress(board)))))
                 .child(div().text_sm().text_color(color(cx, Role::Text)).child(SharedString::from(shown(goal))))
                 .when_some(reason, |this, reason| this.child(div().text_xs().text_color(color(cx, Role::Attention)).child(SharedString::from(shown(&reason))))),
         )

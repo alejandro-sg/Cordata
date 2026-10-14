@@ -106,7 +106,7 @@ fn main() {
         cx.set_global(runtime);
         cx.set_global(display);
         gpui_component::init(cx);
-        theme::install(display.increase_contrast, cx);
+        theme::install(display.increase_contrast, "2049", cx);
         workspace::bind_keys(cx);
 
         let glass_wanted = !display.reduce_transparency;

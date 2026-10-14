@@ -502,7 +502,7 @@ impl Workspace {
                     this.mission.artifact = None;
                     cx.notify();
                 }))))
-                .child(div().id("artifact-text").max_h(px(560.)).overflow_y_scroll().text_xs().font_family(cordata_theme::fonts::MONO).text_color(color(cx, Role::TextSecondary)).child(SharedString::from(shown(text))))
+                .child(div().id("artifact-text").max_h(px(560.)).overflow_y_scroll().text_xs().font_family(crate::theme::mono(cx)).text_color(color(cx, Role::TextSecondary)).child(SharedString::from(shown(text))))
                 .into_any_element();
         }
         if self.mission.selected.is_some() {
@@ -927,7 +927,7 @@ impl Workspace {
                 .py(px(3.))
                 .rounded(px(2.))
                 .when(selected, |this| this.bg(tint(cx, Role::Accent, 0.16)))
-                .child(div().w(px(150.)).font_family(cordata_theme::fonts::MONO).text_sm().text_color(color(cx, if selected { Role::Accent } else { Role::Text })).child(SharedString::from(item.label.clone())))
+                .child(div().w(px(150.)).font_family(crate::theme::mono(cx)).text_sm().text_color(color(cx, if selected { Role::Accent } else { Role::Text })).child(SharedString::from(item.label.clone())))
                 .child(div().text_xs().text_color(color(cx, Role::TextDim)).child(SharedString::from(item.hint.clone())))
                 .child(div().flex_1().text_xs().text_color(color(cx, Role::TextSecondary)).truncate().child(SharedString::from(item.detail.clone())))
         });
@@ -1046,7 +1046,7 @@ impl Workspace {
                             .id("rail-trust-status")
                             .cursor_pointer()
                             .text_xs()
-                            .font_family(cordata_theme::fonts::MONO)
+                            .font_family(crate::theme::mono(cx))
                             .text_color(color(cx, if trusted { Role::Ok } else { Role::Attention }))
                             .child(if trusted { "✓ trusted" } else { "⚠ untrusted" })
                             .on_click(cx.listener(|this, _, _, cx| {
@@ -1278,7 +1278,7 @@ impl Workspace {
                         .p(px(8.))
                         .rounded(px(3.))
                         .bg(color(cx, Role::Surface))
-                        .font_family(cordata_theme::fonts::MONO)
+                        .font_family(crate::theme::mono(cx))
                         .text_xs()
                         .text_color(color(cx, if untrusted { Role::Agent } else { Role::TextSecondary }))
                         .child(SharedString::from(shown(&summary))),
@@ -1337,7 +1337,7 @@ impl Workspace {
                     .rounded(px(2.))
                     .cursor_pointer()
                     .text_xs()
-                    .font_family(cordata_theme::fonts::MONO)
+                    .font_family(crate::theme::mono(cx))
                     .text_color(color(cx, if selected { Role::Accent } else { Role::TextSecondary }))
                     .when(selected, |el| el.bg(tint(cx, Role::Accent, 0.1)))
                     .hover(|el| el.text_color(color(cx, Role::Text)))
@@ -1480,7 +1480,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::save_file_action))
             .size_full()
             .relative()
-            .font_family(cordata_theme::fonts::SANS)
+            .font_family(crate::theme::sans(cx))
             .text_color(color(cx, Role::Text))
             .when(!self.glass, |this| this.child(hud::haze(self.display.atmosphere(), cx)))
             .child(
@@ -1630,7 +1630,7 @@ mod window_tests {
     fn workspace(cx: &mut TestAppContext) -> (gpui::Entity<Workspace>, &mut VisualTestContext) {
         cx.update(|cx| {
             gpui_component::init(cx);
-            crate::theme::install(false, cx);
+            crate::theme::install(false, "2049", cx);
             super::bind_keys(cx);
         });
         let (view, cx) = cx.add_window_view(|window, cx| Workspace::new(offline(), std::env::temp_dir(), super::Launch::default(), window, cx));

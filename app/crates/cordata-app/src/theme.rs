@@ -1,30 +1,68 @@
-//! `cordata-theme`'s roles as GPUI colours, and as the component library's theme.
+//! The one theme module: the design tokens (`cordata_theme::tokens`) as GPUI colours, the fonts the window uses, and
+//! the component library's theme built from the same tokens. Views read colours only through here — `tk(cx)` for a
+//! token, `line`/`amber`/`teal` for the translucent ones, `color(cx, Role)` for the older role-based panes.
 //!
-//! The components (inputs, buttons, lists, the editor) read gpui-component's `Theme`; it is built here from the same
-//! roles the terminal uses, so there is one palette. Increase Contrast swaps in the high-contrast palette.
+//! The theme (`2049` · `graphite` · `dim`) can change while the app runs (Settings → Appearance); Increase Contrast
+//! is read once at launch.
 
+use std::borrow::Cow;
 use std::rc::Rc;
 
-use cordata_theme::{Palette, Role};
-use gpui::{App, Hsla, Rgba, rgb};
+use cordata_theme::tokens::{self, Tokens, fonts};
+use cordata_theme::{Palette, Role, Rgb};
+use gpui::{App, BoxShadow, Hsla, Rgba, SharedString, point, px, rgb};
 use gpui_component::theme::{Theme, ThemeConfig, ThemeMode};
 
-/// The palette in force (the window reads the system's Increase Contrast flag once at start; a change applies on the
-/// next launch — GPUI does not report it live).
-pub struct Active(pub &'static Palette);
+/// What is in force.
+pub struct Active {
+    pub tokens: Tokens,
+    pub palette: Palette,
+    pub sans: SharedString,
+    pub mono: SharedString,
+    pub increase_contrast: bool,
+}
 
 impl gpui::Global for Active {}
 
-pub fn palette(cx: &App) -> &'static Palette {
-    cx.try_global::<Active>().map_or(&cordata_theme::NIGHT, |active| active.0)
+fn active(cx: &App) -> Option<&Active> {
+    cx.try_global::<Active>()
+}
+
+/// The token set in force.
+pub fn tk(cx: &App) -> Tokens {
+    active(cx).map_or(tokens::T2049, |a| a.tokens)
+}
+
+pub fn palette(cx: &App) -> Palette {
+    active(cx).map_or_else(|| tokens::T2049.palette(), |a| a.palette)
+}
+
+pub fn sans(cx: &App) -> SharedString {
+    active(cx).map_or_else(|| SharedString::from(fonts::SANS_FALLBACK), |a| a.sans.clone())
+}
+
+pub fn mono(cx: &App) -> SharedString {
+    active(cx).map_or_else(|| SharedString::from(fonts::MONO_FALLBACKS[1]), |a| a.mono.clone())
 }
 
 pub fn color(cx: &App, role: Role) -> Hsla {
     rgba(palette(cx).get(role)).into()
 }
 
-pub fn rgba(c: cordata_theme::Rgb) -> Rgba {
+pub fn rgba(c: Rgb) -> Rgba {
     rgb(c.to_u32())
+}
+
+/// A token as a GPUI colour.
+pub fn c(value: Rgb) -> Hsla {
+    rgba(value).into()
+}
+
+/// A token at `alpha` (0–1).
+pub fn ca(value: Rgb, alpha: f32) -> Hsla {
+    let mut out = c(value);
+    out.a = alpha;
+    out
 }
 
 /// `role` at `alpha` (0–1), for washes and glows.
@@ -34,11 +72,96 @@ pub fn tint(cx: &App, role: Role, alpha: f32) -> Hsla {
     c
 }
 
-/// Install the palette and the component theme. Call once, after `gpui_component::init`.
-pub fn install(increase_contrast: bool, cx: &mut App) {
-    let palette = Palette::for_contrast(increase_contrast);
-    cx.set_global(Active(palette));
-    let config = Rc::new(component_theme(palette));
+/// A line or a hover fill: the theme's ink at `alpha` (`tokens::LINE_*`, `tokens::HOVER*`).
+pub fn line(cx: &App, alpha: f32) -> Hsla {
+    ca(tk(cx).ink, alpha)
+}
+
+pub fn amber(cx: &App, alpha: f32) -> Hsla {
+    ca(tk(cx).amber, alpha)
+}
+
+pub fn teal(cx: &App, alpha: f32) -> Hsla {
+    ca(tk(cx).teal, alpha)
+}
+
+/// The glow on a live amber dot.
+pub fn amber_glow(cx: &App) -> Vec<BoxShadow> {
+    vec![BoxShadow { color: amber(cx, tokens::AMBER_GLOW), offset: point(px(0.), px(0.)), blur_radius: px(tokens::GLOW_BLUR), spread_radius: px(0.), inset: false }]
+}
+
+/// The modal shadow.
+pub fn modal_shadow(cx: &App) -> Vec<BoxShadow> {
+    vec![BoxShadow { color: ca(tk(cx).bg_window, tokens::MODAL_SHADOW), offset: point(px(0.), px(28.)), blur_radius: px(90.), spread_radius: px(0.), inset: false }]
+}
+
+/// A soft shadow under popovers and the composer.
+pub fn soft_shadow(cx: &App) -> Vec<BoxShadow> {
+    vec![BoxShadow { color: ca(tk(cx).bg_window, 0.5), offset: point(px(0.), px(8.)), blur_radius: px(24.), spread_radius: px(0.), inset: false }]
+}
+
+/// A 1px border drawn inside the box (the active row, an active settings item): no layout shift, no stripe.
+pub fn inset_ring(color: Hsla) -> Vec<BoxShadow> {
+    vec![BoxShadow { color, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(1.), inset: true }]
+}
+
+/// A 1px line inside the bottom edge (the active tab).
+pub fn inset_bottom(color: Hsla) -> Vec<BoxShadow> {
+    vec![BoxShadow { color, offset: point(px(0.), px(-1.)), blur_radius: px(0.), spread_radius: px(0.), inset: true }]
+}
+
+/// Register the bundled fonts (Geist, Geist Mono) and choose the families: Geist when it loaded, else the system's.
+/// The files are looked for in the bundle (`Contents/Resources/fonts`) and, for a run from the checkout,
+/// `app/assets/fonts`. Nothing is fetched.
+pub fn load_fonts(cx: &mut App) -> (SharedString, SharedString) {
+    let mut dirs = Vec::new();
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(contents) = exe.parent().and_then(|macos| macos.parent())
+    {
+        dirs.push(contents.join("Resources").join("fonts"));
+    }
+    dirs.push(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/fonts"));
+    let mut blobs: Vec<Cow<'static, [u8]>> = Vec::new();
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let is_font = path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("ttf") || e.eq_ignore_ascii_case("otf"));
+            // A font file is small; a huge one is not what we shipped.
+            if is_font && entry.metadata().is_ok_and(|m| m.len() < 8 * 1024 * 1024)
+                && let Ok(bytes) = std::fs::read(&path)
+            {
+                blobs.push(Cow::Owned(bytes));
+            }
+        }
+        if !blobs.is_empty() {
+            break;
+        }
+    }
+    if !blobs.is_empty()
+        && let Err(error) = cx.text_system().add_fonts(blobs)
+    {
+        eprintln!("cordata: the bundled fonts did not load ({error}); using the system's");
+    }
+    let names = cx.text_system().all_font_names();
+    let has = |name: &str| names.iter().any(|n| n == name);
+    let sans = if has(fonts::SANS) { fonts::SANS } else { fonts::SANS_FALLBACK };
+    let mono = if has(fonts::MONO) { fonts::MONO } else { fonts::MONO_FALLBACKS.into_iter().find(|f| has(f)).unwrap_or(fonts::MONO_FALLBACKS[1]) };
+    (SharedString::from(sans), SharedString::from(mono))
+}
+
+/// Install the tokens and the component theme. Call once after `gpui_component::init`, and again (`set_theme`) when
+/// the theme setting changes.
+pub fn install(increase_contrast: bool, theme: &str, cx: &mut App) {
+    let (sans, mono) = match active(cx) {
+        Some(a) => (a.sans.clone(), a.mono.clone()),
+        None => load_fonts(cx),
+    };
+    let base = *Tokens::named(theme);
+    let tokens = if increase_contrast { base.high_contrast() } else { base };
+    let palette = tokens.palette();
+    let config = Rc::new(component_theme(&tokens, &palette, &sans, &mono));
+    cx.set_global(Active { tokens, palette, sans, mono, increase_contrast });
     Theme::update(cx, |theme| {
         theme.apply_config(&config);
         theme.mode = ThemeMode::Dark;
@@ -46,83 +169,92 @@ pub fn install(increase_contrast: bool, cx: &mut App) {
     Theme::change(ThemeMode::Dark, None, cx);
 }
 
-/// The component library's colours, from the roles. Keys are gpui-component's theme schema.
-fn component_theme(p: &Palette) -> ThemeConfig {
-    let hex = |role: Role| p.get(role).css();
-    let wash = |role: Role, alpha: u8| format!("{}{:02X}", p.get(role).css(), alpha);
+pub fn set_theme(theme: &str, cx: &mut App) {
+    let increase_contrast = active(cx).is_some_and(|a| a.increase_contrast);
+    install(increase_contrast, theme, cx);
+    cx.refresh_windows();
+}
+
+/// The component library's colours, from the tokens. Keys are gpui-component's theme schema.
+fn component_theme(t: &Tokens, p: &Palette, sans: &str, mono: &str) -> ThemeConfig {
+    let hex = |c: Rgb| c.css();
+    let wash = |c: Rgb, alpha: u8| format!("{}{:02X}", c.css(), alpha);
+    let hairline = hex(p.hairline);
     let colors: serde_json::Map<String, serde_json::Value> = [
-        ("background", hex(Role::Ground)),
-        ("foreground", hex(Role::Text)),
-        ("border", hex(Role::Hairline)),
-        ("input.border", hex(Role::Hairline)),
-        ("ring", hex(Role::Accent)),
-        ("caret", hex(Role::Accent)),
-        ("selection.background", hex(Role::Selection)),
-        ("accent.background", hex(Role::Raised)),
-        ("accent.foreground", hex(Role::Text)),
-        ("muted.background", hex(Role::Surface)),
-        ("muted.foreground", hex(Role::TextSecondary)),
-        ("popover.background", hex(Role::Raised)),
-        ("popover.foreground", hex(Role::Text)),
-        ("primary.background", hex(Role::Accent)),
-        ("primary.foreground", hex(Role::Ground)),
-        ("primary.hover.background", wash(Role::Accent, 0xE0)),
-        ("primary.active.background", wash(Role::Accent, 0xC0)),
-        ("secondary.background", hex(Role::Raised)),
-        ("secondary.foreground", hex(Role::Text)),
-        ("secondary.hover.background", hex(Role::Hairline)),
-        ("secondary.active.background", hex(Role::Hairline)),
-        ("danger.background", hex(Role::Danger)),
-        ("danger.foreground", hex(Role::Ground)),
-        ("warning.background", hex(Role::Attention)),
-        ("warning.foreground", hex(Role::Ground)),
-        ("success.background", hex(Role::Ok)),
-        ("success.foreground", hex(Role::Ground)),
-        ("info.background", hex(Role::Info)),
-        ("info.foreground", hex(Role::Ground)),
-        ("link", hex(Role::Agent)),
-        ("link.hover", hex(Role::Accent)),
-        ("link.active", hex(Role::Accent)),
-        ("list.background", hex(Role::Ground)),
-        ("list.hover.background", hex(Role::Surface)),
-        ("list.active.background", wash(Role::Accent, 0x22)),
-        ("list.active.border", hex(Role::Accent)),
-        ("list.even.background", hex(Role::Ground)),
-        ("list.head.background", hex(Role::Surface)),
-        ("sidebar.background", hex(Role::Surface)),
-        ("sidebar.foreground", hex(Role::TextSecondary)),
-        ("sidebar.border", hex(Role::Hairline)),
-        ("sidebar.accent.background", hex(Role::Raised)),
-        ("sidebar.accent.foreground", hex(Role::Text)),
-        ("sidebar.primary.background", hex(Role::Accent)),
-        ("sidebar.primary.foreground", hex(Role::Ground)),
+        ("background", hex(t.bg_main)),
+        ("foreground", hex(t.text_primary)),
+        ("border", hairline.clone()),
+        ("input.border", hairline.clone()),
+        ("ring", hex(t.amber)),
+        ("caret", hex(t.amber)),
+        ("selection.background", hex(p.selection)),
+        ("accent.background", hex(t.bg_input)),
+        ("accent.foreground", hex(t.text_primary)),
+        ("muted.background", hex(t.bg_panel)),
+        ("muted.foreground", hex(t.text_muted)),
+        ("popover.background", hex(t.bg_input)),
+        ("popover.foreground", hex(t.text_primary)),
+        ("primary.background", hex(t.amber)),
+        ("primary.foreground", hex(t.amber_on_fill)),
+        ("primary.hover.background", hex(t.amber_hover)),
+        ("primary.active.background", wash(t.amber, 0xD0)),
+        ("secondary.background", hex(t.bg_input)),
+        ("secondary.foreground", hex(t.text_primary)),
+        ("secondary.hover.background", hairline.clone()),
+        ("secondary.active.background", hairline.clone()),
+        ("danger.background", hex(t.danger)),
+        ("danger.foreground", hex(t.bg_window)),
+        ("warning.background", hex(t.amber)),
+        ("warning.foreground", hex(t.amber_on_fill)),
+        ("success.background", hex(t.teal)),
+        ("success.foreground", hex(t.bg_window)),
+        ("info.background", hex(t.info)),
+        ("info.foreground", hex(t.bg_window)),
+        ("link", hex(t.teal)),
+        ("link.hover", hex(t.amber)),
+        ("link.active", hex(t.amber)),
+        ("list.background", hex(t.bg_main)),
+        ("list.hover.background", hex(t.bg_panel)),
+        ("list.active.background", wash(t.amber, 0x22)),
+        ("list.active.border", hex(t.amber)),
+        ("list.even.background", hex(t.bg_main)),
+        ("list.head.background", hex(t.bg_panel)),
+        ("sidebar.background", hex(t.bg_panel)),
+        ("sidebar.foreground", hex(t.text_secondary)),
+        ("sidebar.border", hairline.clone()),
+        ("sidebar.accent.background", hex(t.bg_input)),
+        ("sidebar.accent.foreground", hex(t.text_primary)),
+        ("sidebar.primary.background", hex(t.amber)),
+        ("sidebar.primary.foreground", hex(t.amber_on_fill)),
         ("scrollbar.background", "#00000000".to_owned()),
-        ("scrollbar.thumb.background", wash(Role::TextDim, 0x55)),
-        ("scrollbar.thumb.hover.background", wash(Role::TextDim, 0x99)),
-        ("tab_bar.background", hex(Role::Surface)),
-        ("title_bar.background", hex(Role::Ground)),
-        ("title_bar.border", hex(Role::Hairline)),
-        ("progress.bar.background", hex(Role::Accent)),
-        ("skeleton.background", hex(Role::Raised)),
-        ("switch.background", hex(Role::Raised)),
-        ("slider.background", hex(Role::Accent)),
-        ("slider.thumb.background", hex(Role::Text)),
-        ("chart.1", hex(Role::Accent)),
-        ("chart.2", hex(Role::Agent)),
-        ("chart.3", hex(Role::Ok)),
-        ("chart.4", hex(Role::Attention)),
-        ("chart.5", hex(Role::Info)),
+        ("scrollbar.thumb.background", wash(t.text_muted, 0x44)),
+        ("scrollbar.thumb.hover.background", wash(t.text_muted, 0x88)),
+        ("tab_bar.background", hex(t.bg_panel)),
+        ("title_bar.background", hex(t.bg_panel)),
+        ("title_bar.border", hairline),
+        ("progress.bar.background", hex(t.amber)),
+        ("skeleton.background", hex(t.bg_input)),
+        ("switch.background", hex(t.bg_input)),
+        ("slider.background", hex(t.amber)),
+        ("slider.thumb.background", hex(t.text_primary)),
+        ("chart.1", hex(t.amber)),
+        ("chart.2", hex(t.teal)),
+        ("chart.3", hex(t.amber_soft)),
+        ("chart.4", hex(t.danger)),
+        ("chart.5", hex(t.info)),
     ]
     .into_iter()
     .map(|(key, value)| (key.to_owned(), serde_json::Value::String(value)))
     .collect();
     let config = serde_json::json!({
-        "name": "Cordata Night",
+        "name": "Cordata",
         "mode": "dark",
-        "font.size": 14.0,
-        "mono_font.size": 13.0,
-        "radius": 4,
-        "radius.lg": 6,
+        "font.family": sans,
+        "font.size": tokens::TEXT_BODY,
+        "mono_font.family": mono,
+        "mono_font.size": tokens::TEXT_UI,
+        "radius": tokens::RADIUS_CONTROL,
+        "radius.lg": tokens::RADIUS_CARD,
         "shadow": false,
         "colors": colors,
     });
@@ -137,13 +269,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_component_theme_parses_from_the_roles() {
-        for palette in [&cordata_theme::NIGHT, &cordata_theme::NIGHT_HIGH_CONTRAST] {
-            let config = component_theme(palette);
-            assert_eq!(config.name.as_ref(), "Cordata Night");
+    fn the_component_theme_parses_from_the_tokens() {
+        for theme in tokens::THEMES {
+            let p = theme.palette();
+            let config = component_theme(theme, &p, "Geist", "Geist Mono");
             assert!(config.mode.is_dark());
-            assert_eq!(config.colors.background.as_ref().map(|s| s.to_string()), Some(palette.ground.css()));
-            assert_eq!(config.colors.primary.as_ref().map(|s| s.to_string()), Some(palette.accent.css()));
+            assert_eq!(config.colors.background.as_ref().map(|s| s.to_string()), Some(theme.bg_main.css()));
+            assert_eq!(config.colors.primary.as_ref().map(|s| s.to_string()), Some(theme.amber.css()));
         }
     }
 }

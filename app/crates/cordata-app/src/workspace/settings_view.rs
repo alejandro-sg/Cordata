@@ -279,7 +279,7 @@ impl Workspace {
                     .rounded(px(2.))
                     .cursor_pointer()
                     .text_xs()
-                    .font_family(cordata_theme::fonts::MONO)
+                    .font_family(crate::theme::mono(cx))
                     .text_color(color(cx, if selected { Role::Accent } else { Role::TextSecondary }))
                     .when(selected, |el| el.bg(tint(cx, Role::Accent, 0.1)))
                     .hover(|el| el.text_color(color(cx, Role::Text)))
@@ -436,7 +436,7 @@ impl Workspace {
                     .child(
                         div()
                             .text_xs()
-                            .font_family(cordata_theme::fonts::MONO)
+                            .font_family(crate::theme::mono(cx))
                             .text_color(color(cx, Role::TextDim))
                             .child(SharedString::from(format!("{} {}", p.command, p.args.join(" ")))),
                     )
@@ -505,7 +505,7 @@ impl Workspace {
                             .child(
                                 div()
                                     .text_xs()
-                                    .font_family(cordata_theme::fonts::MONO)
+                                    .font_family(crate::theme::mono(cx))
                                     .text_color(color(cx, if r.active { Role::Text } else { Role::TextDim }))
                                     .child(SharedString::from(shown(&r.text))),
                             )
@@ -746,7 +746,7 @@ impl Workspace {
                                 .child(
                                     div()
                                         .text_xs()
-                                        .font_family(cordata_theme::fonts::MONO)
+                                        .font_family(crate::theme::mono(cx))
                                         .text_color(color(cx, Role::TextDim))
                                         .child(key),
                                 )
@@ -766,7 +766,7 @@ impl Workspace {
                         .child(
                             div()
                                 .text_xs()
-                                .font_family(cordata_theme::fonts::MONO)
+                                .font_family(crate::theme::mono(cx))
                                 .text_color(color(cx, Role::Accent))
                                 .child(SharedString::from(val_display)),
                         )

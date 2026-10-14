@@ -196,7 +196,7 @@ impl Workspace {
                                     .id(SharedString::from(format!("hunk-hdr-{file_idx}-{hunk_idx}")))
                                     .flex_1()
                                     .cursor_pointer()
-                                    .font_family(cordata_theme::fonts::MONO)
+                                    .font_family(crate::theme::mono(cx))
                                     .text_xs()
                                     .text_color(color(cx, Role::Accent))
                                     .hover(|el| el.text_color(color(cx, Role::Text)))
@@ -245,7 +245,7 @@ impl Workspace {
                                     .px(px(6.))
                                     .py(px(1.))
                                     .text_xs()
-                                    .font_family(cordata_theme::fonts::MONO)
+                                    .font_family(crate::theme::mono(cx))
                                     .text_color(color(cx, line_role))
                                     .when_some(bg_tint, |el, (r, a)| el.bg(tint(cx, r, a)))
                                     .child(SharedString::from(masked))
@@ -301,7 +301,7 @@ impl Workspace {
                                             .px(px(4.))
                                             .rounded(px(2.))
                                             .text_xs()
-                                            .font_family(cordata_theme::fonts::MONO)
+                                            .font_family(crate::theme::mono(cx))
                                             .text_color(color(cx, status_role))
                                             .bg(tint(cx, status_role, 0.15))
                                             .child(status_str),
@@ -309,7 +309,7 @@ impl Workspace {
                                     .child(
                                         div()
                                             .text_xs()
-                                            .font_family(cordata_theme::fonts::MONO)
+                                            .font_family(crate::theme::mono(cx))
                                             .text_color(color(cx, Role::Text))
                                             .hover(|el| el.text_color(color(cx, Role::Accent)))
                                             .child(SharedString::from(file.path.clone())),
@@ -317,7 +317,7 @@ impl Workspace {
                                     .child(
                                         div()
                                             .text_xs()
-                                            .font_family(cordata_theme::fonts::MONO)
+                                            .font_family(crate::theme::mono(cx))
                                             .text_color(color(cx, Role::TextDim))
                                             .child(format!("+{} -{}", file.additions(), file.deletions())),
                                     ),
@@ -386,7 +386,7 @@ impl Workspace {
                                 .px(px(4.))
                                 .rounded(px(2.))
                                 .text_xs()
-                                .font_family(cordata_theme::fonts::MONO)
+                                .font_family(crate::theme::mono(cx))
                                 .text_color(color(cx, Role::Accent))
                                 .bg(tint(cx, Role::Accent, 0.15))
                                 .child("?"),
@@ -394,7 +394,7 @@ impl Workspace {
                         .child(
                             div()
                                 .text_xs()
-                                .font_family(cordata_theme::fonts::MONO)
+                                .font_family(crate::theme::mono(cx))
                                 .text_color(color(cx, Role::TextSecondary))
                                 .child(SharedString::from(path.clone())),
                         )

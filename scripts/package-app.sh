@@ -32,6 +32,11 @@ log "building cordata-app ${VERSION:-?} (release)…"
 APP="$ROOT/app/target/$APP_NAME.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+# Bundled fonts (Geist, OFL) when vendored in app/assets/fonts; the app falls back to the system fonts without them.
+if compgen -G "$ROOT/app/assets/fonts/*.[ot]tf" >/dev/null; then
+  mkdir -p "$APP/Contents/Resources/fonts"
+  cp "$ROOT"/app/assets/fonts/*.[ot]tf "$ROOT"/app/assets/fonts/OFL.txt "$APP/Contents/Resources/fonts/" 2>/dev/null || true
+fi
 cp "$ROOT/app/target/release/cordata-app" "$APP/Contents/MacOS/cordata-app"
 
 ICON_KEY=""

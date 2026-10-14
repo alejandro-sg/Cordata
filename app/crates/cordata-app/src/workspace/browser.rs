@@ -159,7 +159,7 @@ impl Workspace {
                     .rounded(px(2.))
                     .cursor_pointer()
                     .text_xs()
-                    .font_family(cordata_theme::fonts::MONO)
+                    .font_family(crate::theme::mono(cx))
                     .text_color(color(cx, if selected { Role::Accent } else { Role::TextSecondary }))
                     .when(selected, |el| el.bg(tint(cx, Role::Accent, 0.1)))
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -222,7 +222,7 @@ impl Workspace {
                             .child(
                                 div()
                                     .text_xs()
-                                    .font_family(cordata_theme::fonts::MONO)
+                                    .font_family(crate::theme::mono(cx))
                                     .text_color(color(cx, Role::TextDim))
                                     .child(SharedString::from(shown(&step.target))),
                             ),
@@ -270,7 +270,7 @@ impl Workspace {
                                     .bg(color(cx, Role::Ground))
                                     .rounded(px(2.))
                                     .text_xs()
-                                    .font_family(cordata_theme::fonts::MONO)
+                                    .font_family(crate::theme::mono(cx))
                                     .text_color(color(cx, Role::Agent))
                                     .child(SharedString::from(format!("frame: {}", path.display()))),
                             ),
@@ -302,7 +302,7 @@ impl Workspace {
             div()
                 .id(("console-log", ix))
                 .text_xs()
-                .font_family(cordata_theme::fonts::MONO)
+                .font_family(crate::theme::mono(cx))
                 .text_color(color(cx, Role::TextSecondary))
                 .child(SharedString::from(log.clone()))
         });
@@ -332,7 +332,7 @@ impl Workspace {
                 .justify_between()
                 .p(px(4.))
                 .text_xs()
-                .font_family(cordata_theme::fonts::MONO)
+                .font_family(crate::theme::mono(cx))
                 .child(
                     div()
                         .flex()

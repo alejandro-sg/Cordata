@@ -82,7 +82,7 @@ fn code(text: &str, edge: Option<Role>, cx: &App) -> AnyElement {
         .bg(color(cx, Role::Surface))
         .border_l_2()
         .border_color(color(cx, edge.unwrap_or(Role::Hairline)))
-        .font_family(cordata_theme::fonts::MONO)
+        .font_family(crate::theme::mono(cx))
         .text_xs()
         .text_color(color(cx, Role::TextSecondary))
         .child(SharedString::from(body))
@@ -151,7 +151,7 @@ fn tool(card: &ToolCard, expand: bool, cx: &App) -> AnyElement {
                 .when_some(card.p_ok, |this, p| this.child(div().text_xs().text_color(color(cx, Role::TextDim)).child(SharedString::from(format!("p(ok) {:.0}%", p * 100.0))))),
         )
         .when_some(summary, |this, summary| {
-            this.child(div().px(px(10.)).py(px(4.)).font_family(cordata_theme::fonts::MONO).text_xs().text_color(color(cx, Role::TextSecondary)).child(SharedString::from(cut(&summary))))
+            this.child(div().px(px(10.)).py(px(4.)).font_family(crate::theme::mono(cx)).text_xs().text_color(color(cx, Role::TextSecondary)).child(SharedString::from(cut(&summary))))
         })
         .when(!card.progress.is_empty() && matches!(card.status, ToolStatus::InProgress), |this| {
             let tail: Vec<&str> = card.progress.lines().rev().take(3).collect();
@@ -165,7 +165,7 @@ fn tool(card: &ToolCard, expand: bool, cx: &App) -> AnyElement {
                     .py(px(6.))
                     .border_t_1()
                     .border_color(color(cx, Role::Hairline))
-                    .font_family(cordata_theme::fonts::MONO)
+                    .font_family(crate::theme::mono(cx))
                     .text_xs()
                     .text_color(color(cx, Role::TextSecondary))
                     .child(SharedString::from(body))

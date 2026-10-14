@@ -94,7 +94,7 @@ impl Workspace {
                     .text_xs()
                     .child(
                         div()
-                            .font_family(cordata_theme::fonts::MONO)
+                            .font_family(crate::theme::mono(cx))
                             .text_color(color(cx, Role::TextDim))
                             .child(SharedString::from(format!("cwd: {}", shown(&self.cwd.display().to_string())))),
                     )
@@ -160,7 +160,7 @@ impl Workspace {
                     .border_color(color(cx, Role::Hairline))
                     .cursor_pointer()
                     .text_xs()
-                    .font_family(cordata_theme::fonts::MONO)
+                    .font_family(crate::theme::mono(cx))
                     .text_color(color(cx, Role::TextSecondary))
                     .hover(|el| el.text_color(color(cx, Role::Accent)).border_color(color(cx, Role::Accent)))
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -182,7 +182,7 @@ impl Workspace {
                     .flex()
                     .gap(px(4.))
                     .text_xs()
-                    .font_family(cordata_theme::fonts::MONO)
+                    .font_family(crate::theme::mono(cx))
                     .text_color(color(cx, role))
                     .child(prefix)
                     .child(SharedString::from(line.text.clone()))

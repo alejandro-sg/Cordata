@@ -13,6 +13,8 @@
 //! * colour is never the only signal (a mode is also its name, a risk also its word) — that is the widgets' half of
 //!   the bargain, and why roles have names.
 
+pub mod tokens;
+
 /// A colour as 8-bit sRGB.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Rgb(pub u8, pub u8, pub u8);

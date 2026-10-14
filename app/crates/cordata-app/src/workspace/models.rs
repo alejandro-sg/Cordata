@@ -126,7 +126,7 @@ impl Workspace {
                     .child(
                         div()
                             .text_xs()
-                            .font_family(cordata_theme::fonts::MONO)
+                            .font_family(crate::theme::mono(cx))
                             .text_color(color(cx, Role::TextSecondary))
                             .child(SharedString::from(format!(
                                 "{:.1} GB / {:.1} GB ({:.0}%)",
@@ -153,7 +153,7 @@ impl Workspace {
             .child(
                 div()
                     .text_xs()
-                    .font_family(cordata_theme::fonts::MONO)
+                    .font_family(crate::theme::mono(cx))
                     .text_color(color(cx, Role::TextDim))
                     .child(SharedString::from(format!("Ollama resident: {:.1} GB", models.ollama_resident_gb))),
             );
@@ -192,7 +192,7 @@ impl Workspace {
                             .child(
                                 div()
                                     .text_xs()
-                                    .font_family(cordata_theme::fonts::MONO)
+                                    .font_family(crate::theme::mono(cx))
                                     .text_color(color(cx, Role::TextDim))
                                     .child(SharedString::from(m.size.clone())),
                             ),
@@ -234,7 +234,7 @@ impl Workspace {
                         .child(
                             div()
                                 .text_xs()
-                                .font_family(cordata_theme::fonts::MONO)
+                                .font_family(crate::theme::mono(cx))
                                 .text_color(color(cx, Role::TextDim))
                                 .child(SharedString::from(m.size.clone())),
                         ),
