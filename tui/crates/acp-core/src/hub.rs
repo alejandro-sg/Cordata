@@ -150,6 +150,29 @@ pub async fn search(config: &DaemonConfig, query: &str, cwd: Option<&Path>) -> R
     serde_json::from_value(rows).map_err(|error| Error::DaemonUnreachable(format!("the daemon's search was not understood: {error}")))
 }
 
+/// The scheduled prompts (`daemon/automations.py`), as the daemon describes them (`next` is when each runs next).
+pub async fn automations(config: &DaemonConfig) -> Result<Vec<serde_json::Value>> {
+    let value = request(config, "GET", "/automations", None, LIST_TIMEOUT).await?;
+    Ok(value.get("automations").and_then(|a| a.as_array()).cloned().unwrap_or_default())
+}
+
+/// Create or update an automation (`id` to update). The daemon validates it and says why when it refuses.
+pub async fn save_automation(config: &DaemonConfig, automation: &serde_json::Value) -> Result<serde_json::Value> {
+    request(config, "POST", "/automations", Some(automation), LIST_TIMEOUT).await
+}
+
+pub async fn delete_automation(config: &DaemonConfig, id: &str) -> Result<bool> {
+    let path = format!("/automations/{}", crate::config::percent_encode(id));
+    let value = request(config, "DELETE", &path, None, LIST_TIMEOUT).await?;
+    Ok(value.get("deleted").and_then(|d| d.as_bool()).unwrap_or(false))
+}
+
+/// Run one now; the run is a new conversation (`⏱ <name>`) every door can watch.
+pub async fn run_automation(config: &DaemonConfig, id: &str) -> Result<()> {
+    let path = format!("/automations/{}/run", crate::config::percent_encode(id));
+    request(config, "POST", &path, Some(&serde_json::json!({})), LIST_TIMEOUT).await.map(|_| ())
+}
+
 /// Is a daemon answering on its port? A connect, not a request: what `--transport auto` asks before
 /// it decides between the hub and a terminal-only backend.
 pub async fn reachable(config: &DaemonConfig) -> bool {
