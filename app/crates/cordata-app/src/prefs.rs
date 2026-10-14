@@ -30,6 +30,8 @@ pub struct Prefs {
     pub notify_approval: bool,
     pub sound_on_completion: bool,
     pub share_diagnostics: bool,
+    /// The global quick-ask hotkey (⌃⌥Space) brings the window forward with the composer focused.
+    pub quick_ask_hotkey: bool,
     /// The local Ollama model for ghost-text completions in the editor; empty is off.
     pub completion_model: String,
     /// Most recent first.
@@ -60,6 +62,7 @@ impl Default for Prefs {
             sound_on_completion: false,
             share_diagnostics: false,
             completion_model: String::new(),
+            quick_ask_hotkey: true,
             recents: Vec::new(),
         }
     }

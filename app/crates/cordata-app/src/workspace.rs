@@ -35,6 +35,7 @@ mod attachments;
 mod browser;
 mod completions;
 mod conversation;
+mod customize;
 mod editor;
 mod git_ops;
 mod history;
@@ -235,6 +236,8 @@ pub struct Workspace {
     inline_input: Entity<InputState>,
     /// The installed Ollama models (Settings → Models → Inline completions).
     ollama_models: Vec<String>,
+    /// Settings → Customize and Automations.
+    customize: customize::Customize,
     rename_input: Entity<InputState>,
     /// The sidebar row whose ⋯ menu is open (a hub handle).
     row_menu: Option<String>,
@@ -301,6 +304,7 @@ impl Workspace {
         let allow_input = cx.new(|cx| InputState::new(window, cx).placeholder("pnpm test"));
         let rename_input = cx.new(|cx| InputState::new(window, cx).placeholder("Conversation title"));
         let git = git_ops::Git::new(window, cx);
+        let customize = customize::Customize::new(window, cx);
         let inline_input = cx.new(|cx| InputState::new(window, cx).placeholder("Change the selection… (e.g. add error handling)"));
         let terminal = terminal::Terminal::new(window, cx);
         let browser_view = browser::BrowserView::new(window, cx);
@@ -411,6 +415,7 @@ impl Workspace {
             inline_pending: None,
             inline_input,
             ollama_models: Vec::new(),
+            customize,
             rename_input,
             row_menu: None,
             search_hits: Vec::new(),
@@ -425,6 +430,7 @@ impl Workspace {
         this.schedule_listing(cx);
         this.schedule_mission(cx);
         this.schedule_git(cx);
+        this.watch_hotkey(window, cx);
         this.load_tree(cx);
         this.load_review(cx);
         this.load_settings_data(cx);
@@ -432,6 +438,35 @@ impl Workspace {
             this.open_overlay(Overlay::Picker, window, cx);
         }
         this
+    }
+
+    /// ⌃⌥Space from anywhere: the window comes forward with the composer focused.
+    fn watch_hotkey(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Never from a test run: a global hotkey belongs to the installed app.
+        if !cfg!(test) && self.prefs.quick_ask_hotkey && !crate::platform::set_hotkey(true) {
+            eprintln!("cordata: ⌃⌥Space is taken by another app; quick ask is off");
+        }
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_millis(200)).await;
+                if crate::platform::take_hotkey() {
+                    let alive = this.update_in(cx, |this, window, cx| {
+                        cx.activate(true);
+                        window.activate_window();
+                        this.focus_top(window, cx);
+                        if this.overlays.is_empty() {
+                            this.composer.update(cx, |s, cx| s.focus(window, cx));
+                        }
+                    });
+                    if alive.is_err() {
+                        break;
+                    }
+                } else if this.update(cx, |_, _| ()).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     pub(super) fn project_name(&self) -> String {
@@ -740,6 +775,7 @@ impl Workspace {
                     self.settings_view.set_notice(reason.to_owned(), true);
                 }
             }
+            customize::SKILLS_TAG | customize::SKILL_RETIRE_TAG => self.on_customize_data(tag, &value, cx),
             crate::session::STEER_TAG => {
                 if !value.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false) {
                     self.attach_note = Some(value.get("reason").and_then(|v| v.as_str()).unwrap_or("the note was not taken").to_owned());

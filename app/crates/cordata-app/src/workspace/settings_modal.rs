@@ -19,6 +19,8 @@ pub enum Section {
     General,
     Models,
     Permissions,
+    Customize,
+    Automations,
     Appearance,
     Shortcuts,
     Connections,
@@ -27,13 +29,15 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Section; 8] = [Section::General, Section::Models, Section::Permissions, Section::Appearance, Section::Shortcuts, Section::Connections, Section::Account, Section::Advanced];
+    pub const ALL: [Section; 10] = [Section::General, Section::Models, Section::Permissions, Section::Customize, Section::Automations, Section::Appearance, Section::Shortcuts, Section::Connections, Section::Account, Section::Advanced];
 
     fn icon(self) -> &'static str {
         match self {
             Section::General => "◎",
             Section::Models => "◇",
             Section::Permissions => "⛨",
+            Section::Customize => "✎",
+            Section::Automations => "⏱",
             Section::Appearance => "◐",
             Section::Shortcuts => "⌘",
             Section::Connections => "⇄",
@@ -47,6 +51,8 @@ impl Section {
             Section::General => "General",
             Section::Models => "Models",
             Section::Permissions => "Permissions",
+            Section::Customize => "Customize",
+            Section::Automations => "Automations",
             Section::Appearance => "Appearance",
             Section::Shortcuts => "Shortcuts",
             Section::Connections => "Connections",
@@ -60,6 +66,8 @@ impl Section {
             Section::General => "Launch, sending and notifications.",
             Section::Models => "Which models answer, and how much they think.",
             Section::Permissions => "What Cordata may do without asking.",
+            Section::Customize => "Instructions, prompt commands and learned skills.",
+            Section::Automations => "Prompts the daemon runs on a schedule.",
             Section::Appearance => "Theme, haze and density.",
             Section::Shortcuts => "Every key the window answers to.",
             Section::Connections => "The hub and the MCP servers this project uses.",
@@ -81,7 +89,7 @@ pub enum Select {
 }
 
 /// The read-only shortcut reference.
-pub const SHORTCUTS: [(&str, &str); 15] = [
+pub const SHORTCUTS: [(&str, &str); 16] = [
     ("Command palette", "⌘K"),
     ("Switch project", "⌘O"),
     ("New conversation", "⌘N"),
@@ -95,6 +103,7 @@ pub const SHORTCUTS: [(&str, &str); 15] = [
     ("Stop the run", "esc esc"),
     ("Cycle permission mode", "⇧Tab"),
     ("Start mission run", "⌘↵"),
+    ("Quick ask, from any app", "⌃⌥Space"),
     ("Find a file", "⌘P"),
     ("Save the open file", "⌘S"),
 ];
@@ -171,6 +180,8 @@ impl Workspace {
             Section::General => self.general_rows(cx),
             Section::Models => self.model_rows(cx),
             Section::Permissions => self.permission_rows(cx),
+            Section::Customize => self.customize_rows(cx),
+            Section::Automations => self.automation_rows(cx),
             Section::Appearance => self.appearance_rows(cx),
             Section::Shortcuts => SHORTCUTS.iter().map(|(label, keys)| setting_row(label, "", ui::keycap(*keys, cx).into_any_element(), cx)).collect(),
             Section::Connections => self.connection_rows(cx),
@@ -277,6 +288,8 @@ impl Workspace {
         match self.settings_section {
             Section::Connections => self.load_plugins(cx),
             Section::Permissions => self.load_trusted_projects(cx),
+            Section::Customize => self.load_skills(cx),
+            Section::Automations => self.load_automations(cx),
             Section::Account => self.api_key_masked = crate::keychain::masked(),
             Section::Models => {
                 let job = cx.background_executor().spawn(async { super::completions::installed_models() });
@@ -409,8 +422,16 @@ impl Workspace {
             this.prefs.sound_on_completion = on;
             this.save_prefs(cx);
         }, cx);
+        let hotkey = self.toggle("quick-ask", self.prefs.quick_ask_hotkey, "Quick ask hotkey", |this, on, cx| {
+            this.prefs.quick_ask_hotkey = on;
+            this.save_prefs(cx);
+            if !crate::platform::set_hotkey(on) && on {
+                this.settings_view.set_notice("⌃⌥Space is taken by another app.".into(), true);
+            }
+        }, cx);
         vec![
             setting_row("Open on launch", "What the window shows when Cordata starts.", launch, cx),
+            setting_row("Quick ask (⌃⌥Space)", "From any app: bring Cordata forward with the composer ready.", hotkey, cx),
             setting_row("Send message with", "The other key adds a new line.", send, cx),
             sub_heading("notifications", cx),
             setting_row("Notify when approval is needed", "A system notification when a command waits for you and the window is in the back.", notify, cx),

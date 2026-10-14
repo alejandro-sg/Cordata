@@ -29,6 +29,7 @@ pub enum Action {
     Attach,
     Worktree,
     Review(bool),
+    SettingsAt(super::settings_modal::Section),
     Open(Target),
 }
 
@@ -94,6 +95,8 @@ impl Workspace {
             Item { group: "proj", label: "Switch project…".into(), shortcut: "⌘O", action: Action::SwitchProject },
             Item { group: "proj", label: "Open folder…".into(), shortcut: "", action: Action::OpenFolder },
             Item { group: "app", label: "Settings".into(), shortcut: "⌘,", action: Action::Settings },
+            Item { group: "app", label: "Automations…".into(), shortcut: "", action: Action::SettingsAt(super::settings_modal::Section::Automations) },
+            Item { group: "app", label: "Customize: instructions, commands, skills…".into(), shortcut: "", action: Action::SettingsAt(super::settings_modal::Section::Customize) },
         ];
         items.extend(
             self.listing
@@ -151,6 +154,10 @@ impl Workspace {
             Action::StopRun => self.session.update(cx, |s, cx| s.cancel(cx)),
             Action::Attach => self.choose_attachments(window, cx),
             Action::Worktree => self.begin_worktree(window, cx),
+            Action::SettingsAt(section) => {
+                self.settings_section = section;
+                self.open_overlay(Overlay::Settings, window, cx);
+            }
             Action::Review(branch) => self.request_review(branch, window, cx),
             Action::Open(target) => self.open(target, window, cx),
         }

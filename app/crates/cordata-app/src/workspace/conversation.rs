@@ -554,6 +554,10 @@ impl Workspace {
                     .pb(px(8.))
                     .pt(px(4.))
                     .child(ui::icon_button("attach", "+", cx).aria_label("Attach files (or paste / drop them)").tooltip(ui::tip("Attach files — or paste an image, or drop files here")).on_click(cx.listener(|this, _, window, cx| this.choose_attachments(window, cx))))
+                    .child(ui::icon_button("dictate", "◉", cx).aria_label("Dictate (system dictation)").tooltip(ui::tip("Dictate — macOS dictation into the composer")).on_click(cx.listener(|this, _, window, cx| {
+                        this.composer.update(cx, |s, cx| s.focus(window, cx));
+                        cx.defer(|_| crate::platform::start_dictation());
+                    })))
                     .child(trigger("insert-slash", "/", "commands", cx))
                     .child(trigger("insert-at", "@", "files", cx))
                     .child(trigger("insert-bang", "!", "shell", cx))
