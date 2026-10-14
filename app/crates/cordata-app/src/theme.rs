@@ -45,6 +45,11 @@ pub fn mono(cx: &App) -> SharedString {
     active(cx).map_or_else(|| SharedString::from(fonts::MONO_FALLBACKS[1]), |a| a.mono.clone())
 }
 
+/// The code font size (Settings → Appearance), for code blocks and the editor.
+pub fn code_size(cx: &App) -> f32 {
+    cx.try_global::<crate::prefs::Prefs>().map_or(tokens::TEXT_UI, |p| p.code_font_size)
+}
+
 pub fn color(cx: &App, role: Role) -> Hsla {
     rgba(palette(cx).get(role)).into()
 }

@@ -652,6 +652,7 @@ impl Workspace {
                     .border_1()
                     .border_color(color(cx, Role::Hairline))
                     .bg(color(cx, Role::Surface))
+                    .text_size(px(crate::theme::code_size(cx)))
                     .child(Editor::new(&buffer.state).bordered(false).h(relative(1.)).font_family(crate::theme::mono(cx))),
             )
             .child(div().text_xs().text_color(color(cx, if buffer.errors > 0 { Role::Danger } else { Role::TextDim })).child(SharedString::from(self.files.servers.clone().unwrap_or_else(|| "checking…".into()))))

@@ -24,6 +24,7 @@ trajectories; Ollama's model manager; Gemini's live voice and screen context; Ze
 | **P5** | system integration (§9) | **done** — `cordata://` URL scheme handler (`main.rs`), standalone `scripts/cordata-capture` screenshot helper |
 | **P6** | local models & offline voice (§9) | **done** — unified memory budget gauge, resident VRAM models list with unload (`ollama stop`), weight puller (`_cordata/ollama/*`), offline macOS speech synthesis (`workspace/models.rs`, ⌘8) |
 | **P7** | release packaging & release validation (§9) | **done** — signed `.app` bundle via `scripts/package-app.sh`, verified strict codesign, system framework checks, automated self-test |
+| **UI** | refined shell (the "Cordata Harness" reference design) | **done** — tokens in `cordata-theme::tokens` (2049 · graphite · dim, contrast-tested); sidebar · conversation · side panel · status bar; command palette (⌘K), project picker (⌘O: paste a path, folder panel, clone, new), settings modal (⌘,); window prefs in `~/Library/Application Support/Cordata/prefs.toml`, API key in the Keychain; backend hooks `model.thinking` · `model.maxTokens` · `context.autoCompact`, `_cordata/trust/{revoke,list}` |
 
 **Run it.** `make app-run` (the daemon's hub; `ARGS="--transport stdio"` for a private child from the checkout).
 `make app` builds, signs (`SIGN_IDENTITY` optional) and self-tests `app/target/Cordata.app`; `INSTALL=1` copies it to
@@ -45,7 +46,7 @@ one scripted turn through the real window; `make app-check` is clippy, `cargo de
 | Ctrl+R / Ctrl+E expand reasoning / tools | Ctrl+R / Ctrl+E, or click a block | |
 | `?` / F1 help | F1 | |
 | Ctrl+N / Alt+N / Ctrl+←→ sessions | ⌘N · ⌘W · ⌘[ ⌘] · the rail | |
-| F3 HUD · F4 diff review · F2 Lab | the dock (Mission Control · Files · Editor · Review · Settings · Terminal · Browser · Models) | ⌘1–8 dock tabs; ⌘, settings; ⌘P files; ⌘S save; ⌘W closes editor tab |
+| F3 HUD · F4 diff review · F2 Lab | the side panel (Mission Control · Files · Editor · Review · Terminal, ⋯ Browser · Models) | ⌘1–9 conversations; ⌥⌘1–7 panel tabs; ⌘\\ panel; ⌃` terminal; ⌘, settings; ⌘K palette; ⌘O project; ⌘P files; ⌘S save; ⌘W closes editor tab |
 
 **Crates** (`app/`):
 

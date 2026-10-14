@@ -361,7 +361,7 @@ pub fn code_block(text: impl Into<SharedString>, cx: &App) -> Div {
         .border_1()
         .border_color(line(cx, t::LINE_DEFAULT))
         .font_family(mono(cx))
-        .text_size(px(t::TEXT_SMALL))
+        .text_size(px(crate::theme::code_size(cx) - 1.))
         .text_color(c(tk(cx).text_body))
         .child(text.into())
 }
