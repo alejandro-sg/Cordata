@@ -201,6 +201,50 @@ async def test_options_over_grpc() -> None:
     await state.supervisor.stop_all(grace=1.0)
 
 
+def test_manage_conversations(client: TestClient, head: dict, app) -> None:
+    print("\n=== 5. rename, archive and search conversations ===")
+    import session_history  # noqa: PLC0415
+
+    os.environ["CORDATA_SESSIONS_DIR"] = str(ROOT / "sessions")
+    chats = app.state.daemon.chats
+    project_dir = ROOT / "manage"
+    project_dir.mkdir()
+    conv = chats.create(cwd=str(project_dir), title="first idea", origin="app")
+    conv.acp_id = "acp-manage-1"
+    other = chats.create(cwd=str(project_dir), title="unrelated", origin="app")
+    other.acp_id = "acp-manage-2"
+    snapshot = session_history.snapshot_path("acp-manage-1", ROOT / "sessions")
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    snapshot.write_text(json.dumps({"data": {"messages": [
+        {"role": "user", "content": [{"text": "please migrate the billing webhook to v2"}]},
+        {"role": "user", "content": [{"toolResult": {"toolUseId": "t", "content": [{"text": "webhook secret sk-ant-api03-" + "x" * 40}]}}]},
+        {"role": "assistant", "content": [{"text": "Done: the billing webhook now uses v2."}]},
+    ]}}))
+
+    renamed = client.post(f"/conversations/{conv.handle}/rename", json={"title": "  Billing\nwebhook   v2 "}, headers=head)
+    check(renamed.status_code == 200 and renamed.json()["title"] == "Billing webhook v2", f"rename: one line, trimmed ({renamed.json()})")
+    check(client.post(f"/conversations/{conv.handle}/rename", json={"title": "  "}, headers=head).status_code == 404, "an empty title is refused")
+    check(client.post("/conversations/nope/rename", json={"title": "x"}, headers=head).status_code == 404, "an unknown conversation is 404")
+
+    hits = client.get("/conversations/search", params={"q": "billing webhook", "cwd": str(project_dir)}, headers=head).json()["results"]
+    check(len(hits) == 1 and hits[0]["handle"] == conv.handle and hits[0]["where"] == "title", f"search finds the title ({hits})")
+    words = client.get("/conversations/search", params={"q": "migrate the billing", "cwd": str(project_dir)}, headers=head).json()["results"]
+    check(len(words) == 1 and words[0]["where"] == "user" and "migrate the billing" in words[0]["snippet"], f"…and what was said ({words})")
+    secret = client.get("/conversations/search", params={"q": "webhook secret", "cwd": str(project_dir)}, headers=head).json()["results"]
+    check(secret == [], "tool output is not searched (and so never shown)")
+    check(client.get("/conversations/search", params={"q": "b", "cwd": str(project_dir)}, headers=head).json()["results"] == [], "a one-letter query finds nothing (no full scans for noise)")
+
+    archived = client.post(f"/conversations/{conv.handle}/archive", json={"archived": True}, headers=head).json()
+    listed = [r["handle"] for r in client.get("/conversations", params={"cwd": str(project_dir)}, headers=head).json()["conversations"]]
+    check(archived["archived"] and conv.handle not in listed and other.handle in listed, "archive hides it from the list")
+    again = client.get("/conversations/search", params={"q": "billing", "cwd": str(project_dir)}, headers=head).json()["results"]
+    check(any(r["handle"] == conv.handle and r["archived"] for r in again), "…but search still finds it, marked archived")
+    client.post(f"/conversations/{conv.handle}/archive", json={"archived": False}, headers=head)
+    listed = [r["handle"] for r in client.get("/conversations", params={"cwd": str(project_dir)}, headers=head).json()["conversations"]]
+    check(conv.handle in listed, "un-archive brings it back")
+    check(client.post(f"/conversations/{conv.handle}/rename", json={"title": "x"}).status_code in (401, 403), "the routes need the daemon token")
+
+
 def main() -> None:
     test_token_file_is_atomic()
     app = create_app(port=8798)
@@ -208,6 +252,7 @@ def main() -> None:
         head = {"x-daemon-token": app.state.daemon.token}
         test_projects_and_history(client, head)
         test_observer(client, app)
+        test_manage_conversations(client, head, app)
     asyncio.run(test_options_over_grpc())
     print("\nALL OK")
 

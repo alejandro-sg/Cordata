@@ -167,7 +167,10 @@ async def _session_for_cwd(supervisor: Supervisor, cwd: str) -> str | None:
         return None
 
 
-async def _conversation_for(state: "State", ref: str, cwd: str | None, origin: str, title: str):
+_ADOPTABLE = __import__("re").compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$")
+
+
+async def _conversation_for(state: "State", ref: str, cwd: str | None, origin: str, title: str, adopt: str = ""):
     """The hub conversation `ref` names — a handle, `latest` (the newest in `cwd`, else a new one) or
     `new` — with its agent running and its session open. Raises `ChatError` with a sentence to show."""
     from .chat import ChatError, resolve_dir  # noqa: PLC0415
@@ -186,6 +189,11 @@ async def _conversation_for(state: "State", ref: str, cwd: str | None, origin: s
             conv = chats.latest(folder)
         if conv is None:
             conv = chats.create(cwd=folder, title=title, origin=origin)
+            if adopt:
+                # A conversation that already exists as an ACP session (a fork): the agent loads it instead of starting fresh.
+                if not _ADOPTABLE.match(adopt):
+                    raise ChatError("that is not a session id")
+                conv.acp_id = adopt
     return await chats.ensure(conv.key)
 
 
@@ -417,10 +425,48 @@ def create_app(port: int = DEFAULT_PORT) -> FastAPI:
         ref = str(payload.get("conversation") or "latest")
         origin = str(payload.get("origin") or "terminal")[:20]
         try:
-            conv = await _conversation_for(state, ref, payload.get("cwd"), origin, str(payload.get("title") or ""))
+            adopt = str(payload.get("adopt") or "") if ref == "new" else ""
+            conv = await _conversation_for(state, ref, payload.get("cwd"), origin, str(payload.get("title") or ""), adopt)
         except ChatError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         return conv.row()
+
+    @app.post("/conversations/{handle}/rename")
+    async def rename_conversation(handle: str, payload: dict, x_daemon_token: str | None = Header(default=None)) -> dict[str, Any]:
+        """Rename a conversation (the app's sidebar, ⌘K). The title is one line, masked, at most 120 characters."""
+        authorised(x_daemon_token)
+        row = state.chats.rename(handle, str(payload.get("title") or ""))
+        if row is None:
+            raise HTTPException(status_code=404, detail="no such conversation, or an empty title")
+        return row
+
+    @app.post("/conversations/{handle}/archive")
+    async def archive_conversation(handle: str, payload: dict, x_daemon_token: str | None = Header(default=None)) -> dict[str, Any]:
+        """Hide a conversation from the lists (`{"archived": true}`), or bring it back. Nothing is deleted."""
+        authorised(x_daemon_token)
+        row = state.chats.set_archived(handle, bool(payload.get("archived", True)))
+        if row is None:
+            raise HTTPException(status_code=404, detail="no such conversation")
+        return row
+
+    @app.get("/conversations/search")
+    async def search_conversations(q: str, cwd: str | None = None, limit: int = 20, x_daemon_token: str | None = Header(default=None)) -> dict[str, Any]:
+        """Full-text search of conversations (the person's and the assistant's words, not tool output), newest first:
+        titles first, then what was said. Snippets are masked; reads are bounded (session_history.search)."""
+        authorised(x_daemon_token)
+        import session_history  # noqa: PLC0415
+
+        needle = (q or "").strip().lower()
+        if len(needle) < 2:
+            return {"results": []}
+        rows = state.chats.rows(cwd, 500) + state.chats.rows(cwd, 500, archived=True)
+        by_acp = {r["acpSessionId"]: r for r in rows if r.get("acpSessionId")}
+        titled = [{**r, "snippet": r["title"], "where": "title"} for r in rows if needle and needle in (r.get("title") or "").lower()]
+        sessions_dir = os.environ.get("CORDATA_SESSIONS_DIR") or str(Path(__file__).resolve().parent.parent / "sessions")
+        said = await asyncio.to_thread(session_history.search, list(by_acp), sessions_dir, q, limit=limit)
+        seen = {r["handle"] for r in titled}
+        hits = titled + [{**by_acp[m["sessionId"]], "snippet": m["snippet"], "where": m["role"]} for m in said if by_acp[m["sessionId"]]["handle"] not in seen]
+        return {"results": hits[: max(1, min(limit, 50))]}
 
     # ------------------------------------------------------------- projects and their conversations (the app's rail)
 

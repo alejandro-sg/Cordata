@@ -200,3 +200,42 @@ def fork(session_id: str, base: str | Path, *, checkpoint: str | None = None, tu
         json.dump(blob, out, ensure_ascii=False)
     os.replace(temp, target)
     return {"ok": True, "sessionId": new_id, "from": session_id, "messages": len(data.get("messages") or [])}
+
+
+#: Bounds for `search`: conversations read, a snapshot's size, matches returned.
+SEARCH_MAX_SESSIONS = 300
+SEARCH_MAX_BYTES = 8 * 1024 * 1024
+SEARCH_MAX_RESULTS = 50
+
+
+def search(session_ids: list[str], base: str | Path, query: str, *, limit: int = 20) -> list[dict]:
+    """Conversations whose words contain ``query`` (case-insensitive): ``[{sessionId, role, snippet}]``, one match per
+    conversation, in the order the ids were given (newest first). Reads the person's and the assistant's text only — not
+    tool output — and masks every snippet. Bounded in conversations read, bytes per snapshot and results."""
+    needle = (query or "").strip().lower()
+    if len(needle) < 2:
+        return []
+    limit = max(1, min(int(limit), SEARCH_MAX_RESULTS))
+    found: list[dict] = []
+    for session_id in session_ids[:SEARCH_MAX_SESSIONS]:
+        path = snapshot_path(session_id, base)
+        try:
+            if path.stat().st_size > SEARCH_MAX_BYTES:
+                continue
+        except OSError:
+            continue
+        for message in read_messages(session_id, base) or []:
+            role = message.get("role")
+            if role not in ("user", "assistant"):
+                continue
+            text = " ".join(b["text"] for b in message.get("content") or [] if isinstance(b, dict) and isinstance(b.get("text"), str))
+            at = text.lower().find(needle)
+            if at < 0:
+                continue
+            start = max(0, at - 60)
+            snippet = ("…" if start else "") + " ".join(text[start : at + len(needle) + 80].split()) + "…"
+            found.append({"sessionId": session_id, "role": role, "snippet": _masked(snippet)})
+            break
+        if len(found) >= limit:
+            break
+    return found

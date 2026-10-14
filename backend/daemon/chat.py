@@ -146,12 +146,15 @@ class Conversation:
     tokens_in: int = 0
     tokens_out: int = 0
     turns: int = 0
+    #: Hidden from the lists (Archive in the app); still resolvable by handle, and un-archived by opening it.
+    archived: bool = False
 
     def persisted(self) -> dict[str, Any]:
         return {
             # The title is the opening of the first message — secret-masked on its way to disk.
             "cwd": self.cwd, "title": secret_guard.redact(self.title), "acp_id": self.acp_id, "mode": self.mode, "last_used": self.last_used,
             "tokens_in": self.tokens_in, "tokens_out": self.tokens_out, "turns": self.turns, "handle": self.handle, "origin": self.origin,
+            "archived": self.archived,
         }
 
     def row(self) -> dict[str, Any]:
@@ -159,7 +162,7 @@ class Conversation:
         return {
             "handle": self.handle, "title": secret_guard.redact(self.title), "cwd": self.cwd, "origin": self.origin,
             "lastUsed": self.last_used, "turns": self.turns, "live": bool(self.daemon_id), "busy": self.busy,
-            "turnOrigin": self.turn_origin, "mode": self.mode, "acpSessionId": self.acp_id,
+            "turnOrigin": self.turn_origin, "mode": self.mode, "acpSessionId": self.acp_id, "archived": self.archived,
         }
 
 
@@ -361,15 +364,33 @@ class Chats:
         rows = [c for c in self._convs.values() if target is None or c.cwd == target]
         return max(rows, key=lambda c: c.last_used, default=None)
 
-    def rows(self, cwd: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
-        """Conversations, newest first, for a door's picker."""
+    def rename(self, key: str, title: str) -> dict[str, Any] | None:
+        """Give a conversation a title of the person's choosing (masked, one line, at most 120 characters)."""
+        conv = self.resolve(key)
+        title = " ".join((title or "").split())[:120]
+        if conv is None or not title:
+            return None
+        conv.title = title
+        self._save()
+        return conv.row()
+
+    def set_archived(self, key: str, archived: bool) -> dict[str, Any] | None:
+        conv = self.resolve(key)
+        if conv is None:
+            return None
+        conv.archived = bool(archived)
+        self._save()
+        return conv.row()
+
+    def rows(self, cwd: str | None = None, limit: int = 20, *, archived: bool = False) -> list[dict[str, Any]]:
+        """Conversations, newest first, for a door's picker (the archived ones only when asked for)."""
         target = None
         if cwd:
             try:
                 target = resolve_dir(cwd)
             except ChatError:
                 target = cwd
-        convs = [c for c in self._convs.values() if target is None or c.cwd == target]
+        convs = [c for c in self._convs.values() if (target is None or c.cwd == target) and c.archived == archived]
         return [c.row() for c in sorted(convs, key=lambda c: c.last_used, reverse=True)[:limit]]
 
     def watch(self, key: str, callback: Callable[[dict[str, Any]], None]) -> Callable[[], None]:
@@ -835,6 +856,7 @@ class Chats:
                         mode=str(row.get("mode") or ""), last_used=float(row.get("last_used") or 0.0),
                         tokens_in=int(row.get("tokens_in") or 0), tokens_out=int(row.get("tokens_out") or 0), turns=int(row.get("turns") or 0),
                         handle=str(row.get("handle") or ""), origin=str(row.get("origin") or OWNER),
+                        archived=bool(row.get("archived", False)),
                     )
             for conv in self._convs.values():
                 if not conv.handle:
