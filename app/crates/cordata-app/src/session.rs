@@ -154,6 +154,10 @@ fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
+/// The reply to `steer` (accepted, how many wait) and to `steer/drain` at a turn's end.
+pub const STEER_TAG: &str = "gui-steer";
+pub const STEER_DRAIN_TAG: &str = "gui-steer-drain";
+
 pub struct Session {
     pub view: View,
     handle: Option<SessionHandle>,
@@ -167,6 +171,8 @@ pub struct Session {
     pub data: std::collections::HashMap<String, Result<serde_json::Value, String>>,
     /// Bumped on every change, so a view can tell its cached layout is stale.
     pub version: u64,
+    /// Images and files going out with the prompt being submitted right now (`submit_with`).
+    outgoing: Vec<acp_core::Attachment>,
     local: mpsc::UnboundedSender<LocalEvent>,
 }
 
@@ -176,7 +182,7 @@ impl Session {
         let mut view = View::new();
         view.attach_store(cordata_view::settings::Store::discover(&cwd));
         view.initial_prompt = initial_prompt;
-        let mut session = Self { view, handle: None, cwd: cwd.clone(), transport: connection.describe(), target: target.clone(), listing: None, data: Default::default(), version: 0, local: local_tx };
+        let mut session = Self { view, handle: None, cwd: cwd.clone(), transport: connection.describe(), target: target.clone(), listing: None, data: Default::default(), version: 0, outgoing: Vec::new(), local: local_tx };
         if let Some(problem) = &connection.problem {
             session.view.messages.push(Message::Error(problem.clone()));
             return session;
@@ -354,6 +360,19 @@ impl Session {
         self.settle(effects, cx);
     }
 
+    /// A prompt with attachments. They go only with a prompt sent now: if the text was a command, or the prompt was
+    /// queued behind a running turn, they are dropped (the window refuses both before calling this).
+    pub fn submit_with(&mut self, text: &str, attachments: Vec<acp_core::Attachment>, cx: &mut Context<Self>) {
+        self.outgoing = attachments;
+        self.submit(text, cx);
+        self.outgoing.clear();
+    }
+
+    /// A note for the running turn: the agent reads it at its next model call (`backend/steering.py`).
+    pub fn steer(&self, text: &str) -> bool {
+        self.request("_cordata/steer", serde_json::json!({ "text": text }), STEER_TAG)
+    }
+
     pub fn answer(&mut self, decision: acp_core::ApprovalDecision, cx: &mut Context<Self>) {
         self.view.answer(decision);
         self.settle(Vec::new(), cx);
@@ -370,7 +389,10 @@ impl Session {
 
     fn run(&mut self, effect: Effect, cx: &mut Context<Self>) {
         let sent = match effect {
-            Effect::SendPrompt(text) => self.with_handle(|h| h.send_prompt(text)),
+            Effect::SendPrompt(text) => {
+                let attachments = std::mem::take(&mut self.outgoing);
+                if attachments.is_empty() { self.with_handle(|h| h.send_prompt(text)) } else { self.with_handle(|h| h.send_prompt_with(text, attachments)) }
+            }
             Effect::Cancel => self.with_handle(SessionHandle::cancel),
             Effect::SetMode(mode) => self.with_handle(|h| h.set_mode(mode)),
             Effect::SetConfig { id, value } => self.with_handle(|h| h.set_config_option(id, value)),

@@ -26,6 +26,7 @@ pub enum Action {
     Settings,
     CycleMode,
     StopRun,
+    Attach,
     Open(Target),
 }
 
@@ -77,6 +78,8 @@ impl Workspace {
             Item { group: "panel", label: "Review changes".into(), shortcut: "", action: Action::Tab(DockTab::Review) },
             Item { group: "panel", label: "Browser agent".into(), shortcut: "", action: Action::Tab(DockTab::Browser) },
             Item { group: "panel", label: "Models & voice".into(), shortcut: "", action: Action::Tab(DockTab::Models) },
+            Item { group: "chat", label: "History: go back, fork, undo files".into(), shortcut: "", action: Action::Tab(DockTab::History) },
+            Item { group: "chat", label: "Attach files…".into(), shortcut: "", action: Action::Attach },
             if trusted {
                 Item { group: "proj", label: "Revoke trust for this project".into(), shortcut: "", action: Action::RevokeTrust }
             } else {
@@ -103,7 +106,19 @@ impl Workspace {
         if !query.trim().is_empty() {
             scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
         }
-        scored.into_iter().map(|(_, _, item)| item).collect()
+        let mut items: Vec<Item> = scored.into_iter().map(|(_, _, item)| item).collect();
+        // Full-text matches from the hub (what was said, not only titles), after the commands.
+        if self.search_for == query.trim() {
+            for hit in &self.search_hits {
+                let target = Target::Conversation(hit.conversation.handle.clone());
+                if items.iter().any(|i| i.action == Action::Open(target.clone())) {
+                    continue;
+                }
+                let title = if hit.conversation.title.is_empty() { hit.conversation.handle.clone() } else { hit.conversation.title.clone() };
+                items.push(Item { group: "found", label: shown(&format!("{title} — {}", hit.snippet)), shortcut: "", action: Action::Open(target) });
+            }
+        }
+        items
     }
 
     pub(super) fn run_palette(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
@@ -128,6 +143,7 @@ impl Workspace {
             Action::Settings => self.open_overlay(Overlay::Settings, window, cx),
             Action::CycleMode => self.cycle_mode(&super::CycleMode, window, cx),
             Action::StopRun => self.session.update(cx, |s, cx| s.cancel(cx)),
+            Action::Attach => self.choose_attachments(window, cx),
             Action::Open(target) => self.open(target, window, cx),
         }
     }

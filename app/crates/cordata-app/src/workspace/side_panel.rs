@@ -16,7 +16,7 @@ use crate::ui::{self, Dot, Kind};
 /// The tabs in the strip, given the window width; the rest are in the ⋯ menu.
 pub fn strip_tabs(window_w: f32) -> (Vec<DockTab>, Vec<DockTab>) {
     let mut strip = vec![DockTab::Mission, DockTab::Files, DockTab::Editor, DockTab::Review];
-    let mut overflow = vec![DockTab::Browser, DockTab::Models];
+    let mut overflow = vec![DockTab::History, DockTab::Browser, DockTab::Models];
     if window_w >= t::TERMINAL_OVERFLOW_W {
         strip.push(DockTab::Terminal);
     } else {
@@ -47,6 +47,7 @@ impl Workspace {
             DockTab::Terminal => ("terminal", None),
             DockTab::Browser => ("browser", None),
             DockTab::Models => ("models", None),
+            DockTab::History => ("history", None),
         }
     }
 
@@ -110,6 +111,7 @@ impl Workspace {
             DockTab::Terminal => editor::pane("terminal", self.terminal_panel(cx), cx),
             DockTab::Browser => editor::pane("browser agent", self.browser_panel(cx), cx),
             DockTab::Models => editor::pane("models & voice", self.models_panel(cx), cx),
+            DockTab::History => self.history_panel(cx),
         };
         div()
             .id("side-panel")

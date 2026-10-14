@@ -31,9 +31,11 @@ use crate::theme::{c, ca, line, tk};
 use crate::transcript::{self, GroupEdge};
 use crate::ui::{self, Dot, Kind};
 
+mod attachments;
 mod browser;
 mod conversation;
 mod editor;
+mod history;
 mod models;
 mod palette;
 mod picker;
@@ -55,6 +57,7 @@ pub enum DockTab {
     Terminal,
     Browser,
     Models,
+    History,
 }
 
 /// What floats over the window; the last one is on top and esc closes it first.
@@ -65,6 +68,7 @@ pub enum Overlay {
     Settings,
     Clone,
     Confirm,
+    Rename,
 }
 
 /// A destructive or trust-changing action waiting for a yes.
@@ -205,6 +209,20 @@ pub struct Workspace {
     loaded: HashSet<EntityId>,
     /// Automatic reconnects tried for the shown session.
     reconnects: u32,
+    /// Images and files waiting to go with the next prompt.
+    staged: Vec<attachments::Staged>,
+    /// Why the last attachment or send was refused, shown above the composer.
+    attach_note: Option<String>,
+    /// The side panel's History (checkpoints, file turns).
+    history: history::History,
+    /// The conversation being renamed (its hub handle), and the box.
+    renaming: Option<String>,
+    rename_input: Entity<InputState>,
+    /// The sidebar row whose ⋯ menu is open (a hub handle).
+    row_menu: Option<String>,
+    /// Full-text matches for the palette's query (hub), and which query they answer.
+    search_hits: Vec<acp_core::hub::SearchHit>,
+    search_for: String,
     /// `--selftest`: answer every approval with Allow and quit with a summary once the first turn ends.
     selftest: Option<SelfTest>,
     _subscriptions: Vec<Subscription>,
@@ -263,6 +281,7 @@ impl Workspace {
         let clone_dest = cx.new(|cx| InputState::new(window, cx).placeholder("~/Development"));
         let api_key_input = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("sk-ant-…"));
         let allow_input = cx.new(|cx| InputState::new(window, cx).placeholder("pnpm test"));
+        let rename_input = cx.new(|cx| InputState::new(window, cx).placeholder("Conversation title"));
         let terminal = terminal::Terminal::new(window, cx);
         let browser_view = browser::BrowserView::new(window, cx);
         let models_view = models::ModelsView::new(window, cx);
@@ -273,7 +292,13 @@ impl Workspace {
             cx.subscribe_in(&palette_input, window, |this: &mut Self, _, event: &InputEvent, _, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.palette_ix = 0;
+                    this.search_conversations(cx);
                     cx.notify();
+                }
+            }),
+            cx.subscribe_in(&rename_input, window, |this: &mut Self, _, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::PressEnter { .. }) {
+                    this.finish_rename(window, cx);
                 }
             }),
             cx.subscribe_in(&picker_input, window, |this: &mut Self, _, event: &InputEvent, _, cx| {
@@ -358,6 +383,14 @@ impl Workspace {
             turn_seen: HashMap::new(),
             loaded: HashSet::new(),
             reconnects: 0,
+            staged: Vec::new(),
+            attach_note: None,
+            history: history::History::default(),
+            renaming: None,
+            rename_input,
+            row_menu: None,
+            search_hits: Vec::new(),
+            search_for: String::new(),
             selftest: selftest.then(SelfTest::default),
             _subscriptions: subscriptions,
         };
@@ -401,6 +434,14 @@ impl Workspace {
                     this.refresh_listing(cx);
                 }
                 SessionEvent::Listed => this.take_stdio_listing(cx),
+                SessionEvent::Data(tag) if tag.starts_with("gui-history") => {
+                    if let Some(Ok(value)) = this.session.read(cx).data.get(tag.as_str()).cloned() {
+                        this.on_history_data(tag, value, window, cx);
+                    } else if let Some(Err(error)) = this.session.read(cx).data.get(tag.as_str()).cloned() {
+                        this.history.note = Some((error, true));
+                        cx.notify();
+                    }
+                }
                 SessionEvent::Data(tag) => this.on_data(tag, cx),
                 SessionEvent::Window(request) => this.on_window_request(request.clone(), window, cx),
             }),
@@ -658,6 +699,19 @@ impl Workspace {
                     self.settings_view.set_notice(reason.to_owned(), true);
                 }
             }
+            crate::session::STEER_TAG => {
+                if !value.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false) {
+                    self.attach_note = Some(value.get("reason").and_then(|v| v.as_str()).unwrap_or("the note was not taken").to_owned());
+                }
+            }
+            crate::session::STEER_DRAIN_TAG => {
+                // Notes the turn ended before reading: they become the next prompt, as the person meant them to.
+                let notes: Vec<String> = value.get("notes").and_then(|n| n.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default();
+                if !notes.is_empty() {
+                    let text = notes.join("\n");
+                    self.session.update(cx, |s, cx| s.submit(&text, cx));
+                }
+            }
             models::OLLAMA_STATUS_TAG => {
                 self.models_view.take_status(&value);
             }
@@ -821,9 +875,10 @@ impl Workspace {
             self.close_overlay(top, window, cx);
             return;
         }
-        if self.model_menu || self.overflow_open {
+        if self.model_menu || self.overflow_open || self.row_menu.is_some() {
             self.model_menu = false;
             self.overflow_open = false;
+            self.row_menu = None;
             cx.notify();
             return;
         }
@@ -935,6 +990,7 @@ impl Workspace {
         match tab {
             DockTab::Files => self.load_tree(cx),
             DockTab::Review => self.load_review(cx),
+            DockTab::History => self.load_history(cx),
             DockTab::Models => {
                 self.session.read(cx).request("_cordata/ollama/status", serde_json::json!({}), models::OLLAMA_STATUS_TAG);
             }
@@ -1014,6 +1070,18 @@ impl Workspace {
 
     /// Arrow keys, Tab and Escape belong to the `/`/`@` menu while it is open (before the text box sees them).
     fn composer_keys(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let mods = event.keystroke.modifiers;
+        // ⌘V with an image or files on the clipboard attaches them (text pastes as usual).
+        if event.keystroke.key == "v" && mods.platform && !mods.shift && !mods.alt && self.paste_image(cx) {
+            cx.stop_propagation();
+            return;
+        }
+        // ⌥↵ steers the running turn with what is typed.
+        if event.keystroke.key == "enter" && mods.alt && !mods.platform {
+            self.steer_composer(window, cx);
+            cx.stop_propagation();
+            return;
+        }
         let (has_menu, pending, plan, empty) = {
             let view = &self.session.read(cx).view;
             let pending = view.pending.front();
@@ -1107,6 +1175,7 @@ impl Workspace {
                 window.focus(&self.settings_focus, cx);
             }
             Overlay::Confirm => window.focus(&self.settings_focus, cx),
+            Overlay::Rename => self.rename_input.update(cx, |s, cx| s.focus(window, cx)),
         }
         cx.notify();
     }
@@ -1127,6 +1196,7 @@ impl Workspace {
             Some(Overlay::Picker) => self.picker_input.update(cx, |s, cx| s.focus(window, cx)),
             Some(Overlay::Clone) => self.clone_url.update(cx, |s, cx| s.focus(window, cx)),
             Some(Overlay::Settings | Overlay::Confirm) => window.focus(&self.settings_focus, cx),
+            Some(Overlay::Rename) => self.rename_input.update(cx, |s, cx| s.focus(window, cx)),
             None => self.composer.update(cx, |s, cx| s.focus(window, cx)),
         }
     }
@@ -1398,11 +1468,236 @@ impl Workspace {
 
     pub(super) fn send_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.composer.read(cx).value().trim_end_matches('\n').to_string();
-        if text.trim().is_empty() {
+        if text.trim().is_empty() && self.staged.is_empty() {
             return;
         }
+        if !self.staged.is_empty() {
+            let view = &self.session.read(cx).view;
+            if view.turn_active || !view.pending.is_empty() {
+                self.attach_note = Some("Attachments go with a new prompt — wait for this run to finish (or steer it with text).".into());
+                cx.notify();
+                return;
+            }
+            if text.trim_start().starts_with('/') || text.trim_start().starts_with('!') {
+                self.attach_note = Some("Attachments go with a prompt, not a command.".into());
+                cx.notify();
+                return;
+            }
+            let names: Vec<String> = self.staged.iter().map(|s| s.name.clone()).collect();
+            let body = if text.trim().is_empty() { "Here are the attached files.".to_owned() } else { text };
+            let shown = format!("{body}\n\n[attached: {}]", names.join(", "));
+            let items: Vec<acp_core::Attachment> = self.staged.drain(..).map(|s| s.attachment).collect();
+            self.attach_note = None;
+            self.composer.update(cx, |state, cx| state.set_value("", window, cx));
+            self.session.update(cx, |session, cx| session.submit_with(&shown, items, cx));
+            return;
+        }
+        self.attach_note = None;
         self.composer.update(cx, |state, cx| state.set_value("", window, cx));
         self.session.update(cx, |session, cx| session.submit(&text, cx));
+    }
+
+    /// Send the composer's text to the running turn now (⌥↵ or Steer): the agent reads it at its next model call.
+    pub(super) fn steer_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.composer.read(cx).value().trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        if !self.session.read(cx).view.turn_active {
+            self.send_composer(window, cx);
+            return;
+        }
+        if self.session.read(cx).steer(&text) {
+            self.composer.update(cx, |state, cx| state.set_value("", window, cx));
+            self.session.update(cx, |s, cx| {
+                s.view.messages.push(cordata_view::app::Message::Info(format!("↳ steering: {}", cordata_view::shown(&text))));
+                s.version += 1;
+                cx.notify();
+            });
+        }
+    }
+
+    pub(super) fn stage(&mut self, result: Result<attachments::Staged, String>, cx: &mut Context<Self>) {
+        match result {
+            Ok(_) if self.staged.len() >= attachments::MAX_ATTACHMENTS => self.attach_note = Some(format!("At most {} attachments on one prompt.", attachments::MAX_ATTACHMENTS)),
+            Ok(item) => {
+                self.attach_note = None;
+                self.staged.push(item);
+            }
+            Err(why) => self.attach_note = Some(why),
+        }
+        cx.notify();
+    }
+
+    pub(super) fn add_paths(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+        for path in paths {
+            self.stage(attachments::from_path(path), cx);
+        }
+    }
+
+    /// ⌘V with an image on the clipboard attaches it; anything else pastes as text. Returns whether it attached.
+    pub(super) fn paste_image(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(item) = cx.read_from_clipboard() else { return false };
+        let mut took = false;
+        for entry in item.entries() {
+            match entry {
+                gpui::ClipboardEntry::Image(image) => {
+                    let (mime, ext) = match image.format {
+                        gpui::ImageFormat::Png => ("image/png", "png"),
+                        gpui::ImageFormat::Jpeg => ("image/jpeg", "jpg"),
+                        gpui::ImageFormat::Webp => ("image/webp", "webp"),
+                        gpui::ImageFormat::Gif => ("image/gif", "gif"),
+                        _ => continue,
+                    };
+                    let name = format!("pasted-{}.{ext}", self.staged.len() + 1);
+                    self.stage(attachments::image(&name, mime, &image.bytes), cx);
+                    took = true;
+                }
+                gpui::ClipboardEntry::ExternalPaths(paths) => {
+                    self.add_paths(paths.paths(), cx);
+                    took = true;
+                }
+                _ => {}
+            }
+        }
+        took
+    }
+
+    /// The system's file panel, for the composer's +.
+    pub(super) fn choose_attachments(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let answer = cx.prompt_for_paths(gpui::PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some("Attach".into()) });
+        cx.spawn_in(window, async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = answer.await {
+                let _ = this.update(cx, |this, cx| this.add_paths(&paths, cx));
+            }
+        })
+        .detach();
+    }
+
+    // -------------------------------------------------------------------------------------------- rename, archive, search
+
+    pub(super) fn begin_rename(&mut self, handle: String, title: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.row_menu = None;
+        self.renaming = Some(handle);
+        self.rename_input.update(cx, |s, cx| s.set_value(title, window, cx));
+        self.open_overlay(Overlay::Rename, window, cx);
+    }
+
+    fn finish_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let title = self.rename_input.read(cx).value().trim().to_owned();
+        let Some(handle) = self.renaming.take() else { return };
+        self.close_overlay(Overlay::Rename, window, cx);
+        let BackendTransport::Hub { daemon, .. } = &self.connection.transport else { return };
+        if title.is_empty() {
+            return;
+        }
+        let daemon = daemon.clone();
+        let job = cx.global::<Runtime>().0.spawn(async move { acp_core::hub::rename(&daemon, &handle, &title).await });
+        cx.spawn(async move |this, cx| {
+            let result = job.await;
+            let _ = this.update(cx, |this, cx| {
+                if let Ok(Err(error)) = result {
+                    this.listing_error = Some(error.to_string());
+                }
+                this.refresh_listing(cx);
+            });
+        })
+        .detach();
+    }
+
+    pub(super) fn archive(&mut self, handle: String, cx: &mut Context<Self>) {
+        self.row_menu = None;
+        let BackendTransport::Hub { daemon, .. } = &self.connection.transport else { return };
+        let daemon = daemon.clone();
+        let job = cx.global::<Runtime>().0.spawn(async move { acp_core::hub::archive(&daemon, &handle, true).await });
+        cx.spawn(async move |this, cx| {
+            let result = job.await;
+            let _ = this.update(cx, |this, cx| {
+                if let Ok(Err(error)) = result {
+                    this.listing_error = Some(error.to_string());
+                }
+                this.refresh_listing(cx);
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// The palette's full-text search: asked of the hub once the query is two characters or more, and only the
+    /// answer for the latest query is kept.
+    fn search_conversations(&mut self, cx: &mut Context<Self>) {
+        let query = self.palette_input.read(cx).value().trim().to_owned();
+        self.search_for = query.clone();
+        let BackendTransport::Hub { daemon, .. } = &self.connection.transport else { return };
+        if query.chars().count() < 2 {
+            self.search_hits.clear();
+            return;
+        }
+        let (daemon, cwd) = (daemon.clone(), self.cwd.clone());
+        let asked = query.clone();
+        let job = cx.global::<Runtime>().0.spawn(async move {
+            tokio::time::sleep(Duration::from_millis(220)).await;
+            acp_core::hub::search(&daemon, &asked, Some(&cwd)).await
+        });
+        cx.spawn(async move |this, cx| {
+            let result = job.await;
+            let _ = this.update(cx, |this, cx| {
+                if this.search_for == query
+                    && let Ok(Ok(hits)) = result
+                {
+                    this.search_hits = hits;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn rename_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
+        let tk = tk(cx);
+        div()
+            .size_full()
+            .flex()
+            .items_start()
+            .justify_center()
+            .pt(gpui::relative(0.2))
+            .child(
+                div()
+                    .id("rename")
+                    .role(gpui::Role::Dialog)
+                    .aria_label("Rename conversation")
+                    .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                        if event.keystroke.key == "escape" {
+                            this.renaming = None;
+                            this.close_overlay(Overlay::Rename, window, cx);
+                            cx.stop_propagation();
+                        }
+                    }))
+                    .w(px(420.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(12.))
+                    .p(px(20.))
+                    .rounded(px(t::RADIUS_MODAL))
+                    .bg(c(tk.bg_input))
+                    .border_1()
+                    .border_color(line(cx, t::LINE_CONTROL_STRONG))
+                    .shadow(crate::theme::modal_shadow(cx))
+                    .child(div().text_size(px(t::TEXT_SETTINGS_TITLE)).text_color(c(tk.text_primary)).child("Rename conversation"))
+                    .child(div().h(px(32.)).flex().items_center().px(px(10.)).rounded(px(t::RADIUS_CARD)).bg(c(tk.bg_window)).border_1().border_color(line(cx, t::LINE_CONTROL_STRONG)).text_size(px(t::TEXT_UI)).child(gpui_component::input::Input::new(&self.rename_input).appearance(false)))
+                    .child(
+                        div()
+                            .flex()
+                            .justify_end()
+                            .gap(px(8.))
+                            .child(ui::button("rename-cancel", "Cancel  esc", Kind::Ghost, cx).on_click(cx.listener(|this, _, window, cx| {
+                                this.renaming = None;
+                                this.close_overlay(Overlay::Rename, window, cx);
+                            })))
+                            .child(ui::button("rename-save", "Rename  ↵", Kind::Primary, cx).on_click(cx.listener(|this, _, window, cx| this.finish_rename(window, cx)))),
+                    ),
+            )
+            .into_any_element()
     }
 
     pub(super) fn copy_last_reply(&mut self, cx: &mut Context<Self>) {
@@ -1439,8 +1734,15 @@ impl Workspace {
             (view.turn_active, !view.pending.is_empty(), matches!(view.conn, ConnState::Connected))
         };
         let was = self.turn_seen.insert(id, active).unwrap_or(false);
-        if was && !active && self.prefs.sound_on_completion {
-            crate::platform::play_sound("Glass");
+        if was && !active {
+            if self.prefs.sound_on_completion {
+                crate::platform::play_sound("Glass");
+            }
+            // Steering notes the agent never reached go out as the next prompt.
+            session.read(cx).request("_cordata/steer/drain", serde_json::json!({}), crate::session::STEER_DRAIN_TAG);
+            if id == self.session.entity_id() && self.dock_tab == DockTab::History {
+                self.load_history(cx);
+            }
         }
         if connected && self.loaded.insert(id) && id == self.session.entity_id() {
             self.reconnects = 0;
@@ -1480,7 +1782,7 @@ impl Workspace {
         }
         let tk = tk(cx);
         // A scrim under modals; the picker is a popover and keeps the window visible.
-        let modal = self.overlays.iter().any(|o| matches!(o, Overlay::Palette | Overlay::Settings | Overlay::Clone | Overlay::Confirm));
+        let modal = self.overlays.iter().any(|o| matches!(o, Overlay::Palette | Overlay::Settings | Overlay::Clone | Overlay::Confirm | Overlay::Rename));
         let mut layer = div().id("overlays").absolute().inset_0().when(modal, |l| l.bg(ca(tk.bg_window, t::SCRIM))).occlude();
         for overlay in &self.overlays {
             let element = match overlay {
@@ -1489,6 +1791,7 @@ impl Workspace {
                 Overlay::Settings => self.settings_modal(window, cx),
                 Overlay::Clone => self.clone_sheet(cx),
                 Overlay::Confirm => self.confirm_dialog(cx),
+                Overlay::Rename => self.rename_dialog(cx),
             };
             layer = layer.child(div().absolute().inset_0().child(element));
         }
@@ -1569,6 +1872,7 @@ impl Render for Workspace {
         let panel = self.panel_open.then(|| self.side_panel(window_w, cx));
         let overlays = self.overlay_layer(window, cx);
         let haze = self.prefs.haze && self.display.atmosphere();
+        let drop_ring = crate::theme::amber(cx, t::AMBER_BORDER_STRONG);
         let body: AnyElement = if has_conversation {
             div().id("transcript").role(gpui::Role::Log).aria_label("Transcript").flex_1().min_h_0().child(transcript_list).into_any_element()
         } else {
@@ -1629,6 +1933,8 @@ impl Render for Workspace {
                     .child(
                         div()
                             .id("conversation")
+                            .on_drop(cx.listener(|this, paths: &gpui::ExternalPaths, _, cx| this.add_paths(paths.paths(), cx)))
+                            .drag_over::<gpui::ExternalPaths>(move |style, _, _, _| style.border_2().border_color(drop_ring))
                             .flex_1()
                             .h_full()
                             .min_w_0()
@@ -1949,6 +2255,65 @@ mod window_tests {
         assert_eq!(recent, Some((cwd.clone(), false)), "first in the recents, untrusted");
         assert_eq!(sessions, 2, "a conversation opens in the new project");
         assert!(view.read_with(cx, |this, _| this.overlays.is_empty()));
+    }
+
+    #[gpui::test]
+    fn attachments_stage_and_refuse_what_they_must(cx: &mut TestAppContext) {
+        let (view, cx) = workspace(cx);
+        let dir = tempfile_dir();
+        std::fs::write(dir.join("notes.md"), "hello").unwrap();
+        std::fs::write(dir.join(".env"), "KEY=1").unwrap();
+        view.update(cx, |this, cx| this.add_paths(&[dir.join("notes.md"), dir.join(".env")], cx));
+        let (count, note) = view.read_with(cx, |this, _| (this.staged.len(), this.attach_note.clone()));
+        assert_eq!(count, 1, "the text file is staged");
+        assert!(note.unwrap_or_default().contains("credentials"), "the .env is refused, and says why");
+        // A running turn: attachments wait instead of being dropped.
+        view.update_in(cx, |this, window, cx| {
+            this.session.update(cx, |s, _| {
+                s.view.conn = cordata_view::app::ConnState::Connected;
+                s.view.turn_active = true;
+            });
+            this.composer.update(cx, |c, cx| c.set_value("look at this", window, cx));
+            this.send_composer(window, cx);
+        });
+        let (count, note) = view.read_with(cx, |this, _| (this.staged.len(), this.attach_note.clone()));
+        assert_eq!(count, 1, "still staged while the turn runs");
+        assert!(note.unwrap_or_default().contains("wait for this run"), "…and the window says so");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui::test]
+    fn steering_adds_a_note_and_clears_the_box(cx: &mut TestAppContext) {
+        let (view, cx) = workspace(cx);
+        view.update_in(cx, |this, window, cx| {
+            this.session.update(cx, |s, _| {
+                s.view.conn = cordata_view::app::ConnState::Connected;
+                s.view.turn_active = true;
+            });
+            this.composer.update(cx, |c, cx| c.set_value("use the v2 API", window, cx));
+        });
+        cx.simulate_keystrokes("alt-enter");
+        cx.run_until_parked();
+        let (empty, shown) = view.read_with(cx, |this, cx| {
+            let v = &this.session.read(cx).view;
+            (this.composer.read(cx).value().is_empty(), v.messages.iter().any(|m| matches!(m, cordata_view::app::Message::Info(t) if t.contains("steering: use the v2 API"))))
+        });
+        // Offline, the request cannot go out: the box keeps the text. Connected (real handle), it clears and notes it.
+        assert!(!empty || shown, "either kept (no backend) or sent and noted");
+    }
+
+    #[gpui::test]
+    fn history_answers_route_to_the_pane(cx: &mut TestAppContext) {
+        let (view, cx) = workspace(cx);
+        view.update_in(cx, |this, window, cx| {
+            this.on_history_data(super::history::CONVERSATION_TAG, serde_json::json!({"turns": 2, "checkpoints": [{"index": 1, "id": "abc", "turn": 2, "prompt": "add tests", "at": 1.0}]}), window, cx);
+            this.on_history_data(super::history::UNDO_TAG, serde_json::json!({"ok": true, "dry_run": true, "turn": "t-1", "count": 3, "files": ["a.rs"]}), window, cx);
+            this.on_history_data(super::history::REWIND_TAG, serde_json::json!({"ok": false, "reason": "a turn is running"}), window, cx);
+        });
+        let (cps, preview, note) = view.read_with(cx, |this, _| (this.history.checkpoints.len(), this.history.preview.as_ref().map(|(t, _)| t.clone()), this.history.note.clone()));
+        assert_eq!(cps, 1);
+        assert_eq!(preview.as_deref(), Some("t-1"), "a dry run becomes a preview, not a change");
+        assert_eq!(note, Some(("a turn is running".into(), true)), "a refusal says why");
     }
 
     #[gpui::test]

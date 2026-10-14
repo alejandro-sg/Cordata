@@ -422,6 +422,82 @@ impl Workspace {
                 .child(div().text_color(c(tk.text_secondary)).child(key))
                 .child(word)
         };
+        let typed = !self.composer.read(cx).value().trim().is_empty();
+        let running = view.turn_active;
+        let steer = (running && typed).then(|| {
+            ui::button("steer", "Steer ⌥↵", Kind::Tint, cx)
+                .h(px(t::SEND_BUTTON))
+                .aria_label("Steer the running turn (Option+Enter)")
+                .tooltip(ui::tip("Send this to the running turn now; ↵ queues it for after"))
+                .on_click(cx.listener(|this, _, window, cx| this.steer_composer(window, cx)))
+        });
+        let chips: Vec<AnyElement> = self
+            .staged
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let hover = c(tk.danger);
+                div()
+                    .id(("attachment", index))
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .gap(px(6.))
+                    .h(px(24.))
+                    .px(px(8.))
+                    .rounded(px(t::RADIUS_CONTROL))
+                    .border_1()
+                    .border_color(line(cx, t::LINE_CONTROL_STRONG))
+                    .bg(line(cx, t::FILL_FAINT))
+                    .child(div().text_color(c(if item.image { tk.teal } else { tk.amber_soft })).text_size(px(t::TEXT_META)).child(if item.image { "▣" } else { "▤" }))
+                    .child(div().max_w(px(180.)).truncate().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.text_secondary)).child(SharedString::from(item.name.clone())))
+                    .child(ui::meta(SharedString::from(super::attachments::size_label(item.size)), cx))
+                    .child(
+                        div()
+                            .id(("attachment-remove", index))
+                            .role(gpui::Role::Button)
+                            .aria_label(SharedString::from(format!("Remove {}", item.name)))
+                            .cursor_pointer()
+                            .text_color(c(tk.text_faint))
+                            .hover(move |s| s.text_color(hover))
+                            .child("✕")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if index < this.staged.len() {
+                                    this.staged.remove(index);
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .into_any_element()
+            })
+            .collect();
+        let queued: Vec<AnyElement> = view
+            .queue
+            .iter()
+            .enumerate()
+            .map(|(index, text)| {
+                div()
+                    .id(("queued", index))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .px(px(10.))
+                    .py(px(4.))
+                    .child(ui::meta("queued", cx))
+                    .child(div().flex_1().min_w_0().truncate().text_size(px(t::TEXT_SMALL)).text_color(c(tk.text_secondary)).child(SharedString::from(shown(text))))
+                    .child(ui::icon_button(("queued-remove", index), "✕", cx).size(px(18.)).aria_label("Remove from the queue").on_click(cx.listener(move |this, _, _, cx| {
+                        this.session.update(cx, |s, cx| {
+                            if index < s.view.queue.len() {
+                                s.view.queue.remove(index);
+                            }
+                            s.version += 1;
+                            cx.notify();
+                        });
+                    })))
+                    .into_any_element()
+            })
+            .collect();
+        let note = self.attach_note.clone();
         let send = if busy {
             ui::button("stop-turn", "■ Stop", Kind::AmberOutline, cx)
                 .h(px(t::SEND_BUTTON))
@@ -464,6 +540,9 @@ impl Workspace {
             .border_1()
             .border_color(amber(cx, t::AMBER_BORDER_STRONG))
             .shadow(ring)
+            .when(!queued.is_empty(), |col| col.child(div().flex().flex_col().pt(px(4.)).border_b_1().border_color(line(cx, t::LINE_SUBTLE)).children(queued)))
+            .when(!chips.is_empty(), |col| col.child(div().flex().flex_wrap().gap(px(6.)).px(px(12.)).pt(px(10.)).children(chips)))
+            .when_some(note, |col, note| col.child(div().px(px(14.)).pt(px(8.)).text_size(px(t::TEXT_SMALL)).text_color(c(tk.amber)).child(SharedString::from(note))))
             .child(div().px(px(14.)).pt(px(10.)).text_size(px(t::TEXT_BODY)).child(Textarea::new(&self.composer).appearance(false).aria_label("Message")))
             .child(
                 div()
@@ -473,6 +552,7 @@ impl Workspace {
                     .px(px(8.))
                     .pb(px(8.))
                     .pt(px(4.))
+                    .child(ui::icon_button("attach", "+", cx).aria_label("Attach files (or paste / drop them)").tooltip(ui::tip("Attach files — or paste an image, or drop files here")).on_click(cx.listener(|this, _, window, cx| this.choose_attachments(window, cx))))
                     .child(trigger("insert-slash", "/", "commands", cx))
                     .child(trigger("insert-at", "@", "files", cx))
                     .child(trigger("insert-bang", "!", "shell", cx))
@@ -484,6 +564,7 @@ impl Workspace {
                             .tooltip(ui::tip("Permission mode  ⇧Tab"))
                             .on_click(cx.listener(|this, _, window, cx| this.cycle_mode(&super::CycleMode, window, cx))),
                     )
+                    .children(steer)
                     .child(send),
             )
             .into_any_element()
@@ -496,6 +577,8 @@ impl Workspace {
             "Say why (or answer in your own words) — ↵ sends, esc goes back"
         } else if !view.pending.is_empty() {
             "Reply to steer, or approve the command above…"
+        } else if view.turn_active {
+            "Queue a follow-up (↵), or steer the run now (⌥↵)…"
         } else if view.messages.iter().any(transcript::is_conversation) {
             "Follow up…"
         } else {
