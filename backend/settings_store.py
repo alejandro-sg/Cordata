@@ -215,6 +215,13 @@ SCHEMA: dict[str, tuple] = {
     # Who writes the summary when a long chat is compacted: the fast model tier (MODEL_TIER_FAST) when one is set, or the
     # session's own model (`main`). With no fast tier configured both are the same.
     "context.summaryModel": ("enum", ("fast", "main")),
+    # Generation and compaction (the app's Settings → Models). `model.thinking` is Anthropic extended thinking: off,
+    # auto (the model decides — adaptive thinking), always (a budget every call). `model.maxTokens` caps one reply.
+    # `context.autoCompact` is when Strands' proactive compression summarises older turns (unset: 70%). All three are
+    # trust-gated: a cloned repository must not raise what a turn may spend.
+    "model.thinking": ("enum", ("off", "auto", "always")),
+    "model.maxTokens": ("float", 1024.0, 128000.0),
+    "context.autoCompact": ("enum", ("80", "90", "off")),
     "context.maxTurnUsage": ("float", 0.0, 50000000.0),
     # Skills (skill_search.py): list only the few that fit the request — embedding search, Laya deciding — instead of
     # all 49 on every call. `skillSearch: false` lists them all; `skillsListed` is how many are listed per turn.
@@ -252,7 +259,7 @@ def user_only(key: str) -> bool:
 #: from the user file, or from a project the user has `/trust`ed, they apply.
 #: Mirrored in `app/crates/cordata-view/src/settings.rs` (`TRUST_GATED_KEYS`).
 TRUST_GATED_KEYS = frozenset(
-    {"vault.enabled", "vault.addr", "vault.vault", "vault.egressPolicy", "kg.sink", "claudeCode.maxBudgetUsd", "claudeCode.model", "claudeCode.effort", "context.coldTools", "context.toolOutputChars", "context.agedOutputChars", "context.offload", "context.webFetch", "context.maxSteps", "context.maxTurnUsage", "context.summaryModel", "context.skillSearch", "context.skillsListed", "checkpoints.enabled", "checkpoints.maxFileMb", "learning.promotion", "learning.optimizePrompts", "learning.bandit",
+    {"vault.enabled", "vault.addr", "vault.vault", "vault.egressPolicy", "kg.sink", "claudeCode.maxBudgetUsd", "claudeCode.model", "claudeCode.effort", "context.coldTools", "context.toolOutputChars", "context.agedOutputChars", "context.offload", "context.webFetch", "context.maxSteps", "context.maxTurnUsage", "context.summaryModel", "model.thinking", "model.maxTokens", "context.autoCompact", "context.skillSearch", "context.skillsListed", "checkpoints.enabled", "checkpoints.maxFileMb", "learning.promotion", "learning.optimizePrompts", "learning.bandit",
      # Laya's own lines: `callGuard: off` or a raised `riskDestroy` from a cloned repo would quietly remove the
      # per-call asks that make `auto` mode bounded, and `laya.mode: off` the turn-level arming.
      "laya.mode", "laya.callGuard", "laya.riskSafe", "laya.riskDestroy",
@@ -598,6 +605,26 @@ def trust_project(cwd) -> Path:
         trusted.append(here)
     _write_json(path, data, private=True)
     return path
+
+
+def untrust_project(path) -> Path | None:
+    """Take ``path`` out of the user's ``trustedProjects`` (by realpath). Revoking only ever lowers what a folder may
+    do, so it needs no confirmation. Returns the file written, or None when the folder was not trusted."""
+    file, data = _editable("user", path)
+    here = os.path.realpath(str(path))
+    trusted = data.get("trustedProjects")
+    if not isinstance(trusted, list) or not any(os.path.realpath(str(p)) == here for p in trusted if isinstance(p, str)):
+        return None
+    data["trustedProjects"] = [p for p in trusted if not (isinstance(p, str) and os.path.realpath(p) == here)]
+    _write_json(file, data, private=True)
+    return file
+
+
+def trusted_projects(cwd) -> list[str]:
+    """Every folder in the user's ``trustedProjects``."""
+    _, data = _editable("user", cwd)
+    trusted = data.get("trustedProjects")
+    return [p for p in trusted if isinstance(p, str)] if isinstance(trusted, list) else []
 
 
 # ------------------------------------------------------------ instructions

@@ -425,7 +425,18 @@ def _summarizer_agent(which: str) -> Agent | None:
     return Agent(model=model, callback_handler=None) if model is not None else None
 
 
-def build_conversation_manager(summarizer: str = "fast") -> SummarizingConversationManager:
+def compression_setting(compact_at: str | None) -> bool | dict:
+    """``context.autoCompact`` as Strands' ``proactive_compression`` (``SummarizingConversationManager``): unset keeps
+    the SDK default (``True``, 70% of the window), ``"80"``/``"90"`` become ``{"compression_threshold": 0.8/0.9}``,
+    ``"off"`` turns proactive compression off (the manager still reduces after a context-overflow error)."""
+    if compact_at == "off":
+        return False
+    if compact_at in ("80", "90"):
+        return {"compression_threshold": int(compact_at) / 100}
+    return True
+
+
+def build_conversation_manager(summarizer: str = "fast", compact_at: str | None = None) -> SummarizingConversationManager:
     """Context management: summarize older turns instead of just dropping them.
 
     No ``summarization_agent`` given, so Strands uses the parent agent's own
@@ -439,7 +450,7 @@ def build_conversation_manager(summarizer: str = "fast") -> SummarizingConversat
     call and the history is summarised first once it passes 70%.
     """
     return SummarizingConversationManager(
-        preserve_recent_messages=ACTIVE_MEMORY_WINDOW, proactive_compression=True, summarization_agent=_summarizer_agent(summarizer)
+        preserve_recent_messages=ACTIVE_MEMORY_WINDOW, proactive_compression=compression_setting(compact_at), summarization_agent=_summarizer_agent(summarizer)
     )
 
 
@@ -566,6 +577,7 @@ def build_agent_for_session(
     skill_options: dict | None = None,
     offloader: Any = None,
     summarizer: str = "fast",
+    compact_at: str | None = None,
     project_root: str | None = None,
     web_fetch_mode: str = "agentic",
     extra_plugins: list | None = None,
@@ -654,7 +666,7 @@ def build_agent_for_session(
             *(triage_hooks(notify=triage_notify) if use_triage else []),
             *(extra_hooks or []),
         ],
-        conversation_manager=build_conversation_manager(summarizer),
+        conversation_manager=build_conversation_manager(summarizer, compact_at),
         # Snapshots (session_store.py); a conversation from the old layout is migrated on first use.
         session_manager=session_store.session_manager(session_id, SESSIONS_DIR),
         interventions=interventions,

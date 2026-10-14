@@ -146,6 +146,54 @@ def _apply_temperature(agent, value) -> bool:
     return True
 
 
+def generation_config(provider: str, preferences, params: dict) -> dict:
+    """The model-config update for ``model.maxTokens`` and ``model.thinking``, or ``{}`` when neither applies.
+
+    Anthropic (``AnthropicConfig``): ``max_tokens`` is top-level; thinking rides in ``params``. Current Claude models
+    take only adaptive thinking (a fixed ``budget_tokens`` is rejected), so ``auto`` sends ``{"type": "adaptive"}`` and
+    ``always`` adds ``output_config.effort = "high"`` for deeper thinking every turn; ``off`` sends nothing (some
+    current models reject an explicit ``disabled``). Sampling parameters are not sent alongside thinking.
+    OpenAI-compatible models take ``max_tokens`` as a sampling param and have no thinking switch here."""
+    raw = preferences.get("model.maxTokens")
+    max_tokens = int(raw) if isinstance(raw, (int, float)) and raw >= 1024 else None
+    thinking = preferences.get("model.thinking")
+    params = dict(params or {})
+    if provider == "anthropic":
+        update: dict = {}
+        if max_tokens is not None:
+            update["max_tokens"] = max_tokens
+        if thinking in ("auto", "always"):
+            params["thinking"] = {"type": "adaptive"}
+            if thinking == "always":
+                params["output_config"] = {**(params.get("output_config") or {}), "effort": "high"}
+            params.pop("temperature", None)
+            update["params"] = params
+        elif thinking == "off" and ("thinking" in params or "output_config" in params):
+            params.pop("thinking", None)
+            params.pop("output_config", None)
+            update["params"] = params
+        return update
+    if max_tokens is not None:
+        params["max_tokens"] = max_tokens
+        return {"params": params}
+    return {}
+
+
+def _apply_generation(agent, preferences) -> bool:
+    """Apply ``model.maxTokens`` / ``model.thinking`` to the session's model. Never raises: a provider that refuses a
+    key keeps its current config (logged)."""
+    try:
+        import agent_common
+
+        update = generation_config(agent_common.ACTIVE_PROVIDER, preferences, agent.model.get_config().get("params") or {})
+        if update:
+            agent.model.update_config(**update)
+        return bool(update)
+    except Exception:
+        logging.getLogger(__name__).warning("generation settings not applied", exc_info=True)
+        return False
+
+
 def _apply_startup_preferences(preferences) -> None:
     """Preferences that configure modules which read them when a session is
     built (Laya's mode and gate, the sub-agent model tiers). A value in a

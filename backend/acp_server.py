@@ -167,6 +167,7 @@ from acp_session import (  # noqa: E402,F401
     _project_system_prompt,
     _is_chat_scratch,
     _chat_system_prompt,
+    _apply_generation,
     _apply_temperature,
     _apply_startup_preferences,
     _router_policy,
@@ -750,6 +751,7 @@ class CordataAcpAgent:
             # What a specialist or the Claude Code CLI returns is the answer itself, so those are never set aside.
             offloader=context_offload.build(session_id, preferences=lambda: settings_store.current(cwd), never=set(specialist_agents)),
             summarizer=str(preferences.get("context.summaryModel", "fast")),
+            compact_at=preferences.get("context.autoCompact"),
             project_root=cwd,
             # What each message carries along (ephemeral, never stored): the MCP servers this project has *now* — a
             # server discovered in the workspace and started in the background is part of the agent's picture from the
@@ -805,6 +807,7 @@ class CordataAcpAgent:
             _apply_model(agent, preferences.get("model"))
         if preferences.get("temperature"):
             _apply_temperature(agent, preferences.get("temperature"))
+        _apply_generation(agent, preferences)
 
         plugins.attach(agent)  # specialists keep their fixed kit; plugins reach the orchestrator
         threading.Thread(target=self._start_background, args=(plugins, manager, lsp_enabled), name="harness-start", daemon=True).start()
@@ -1298,6 +1301,18 @@ class CordataAcpAgent:
             return {"ok": bool(changed), "paths": [str(p) for p in changed]}
         if name == "trust/status":
             return await run_blocking(self._trust_status, state, cwd)
+        if name == "trust/list":
+            return {"projects": await run_blocking(settings_store.trusted_projects, cwd)}
+        if name == "trust/revoke":
+            target = str(params.get("path") or cwd)
+            if not os.path.isabs(target):
+                return {"ok": False, "reason": "path must be absolute"}
+            state_store.append_event("trust", {"action": "revoke", "cwd": os.path.realpath(target)}, session_id=session_id, source="acp_server")
+            written = await run_blocking(settings_store.untrust_project, target)
+            if state is not None and os.path.realpath(state.cwd) == os.path.realpath(target):
+                # What trust unlocked (project MCP servers, allow rules, gated keys) stops applying from now on.
+                await run_blocking(state.plugins.discover)
+            return {"ok": True, "changed": written is not None, "trusted": settings_store.current(cwd).trusted}
         if name == "trust/grant":
             if not params.get("confirmed"):
                 return {"ok": False, "reason": "trusting a folder is the person's decision — answer the trust card", "needs": "confirm_trust"}

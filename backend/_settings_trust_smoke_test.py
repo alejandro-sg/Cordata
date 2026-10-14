@@ -100,6 +100,35 @@ async def main() -> None:
     check(any(e["payload"].get("action") == "grant" for e in state_store.recent_events(kind="trust", limit=5)), "…and the grant is in the ledger")
     tools = [getattr(t, "tool_name", "") for t in server._sessions[sid].agent.tool_registry.registry.values()] if hasattr(server._sessions[sid].agent, "tool_registry") else []
     check(not any("trust" in name for name in tools), "no tool can trust a folder (it is an ext method only)")
+    listed = await ext(server, "trust/list", sid)
+    check(os.path.realpath(str(cwd)) in listed["projects"], f"trust/list names the trusted folder ({listed['projects']})")
+    relative = await ext(server, "trust/revoke", sid, path="relative/dir")
+    check(not relative["ok"], "trust/revoke wants an absolute path")
+    revoked = await ext(server, "trust/revoke", sid, path=str(cwd))
+    check(revoked["ok"] and revoked["changed"] and not revoked["trusted"] and not settings_store.current(str(cwd)).trusted, "trust/revoke takes the folder out (no confirmation: it only lowers trust)")
+    check(any(e["payload"].get("action") == "revoke" for e in state_store.recent_events(kind="trust", limit=5)), "…and the revoke is in the ledger")
+    again = await ext(server, "trust/revoke", sid, path=str(cwd))
+    check(again["ok"] and not again["changed"], "revoking an untrusted folder changes nothing")
+    regranted = await ext(server, "trust/grant", sid, confirmed=True)
+    check(regranted["ok"] and regranted["trusted"], "granted again for the sections below")
+
+    print("\n=== 3b. generation and compaction settings ===")
+    import agent_common
+    from acp_session import generation_config
+
+    check(agent_common.compression_setting(None) is True, "autoCompact unset keeps Strands' default (70%)")
+    check(agent_common.compression_setting("90") == {"compression_threshold": 0.9}, "autoCompact 90 → compression_threshold 0.9")
+    check(agent_common.compression_setting("off") is False, "autoCompact off turns proactive compression off")
+    auto = generation_config("anthropic", {"model.thinking": "auto", "model.maxTokens": 32000.0}, {"temperature": 0.2})
+    check(auto == {"max_tokens": 32000, "params": {"thinking": {"type": "adaptive"}}}, f"auto: adaptive thinking, max_tokens top-level, no temperature ({auto})")
+    always = generation_config("anthropic", {"model.thinking": "always"}, {})
+    check(always["params"]["output_config"] == {"effort": "high"} and "budget_tokens" not in json.dumps(always), f"always: adaptive at high effort, never a fixed budget ({always})")
+    off = generation_config("anthropic", {"model.thinking": "off"}, {"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}})
+    check(off == {"params": {}}, f"off removes what auto/always added ({off})")
+    check(generation_config("openai_compatible", {"model.maxTokens": 8192.0, "model.thinking": "auto"}, {}) == {"params": {"max_tokens": 8192}}, "OpenAI-compatible: max_tokens as a param, no thinking")
+    check(generation_config("anthropic", {}, {}) == {}, "nothing set, nothing changes")
+    for key in ("model.thinking", "model.maxTokens", "context.autoCompact"):
+        check(key in settings_store.SCHEMA and key in settings_store.TRUST_GATED_KEYS, f"{key} is in the schema and trust-gated")
 
     print("\n=== 4. before auto ===")
     ready = await ext(server, "auto/readiness", sid)
