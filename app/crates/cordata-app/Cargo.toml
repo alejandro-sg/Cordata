@@ -27,6 +27,8 @@ serde.workspace = true
 toml = "0.8"
 # Images attached to a prompt go out base64-encoded (ACP image blocks).
 base64 = "0.22"
+# The editor's completion types (the same version gpui-component uses).
+lsp-types = "=0.97.0"
 tokio.workspace = true
 
 [dev-dependencies]

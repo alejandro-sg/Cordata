@@ -33,10 +33,12 @@ use crate::ui::{self, Dot, Kind};
 
 mod attachments;
 mod browser;
+mod completions;
 mod conversation;
 mod editor;
 mod git_ops;
 mod history;
+mod inline_ai;
 mod models;
 mod palette;
 mod picker;
@@ -116,6 +118,7 @@ actions!(
         ShowModels,
         OpenFiles,
         SaveFile,
+        InlineEdit,
         SwitchTo1,
         SwitchTo2,
         SwitchTo3,
@@ -227,6 +230,11 @@ pub struct Workspace {
     renaming: Option<Naming>,
     /// Git and GitHub state for the Review tab and the header.
     git: git_ops::Git,
+    /// An ⌘I edit open in the editor, and its instruction box.
+    inline_pending: Option<inline_ai::Pending>,
+    inline_input: Entity<InputState>,
+    /// The installed Ollama models (Settings → Models → Inline completions).
+    ollama_models: Vec<String>,
     rename_input: Entity<InputState>,
     /// The sidebar row whose ⋯ menu is open (a hub handle).
     row_menu: Option<String>,
@@ -293,6 +301,7 @@ impl Workspace {
         let allow_input = cx.new(|cx| InputState::new(window, cx).placeholder("pnpm test"));
         let rename_input = cx.new(|cx| InputState::new(window, cx).placeholder("Conversation title"));
         let git = git_ops::Git::new(window, cx);
+        let inline_input = cx.new(|cx| InputState::new(window, cx).placeholder("Change the selection… (e.g. add error handling)"));
         let terminal = terminal::Terminal::new(window, cx);
         let browser_view = browser::BrowserView::new(window, cx);
         let models_view = models::ModelsView::new(window, cx);
@@ -399,6 +408,9 @@ impl Workspace {
             history: history::History::default(),
             renaming: None,
             git,
+            inline_pending: None,
+            inline_input,
+            ollama_models: Vec::new(),
             rename_input,
             row_menu: None,
             search_hits: Vec::new(),
@@ -447,6 +459,14 @@ impl Workspace {
                     this.refresh_listing(cx);
                 }
                 SessionEvent::Listed => this.take_stdio_listing(cx),
+                SessionEvent::Data(tag) if tag == inline_ai::EDIT_TAG => {
+                    let value = match this.session.read(cx).data.get(tag.as_str()).cloned() {
+                        Some(Ok(value)) => value,
+                        Some(Err(error)) => serde_json::json!({"ok": false, "reason": error}),
+                        None => return,
+                    };
+                    this.on_inline_edit(value, window, cx);
+                }
                 SessionEvent::Data(tag) if tag == git_ops::MESSAGE_TAG => {
                     let value = match this.session.read(cx).data.get(tag.as_str()).cloned() {
                         Some(Ok(value)) => value,
@@ -1946,6 +1966,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::show_models_action))
             .on_action(cx.listener(Self::open_files_action))
             .on_action(cx.listener(Self::save_file_action))
+            .on_action(cx.listener(|this, _: &InlineEdit, window, cx| this.begin_inline_edit(window, cx)))
             .on_action(cx.listener(|this, _: &SwitchTo1, _, cx| this.switch_slot(1, cx)))
             .on_action(cx.listener(|this, _: &SwitchTo2, _, cx| this.switch_slot(2, cx)))
             .on_action(cx.listener(|this, _: &SwitchTo3, _, cx| this.switch_slot(3, cx)))
@@ -2070,6 +2091,7 @@ pub fn bind_keys(cx: &mut App) {
         gpui::KeyBinding::new("cmd-p", OpenFiles, Some("Workspace")),
         gpui::KeyBinding::new("cmd-s", SaveFile, Some("Workspace")),
         gpui::KeyBinding::new("cmd-s", SaveFile, Some("CordataEditor")),
+        gpui::KeyBinding::new("cmd-i", InlineEdit, Some("CordataEditor")),
     ]);
 }
 
@@ -2377,6 +2399,37 @@ mod window_tests {
         });
         assert!(said, "the review prompt went out, naming its attachment");
         assert_eq!(staged, 0, "the diff left with it");
+    }
+
+    #[gpui::test]
+    fn cmd_i_rewrites_the_selection_only_if_it_is_unchanged(cx: &mut TestAppContext) {
+        let (view, cx) = workspace(cx);
+        let dir = tempfile_dir();
+        let file = dir.join("m.py");
+        std::fs::write(&file, "def add(a, b):\n    return a+b\n").unwrap();
+        let state = cx.update(|window, cx| cx.new(|cx| gpui_component::input::EditorState::new(window, cx).default_value("def add(a, b):\n    return a+b\n")));
+        view.update(cx, |this, _| {
+            this.dock_tab = super::DockTab::Editor;
+            this.add_test_buffer("m.py", file.clone(), state.clone());
+        });
+        view.update_in(cx, |this, window, cx| {
+            state.update(cx, |s, cx| s.set_selected_range(0..14, cx));
+            this.begin_inline_edit(window, cx);
+            this.on_inline_edit(serde_json::json!({"ok": true, "code": "def add(a: int, b: int) -> int:"}), window, cx);
+        });
+        let text = state.read_with(cx, |s, _| s.value().to_string());
+        assert_eq!(text, "def add(a: int, b: int) -> int:\n    return a+b\n", "the selection is replaced");
+
+        view.update_in(cx, |this, window, cx| {
+            state.update(cx, |s, cx| s.set_selected_range(0..3, cx));
+            this.begin_inline_edit(window, cx);
+            state.update(cx, |s, cx| s.set_value("changed meanwhile", window, cx));
+            this.on_inline_edit(serde_json::json!({"ok": true, "code": "XXX"}), window, cx);
+        });
+        let (text, notice) = view.read_with(cx, |this, cx| (state.read(cx).value().to_string(), this.files.notice.clone()));
+        assert_eq!(text, "changed meanwhile", "a stale answer is not applied");
+        assert!(notice.unwrap_or_default().contains("selection changed"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[gpui::test]

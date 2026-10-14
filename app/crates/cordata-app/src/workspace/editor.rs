@@ -265,6 +265,7 @@ impl Workspace {
         if let Some(line) = line {
             state.update(cx, |state, cx| state.set_cursor_position(Position::new(line, 0), window, cx));
         }
+        self.apply_completions(&state, cx);
         let subscription = cx.subscribe_in(&state, window, Self::on_buffer_event);
         self.files.buffers.push(Buffer {
             rel: rel.to_owned(),
@@ -286,6 +287,15 @@ impl Workspace {
         state.update(cx, |state, cx| state.focus(window, cx));
         self.check_buffer(&path, None, cx);
         cx.notify();
+    }
+
+    /// An edit made without a change event (a programmatic replace): the buffer is unsaved, and the disk poll must
+    /// not reload over it.
+    pub(super) fn mark_edited(&mut self, state: &Entity<EditorState>) {
+        if let Some(buffer) = self.files.buffers.iter_mut().find(|b| &b.state == state) {
+            buffer.dirty = true;
+            buffer.edits += 1;
+        }
     }
 
     fn on_buffer_event(&mut self, state: &Entity<EditorState>, event: &InputEvent, _window: &mut Window, cx: &mut Context<Self>) {
@@ -641,6 +651,7 @@ impl Workspace {
                 )
             })
             .when_some(self.files.notice.clone(), |el, notice| el.child(div().text_xs().text_color(color(cx, Role::Attention)).child(SharedString::from(shown(&notice)))))
+            .children(self.inline_bar(cx))
             .child(
                 div()
                     .id("editor")

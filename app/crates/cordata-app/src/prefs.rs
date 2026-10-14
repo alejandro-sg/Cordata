@@ -30,6 +30,8 @@ pub struct Prefs {
     pub notify_approval: bool,
     pub sound_on_completion: bool,
     pub share_diagnostics: bool,
+    /// The local Ollama model for ghost-text completions in the editor; empty is off.
+    pub completion_model: String,
     /// Most recent first.
     pub recents: Vec<RecentProject>,
 }
@@ -57,6 +59,7 @@ impl Default for Prefs {
             notify_approval: true,
             sound_on_completion: false,
             share_diagnostics: false,
+            completion_model: String::new(),
             recents: Vec::new(),
         }
     }

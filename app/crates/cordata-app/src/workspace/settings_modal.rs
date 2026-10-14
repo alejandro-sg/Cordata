@@ -77,6 +77,7 @@ pub enum Select {
     FastModel,
     MaxTokens,
     CodeFont,
+    CompletionModel,
 }
 
 /// The read-only shortcut reference.
@@ -277,6 +278,17 @@ impl Workspace {
             Section::Connections => self.load_plugins(cx),
             Section::Permissions => self.load_trusted_projects(cx),
             Section::Account => self.api_key_masked = crate::keychain::masked(),
+            Section::Models => {
+                let job = cx.background_executor().spawn(async { super::completions::installed_models() });
+                cx.spawn(async move |this, cx| {
+                    let models = job.await;
+                    let _ = this.update(cx, |this, cx| {
+                        this.ollama_models = models;
+                        cx.notify();
+                    });
+                })
+                .detach();
+            }
             _ => {}
         }
     }
@@ -330,6 +342,7 @@ impl Workspace {
             Select::FastModel if value.is_empty() => "same as main".into(),
             Select::MaxTokens if value.is_empty() => "16384".into(),
             Select::CodeFont => format!("{value} px"),
+            Select::CompletionModel if value.is_empty() => "off".into(),
             _ if value.is_empty() => "—".into(),
             _ => value.into(),
         }
@@ -350,6 +363,11 @@ impl Workspace {
             Select::CodeFont => {
                 self.prefs.code_font_size = value.parse().unwrap_or(13.0);
                 self.save_prefs(cx);
+            }
+            Select::CompletionModel => {
+                self.prefs.completion_model = value;
+                self.save_prefs(cx);
+                self.apply_completions_to_all(cx);
             }
         }
     }
@@ -420,8 +438,12 @@ impl Workspace {
         let max_tokens = self.select(Select::MaxTokens, &max_tokens, ["4096", "8192", "16384", "32000", "64000"].iter().map(|v| ((*v).to_owned(), (*v).to_owned())).collect(), cx);
         let compact = self.value_str("context.autoCompact");
         let compact = self.segmented("auto-compact", &[("80", "80%"), ("90", "90%"), ("off", "off")], &compact, |this, v, cx| this.set_user_setting("context.autoCompact", json!(v), cx), cx);
+        let mut local = vec![(String::new(), "off".to_owned())];
+        local.extend(self.ollama_models.iter().map(|m| (m.clone(), m.clone())));
+        let completion = self.select(Select::CompletionModel, &self.prefs.completion_model.clone(), local, cx);
         vec![
             setting_row("Default model", "Used by new conversations; the header's model chip changes the current one.", default_model, cx),
+            setting_row("Inline completions", "Ghost text in the editor from a local Ollama model (a coder model with fill-in-the-middle, e.g. qwen2.5-coder). Code stays on this Mac. Tab accepts.", completion, cx),
             setting_row("Fast model", "Titles, summaries and compaction.", fast, cx),
             setting_row("Extended thinking", "Anthropic models only. Auto: adaptive thinking (the model decides). Always: adaptive at high effort every turn.", thinking, cx),
             setting_row("Max output tokens", "The longest single reply.", max_tokens, cx),
