@@ -245,6 +245,22 @@ def test_manage_conversations(client: TestClient, head: dict, app) -> None:
     check(client.post(f"/conversations/{conv.handle}/rename", json={"title": "x"}).status_code in (401, 403), "the routes need the daemon token")
 
 
+def test_automation_routes(client: TestClient, head: dict) -> None:
+    print("\n=== 6. automations over HTTP ===")
+    project_dir = ROOT / "auto-project"
+    project_dir.mkdir()
+    bad = client.post("/automations", json={"name": "x", "prompt": "y", "cwd": str(project_dir), "kind": "interval", "minutes": 1}, headers=head)
+    check(bad.status_code == 400 and "15" in bad.json()["error"], "a too-tight schedule is refused with a reason")
+    made = client.post("/automations", json={"name": "Morning summary", "prompt": "summarise yesterday", "cwd": str(project_dir), "kind": "daily", "time": "08:30"}, headers=head).json()
+    check(made["id"] and made["next"] and made["enabled"], f"created, with its next run ({made['next']})")
+    listed = client.get("/automations", headers=head).json()["automations"]
+    check([a["id"] for a in listed] == [made["id"]], "listed")
+    check((ROOT / "home" / "automations.json").exists(), "stored in the user dir")
+    check(client.post("/automations/nope/run", headers=head).status_code == 404, "running an unknown one is 404")
+    check(client.delete(f"/automations/{made['id']}", headers=head).json()["deleted"], "deleted")
+    check(client.get("/automations").status_code in (401, 403), "the routes need the daemon token")
+
+
 def main() -> None:
     test_token_file_is_atomic()
     app = create_app(port=8798)
@@ -253,6 +269,7 @@ def main() -> None:
         test_projects_and_history(client, head)
         test_observer(client, app)
         test_manage_conversations(client, head, app)
+        test_automation_routes(client, head)
     asyncio.run(test_options_over_grpc())
     print("\nALL OK")
 

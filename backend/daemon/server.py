@@ -468,6 +468,56 @@ def create_app(port: int = DEFAULT_PORT) -> FastAPI:
         hits = titled + [{**by_acp[m["sessionId"]], "snippet": m["snippet"], "where": m["role"]} for m in said if by_acp[m["sessionId"]]["handle"] not in seen]
         return {"results": hits[: max(1, min(limit, 50))]}
 
+    # ------------------------------------------------------------- automations (scheduled prompts)
+
+    def automations_runner():
+        from . import automations  # noqa: PLC0415
+
+        if getattr(state, "automations", None) is None:
+            import settings_store  # noqa: PLC0415
+
+            store = automations.Store(Path(settings_store.user_dir()) / "automations.json")
+            state.automations = automations.Runner(store, state.chats)
+            state.automations.start()
+        return state.automations
+
+    @app.on_event("startup")
+    async def start_automations() -> None:
+        if getattr(state, "chats", None) is not None:
+            automations_runner()
+
+    @app.get("/automations")
+    async def list_automations(x_daemon_token: str | None = Header(default=None)) -> dict[str, Any]:
+        authorised(x_daemon_token)
+        runner = automations_runner()
+        return {"automations": [a.public() for a in sorted(runner.store.items.values(), key=lambda a: a.created)]}
+
+    @app.post("/automations")
+    async def save_automation(payload: dict, x_daemon_token: str | None = Header(default=None)) -> dict[str, Any]:
+        """Create or update one (`id` to update). Validated: an existing folder, a schedule no tighter than 15 minutes."""
+        authorised(x_daemon_token)
+        from .automations import AutomationError  # noqa: PLC0415
+
+        try:
+            return automations_runner().store.upsert(payload).public()
+        except AutomationError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @app.delete("/automations/{item_id}")
+    async def delete_automation(item_id: str, x_daemon_token: str | None = Header(default=None)) -> dict[str, Any]:
+        authorised(x_daemon_token)
+        return {"deleted": automations_runner().store.delete(item_id)}
+
+    @app.post("/automations/{item_id}/run")
+    async def run_automation(item_id: str, x_daemon_token: str | None = Header(default=None)) -> dict[str, Any]:
+        """Run one now, in the background: answers at once; the run is a new conversation every door can watch."""
+        authorised(x_daemon_token)
+        runner = automations_runner()
+        if item_id not in runner.store.items:
+            raise HTTPException(status_code=404, detail="no such automation")
+        asyncio.ensure_future(runner.run(item_id))
+        return {"started": True}
+
     # ------------------------------------------------------------- projects and their conversations (the app's rail)
 
     @app.get("/projects")
