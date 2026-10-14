@@ -85,6 +85,7 @@ impl Workspace {
             // The empty middle drags the window.
             .child(div().flex_1().h_full().min_w(px(8.)).on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move()))
             .when_some(branch, |row, branch| row.child(ui::chip("branch-chip", SharedString::from(format!("⎇ {branch}")), cx).cursor_default().aria_label(SharedString::from(format!("Branch {branch}")))))
+            .children(self.pr_chip(cx))
             .when_some(model_text, |row, text| {
                 row.child(
                     ui::chip("model-picker", SharedString::from(text), cx)

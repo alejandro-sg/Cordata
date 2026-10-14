@@ -35,6 +35,7 @@ mod attachments;
 mod browser;
 mod conversation;
 mod editor;
+mod git_ops;
 mod history;
 mod models;
 mod palette;
@@ -69,6 +70,13 @@ pub enum Overlay {
     Clone,
     Confirm,
     Rename,
+}
+
+/// What the small naming dialog names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Naming {
+    Conversation(String),
+    Worktree,
 }
 
 /// A destructive or trust-changing action waiting for a yes.
@@ -215,8 +223,10 @@ pub struct Workspace {
     attach_note: Option<String>,
     /// The side panel's History (checkpoints, file turns).
     history: history::History,
-    /// The conversation being renamed (its hub handle), and the box.
-    renaming: Option<String>,
+    /// What the naming dialog is for: renaming a conversation (its hub handle), or a new worktree.
+    renaming: Option<Naming>,
+    /// Git and GitHub state for the Review tab and the header.
+    git: git_ops::Git,
     rename_input: Entity<InputState>,
     /// The sidebar row whose ⋯ menu is open (a hub handle).
     row_menu: Option<String>,
@@ -282,6 +292,7 @@ impl Workspace {
         let api_key_input = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("sk-ant-…"));
         let allow_input = cx.new(|cx| InputState::new(window, cx).placeholder("pnpm test"));
         let rename_input = cx.new(|cx| InputState::new(window, cx).placeholder("Conversation title"));
+        let git = git_ops::Git::new(window, cx);
         let terminal = terminal::Terminal::new(window, cx);
         let browser_view = browser::BrowserView::new(window, cx);
         let models_view = models::ModelsView::new(window, cx);
@@ -387,6 +398,7 @@ impl Workspace {
             attach_note: None,
             history: history::History::default(),
             renaming: None,
+            git,
             rename_input,
             row_menu: None,
             search_hits: Vec::new(),
@@ -400,6 +412,7 @@ impl Workspace {
         this.adopt(first, window, cx);
         this.schedule_listing(cx);
         this.schedule_mission(cx);
+        this.schedule_git(cx);
         this.load_tree(cx);
         this.load_review(cx);
         this.load_settings_data(cx);
@@ -434,6 +447,14 @@ impl Workspace {
                     this.refresh_listing(cx);
                 }
                 SessionEvent::Listed => this.take_stdio_listing(cx),
+                SessionEvent::Data(tag) if tag == git_ops::MESSAGE_TAG => {
+                    let value = match this.session.read(cx).data.get(tag.as_str()).cloned() {
+                        Some(Ok(value)) => value,
+                        Some(Err(error)) => serde_json::json!({"ok": false, "reason": error}),
+                        None => return,
+                    };
+                    this.on_git_message(value, window, cx);
+                }
                 SessionEvent::Data(tag) if tag.starts_with("gui-history") => {
                     if let Some(Ok(value)) = this.session.read(cx).data.get(tag.as_str()).cloned() {
                         this.on_history_data(tag, value, window, cx);
@@ -1385,6 +1406,8 @@ impl Workspace {
         self.mission = Mission::default();
         self.files = editor::Files::default();
         self.review = review::Review::default();
+        self.git.pr = None;
+        self.git.note = None;
         let target = self.new_target();
         let (connection, cwd) = (self.connection.clone(), self.cwd.clone());
         let session = cx.new(|cx| Session::start(&connection, target, cwd, None, cx));
@@ -1392,6 +1415,7 @@ impl Workspace {
         self.refresh_listing(cx);
         self.load_tree(cx);
         self.load_review(cx);
+        self.refresh_git(true, cx);
         self.composer.update(cx, |s, cx| s.focus(window, cx));
         cx.notify();
     }
@@ -1578,15 +1602,28 @@ impl Workspace {
 
     pub(super) fn begin_rename(&mut self, handle: String, title: String, window: &mut Window, cx: &mut Context<Self>) {
         self.row_menu = None;
-        self.renaming = Some(handle);
+        self.renaming = Some(Naming::Conversation(handle));
         self.rename_input.update(cx, |s, cx| s.set_value(title, window, cx));
+        self.open_overlay(Overlay::Rename, window, cx);
+    }
+
+    pub(super) fn begin_worktree(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.renaming = Some(Naming::Worktree);
+        self.rename_input.update(cx, |s, cx| s.set_value("", window, cx));
         self.open_overlay(Overlay::Rename, window, cx);
     }
 
     fn finish_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let title = self.rename_input.read(cx).value().trim().to_owned();
-        let Some(handle) = self.renaming.take() else { return };
+        let Some(naming) = self.renaming.take() else { return };
         self.close_overlay(Overlay::Rename, window, cx);
+        let handle = match naming {
+            Naming::Worktree => {
+                self.new_worktree_conversation(&title, window, cx);
+                return;
+            }
+            Naming::Conversation(handle) => handle,
+        };
         let BackendTransport::Hub { daemon, .. } = &self.connection.transport else { return };
         if title.is_empty() {
             return;
@@ -1683,7 +1720,8 @@ impl Workspace {
                     .border_1()
                     .border_color(line(cx, t::LINE_CONTROL_STRONG))
                     .shadow(crate::theme::modal_shadow(cx))
-                    .child(div().text_size(px(t::TEXT_SETTINGS_TITLE)).text_color(c(tk.text_primary)).child("Rename conversation"))
+                    .child(div().text_size(px(t::TEXT_SETTINGS_TITLE)).text_color(c(tk.text_primary)).child(if self.renaming == Some(Naming::Worktree) { "New conversation in a worktree" } else { "Rename conversation" }))
+                    .when(self.renaming == Some(Naming::Worktree), |d| d.child(div().text_size(px(t::TEXT_SMALL)).text_color(c(tk.text_muted)).child("A name for the task: it becomes branch cordata/<name> in a folder beside this repository.")))
                     .child(div().h(px(32.)).flex().items_center().px(px(10.)).rounded(px(t::RADIUS_CARD)).bg(c(tk.bg_window)).border_1().border_color(line(cx, t::LINE_CONTROL_STRONG)).text_size(px(t::TEXT_UI)).child(gpui_component::input::Input::new(&self.rename_input).appearance(false)))
                     .child(
                         div()
@@ -1694,7 +1732,7 @@ impl Workspace {
                                 this.renaming = None;
                                 this.close_overlay(Overlay::Rename, window, cx);
                             })))
-                            .child(ui::button("rename-save", "Rename  ↵", Kind::Primary, cx).on_click(cx.listener(|this, _, window, cx| this.finish_rename(window, cx)))),
+                            .child(ui::button("rename-save", if self.renaming == Some(Naming::Worktree) { "Create  ↵" } else { "Rename  ↵" }, Kind::Primary, cx).on_click(cx.listener(|this, _, window, cx| this.finish_rename(window, cx)))),
                     ),
             )
             .into_any_element()
@@ -2314,6 +2352,31 @@ mod window_tests {
         assert_eq!(cps, 1);
         assert_eq!(preview.as_deref(), Some("t-1"), "a dry run becomes a preview, not a change");
         assert_eq!(note, Some(("a turn is running".into(), true)), "a refusal says why");
+    }
+
+    #[gpui::test]
+    fn a_review_sends_the_diff_as_an_attachment(cx: &mut TestAppContext) {
+        let (view, cx) = workspace(cx);
+        let dir = tempfile_dir().join("repo");
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |args: &[&str]| super::git_ops::run("git", &[&["-c", "user.email=t@t", "-c", "user.name=t"], args].concat(), &dir, None, std::time::Duration::from_secs(20)).unwrap();
+        g(&["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
+        g(&["add", "-A"]);
+        g(&["commit", "-qm", "init"]);
+        std::fs::write(dir.join("a.rs"), "fn a() { todo!() }\n").unwrap();
+        view.update_in(cx, |this, window, cx| {
+            this.cwd = dir.clone();
+            this.session.update(cx, |s, _| s.view.conn = cordata_view::app::ConnState::Connected);
+            this.request_review(false, window, cx);
+        });
+        cx.run_until_parked();
+        let (staged, said) = view.read_with(cx, |this, cx| {
+            let said = this.session.read(cx).view.messages.iter().any(|m| matches!(m, cordata_view::app::Message::User(t) if t.contains("Review the uncommitted changes") && t.contains("[attached: uncommitted.diff]")));
+            (this.staged.len(), said)
+        });
+        assert!(said, "the review prompt went out, naming its attachment");
+        assert_eq!(staged, 0, "the diff left with it");
     }
 
     #[gpui::test]

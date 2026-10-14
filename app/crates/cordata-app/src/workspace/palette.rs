@@ -27,6 +27,8 @@ pub enum Action {
     CycleMode,
     StopRun,
     Attach,
+    Worktree,
+    Review(bool),
     Open(Target),
 }
 
@@ -80,6 +82,10 @@ impl Workspace {
             Item { group: "panel", label: "Models & voice".into(), shortcut: "", action: Action::Tab(DockTab::Models) },
             Item { group: "chat", label: "History: go back, fork, undo files".into(), shortcut: "", action: Action::Tab(DockTab::History) },
             Item { group: "chat", label: "Attach files…".into(), shortcut: "", action: Action::Attach },
+            Item { group: "chat", label: "New conversation in a worktree…".into(), shortcut: "", action: Action::Worktree },
+            Item { group: "proj", label: "Review uncommitted changes".into(), shortcut: "", action: Action::Review(false) },
+            Item { group: "proj", label: "Review this branch".into(), shortcut: "", action: Action::Review(true) },
+            Item { group: "proj", label: "Commit, push, pull request…".into(), shortcut: "", action: Action::Tab(DockTab::Review) },
             if trusted {
                 Item { group: "proj", label: "Revoke trust for this project".into(), shortcut: "", action: Action::RevokeTrust }
             } else {
@@ -144,6 +150,8 @@ impl Workspace {
             Action::CycleMode => self.cycle_mode(&super::CycleMode, window, cx),
             Action::StopRun => self.session.update(cx, |s, cx| s.cancel(cx)),
             Action::Attach => self.choose_attachments(window, cx),
+            Action::Worktree => self.begin_worktree(window, cx),
+            Action::Review(branch) => self.request_review(branch, window, cx),
             Action::Open(target) => self.open(target, window, cx),
         }
     }

@@ -125,7 +125,8 @@ impl Workspace {
                             .child(div().flex_1().min_w_0().truncate().text_size(px(t::TEXT_TITLE)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(SharedString::from(self.project_name())))
                             .child(div().flex_shrink_0().text_size(px(t::TEXT_SMALL)).text_color(c(tk.text_muted)).child("⌄")),
                     )
-                    .child(div().truncate().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.text_faint)).child(SharedString::from(tilde(&self.cwd)))),
+                    .child(div().truncate().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.text_faint)).child(SharedString::from(tilde(&self.cwd))))
+                    .when_some(self.git.branch.clone(), |col, branch| col.child(div().truncate().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.teal)).child(SharedString::from(format!("⎇ {branch}"))))),
             )
             .child(
                 div()

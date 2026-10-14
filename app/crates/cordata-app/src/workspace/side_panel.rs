@@ -107,7 +107,10 @@ impl Workspace {
             DockTab::Mission => self.mission_tab(cx),
             DockTab::Files => editor::pane("files", self.files_panel(cx), cx),
             DockTab::Editor => self.editor_panel(cx),
-            DockTab::Review => self.review_panel(cx),
+            DockTab::Review => {
+                let git = self.git_section(cx);
+                div().size_full().flex().flex_col().children(git).child(div().flex_1().min_h_0().child(self.review_panel(cx))).into_any_element()
+            }
             DockTab::Terminal => editor::pane("terminal", self.terminal_panel(cx), cx),
             DockTab::Browser => editor::pane("browser agent", self.browser_panel(cx), cx),
             DockTab::Models => editor::pane("models & voice", self.models_panel(cx), cx),
