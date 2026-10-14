@@ -94,6 +94,7 @@ import specialists
 import secret_guard
 import secret_patterns
 import state_store
+import steering as steering_module
 import orchestrate_tool
 import trace_store
 import vault_proxy
@@ -513,6 +514,8 @@ class CordataAcpAgent:
         self._last_session: str | None = None
         #: session -> the goal being pursued across turns (``goal.py``, ``/goal``).
         self._goals: dict[str, goal_module.Goal] = {}
+        # What the person typed while a turn ran (steering.py), per session.
+        self._steering: dict[str, steering_module.Steering] = {}
         #: Sessions with a ``session/prompt`` in flight. One at a time: a second one used to reset the first turn's
         #: recorder, checkpoint, cancel flag and stream handle before Strands refused it, leaving Stop unable to stop.
         self._busy: set[str] = set()
@@ -700,6 +703,7 @@ class CordataAcpAgent:
         plugins = _plugin_host(cwd, reserved, trace_store.enabled(preferences))
         heal = SelfHealHooks(config=lambda: _heal_config(settings_store.current(cwd)), session_id=session_id, root=cwd)
         router_hooks = RouterHooks(router, notify=self._laya_notifier(session_id), plugin_host=plugins)
+        steer = self._steering.setdefault(session_id, steering_module.Steering())
         handler = _ApprovalHandler(
             cwd,
             preferences.get("permissions.defaultMode", _DEFAULT_MODE),
@@ -766,6 +770,7 @@ class CordataAcpAgent:
                     enabled=lambda: settings_store.current(cwd).get("reasoning.adaptive", True) is not False,
                     notify=lambda payload: harness_events.emit("effort", {**payload, "sessionId": session_id}),
                 ),
+                steer,
                 lsp_bridge.LspEditHooks(), router_hooks, heal, outcome_hooks.OutcomeHooks(session_id, "orchestrator"), stall_guard.StallHooks(session_id, "orchestrator"),
                 # Last, so it reads the route the router just set (BeforeInvocation runs in order) and caps a
                 # tool result before the hooks registered earlier see it (AfterToolCall runs in reverse).
@@ -1130,6 +1135,16 @@ class CordataAcpAgent:
             return session_extras.context_snapshot(state.agent) if state else {"used": 0, "window": None, "pct": None, "messages": 0, "estimated": True}
         if name == "context/compact":
             return await self._compact(session_id, state, str(params.get("focus") or ""))
+        if name == "steer":
+            # A note for the running turn (steering.py): reaches the agent at its next model call.
+            steer = self._steering.get(session_id or "")
+            if steer is None:
+                return {"ok": False, "reason": "no session"}
+            accepted = steer.add(str(params.get("text") or ""))
+            return {"ok": accepted, "pending": steer.pending(), **({} if accepted else {"reason": "empty, or too many notes waiting"})}
+        if name == "steer/drain":
+            steer = self._steering.get(session_id or "")
+            return {"notes": steer.drain() if steer is not None else []}
         if name == "btw":
             return await self._aside(state, str(params.get("question") or ""))
         if name == "goal/status":
