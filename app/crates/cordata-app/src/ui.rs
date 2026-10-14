@@ -316,8 +316,9 @@ pub fn popover(cx: &App) -> Div {
 }
 
 /// A tooltip builder for `.tooltip(…)`: the words, and the shortcut when there is one.
-pub fn tip(text: &'static str) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
-    move |window, cx| Tooltip::new(text).build(window, cx)
+pub fn tip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    let text: SharedString = text.into();
+    move |window, cx| Tooltip::new(text.clone()).build(window, cx)
 }
 
 /// One row of a menu, list or palette: hover fill, selected amber tint.

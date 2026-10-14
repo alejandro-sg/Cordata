@@ -419,13 +419,13 @@ impl Workspace {
         let max_tokens = self.value("model.maxTokens").and_then(Value::as_f64).map(|v| format!("{v:.0}")).unwrap_or_default();
         let max_tokens = self.select(Select::MaxTokens, &max_tokens, ["4096", "8192", "16384", "32000", "64000"].iter().map(|v| ((*v).to_owned(), (*v).to_owned())).collect(), cx);
         let compact = self.value_str("context.autoCompact");
-        let compact = self.segmented("auto-compact", &[("80", "80%"), ("90", "90%"), ("off", "off")], if compact.is_empty() { "90" } else { &compact }, |this, v, cx| this.set_user_setting("context.autoCompact", json!(v), cx), cx);
+        let compact = self.segmented("auto-compact", &[("80", "80%"), ("90", "90%"), ("off", "off")], &compact, |this, v, cx| this.set_user_setting("context.autoCompact", json!(v), cx), cx);
         vec![
             setting_row("Default model", "Used by new conversations; the header's model chip changes the current one.", default_model, cx),
             setting_row("Fast model", "Titles, summaries and compaction.", fast, cx),
-            setting_row("Extended thinking", "Anthropic models only. Auto lets the model decide; always gives it a budget every turn.", thinking, cx),
+            setting_row("Extended thinking", "Anthropic models only. Auto: adaptive thinking (the model decides). Always: adaptive at high effort every turn.", thinking, cx),
             setting_row("Max output tokens", "The longest single reply.", max_tokens, cx),
-            setting_row("Auto-compact at", "Summarise older turns when the context window is this full.", compact, cx),
+            setting_row("Auto-compact at", "Summarise older turns when the context window is this full (unset: 70%).", compact, cx),
         ]
     }
 

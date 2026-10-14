@@ -38,7 +38,7 @@ impl Workspace {
             .text_size(px(t::TEXT_STATUS))
             .whitespace_nowrap()
             .overflow_hidden()
-            .child(div().id("context-gauge").tooltip(ui::tip("Context window used. Cordata compacts automatically at 90%.")).child(hud::gauge("context", fraction, &percent, cx)))
+            .child(div().id("context-gauge").tooltip(ui::tip(SharedString::from(format!("Context window used. {}", self.compaction_note())))).child(hud::gauge("context", fraction, &percent, cx)))
             .child(div().flex().items_center().gap(px(6.)).child(label("tokens")).child(div().text_color(c(tk.text_secondary)).child(SharedString::from(format!("{} in · {} out", kilo(tokens_in), kilo(tokens_out))))))
             .when(view.turn_active, |bar| bar.child(div().text_color(c(tk.amber)).child(SharedString::from(format!("● working · {} tool{} · esc esc stops", view.turn_tools, if view.turn_tools == 1 { "" } else { "s" })))))
             .when_some(self.esc_hint(), |bar, hint| bar.child(div().text_color(c(tk.amber)).child(hint)))
@@ -46,6 +46,17 @@ impl Workspace {
             .child(div().flex_1())
             .child(div().flex().items_center().gap(px(6.)).child(ui::dot(kind, cx).size(px(t::DOT_SMALL))).child(div().text_color(c(if kind == Dot::Amber { tk.amber } else { tk.text_muted })).child(SharedString::from(health))))
             .into_any_element()
+    }
+}
+
+impl Workspace {
+    /// When the harness compacts, from `context.autoCompact` (unset: Strands' 70%).
+    fn compaction_note(&self) -> String {
+        match self.settings_view.values.get("context.autoCompact").and_then(|v| v.as_str()) {
+            Some("off") => "Automatic compaction is off.".into(),
+            Some(pct) => format!("Cordata compacts automatically at {pct}%."),
+            None => "Cordata compacts automatically at 70%.".into(),
+        }
     }
 }
 
