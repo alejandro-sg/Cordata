@@ -72,6 +72,9 @@ class Verdict:
     heldout: dict[str, Any] | None = None
     driver: str = ""
     kind: str = "skill"
+    #: What reflect.py's drafter attributed (rows, evidence, confidence, cue), carried into the eval record and the
+    #: promotion evidence so a promoted skill says what it rests on.
+    attribution: dict[str, Any] | None = None
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -251,6 +254,7 @@ def cycle(
         if only and row["name"] not in only:
             continue
         verdict = evaluate(row["name"], project, kind=kind, driver_factory=driver_factory, n_tasks=n_tasks, baseline=baseline, run_suite=run_suite, catalog=catalog)
+        verdict.attribution = row.get("attribution")
         verdicts.append(verdict)
         store.record_eval(row["name"], project, verdict.to_json())
         if verdict.promote and mode == "live":

@@ -219,10 +219,13 @@ def stage(
     session_id: str | None = None,
     scope: str = "project",
     source: str = "",
+    attribution: dict[str, Any] | None = None,
 ) -> Staged:
     """Put a drafted skill in staging, or say why not. A draft that fails the filter is kept in ``rejected/``
     (with the reasons) so the same lesson is not drafted, and judged, again. ``source`` records what the draft was
-    written *from* — a failure family, or the name of a live skill it is a variant of (``optimize.py``)."""
+    written *from* — a failure family, or the name of a live skill it is a variant of (``optimize.py``). ``attribution``
+    is what ``reflect.py``'s drafter attributed (rows, evidence, confidence); its ``cue`` is the description's
+    situation, the text ``skill_search`` embeds."""
     with _LOCK:
         target = None if scope == "global" else project
         draft = validate_draft(text, taken=all_names(project))
@@ -241,6 +244,14 @@ def stage(
             "rewards": [],
             "evals": [],
         }
+        if attribution is not None:
+            cue = re.sub(r"^use when\s+", "", draft.description or "", flags=re.IGNORECASE).strip()
+            meta["attribution"] = {
+                "cue": cue,
+                "rows": list(attribution.get("rows") or [])[:8],
+                "evidence": str(attribution.get("evidence") or ""),
+                "confidence": str(attribution.get("confidence") or ""),
+            }
         if not draft.ok:
             if NAME_RE.match(draft.name or "") and draft.name not in all_names(project):
                 path = _skill_dir(target, "rejected", draft.name)

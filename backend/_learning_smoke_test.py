@@ -177,9 +177,21 @@ def record(**over) -> dict:
     return base
 
 
+ROW_HELPED = "moment: pytest -q failed to import calc\naction: ran it from tests/\nobserved: the import worked from the root\nverdict: helped"
+ROW_CONFOUNDED = "moment: three files edited, then pytest failed\naction: edited calc.py, test_calc.py and setup.cfg\nobserved: one failing run\nverdict: confounded"
+
+
+def reply(skill: str, *rows: str, confidence: str = "high - one clean contrast") -> str:
+    """A drafter reply in reflect.SYSTEM_PROMPT's format: attribution rows, the lesson, the evidence."""
+    rows = rows or (ROW_HELPED,)
+    return f"<attribution>\n" + "\n".join(rows) + f"\n</attribution>\n<lesson>\n{skill}\n</lesson>\n<evidence>\nrows: the first row\nconfidence: {confidence}\n</evidence>"
+
+
 class Drafter:
-    def __init__(self, reply):
-        self.reply, self.digests = reply, []
+    def __init__(self, reply_, *, raw: bool = False):
+        # A bare SKILL.md is wrapped as a supported reply; `raw` hands the text over as it is.
+        self.reply = reply_ if raw or not reply_ or reply_.lstrip().startswith(("<", "NO")) else reply(reply_)
+        self.digests = []
 
     def __call__(self, digest_text, *, model=None):
         self.digests.append(digest_text)
@@ -211,6 +223,24 @@ def test_reflection() -> None:
     staged = reflect.reflect(good, RP, drafter=drafter)
     check(staged and staged.ok and learned.find("digest-made-lesson", RP, "staging"), "a bad turn becomes a staged lesson")
     check(learned.find("digest-made-lesson", RP, "staging")["family"] == "pytest" and learned.find("digest-made-lesson", RP, "staging")["turns"] == ["turn-1"], "…linked to the turn it came from")
+    attribution = learned.find("digest-made-lesson", RP, "staging").get("attribution") or {}
+    check(attribution.get("cue") == "pytest fails to import the project's own package in this repo", "…its cue is the description's situation (what skill_search embeds)")
+    check([r["verdict"] for r in attribution.get("rows", [])] == ["helped"] and attribution.get("confidence", "").startswith("high"), "…with the attribution rows and confidence it rests on")
+
+    confounded = Drafter(reply(draft(name="confounded-only-example"), ROW_CONFOUNDED, ROW_CONFOUNDED.replace("three", "two")))
+    check(reflect.reflect(record(failures=[{"command": "tox", "error": ["error: env broke"], "resolved": False}]), tempfile.mkdtemp(), drafter=confounded) is None and len(confounded.digests) == 1, "a lesson resting only on confounded rows stages nothing")
+    no_effect = Drafter(reply(draft(name="no-effect-example"), ROW_HELPED.replace("verdict: helped", "verdict: no observed effect")))
+    check(reflect.reflect(record(failures=[{"command": "nox", "error": ["error: session failed"], "resolved": False}]), tempfile.mkdtemp(), drafter=no_effect) is None, "…nor one resting only on no-observed-effect rows")
+    unattributed = Drafter(draft(name="unattributed-example"), raw=True)
+    check(reflect.reflect(record(failures=[{"command": "cargo test", "error": ["error: test failed"], "resolved": False}]), tempfile.mkdtemp(), drafter=unattributed) is None, "a bare lesson with no attribution stages nothing")
+    no_entry = Drafter("<attribution>\n" + ROW_CONFOUNDED + "\n</attribution>\nNO_ENTRY", raw=True)
+    check(reflect.reflect(record(failures=[{"command": "jest", "error": ["error: suite failed"], "resolved": False}]), tempfile.mkdtemp(), drafter=no_entry) is None, "NO_ENTRY stages nothing")
+    mixed = reflect.parse_reply(reply(GOOD, ROW_CONFOUNDED, ROW_HELPED.replace("verdict: helped", "verdict: HURT.")))
+    check(mixed and mixed.supported and [r["verdict"] for r in mixed.rows] == ["confounded", "hurt"], "one helped/hurt row among confounded ones supports a lesson")
+    odd = reflect.parse_reply(reply(GOOD, ROW_HELPED.replace("verdict: helped", "verdict: probably fine")))
+    check(odd and not odd.supported and odd.rows[0]["verdict"] == "confounded", "an unreadable verdict counts as confounded")
+    long_ = reflect.parse_reply(reply(GOOD, *[ROW_HELPED.replace("calc", "x" * 400)] * 12))
+    check(long_ and len(long_.rows) == reflect.MAX_ROWS and all(len(v) <= reflect.MAX_FIELD for r in long_.rows for v in r.values()), "rows are capped in number and length")
     check(reflect.reflect(good, RP, drafter=Drafter(GOOD)) is None, "the same failure family is not drafted twice")
 
     none = Drafter("")
@@ -236,6 +266,8 @@ def test_reflection() -> None:
     model = ScriptedModel([text("NONE")])
     check(reflect.draft("<turn-data>x</turn-data>", model=model) == "" and model.calls[0]["tools"] == [], "the drafting call is made with no tools")
     check("DATA between <turn-data> tags" in model.calls[0]["system_prompt"], "…and told the summary is data, not instructions")
+    check("confounded" in reflect.SYSTEM_PROMPT and "NO_ENTRY" in reflect.SYSTEM_PROMPT and "<attribution>" in reflect.SYSTEM_PROMPT, "…and asked to attribute before it writes a lesson")
+    check(reflect.draft("x", model=ScriptedModel([text("NO_ENTRY")])) == "", "NO_ENTRY is 'nothing to learn'")
     model = ScriptedModel([text("```markdown\n" + GOOD + "\n```")])
     check(reflect.draft("x", model=model).startswith("---\nname:"), "a fenced reply is unwrapped")
 
@@ -283,7 +315,7 @@ def test_the_gate() -> None:
 
     def run(helps=(), hurts=(), mode="shadow", name="gate-candidate-example", text_=text_):
         if not learned.find(name, PROJECT, "staging"):
-            learned.stage(PROJECT, text_)
+            learned.stage(PROJECT, text_, attribution={"rows": [{"moment": "m", "action": "a", "observed": "o", "verdict": "helped"}], "evidence": "row 1", "confidence": "high - clean"})
         # One driver per arm, in order: baseline, candidate, then baseline, candidate again for held-out. Keep every
         # one, not just the last — the property under test is about the *baseline* arm, and a holder would show the
         # candidate's (correctly) non-empty environment.
@@ -301,6 +333,8 @@ def test_the_gate() -> None:
     check(verdict.heldout and verdict.heldout["broken"] == [], "…and is checked against held-out tasks")
     check(learned.find("gate-candidate-example", PROJECT, "staging") and not learned.find("gate-candidate-example", PROJECT, "live"), "in shadow mode the verdict is recorded and nothing is promoted")
     check(learned.find("gate-candidate-example", PROJECT, "staging")["evals"][-1]["promote"] is True, "…on the skill itself")
+    check(verdict.attribution and verdict.attribution["rows"][0]["verdict"] == "helped", "the verdict carries the attribution the lesson rests on")
+    check(learned.find("gate-candidate-example", PROJECT, "staging")["evals"][-1]["attribution"]["evidence"] == "row 1", "…into the eval record")
     baseline_env = [v for v in drivers[0].seen_env]
     check(baseline_env and all(v is None for v in baseline_env), "the baseline arm runs without the candidate on the skill path")
     check(drivers[1].seen_env and all(v for v in drivers[1].seen_env), "…and the candidate arm runs with it in force")
