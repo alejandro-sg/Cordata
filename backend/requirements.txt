@@ -18,6 +18,9 @@ strands-agents[openai,anthropic]==1.57.2
 # the a2a-sdk protocol package — pip pulls a2a-sdk==0.3.26 with it
 strands-agents[a2a]==1.57.2
 strands-agents-tools==0.8.9
+# subagent_tool.py: only strands_harness.tools.subagent.make_subagent (the delegation tool and its
+# schema), never create_harness. Pulls the otel exporter and pydantic-monty with it.
+strands-harness==0.3.1
 # core_tools.shape_pdf_result: file_read on a PDF returns its text, not bytes a local model can't read
 pypdf==6.19.0
 agent-client-protocol==0.12.1

@@ -77,6 +77,26 @@ fn team_result_summary(body: &str) -> Option<String> {
 }
 
 /// One agent (or hand-off) of a team card, as bordered body line(s).
+/// "↳ code_search · file_read · shell" under an agent's row: the tools it has called, newest kept when it is long.
+fn tools_line(
+    node: &team::NodeRow,
+    lead: usize,
+    avail: usize,
+    boxed: &impl Fn(Vec<Span<'static>>) -> Line<'static>,
+) -> Line<'static> {
+    let shown: Vec<&str> = node.tools.iter().rev().take(6).rev().map(String::as_str).collect();
+    let more = node.tools.len().saturating_sub(shown.len());
+    let text = if more > 0 {
+        format!("↳ +{more} · {}", shown.join(" · "))
+    } else {
+        format!("↳ {}", shown.join(" · "))
+    };
+    boxed(vec![
+        Span::raw(" ".repeat(lead)),
+        Span::styled(truncate(&text, avail), Style::new().fg(Color::Cyan)),
+    ])
+}
+
 fn team_row_lines(
     row: &TeamRow,
     inner: usize,
@@ -121,12 +141,16 @@ fn team_row_lines(
                             dim.add_modifier(Modifier::ITALIC),
                         )
                     };
-                    vec![boxed(vec![
+                    let mut out = vec![boxed(vec![
                         glyph_span,
                         name_span,
                         Span::raw("  "),
                         Span::styled(truncate(&text, avail), style),
-                    ])]
+                    ])];
+                    if !node.tools.is_empty() {
+                        out.push(tools_line(node, lead, avail, &boxed));
+                    }
+                    out
                 }
                 NodeState::Done if expanded && display_width(&node.summary) > avail => {
                     let mut out = Vec::new();
@@ -147,12 +171,23 @@ fn team_row_lines(
                     }
                     out
                 }
-                NodeState::Done => vec![boxed(vec![
-                    glyph_span,
-                    name_span,
-                    Span::raw("  "),
-                    Span::styled(truncate(&node.summary.replace('\n', " "), avail), dim),
-                ])],
+                NodeState::Done => {
+                    let summary = if node.summary.is_empty() && !node.tools.is_empty() {
+                        format!("done after {} tool call{}", node.tools.len(), if node.tools.len() == 1 { "" } else { "s" })
+                    } else {
+                        node.summary.replace('\n', " ")
+                    };
+                    let mut out = vec![boxed(vec![
+                        glyph_span,
+                        name_span,
+                        Span::raw("  "),
+                        Span::styled(truncate(&summary, avail), dim),
+                    ])];
+                    if expanded && !node.tools.is_empty() {
+                        out.push(tools_line(node, lead, avail, &boxed));
+                    }
+                    out
+                }
             }
         }
         TeamRow::Handoff { from, to, message } => {
@@ -208,7 +243,11 @@ pub fn render_in(
     let (glyph, glyph_color) = status_glyph(card.status, spinner);
     let is_team = team::is_team_tool(&card.name);
     let team_rows = if is_team {
-        team::parse(&card.progress)
+        let mut rows = team::parse(&card.progress);
+        if card.status != ToolStatus::InProgress && card.status != ToolStatus::Pending {
+            team::settle(&mut rows);
+        }
+        rows
     } else {
         Vec::new()
     };

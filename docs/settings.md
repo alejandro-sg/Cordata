@@ -69,6 +69,7 @@ other value is replaced by the higher scope.
 | `observer.enabled` | `true` · `false` | next cycle | the daemon's background observer (see below); off by default |
 | `observer.intervalMinutes` | 1–1440 | next cycle | how long between observations (default 30) |
 | `memory.traces` | `true` · `false` | next session | record execution traces to the local LanceDB corpus |
+| `subagents.background` | `true` · `false` | next session | let the orchestrator run a `subagent` call in the background (`_background_execution`) and keep working; the turn waits for it before it ends (`backend/subagent_tool.py`) |
 | `learning.reflect` | `true` · `false` | next turn | draft a lesson from a failed or reworked turn into staging (see `docs/agentic-harness.md`) |
 | `learning.promotion` | `off` · `shadow` · `live` | next turn | promote a staged lesson, skill or prompt overlay only when it raises the eval score: `shadow` records the verdict and promotes nothing (trust-gated — a project file cannot turn it on) |
 | `learning.evalTasks` | 3–60 | next turn | how many eval tasks a promotion candidate is judged on |

@@ -581,6 +581,7 @@ def build_agent_for_session(
     project_root: str | None = None,
     web_fetch_mode: str = "agentic",
     extra_plugins: list | None = None,
+    background_tasks: dict | None = None,
 ) -> Agent:
     """A fully session-bound Agent, for front doors that manage their own
     per-session instances (the ACP server — nothing derives this one for us).
@@ -671,12 +672,18 @@ def build_agent_for_session(
         session_manager=session_store.session_manager(session_id, SESSIONS_DIR),
         interventions=interventions,
         checkpointing=checkpointing,
+        # Background execution, for the tools the front door names (subagent_tool.BACKGROUND_TASKS).
+        background_tasks=background_tasks,
         # The default handler prints the streamed reply to stdout — which for the
         # ACP front door is the protocol channel (see acp_server._ProtocolStdout).
         # Events reach the client through stream_async, not through printing.
         callback_handler=None,
     )
     sandbox.bind(agent)
+    if background_tasks:
+        import subagent_tool
+
+        subagent_tool.hold_turn_for_background(agent)
     agent.web_usage = web_usage  # read by the per-turn receipt and the turn budget (acp_server)
     session_store.forget_prompt_bookkeeping(agent)  # a restored state may name a prompt block this fresh prompt does not have
     return agent

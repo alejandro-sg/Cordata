@@ -89,7 +89,7 @@ _MEMORY_READ_ACTIONS = {"retrieve", "list"}
 # *it* read. Returned up as a plain tool result, an injected instruction a
 # worker repeated in its report would arrive looking trusted (laundered through
 # the delegation). Wrapping the result marks it as derived-from-untrusted.
-_SUBAGENT_TOOLS = frozenset({"orchestrate"})
+_SUBAGENT_TOOLS = frozenset({"orchestrate", "subagent"})
 
 # Optional local classifier (github.com/NandhaKishorM/laya, settings.
 # LAYA_GUARD_ENABLED) that scores untrusted tool output for injection risk

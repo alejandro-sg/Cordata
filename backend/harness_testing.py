@@ -41,6 +41,7 @@ class Step:
     text: str = ""
     tool_use_id: str | None = None
     tokens: int = 2  # what the model call reports as used (the loop's usage metrics, and `limits`, read it)
+    thought: str = ""  # streamed as reasoning before the reply (a reasoning model's thinking)
 
 
 def tool(name: str, tool_input: dict | None = None, tool_use_id: str | None = None, *, says: str = "", tokens: int = 2) -> Step:
@@ -49,8 +50,8 @@ def tool(name: str, tool_input: dict | None = None, tool_use_id: str | None = No
     return Step(kind="tool", name=name, input=tool_input or {}, tool_use_id=tool_use_id, text=says, tokens=tokens)
 
 
-def text(reply: str, *, tokens: int = 2) -> Step:
-    return Step(kind="text", text=reply, tokens=tokens)
+def text(reply: str, *, tokens: int = 2, thinks: str = "") -> Step:
+    return Step(kind="text", text=reply, tokens=tokens, thought=thinks)
 
 
 class ScriptedModel(Model):
@@ -96,6 +97,11 @@ class ScriptedModel(Model):
         )
         step = self._next(messages, system_prompt, tool_specs)
         yield {"messageStart": {"role": "assistant"}}
+        if step.thought:
+            yield {"contentBlockStart": {"start": {}}}
+            for word in step.thought.split(" "):
+                yield {"contentBlockDelta": {"delta": {"reasoningContent": {"text": word + " "}}}}
+            yield {"contentBlockStop": {}}
         if step.kind == "tool":
             self._ids += 1
             tool_use_id = step.tool_use_id or f"call-{self._ids}-{step.name}"

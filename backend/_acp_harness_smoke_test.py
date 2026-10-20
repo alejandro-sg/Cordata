@@ -71,7 +71,8 @@ def specialist_model(name, steps):
     MODELS[name] = ScriptedModel(steps, model_id=f"{name}-model")
 
 
-specialists._model = lambda tier, role=None: ScriptedModel([text("(unused specialist)")])
+# A `subagent` child (and anything else built on specialists._model) plays the script registered under its role.
+specialists._model = lambda tier, role=None: MODELS.get(role or "") or ScriptedModel([text("(unused specialist)")])
 _real_build_specialist = specialists.build_specialist
 
 

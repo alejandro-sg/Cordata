@@ -7,7 +7,8 @@ each model from a script and records every request. Only Laya's forward pass is
 scripted (so "destructive" is a given, not a guess about a 322M classifier).
 
 Scenario: the Orchestrator (glm-5.3-flash, reasoning_effort=low) delegates to the
-Debugger (kimi-k2.7-code, reasoning_effort=max), which wants to ``rm -rf build``.
+Debugger (kimi-k2.7-code, reasoning_effort=max) — a ``subagent`` call with
+``agent_type=debugger``, so a pod of its own (``debugger-1``) — which wants to ``rm -rf build``.
 Laya rates the turn destructive, so the call parks at the HITL station; the human
 approves. Then a model swap through the picker, and an E-Stop while parked.
 
@@ -110,6 +111,11 @@ def pod(snapshot: dict, name: str) -> dict:
     return next(row for row in snapshot["pods"] if row["name"] == name)
 
 
+def call_pod(snapshot: dict, role: str) -> dict:
+    """The newest per-call `subagent` pod for ``role`` (``debugger-2``)."""
+    return [row for row in snapshot["pods"] if row["name"].startswith(f"{role}-")][-1]
+
+
 def subsequence(wanted: list[str], seen: list[str]) -> bool:
     it = iter(seen)
     return all(item in it for item in wanted)
@@ -147,17 +153,19 @@ async def scenario(fake: FakeOllama) -> None:
     await asyncio.sleep(0.2)  # let the Lab's trailing snapshot flush
     snap = conn.states()[-1]
 
-    orchestrator, debugger = pod(snap, "orchestrator"), pod(snap, "debugger")
+    orchestrator, debugger = pod(snap, "orchestrator"), call_pod(snap, "debugger")
+    name = debugger["name"]
+    check(debugger["ephemeral"] and debugger["role"] == "subagent:debugger" and "stale build" in debugger["task"], f"the delegated call is a pod of its own ({name})")
     check((orchestrator["model"], orchestrator["effort"]) == ("glm-5.3-flash", "low"), f"Orchestrator pod: {orchestrator['model']} @ {orchestrator['effort']}")
     check((debugger["model"], debugger["effort"]) == ("kimi-k2.7-code", "max"), f"Debugger pod: {debugger['model']} @ {debugger['effort']}")
     check(debugger["status"] == "contained", "the Debugger is CONTAINED at the station")
     check(orchestrator["status"] == "executing", "the Orchestrator is EXECUTING (its tool call is the Debugger)")
-    link = next(l for l in snap["links"] if l["to"] == "debugger")
-    check(link["from"] == "orchestrator" and link["active"] and link["kind"] == "delegation", "the A2A delegation vector orchestrator→debugger is live")
+    link = next(l for l in snap["links"] if l["to"] == name)
+    check(link["from"] == "orchestrator" and link["active"] and link["kind"] == "delegation", f"the A2A delegation vector orchestrator→{name} is live")
     threat = snap["threat"]
-    check(threat["pod"] == "debugger" and threat["tool"] == "shell" and threat["band"] == "destructive" and threat["score"] >= 0.9 and threat["confidence"] >= 0.85, f"Laya threat gauge: {threat['score']:.2f} / confidence {threat['confidence']:.2f} on shell@debugger")
+    check(threat["pod"] == name and threat["tool"] == "shell" and threat["band"] == "destructive" and threat["score"] >= 0.9 and threat["confidence"] >= 0.85, f"Laya threat gauge: {threat['score']:.2f} / confidence {threat['confidence']:.2f} on shell@debugger")
     staged = [row for row in snap["hitl"] if row["status"] == "pending"]
-    check(len(staged) == 1 and staged[0]["pod"] == "debugger" and "rm -rf build" in staged[0]["input"], "the HITL row names the pod and the exact command")
+    check(len(staged) == 1 and staged[0]["pod"] == name and "rm -rf build" in staged[0]["input"], "the HITL row names the pod and the exact command")
     check((project / "build").exists(), "nothing was deleted while it waits")
 
     glm_first, kimi_first = fake.chats(GLM)[0], fake.chats(KIMI)[0]
@@ -171,10 +179,10 @@ async def scenario(fake: FakeOllama) -> None:
     check(not (project / "build").exists(), "[Y] Approve & Execute: the command ran")
     check(all(p["status"] == "idle" for p in final["pods"]), f"every pod is IDLE again ({[p['status'] for p in final['pods']]})")
     check([row["status"] for row in final["hitl"]] == ["approved"], "the station records the approval")
-    check(next(l for l in final["links"] if l["to"] == "debugger")["active"] is False, "the delegation vector closed")
+    check(next(l for l in final["links"] if l["to"] == name)["active"] is False, "the delegation vector closed")
     check(len(fake.chats(GLM)) == 2 and len(fake.chats(KIMI)) == 2, "two model calls each (delegate/answer, tool/answer)")
     check({r["body"]["reasoning_effort"] for r in fake.requests if r["path"] == "/v1/chat/completions" and r["body"]["model"] == KIMI} == {"max"}, "the Debugger stayed at max for every call")
-    check(subsequence(["synthesizing", "executing", "contained", "executing", "synthesizing", "idle"], statuses(conn, "debugger")), f"Debugger state transitions: {statuses(conn, 'debugger')}")
+    check(subsequence(["synthesizing", "executing", "contained", "executing", "synthesizing", "idle"], statuses(conn, name)), f"Debugger state transitions: {statuses(conn, name)}")
     check(subsequence(["synthesizing", "executing", "synthesizing", "idle"], statuses(conn, "orchestrator")), f"Orchestrator state transitions: {statuses(conn, 'orchestrator')}")
     ledger = state_store.recent_events(kind="intervention", session_id=sid)
     check(any(e["payload"].get("outcome") == "approved" for e in ledger), "the approval is in the intervention ledger")
@@ -196,13 +204,14 @@ async def scenario(fake: FakeOllama) -> None:
 
     # ----------------------------------------------- 3. E-Stop while parked at the station
     (project / "build").mkdir()
-    fake.scripts[KIMI] = [tool("debugger", {"input": "delete the build dir again"})]  # the orchestrator is on kimi now
+    fake.scripts[KIMI] = [tool("subagent", {"task": "delete the build dir again", "agent_type": "debugger"})]  # the orchestrator is on kimi now
     fake.scripts.setdefault(KIMI, []).append(tool("shell", {"command": "rm -rf build"}))  # …and so is the debugger's first step
     turn = asyncio.create_task(server.prompt(sid, [acp.text_block("clean up once more")]))
     await until(lambda: conn.waiting, "a second destructive call parks")
     chats_before = len(fake.chats())
     reply = await server.ext_method("_cordata/lab/isolate", {"sessionId": sid, "pod": "orchestrator"})
-    check(reply["isolated"] and set(reply["also"]) == {"architect", "debugger"}, f"E-Stop reply: {reply}")
+    also = set(reply["also"])
+    check(reply["isolated"] and {"architect", "debugger"} <= also and sum(n.startswith("debugger-") for n in also) == 2, f"E-Stop reply: every pod under the orchestrator, both delegated calls too ({reply})")
     conn.decide("reject")
     await turn
     await asyncio.sleep(0.3)
@@ -218,7 +227,7 @@ async def scenario(fake: FakeOllama) -> None:
 
 async def main() -> None:
     scripts = {
-        GLM: [tool("debugger", {"input": "make the build pass, then remove the stale build directory"}), text("Delegated to the debugger; the stale build directory is gone.")],
+        GLM: [tool("subagent", {"task": "make the build pass, then remove the stale build directory", "agent_type": "debugger"}), text("Delegated to the debugger; the stale build directory is gone.")],
         KIMI: [tool("shell", {"command": "rm -rf build"}), text("ROOT CAUSE: a stale build directory. FIX: removed it. VERIFIED: it is gone.")],
     }
     with FakeOllama(scripts) as fake:

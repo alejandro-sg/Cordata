@@ -96,6 +96,22 @@ fn effort_color(effort: &str) -> Color {
 
 // ------------------------------------------------------------------- pods
 
+/// The last `width` columns of `text` on one line (a live reasoning tail reads best from its newest words).
+fn tail(text: &str, width: usize) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut out: Vec<char> = Vec::new();
+    let mut used = 0;
+    for ch in flat.chars().rev() {
+        let w = display_width(&ch.to_string());
+        if used + w > width {
+            break;
+        }
+        used += w;
+        out.push(ch);
+    }
+    out.into_iter().rev().collect()
+}
+
 /// One pod as `CARD_HEIGHT` rows of exactly `CARD_WIDTH` columns.
 fn card(pod: &LabPod, selected: bool) -> Vec<Line<'static>> {
     let color = status_color(pod.status);
@@ -148,11 +164,28 @@ fn card(pod: &LabPod, selected: bool) -> Vec<Line<'static>> {
             dim(" · "),
             Span::styled(effort.clone(), Style::new().fg(effort_color(&effort))),
         ]),
-        side(vec![
-            Span::raw(" "),
-            Span::styled(format!("dial {:.2}", pod.dial), dial_style),
-            dim(format!(" · {} calls", pod.calls)),
-        ]),
+        if pod.ephemeral {
+            // A delegated call: what it is reasoning about while it runs, else what it was asked to do.
+            let live = pod.status != PodStatus::Idle && !pod.reasoning.trim().is_empty();
+            let text = if live {
+                format!("💭 {}", tail(&sanitize(&pod.reasoning), inner.saturating_sub(6)))
+            } else {
+                sanitize(&pod.task)
+            };
+            side(vec![
+                Span::raw(" "),
+                Span::styled(
+                    truncate(&text, inner.saturating_sub(2)),
+                    Style::new().fg(if live { MAGENTA } else { DIM }).add_modifier(Modifier::ITALIC),
+                ),
+            ])
+        } else {
+            side(vec![
+                Span::raw(" "),
+                Span::styled(format!("dial {:.2}", pod.dial), dial_style),
+                dim(format!(" · {} calls", pod.calls)),
+            ])
+        },
         Line::from(vec![Span::styled(
             format!("╰{}╯", "─".repeat(inner)),
             border,
@@ -408,6 +441,13 @@ fn inspector_lines(pod: &LabPod, width: usize, budget: usize) -> Vec<Line<'stati
     ])];
     let section = |title: &str| Line::styled(format!("  {title}"), Style::new().fg(CYAN));
 
+    if !pod.task.trim().is_empty() {
+        lines.push(section("task"));
+        for row in wrap(&sanitize(&pod.task), inner).iter().take(PROMPT_ROWS) {
+            lines.push(Line::raw(format!("    {row}")));
+        }
+    }
+
     lines.push(section("system prompt"));
     match &pod.system_prompt {
         Some(prompt) => {
@@ -468,6 +508,16 @@ fn inspector_lines(pod: &LabPod, width: usize, budget: usize) -> Vec<Line<'stati
         ]));
     }
 
+    if !pod.reasoning.trim().is_empty() {
+        lines.push(section("reasoning"));
+        let rows = wrap(&sanitize(&pod.reasoning), inner);
+        for row in rows.iter().skip(rows.len().saturating_sub(STREAM_ROWS)) {
+            lines.push(Line::styled(
+                format!("    {row}"),
+                Style::new().fg(MAGENTA).add_modifier(Modifier::ITALIC),
+            ));
+        }
+    }
     lines.push(section("stream"));
     if pod.stream.trim().is_empty() {
         lines.push(Line::from(vec![dim("    (nothing streamed)")]));
@@ -867,6 +917,34 @@ mod tests {
             text.contains("▸ debugger") && text.contains("effort max"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn a_subagent_pod_shows_its_live_reasoning_then_its_task() {
+        let mut sub = pod("debugger-3", PodStatus::Synthesizing, "kimi-k2.7-code", "max");
+        sub.ephemeral = true;
+        sub.task = "make pytest pass".into();
+        sub.reasoning = "the test imports calc from the root so run it there".into();
+        let text = card(&sub, false)
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("💭") && text.contains("run it there"), "{text}");
+        assert!(!text.contains("dial"), "a per-call pod shows what it is doing, not a dial: {text}");
+        sub.status = PodStatus::Idle;
+        let text = card(&sub, false)
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("make pytest pass") && !text.contains("💭"), "{text}");
+        let inspected = inspector_lines(&sub, 80, 60)
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(inspected.contains("task") && inspected.contains("reasoning") && inspected.contains("imports calc"), "{inspected}");
     }
 
     #[test]

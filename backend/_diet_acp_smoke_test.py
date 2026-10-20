@@ -53,7 +53,7 @@ async def test_a_plain_turn_sends_a_fraction_of_the_schema() -> None:
 
     cold = set(context_diet.COLD_TOOLS)
     check(not (cold & set(seen["names"])), f"the rarely-used tools are not sent on a plain turn ({sorted(cold & set(seen['names'])) or 'none sent'})")
-    check({"shell", "editor", "file_read", "file_write", "python_repl", "architect", "debugger", "enable_tools"} <= set(seen["names"]), "the core kit, the specialists and the loader are")
+    check({"shell", "editor", "file_read", "file_write", "python_repl", "subagent", "enable_tools"} <= set(seen["names"]), "the core kit, the subagent tool (the specialists are its presets) and the loader are")
     saved = 1 - seen["bytes"] / full
     check(saved >= 0.45, f"the schema a model call carries fell by {saved:.0%} ({full:,} → {seen['bytes']:,} bytes ≈ {(full - seen['bytes']) // 4:,} tokens per call)")
     check("Tools not loaded this turn" in seen["prompt"] and "enable_tools" in seen["prompt"], "and the prompt says what is not loaded and how to load it")

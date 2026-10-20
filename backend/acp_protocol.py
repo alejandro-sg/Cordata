@@ -23,6 +23,7 @@ _TOOL_KIND: dict[str, str] = {
     "a2a_client": "fetch",
     "architect": "think",
     "debugger": "other",
+    "subagent": "think",
     claude_code_tool.TOOL_NAME: "execute",
     orchestrate_tool.TOOL_NAME: "execute",
     "context_digest": "think",
@@ -162,14 +163,21 @@ def _recent_context(messages: list, limit: int = _SPECIALIST_CONTEXT_CHARS) -> s
     return "\n".join(reversed(parts))
 
 
+def _crossed(before: int, after: int, every: int = 48) -> bool:
+    """Re-render a streaming tail on its first characters and then about every ``every`` characters."""
+    return before == 0 and after > 0 or before // every != after // every
+
+
 class _SpecialistProgress:
-    """A running specialist's activity, rendered into its tool card: the tools
-    it called and the tail of what it is writing."""
+    """A running sub-agent's activity, rendered into its tool card in the team-progress format the TUI parses
+    (``acp-tui`` ``ui/team.rs``): ``started:``, one ``tool:`` line per tool it called, and ``thinking:`` — the tail of
+    its reasoning while the model streams any, else the tail of what it is writing."""
 
     def __init__(self) -> None:
         self.lines: list[str] = []
         self.seen: set[str] = set()
         self.text = ""
+        self.reasoning = ""
 
     def feed(self, data: dict) -> bool:
         changed = False
@@ -178,16 +186,22 @@ class _SpecialistProgress:
             tool_id = current.get("toolUseId")
             if tool_id and tool_id not in self.seen:
                 self.seen.add(tool_id)
-                self.lines.append(f"→ {current.get('name') or 'tool'}")
+                self.lines.append(current.get("name") or "tool")
+                self.reasoning = ""  # a new step: its reasoning starts over
                 changed = True
+        elif data.get("reasoning") and isinstance(data.get("reasoningText"), str):
+            before = len(self.reasoning)
+            self.reasoning += data["reasoningText"]
+            changed = _crossed(before, len(self.reasoning))
         elif isinstance(data.get("data"), str):
+            before = len(self.text)
             self.text += data["data"]
-            changed = len(self.text) % 48 < len(data["data"])  # re-render every ~48 chars
+            changed = _crossed(before, len(self.text))
         return changed
 
     def render(self, name: str) -> str:
-        lines = [f"{name}: " + line for line in self.lines[-8:]]
-        tail = " ".join(self.text.split())[-_REASONING_TAIL_CHARS:]
+        lines = [f"started: {name}", *(f"tool: {name} - {tool}" for tool in self.lines[-8:])]
+        tail = " ".join((self.reasoning or self.text).split())[-_REASONING_TAIL_CHARS:]
         if tail:
             lines.append(f"thinking: {name} - {tail}")
         return "\n".join(lines)

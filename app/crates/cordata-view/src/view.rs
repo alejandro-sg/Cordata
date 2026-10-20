@@ -93,6 +93,14 @@ pub fn summarize_input(value: &Value, is_team: bool) -> Option<String> {
         },
         // A team tool's input is a task plus every specialist's full system
         // prompt; the task is what a reader wants (the agents get their own rows).
+        // `subagent`: `{task, agent_type, …}` — the task, and which role it went to.
+        Value::Object(map) if is_team && map.get("agents").is_none() && map.get("task").is_some() => {
+            let task = map.get("task").and_then(Value::as_str).unwrap_or_default();
+            match map.get("agent_type").and_then(Value::as_str) {
+                Some(role) => format!("{role}: {task}"),
+                None => format!("task: {task}"),
+            }
+        }
         Value::Object(map) if map.get("agents").is_some() && map.get("task").is_some() => {
             format!("task: {}", map.get("task").and_then(Value::as_str).unwrap_or_default())
         }

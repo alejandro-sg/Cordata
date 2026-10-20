@@ -187,7 +187,7 @@ fn tool(card: &ToolCard, edge: GroupEdge, expanded: bool, cx: &App) -> AnyElemen
         let shown_lines = lines.len().min(RESULT_PREVIEW_LINES);
         let more = lines.len().saturating_sub(shown_lines);
         let text = lines[..shown_lines].iter().map(|line| cut(line)).collect::<Vec<_>>().join("\n");
-        let progress = (!card.progress.is_empty() && matches!(card.status, ToolStatus::InProgress)).then(|| shown(&card.progress));
+        let progress = (!card.progress.is_empty() && matches!(card.status, ToolStatus::InProgress) && !cordata_view::team::is_team_tool(&card.name)).then(|| shown(&card.progress));
         div()
             .px(px(12.))
             .pb(px(10.))
@@ -198,6 +198,17 @@ fn tool(card: &ToolCard, edge: GroupEdge, expanded: bool, cx: &App) -> AnyElemen
             .when(!text.is_empty(), |d| d.child(ui::code_block(SharedString::from(text), cx)))
             .when(more > 0, |d| d.child(ui::meta(SharedString::from(format!("… {more} more lines (Ctrl+E shows everything)")), cx)))
     });
+    // A sub-agent call (`subagent`, the old teams): one row per agent — live while it runs, the reasoning tail and the
+    // tools it called — shown without expanding the card, because watching it is the point.
+    let team = cordata_view::team::is_team_tool(&card.name).then(|| {
+        let mut rows = cordata_view::team::parse(&card.progress);
+        if !matches!(card.status, ToolStatus::InProgress | ToolStatus::Pending) {
+            cordata_view::team::settle(&mut rows);
+        }
+        rows
+    });
+    let team = team.filter(|rows| !rows.is_empty() && (expanded || matches!(card.status, ToolStatus::InProgress)));
+    let team = team.map(|rows| team_rows(&rows, cx));
     div()
         .when(edge.first, |d| d.mt(px(6.)))
         .when(edge.last, |d| d.mb(px(6.)))
@@ -225,7 +236,68 @@ fn tool(card: &ToolCard, edge: GroupEdge, expanded: bool, cx: &App) -> AnyElemen
                 .child(div().flex_shrink_0().whitespace_nowrap().text_color(c(if card.status == ToolStatus::Failed { tk.danger } else { tk.text_faint })).child(SharedString::from(meta_of(card))))
                 .child(div().flex_shrink_0().text_color(c(tk.text_faint)).child(if expanded { "⌃" } else { "⌄" })),
         )
+        .children(team)
         .children(body)
+        .into_any_element()
+}
+
+/// The agents of a sub-agent call, one block each: ◆ running (amber) or ✓ done, its name, what it is reasoning about
+/// now, and the tools it called.
+fn team_rows(rows: &[cordata_view::team::TeamRow], cx: &App) -> AnyElement {
+    use cordata_view::team::{NodeState, TeamRow};
+    let tk = tk(cx);
+    div()
+        .px(px(12.))
+        .pb(px(8.))
+        .flex()
+        .flex_col()
+        .gap(px(4.))
+        .font_family(mono(cx))
+        .text_size(px(t::TEXT_META))
+        .children(rows.iter().map(|row| match row {
+            TeamRow::Node(node) => {
+                let running = node.state == NodeState::Running;
+                let (mark, ink) = if running { ("◆", tk.amber) } else { ("✓", tk.teal) };
+                let detail = if running {
+                    if node.thinking.is_empty() { "working…".to_owned() } else { format!("💭 {}", cut(&node.thinking)) }
+                } else if node.summary.is_empty() {
+                    format!("done after {} tool call{}", node.tools.len(), if node.tools.len() == 1 { "" } else { "s" })
+                } else {
+                    cut(&node.summary)
+                };
+                let tools = (!node.tools.is_empty()).then(|| {
+                    let shown: Vec<&str> = node.tools.iter().rev().take(6).rev().map(String::as_str).collect();
+                    let more = node.tools.len().saturating_sub(shown.len());
+                    let prefix = if more > 0 { format!("↳ +{more} · ") } else { "↳ ".to_owned() };
+                    div().pl(px(22.)).text_color(c(tk.text_faint)).child(SharedString::from(format!("{prefix}{}", shown.join(" · "))))
+                });
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .flex()
+                            .gap(px(10.))
+                            .child(div().w(px(12.)).flex_shrink_0().text_color(c(ink)).child(mark))
+                            .child(div().flex_shrink_0().text_color(c(tk.text_body)).child(SharedString::from(node.name.clone())))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .italic()
+                                    .text_color(c(if running { tk.text_muted } else { tk.text_faint }))
+                                    .child(SharedString::from(detail)),
+                            ),
+                    )
+                    .children(tools)
+                    .into_any_element()
+            }
+            TeamRow::Handoff { from, to, message } => div()
+                .text_color(c(tk.teal))
+                .child(SharedString::from(format!("→ {from} → {to}  {}", cut(message))))
+                .into_any_element(),
+        }))
         .into_any_element()
 }
 

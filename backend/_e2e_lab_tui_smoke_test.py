@@ -3,7 +3,7 @@
 ``fake_ollama.FakeOllama``. The proof that the Lab's keys and its telemetry are
 wired to the daemon's agent loop end to end — not just each half in isolation:
 
-    prompt → Orchestrator (glm @ low) → Debugger (kimi @ max) → shell
+    prompt → Orchestrator (glm @ low) → subagent(debugger) (kimi @ max, its own pod debugger-N) → shell
           → parked at the HITL station → F2 → [N] / [Y] / [K] → the loop obeys
     Laya dial, guidance and E-Stop/release from the Lab → the next request shows it
 
@@ -144,9 +144,9 @@ def main() -> None:
     (project / "README.md").write_text("demo\n")
     scripts = {
         GLM: [
-            tool("debugger", {"input": "fix the build"}), text("T1 done: the debugger's command was rejected."),
-            tool("debugger", {"input": "fix the build again"}), text("T2 done: the debugger ran its command."),
-            tool("debugger", {"input": "clean up"}), text("T3 done: the debugger was E-stopped."),
+            tool("subagent", {"task": "fix the build", "agent_type": "debugger"}), text("T1 done: the debugger's command was rejected."),
+            tool("subagent", {"task": "fix the build again", "agent_type": "debugger"}), text("T2 done: the debugger ran its command."),
+            tool("subagent", {"task": "clean up", "agent_type": "debugger"}), text("T3 done: the debugger was E-stopped."),
             text("T4 done: noted your guidance."),
         ],
         KIMI: [
@@ -190,11 +190,13 @@ def run(term: Terminal, fake: FakeOllama, project: Path) -> None:
     term.send(ENTER)
     term.wait_for("Permission required", timeout=60)
     check(True, "Orchestrator → Debugger → shell parked at an approval prompt")
+    frame = term.last_frame()
+    check("subagent · team" in frame and "debugger" in frame and "↳ shell" in frame, "the transcript's card shows the delegated agent live: its role and the tool it is calling")
     shown = term.step(F2, "EXPERIMENTAL LAB", "HITL INTERVENTION STATION", "[CONTAINED ⚠️]", "Approve & Execute", "Reject & Discard")
     check("kimi-k2.7-code" in shown and "glm-5.3-flash" in shown, "F2: the Lab shows both models")
     check("max" in shown and "low" in shown, "…with their reasoning efforts (kimi max, glm low)")
     check("orchestrator" in shown and "debugger" in shown and "delegation" in shown, "…and the delegation vector")
-    check("pod   debugger" in shown or "debugger" in shown, "…and names the pod behind the request")
+    check("debugger-1" in shown, "…and names the pod behind the request: the delegated call's own pod")
     check(not (project / "rejected.txt").exists(), "nothing ran while it waited")
     term.step(b"n", "0 busy", "T1 done", timeout=30)
     check(not (project / "rejected.txt").exists(), "[N] Reject & Discard: the command never ran")
@@ -222,26 +224,28 @@ def run(term: Terminal, fake: FakeOllama, project: Path) -> None:
     term.wait_for("Permission required", timeout=60)
     term.step(F2, "HITL INTERVENTION STATION", "E-Stop")
     kimi_before, glm_before = len(fake.chats(KIMI)), len(fake.chats(GLM))
-    term.step(b"K", "debugger ISOLATED", "[ISOLATED 🛑]", timeout=30)
+    term.step(b"K", "debugger-3 ISOLATED", "[ISOLATED 🛑]", timeout=30)
     check(not (project / "estop.txt").exists(), "[K] at the station: the call was rejected and never ran")
     term.wait_for("T3 done", timeout=30)
     check(True, "the Orchestrator carried on — its delegate was refused, not the whole session")
     term.wait_for("0 busy", timeout=30)
     check(len(fake.chats(KIMI)) == kimi_before, "the isolated Debugger made no further model call")
     check(len(fake.chats(GLM)) == glm_before + 1, "only the Orchestrator's own wrap-up call followed")
-    # release the debugger: orchestrator, architect, debugger — two to the right
-    term.send(RIGHT)
-    term.step(RIGHT, "MONITOR ▸ debugger")
-    term.step(b"R", "debugger released", timeout=20)
+    # release the call's pod: orchestrator, architect, debugger, debugger-1, debugger-2, debugger-3 — five to the right
+    for _ in range(4):
+        term.send(RIGHT)
+    term.step(RIGHT, "MONITOR ▸ debugger-3")
+    term.step(b"R", "debugger-3 released", timeout=20)
     check("[ISOLATED 🛑]" not in term.last_frame(), "R releases the selected pod — no pod reads ISOLATED any more")
 
     # -------------------------------------------- 4. E-Stop the whole team from the Lab, release
-    term.send(LEFT)
+    for _ in range(4):
+        term.send(LEFT)
     term.step(LEFT, "MONITOR ▸ orchestrator")
     shown = term.step(b"K", "orchestrator ISOLATED, with architect, debugger", timeout=20)
-    check(term.last_frame().count("[ISOLATED 🛑]") == 3, "[K] on the orchestrator isolates it and both specialists — three ISOLATED pods on screen")
+    check(term.last_frame().count("[ISOLATED 🛑]") == 6, "[K] on the orchestrator isolates it, both specialists and the three delegated calls — six ISOLATED pods on screen")
     term.step(b"R", "orchestrator released", timeout=20)
-    check(term.last_frame().count("[ISOLATED 🛑]") == 2, "R frees the orchestrator alone")
+    check(term.last_frame().count("[ISOLATED 🛑]") == 5, "R frees the orchestrator alone")
 
     # ------------------------------------------------------ 5. Laya dial (tightens only)
     term.step(b"[", "dial 0.75", "Laya dial → 0.75", timeout=20)

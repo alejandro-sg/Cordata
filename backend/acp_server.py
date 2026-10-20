@@ -91,6 +91,7 @@ import reflect
 import settings as app_settings
 import settings_store
 import specialists
+import subagent_tool
 import secret_guard
 import secret_patterns
 import state_store
@@ -696,7 +697,7 @@ class CordataAcpAgent:
         manager.enabled = lsp_enabled
 
         reserved = {
-            "shell", "editor", "file_read", "file_write", "python_repl", "http_request", "web_fetch", "apply_patch", "architect", "debugger",
+            "shell", "editor", "file_read", "file_write", "python_repl", "http_request", "web_fetch", "apply_patch", "architect", "debugger", subagent_tool.TOOL_NAME,
             claude_code_tool.TOOL_NAME, orchestrate_tool.TOOL_NAME, "omlx_resource_manager", "ollama_resource_manager", "context_digest", "enable_tools", "search_skills",
             context_offload.RETRIEVE_TOOL, "code_search", "code_outline", "environment_profile", plugin_host.RESOURCE_TOOL, plan_mode.TOOL_NAME, ask_user.TOOL_NAME,
         }
@@ -712,7 +713,7 @@ class CordataAcpAgent:
             router_hooks=router_hooks,
             vault=vault,
         )
-        specialist_tools, specialist_agents = specialists.specialist_tools(
+        _, specialist_agents = specialists.specialist_tools(
             interventions=[handler],
             # A specialist's kit is fixed, so it gets the two history levers (cap one result, age old output)
             # and not the cold-tool scoping.
@@ -722,8 +723,18 @@ class CordataAcpAgent:
                 context_diet.ContextDiet(lambda: settings_store.current(cwd), scope_tools=False),
             ],
         )
+        # The model-picked delegate (subagent_tool.py): the same gate and the same per-child hooks as the specialists.
+        delegate = subagent_tool.subagent_tool(
+            interventions=[handler],
+            hooks_factory=lambda: [
+                code_nav.LargeFileHooks(code_nav.threshold_from(lambda: settings_store.current(cwd)), root=cwd),
+                lsp_bridge.LspEditHooks(), router_hooks, outcome_hooks.OutcomeHooks(session_id, subagent_tool.TOOL_NAME),
+                stall_guard.StallHooks(session_id, subagent_tool.TOOL_NAME),
+                context_diet.ContextDiet(lambda: settings_store.current(cwd), scope_tools=False),
+            ],
+        )
         instructions = settings_store.load_instructions(cwd)
-        context = workspace_context.summary(cwd, specialists=list(specialist_agents))
+        context = workspace_context.summary(cwd, specialists=[f"{subagent_tool.TOOL_NAME} (agent_type: {', '.join(subagent_tool.ROLES)})"])
         system_prompt = (_chat_system_prompt(cwd) if _is_chat_scratch(cwd) else _project_system_prompt(cwd)) + f"\n\n{context}" + (f"\n\n{instructions}" if instructions else "") + prompts.live_text(cwd)
         # Order matters for AfterInvocationEvent (callbacks run in reverse):
         # self-heal is registered last so it runs first and can set `resume`
@@ -737,7 +748,9 @@ class CordataAcpAgent:
             # door has no vault status to route the CLI's egress through, no approval gate for it.
             extra_tools=[
                 patch_tool.apply_patch,
-                *specialist_tools,
+                # The specialists are `subagent` presets (architect, debugger); `specialist_agents` stay for the
+                # router's direct dispatch and the Lab's standing pods.
+                delegate,
                 claude_code_tool.claude_code_engineer,
                 orchestrate_tool.orchestrate,
                 omlx_resource_tool.omlx_resource_manager,
@@ -753,7 +766,7 @@ class CordataAcpAgent:
             # A result over the limit is set aside whole — written to ~/.cordata/offloaded/<session>/, a head+tail preview and
             # a reference in context, `retrieve_offloaded_content` for the slice the agent wants (Strands' ContextOffloader).
             # What a specialist or the Claude Code CLI returns is the answer itself, so those are never set aside.
-            offloader=context_offload.build(session_id, preferences=lambda: settings_store.current(cwd), never=set(specialist_agents)),
+            offloader=context_offload.build(session_id, preferences=lambda: settings_store.current(cwd), never={*specialist_agents, subagent_tool.TOOL_NAME}),
             summarizer=str(preferences.get("context.summaryModel", "fast")),
             compact_at=preferences.get("context.autoCompact"),
             project_root=cwd,
@@ -781,6 +794,8 @@ class CordataAcpAgent:
             untrusted_tools=plugins.untrusted_names,
             skill_dirs=learned.live_dirs(cwd),
             checkpointing=True,
+            # `subagent` calls may run in the background while the orchestrator keeps working; the turn waits for them.
+            background_tasks=subagent_tool.BACKGROUND_TASKS if preferences.get("subagents.background", True) is not False else None,
             # Skills: the few that fit the request, found by embedding search; Laya decides whether one clearly
             # does (the router's own forward pass and calibrator — `skill_search.SkillDecider`).
             skill_options={
@@ -860,6 +875,7 @@ class CordataAcpAgent:
         agent.hooks.add_hook(lab.attach(agent, "orchestrator", role="orchestrator"))
         for name, specialist in specialist_agents.items():
             specialist.hooks.add_hook(lab.attach(specialist, name, role=name, parent="orchestrator"))
+            specialist.callback_handler = lab_module.LabStream(lab, name)  # its output and reasoning, live
         lab.emit(force=True)
 
     @staticmethod
@@ -2141,10 +2157,15 @@ class CordataAcpAgent:
                     rendered = None
                     if tool_use_id and isinstance(data, dict) and isinstance(data.get("progress"), str):
                         rendered = data["progress"]  # a tool that narrates its own progress (claude_code_engineer, orchestrate)
-                    elif tool_use_id and isinstance(data, dict) and tool_use.get("name") in self._specialist_names(session_id):
+                    elif tool_use_id and isinstance(data, dict) and tool_use.get("name") in {*self._specialist_names(session_id), subagent_tool.TOOL_NAME}:
                         progress = specialist_progress.setdefault(tool_use_id, _SpecialistProgress())
                         if progress.feed(data):
-                            rendered = progress.render(tool_use.get("name"))
+                            name = tool_use.get("name")
+                            if name == subagent_tool.TOOL_NAME:
+                                tool_input = tool_use.get("input")
+                                tool_input = tool_input if isinstance(tool_input, dict) else {}
+                                name = str(tool_input.get("agent_type") or "generalist")
+                            rendered = progress.render(name)
                     # Progress is re-yielded whole on every update; a client only
                     # needs to hear when the rendered text actually changed.
                     if rendered and last_progress.get(tool_use_id) != rendered:

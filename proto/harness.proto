@@ -121,6 +121,10 @@ message Pod {
   double risk_peak = 20;           // the highest this session
   uint32 auto_approved = 21;       // calls that ran in auto mode without asking
   uint32 asked = 22;               // calls held for a person
+  // A sub-agent's thinking and what it was given (backend/lab.py: Pod.reasoning / task / ephemeral).
+  string reasoning_tail = 23;      // the end of the model's reasoning for its current invocation, live, redacted
+  string task = 24;                // what its caller delegated, for a per-call `subagent` pod; "" otherwise
+  bool ephemeral = 25;             // the pod lives for one delegated call (`debugger-3`); the last few finished are kept
 }
 
 message Link {

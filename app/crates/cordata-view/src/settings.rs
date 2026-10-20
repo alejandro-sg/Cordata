@@ -284,6 +284,12 @@ pub const SCHEMA: &[Entry] = &[
         help: "continue a turn a crash interrupted on its own when the session reloads (twice at most)",
     },
     Entry {
+        key: "subagents.background",
+        kind: Kind::Bool,
+        applies: Applies::NextSession,
+        help: "let the agent run a `subagent` in the background and keep working; the turn still waits for it",
+    },
+    Entry {
         key: "learning.reflect",
         kind: Kind::Bool,
         applies: Applies::NextSession,

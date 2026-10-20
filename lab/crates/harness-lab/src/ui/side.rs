@@ -248,6 +248,13 @@ impl LabApp {
             }
             drawer = drawer.child(div().flex().flex_col().gap_1().child(caption("recent work", &theme)).child(recent));
         }
+        if !pod.task.is_empty() {
+            drawer = drawer.child(div().flex().flex_col().gap_1().child(caption("task", &theme)).child(div().text_xs().text_color(theme.dim).line_clamp(3).child(pod.task.clone())));
+        }
+        if !pod.reasoning_tail.is_empty() {
+            // Live while the model streams its reasoning: what it is thinking about right now.
+            drawer = drawer.child(div().flex().flex_col().gap_1().child(caption("thinking", &theme)).child(div().text_xs().italic().text_color(theme.dim).line_clamp(5).child(pod.reasoning_tail.clone())));
+        }
         if !pod.stream_tail.is_empty() {
             drawer = drawer.child(div().flex().flex_col().gap_1().child(caption("last said", &theme)).child(div().text_xs().text_color(theme.dim).line_clamp(4).child(pod.stream_tail.clone())));
         }

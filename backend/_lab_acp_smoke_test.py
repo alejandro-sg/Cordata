@@ -186,20 +186,32 @@ async def test_inject_state_select() -> None:
 
 async def test_delegation_visible() -> None:
     lab_module.get().reset()
-    orchestrator_model([call("debugger", {"input": "why does the build fail"}), text("handed back")])
-    specialist_model("debugger", [text("ROOT CAUSE: typo")])
+    orchestrator_model([call("subagent", {"task": "why does the build fail", "agent_type": "debugger"}), text("handed back")])
+    specialist_model("debugger", [text("ROOT CAUSE: typo", thinks="the build log names a missing import")])
     server, conn = server_with(laya_answer("code", {"code": 0.5, "answer": 0.5}))
     created = await server.new_session(cwd=str(project("delegate")))
     await server.set_session_mode(created.session_id, "auto")
     await server.prompt(created.session_id, [acp.text_block("investigate")])
     await settle()
     states = lab_states(conn)
-    active = [s for s in states if any(l["from"] == "orchestrator" and l["to"] == "debugger" and l["active"] for l in s["links"])]
-    check(bool(active), "a snapshot showed the orchestrator→debugger delegation vector live")
-    check(any(p["name"] == "debugger" and p["status"] in ("synthesizing", "executing") for s in states for p in s["pods"]), "the debugger pod was busy while it ran")
+    is_call = lambda name: name.startswith("debugger-")  # one pod per delegated call
+    active = [s for s in states if any(l["from"] == "orchestrator" and is_call(l["to"]) and l["active"] for l in s["links"])]
+    check(bool(active), "a snapshot showed the orchestrator→debugger-N delegation vector live")
+    check(any(is_call(p["name"]) and p["status"] in ("synthesizing", "executing") for s in states for p in s["pods"]), "the call's pod was busy while it ran")
     final = states[-1]
-    link = next(l for l in final["links"] if l["to"] == "debugger")
+    pod_row = next(p for p in final["pods"] if is_call(p["name"]))
+    check(pod_row["ephemeral"] and pod_row["task"] == "why does the build fail" and pod_row["role"] == "subagent:debugger", "…a per-call pod with its task and role")
+    check("missing import" in pod_row["reasoning"], f"…and its reasoning reached the client ({pod_row['reasoning']!r})")
+    link = next(l for l in final["links"] if is_call(l["to"]))
     check(link["active"] is False and link["count"] == 1, "…and closed afterwards")
+    progress = [
+        block.content.text
+        for u in conn.updates
+        if type(u).__name__ == "ToolCallProgress"
+        for block in (getattr(u, "content", None) or [])
+        if getattr(getattr(block, "content", None), "text", None)
+    ]
+    check(any(t.startswith("started: debugger") and "thinking: debugger - the build log" in t for t in progress), f"the tool card showed the agent and its reasoning live ({progress[-1:]!r})")
 
 
 async def main() -> None:

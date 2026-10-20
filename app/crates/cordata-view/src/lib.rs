@@ -24,6 +24,7 @@ pub mod redact;
 pub mod review;
 pub mod run_board;
 pub mod settings;
+pub mod team;
 pub mod shell;
 pub mod tree;
 pub mod view;

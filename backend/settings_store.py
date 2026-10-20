@@ -86,6 +86,7 @@ SCHEMA: dict[str, tuple] = {
     # something; nothing staged reaches a model until it has beaten the baseline on the eval suite
     # (`learning.promotion`: off = never automatically, shadow = evaluate and record verdicts only, live = promote on a pass).
     "learning.reflect": ("bool",),
+    "subagents.background": ("bool",),
     "learning.promotion": ("enum", ("off", "shadow", "live")),
     "learning.evalTasks": ("float", 3.0, 60.0),
     # Prompt/skill optimization (optimize.py, prompts.py): draft a sharper variant of a live lesson or prompt

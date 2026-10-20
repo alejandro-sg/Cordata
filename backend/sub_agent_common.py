@@ -51,6 +51,8 @@ DENIED_TOOLS = {"shell", "python_repl", "file_write", "editor", "apply_patch"}
 # side effect.
 ORCHESTRATOR_ONLY_TOOLS = {
     "orchestrate",
+    # subagent_tool.py: delegation is the orchestrator's call; a child that could delegate again is fan-out.
+    "subagent",
     # Unreviewed egress to a third-party host (a2a_client_tool.py) — a
     # sub-agent has no gate, and no credentials it could be handed either.
     "a2a_client",

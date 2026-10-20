@@ -467,6 +467,12 @@ pub struct LabPod {
     pub memory: Vec<LabMemory>,
     /// The tail of what the pod is writing (the whole text when inspected).
     pub stream: String,
+    /// The tail of the model's reasoning for its current invocation, live while it streams (whole when inspected).
+    pub reasoning: String,
+    /// What its caller delegated, for a per-call `subagent` pod (`debugger-3`).
+    pub task: String,
+    /// The pod lives for one delegated call; the backend keeps the last few finished ones.
+    pub ephemeral: bool,
     /// Only present for the pod the client selected (`lab/select`).
     pub system_prompt: Option<String>,
     pub guidance: Vec<String>,
@@ -590,6 +596,12 @@ fn parse_lab(params: &Value) -> Option<LabState> {
                     })
                     .collect(),
                 stream: text(pod, "stream").unwrap_or_default(),
+                reasoning: text(pod, "reasoning").unwrap_or_default(),
+                task: text(pod, "task").unwrap_or_default(),
+                ephemeral: pod
+                    .get("ephemeral")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
                 system_prompt: text(pod, "system_prompt"),
                 guidance: list(pod, "guidance")
                     .iter()

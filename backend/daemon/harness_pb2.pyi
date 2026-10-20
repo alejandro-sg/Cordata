@@ -100,7 +100,7 @@ class TraceRow(_message.Message):
     def __init__(self, tool: _Optional[str] = ..., status: _Optional[str] = ..., input: _Optional[str] = ..., ms: _Optional[int] = ..., ts_ms: _Optional[int] = ...) -> None: ...
 
 class Pod(_message.Message):
-    __slots__ = ("id", "name", "role", "parent", "model", "effort", "status", "isolated", "dial", "dial_default", "calls", "busy_ms", "pending_tool", "guidance_pending", "stream_tail", "trace", "effort_adjustable", "since_ms", "risk_last", "risk_peak", "auto_approved", "asked")
+    __slots__ = ("id", "name", "role", "parent", "model", "effort", "status", "isolated", "dial", "dial_default", "calls", "busy_ms", "pending_tool", "guidance_pending", "stream_tail", "trace", "effort_adjustable", "since_ms", "risk_last", "risk_peak", "auto_approved", "asked", "reasoning_tail", "task", "ephemeral")
     ID_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
     ROLE_FIELD_NUMBER: _ClassVar[int]
@@ -123,6 +123,9 @@ class Pod(_message.Message):
     RISK_PEAK_FIELD_NUMBER: _ClassVar[int]
     AUTO_APPROVED_FIELD_NUMBER: _ClassVar[int]
     ASKED_FIELD_NUMBER: _ClassVar[int]
+    REASONING_TAIL_FIELD_NUMBER: _ClassVar[int]
+    TASK_FIELD_NUMBER: _ClassVar[int]
+    EPHEMERAL_FIELD_NUMBER: _ClassVar[int]
     id: str
     name: str
     role: str
@@ -145,7 +148,10 @@ class Pod(_message.Message):
     risk_peak: float
     auto_approved: int
     asked: int
-    def __init__(self, id: _Optional[str] = ..., name: _Optional[str] = ..., role: _Optional[str] = ..., parent: _Optional[str] = ..., model: _Optional[str] = ..., effort: _Optional[str] = ..., status: _Optional[_Union[PodStatus, str]] = ..., isolated: _Optional[bool] = ..., dial: _Optional[float] = ..., dial_default: _Optional[float] = ..., calls: _Optional[int] = ..., busy_ms: _Optional[int] = ..., pending_tool: _Optional[str] = ..., guidance_pending: _Optional[int] = ..., stream_tail: _Optional[str] = ..., trace: _Optional[_Iterable[_Union[TraceRow, _Mapping]]] = ..., effort_adjustable: _Optional[bool] = ..., since_ms: _Optional[int] = ..., risk_last: _Optional[float] = ..., risk_peak: _Optional[float] = ..., auto_approved: _Optional[int] = ..., asked: _Optional[int] = ...) -> None: ...
+    reasoning_tail: str
+    task: str
+    ephemeral: bool
+    def __init__(self, id: _Optional[str] = ..., name: _Optional[str] = ..., role: _Optional[str] = ..., parent: _Optional[str] = ..., model: _Optional[str] = ..., effort: _Optional[str] = ..., status: _Optional[_Union[PodStatus, str]] = ..., isolated: _Optional[bool] = ..., dial: _Optional[float] = ..., dial_default: _Optional[float] = ..., calls: _Optional[int] = ..., busy_ms: _Optional[int] = ..., pending_tool: _Optional[str] = ..., guidance_pending: _Optional[int] = ..., stream_tail: _Optional[str] = ..., trace: _Optional[_Iterable[_Union[TraceRow, _Mapping]]] = ..., effort_adjustable: _Optional[bool] = ..., since_ms: _Optional[int] = ..., risk_last: _Optional[float] = ..., risk_peak: _Optional[float] = ..., auto_approved: _Optional[int] = ..., asked: _Optional[int] = ..., reasoning_tail: _Optional[str] = ..., task: _Optional[str] = ..., ephemeral: _Optional[bool] = ...) -> None: ...
 
 class Link(_message.Message):
     __slots__ = ("to", "kind", "active", "count", "label")

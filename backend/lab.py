@@ -80,6 +80,9 @@ _MAX_TRACE = 24
 _MAX_STREAM = 1200
 _MAX_PROMPT = 4000
 _MAX_MEMORY = 10
+_MAX_REASONING = 4000
+#: Finished per-call pods (a `subagent` child) kept for the operator to read before the oldest is dropped.
+_KEEP_FINISHED_EPHEMERAL = 6
 _MIN_EMIT_INTERVAL = 0.08
 
 #: The pod whose tool call is executing, for code a tool runs (memory reads).
@@ -121,6 +124,11 @@ class Pod:
         self.messages = 0
         self.trace: collections.deque[dict[str, Any]] = collections.deque(maxlen=_MAX_TRACE)
         self.stream = ""
+        #: The model's reasoning (thinking) for the current invocation, live while it streams.
+        self.reasoning = ""
+        #: What the caller delegated (a per-call `subagent` child's task), and whether the pod lives for one call only.
+        self.task = ""
+        self.ephemeral = False
         self.memory: collections.deque[dict[str, Any]] = collections.deque(maxlen=_MAX_MEMORY)
         self.guidance: list[str] = []
         self.busy_ms = 0.0
@@ -171,6 +179,9 @@ class Pod:
             "trace": list(self.trace)[-6:],
             "memory": list(self.memory)[-4:],
             "stream": self.stream[-160:],
+            "reasoning": self.reasoning[-240:],
+            "task": _short(self.task, 240),
+            "ephemeral": self.ephemeral,
         }
         if detail:
             row.update(
@@ -179,6 +190,8 @@ class Pod:
                     "trace": list(self.trace),
                     "memory": list(self.memory),
                     "stream": self.stream,
+                    "reasoning": self.reasoning,
+                    "task": _redact(self.task, _MAX_PROMPT),
                     "guidance": [_redact(text, 400) for text in self.guidance],
                 }
             )
@@ -243,6 +256,28 @@ class Lab:
             pod = Pod(pod_id, name, role or name, parent)
             self.pods[pod_id] = pod
         self.emit(force=True)
+        return pod
+
+    def spawn(self, prefix: str, *, role: str, parent: str | None, task: str = "") -> Pod:
+        """A pod for one delegated call (a `subagent` child): a fresh, numbered name each time, its task recorded,
+        and only the last few finished ones kept, so a long session does not grow the canvas without bound."""
+        with self._lock:
+            self._spawned = getattr(self, "_spawned", 0) + 1
+            name = f"{prefix}-{self._spawned}"
+            pod = Pod(name, name, role, parent)
+            pod.ephemeral = True
+            pod.task = task
+            pod.status = "synthesizing"
+            self.pods[name] = pod
+            done = [p for p in self.pods.values() if p.ephemeral and p.status in ("idle", "isolated") and p is not pod]
+            for old in done[: max(0, len(done) - _KEEP_FINISHED_EPHEMERAL)]:
+                self.pods.pop(old.id, None)
+                for key in [k for k in self.links if old.id in k]:
+                    self.links.pop(key, None)
+        if parent:
+            self.link(parent, name, "delegation", label=_short(task, 40))
+        else:
+            self.emit(force=True)
         return pod
 
     def reset(self) -> None:
@@ -313,6 +348,14 @@ class Lab:
             return
         with self._lock:
             pod.stream = (pod.stream + _redact(text))[-_MAX_STREAM:]
+        self.emit()
+
+    def stream_reasoning(self, pod_name: str, text: str) -> None:
+        pod = self.pods.get(pod_name)
+        if pod is None or not text:
+            return
+        with self._lock:
+            pod.reasoning = (pod.reasoning + _redact(text))[-_MAX_REASONING:]
         self.emit()
 
     def memory_hit(self, source: str, query: str, hits: list[dict[str, Any]], *, pod_name: str | None = None) -> None:
@@ -741,6 +784,7 @@ class LabHooks(HookProvider):
             event.cancel = f"{self.pod.name} is isolated by the lab master"
             return
         self.pod.stream = ""
+        self.pod.reasoning = ""
         self.lab.set_status(self.pod, "synthesizing")
 
     def _before_model(self, event: BeforeModelCallEvent) -> None:
@@ -775,6 +819,15 @@ class LabHooks(HookProvider):
             text = "".join(parts).strip()
             if text:
                 pod.stream = _redact(text, _MAX_STREAM)
+            # A provider that does not stream reasoning (or a callback that was never attached) still leaves it in the
+            # message: take it from there when nothing arrived live.
+            thought = "".join(
+                ((block.get("reasoningContent") or {}).get("reasoningText") or {}).get("text", "")
+                for block in (response.message.get("content") or [])
+                if isinstance(block, dict)
+            ).strip()
+            if thought and not pod.reasoning:
+                pod.reasoning = _redact(thought, _MAX_REASONING)
         self.lab.emit()
 
     def _before_tool(self, event: BeforeToolCallEvent) -> None:
@@ -819,7 +872,31 @@ class LabHooks(HookProvider):
         self.lab.set_status(pod, "synthesizing")
 
     def _on_done(self, event: AfterInvocationEvent) -> None:
+        paused = getattr(getattr(event, "result", None), "stop_reason", None) == "interrupt"
+        if self.pod.ephemeral and self.pod.parent and not paused:
+            # A child parked on an approval is still the caller's delegation; it closes when the call really ends.
+            self.lab.link(self.pod.parent, self.pod.name, "delegation", active=False)
         self.lab.set_status(self.pod, "isolated" if self.pod.isolated else "idle")
+
+
+class LabStream:
+    """A Strands ``callback_handler`` that streams one pod's output and reasoning into the Lab as it is generated —
+    the hooks above only see a model call once it is finished. Text deltas (``data``) and reasoning deltas
+    (``reasoningText`` with ``reasoning=True``) are redacted on the way in, like everything in a snapshot."""
+
+    def __init__(self, lab: "Lab", pod_name: str, forward: Callable[..., None] | None = None) -> None:
+        self.lab, self.pod_name, self.forward = lab, pod_name, forward
+
+    def __call__(self, **kwargs: Any) -> None:
+        try:
+            if kwargs.get("reasoning") and isinstance(kwargs.get("reasoningText"), str):
+                self.lab.stream_reasoning(self.pod_name, kwargs["reasoningText"])
+            elif isinstance(kwargs.get("data"), str):
+                self.lab.stream_text(self.pod_name, kwargs["data"])
+        except Exception:
+            logging.getLogger(__name__).debug("lab: stream callback failed", exc_info=True)
+        if self.forward is not None:
+            self.forward(**kwargs)
 
 
 def _merge_guidance(agent: Any, guidance: list[str]) -> None:

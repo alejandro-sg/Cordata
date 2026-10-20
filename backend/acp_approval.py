@@ -67,6 +67,9 @@ def _read_only_call(tool_name: str, tool_input) -> bool:
         return False
     if tool_name == "editor":
         return tool_input.get("command") in _EDITOR_READ_COMMANDS
+    if tool_name == "subagent":
+        # The explorer and architect roles are read-only whatever `tools` asks for (subagent_tool.py): plan mode runs them.
+        return tool_input.get("agent_type") in ("explorer", "architect")
     reads = _READ_ONLY_ACTIONS.get(tool_name)
     return reads is not None and str(tool_input.get("action", "")).strip().lower() in reads
 

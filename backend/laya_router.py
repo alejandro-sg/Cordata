@@ -539,6 +539,11 @@ class RouterHooks(HookProvider):
         if tool_use_id in turn.seen_calls:
             return  # the same call again, resumed after an approval prompt
         turn.seen_calls.add(tool_use_id)
+        if name == "subagent":
+            # The specialists are `subagent` presets now; a call to one is still that specialist's route.
+            role = (event.tool_use.get("input") or {}).get("agent_type") if isinstance(event.tool_use.get("input"), dict) else None
+            if role in ("architect", "debugger"):
+                name = role
         turn.tools.append(name)
         if name != "shell" or not self.predict_commands:
             return

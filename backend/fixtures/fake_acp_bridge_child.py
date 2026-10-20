@@ -6,7 +6,7 @@ its working directory, so a test can assert what actually reached the child:
 
   command (a notification the test sends)   what the child does
   ------------------------------------------------------------------------------------
-  bridge/lab      {seq,status,count,delay_ms}  emits ``count`` Lab state frames, seq..seq+count-1,
+  bridge/lab      {seq,status,count,delay_ms,pods}  emits ``count`` Lab state frames, seq..seq+count-1,
                                             ``delay_ms`` apart (default: back to back)
   bridge/permit   {tool,input,meta,id,options} emits a ``session/request_permission`` request and
                                             then waits (logging whatever answers it)
@@ -86,7 +86,8 @@ for line in sys.stdin:
                                 "trace": [{"tool": "shell", "status": "completed", "input": "ls", "ms": 3}],
                                 "effort_adjustable": True,
                                 "memory": params.get("memory", []),
-                            }
+                            },
+                            *params.get("pods", []),  # extra pods, e.g. a per-call subagent pod with reasoning/task
                         ],
                         "links": [{"from": "orchestrator", "to": "debugger", "kind": "delegation", "active": True, "count": 1, "label": "x"}],
                         "threat": ({"pod": "orchestrator", "tool": "shell", "score": params["score"], "confidence": 0.9, "band": "destructive", "pending": True} if "score" in params else {"pod": "orchestrator", "tool": "shell", "score": None, "confidence": None, "band": None, "pending": True}),
