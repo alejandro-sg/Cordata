@@ -1,5 +1,5 @@
 backend/.venv/
-backend/**/__pycache__/
+**/__pycache__/
 backend/.env
 # Credentials, wherever they end up: any .env (the *.example templates are kept), keys, certificates, daemon tokens.
 .env

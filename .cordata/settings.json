@@ -1,0 +1,4 @@
+{
+  "hooks.preToolUse": "scripts/guard.sh",
+  "hooks.matcher": "shell|background_shell|editor|apply_patch|write_file|file_write"
+}
