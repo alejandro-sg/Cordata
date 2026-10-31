@@ -732,6 +732,7 @@ class CordataAcpAgent:
         # The model-picked delegate (subagent_tool.py): the same gate and the same per-child hooks as the specialists.
         delegate = subagent_tool.subagent_tool(
             interventions=[handler],
+            max_depth=subagent_tool.max_depth_from(preferences),
             hooks_factory=lambda: [
                 code_nav.LargeFileHooks(code_nav.threshold_from(lambda: settings_store.current(cwd)), root=cwd),
                 lsp_bridge.LspEditHooks(), router_hooks, outcome_hooks.OutcomeHooks(session_id, subagent_tool.TOOL_NAME),

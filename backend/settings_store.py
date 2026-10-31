@@ -87,6 +87,8 @@ SCHEMA: dict[str, tuple] = {
     # (`learning.promotion`: off = never automatically, shadow = evaluate and record verdicts only, live = promote on a pass).
     "learning.reflect": ("bool",),
     "subagents.background": ("bool",),
+    # How many levels of `subagent` delegation a turn may build (subagent_tool.py): 1 = children only.
+    "subagents.maxDepth": ("float", 1.0, 3.0),
     "learning.promotion": ("enum", ("off", "shadow", "live")),
     "learning.evalTasks": ("float", 3.0, 60.0),
     # Prompt/skill optimization (optimize.py, prompts.py): draft a sharper variant of a live lesson or prompt

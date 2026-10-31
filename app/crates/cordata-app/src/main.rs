@@ -168,7 +168,7 @@ fn main() {
                 let view = cx.new(|cx| Workspace::new(
                     connection.clone(),
                     args.cwd.clone(),
-                    workspace::Launch { prompt: args.prompt.clone(), run: args.run.clone(), selftest: args.selftest && (args.prompt.is_some() || args.run.is_some()), picker: open_picker },
+                    workspace::Launch { prompt: args.prompt.clone(), run: args.run.clone(), selftest: args.selftest && (args.prompt.is_some() || args.run.is_some()), picker: open_picker, show: std::env::var("CORDATA_APP_SHOW").ok() },
                     window,
                     cx,
                 ));

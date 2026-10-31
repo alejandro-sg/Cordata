@@ -12,6 +12,10 @@ session's agent and the child — no network, no model server.
 5. Background: with checkpoints on (as the ACP session runs), a backgrounded call does not block the next pause, the
    parent keeps working, and the turn still ends with the child's answer delivered.
 6. Containment: ``subagent`` is orchestrator-only for every other sub-agent too, and its result is fenced.
+7. Nesting: a child delegates to a grandchild (its pod hangs off the child's) up to ``max_depth``, and no further; a
+   read-only child's delegate offers only read-only roles; ``subagents.maxDepth`` is clamped to 1–3.
+8. Grounded research: the researcher gets web_fetch and no write tool, and an answer that cites nothing comes back
+   marked unverified.
 
     backend/.venv/bin/python _subagent_tool_smoke_test.py
 """
@@ -65,12 +69,12 @@ def schema() -> None:
     spec = subagent_tool.subagent_tool(model_factory=Children()).tool_spec
     props = spec["inputSchema"]["json"]["properties"]
     check(spec["name"] == "subagent", "the tool is named subagent")
-    check(props["agent_type"]["enum"] == ["generalist", "explorer", "architect", "debugger"], "four roles, the specialists among them")
+    check(props["agent_type"]["enum"] == ["generalist", "explorer", "researcher", "architect", "debugger"], "five roles, the researcher and the specialists among them")
     check("change plan" in spec["description"] and "root cause" in spec["description"], "…each role described for the model")
     check(props["model"]["enum"] == ["fast", "standard", "strong"], "the model picks a tier")
     check(props["context"]["enum"] == ["none", "no_tools"], "context is none or no_tools — never all")
     check({"shell", "apply_patch", "file_read", "code_search"} <= set(props["tools"]["items"]["enum"]), "the kit is offered as a subset choice")
-    check("subagent" not in props["tools"]["items"]["enum"], "a child cannot be handed subagent")
+    check("subagent" not in props["tools"]["items"]["enum"], "subagent is not a kit choice (a child's own comes from the depth budget)")
     check("mcp_servers" not in props and "instructions" not in props, "no MCP servers and no ad-hoc system prompt")
 
 
@@ -189,6 +193,67 @@ def containment() -> None:
     check("subagent" in prompt_security._SUBAGENT_TOOLS, "its result is fenced as delegated output")
 
 
+def nesting() -> None:
+    lab = lab_module.get()
+    lab.reset()
+    children = Children(
+        [call("subagent", {"task": "find the config loader", "agent_type": "explorer"}), text("child: loader is in cfg.py:4")],
+        [text("grandchild: cfg.py:4 loads it")],
+    )
+    parent = parent_with(subagent_tool.subagent_tool(model_factory=children, max_depth=2), [call("subagent", {"task": "fix config loading"}), text("parent done")])
+    result = parent("go")
+    check(str(result).strip() == "parent done", "a two-level delegation finishes")
+    check([role for _, role in children.asked] == ["generalist", "explorer"], f"the child delegated to a grandchild ({children.asked})")
+    check("subagent" in children.models[0].calls[0]["tools"], "a child above the last level has a subagent tool")
+    check("subagent" not in children.models[1].calls[0]["tools"], "…the last level has none")
+    grandchild = next(p for p in lab.pods.values() if p.name.startswith("explorer-"))
+    child = next(p for p in lab.pods.values() if p.name.startswith("generalist-"))
+    check(grandchild.parent == child.name and child.parent == "orchestrator", "the grandchild's pod hangs off the child's in the Lab")
+    results = [b["toolResult"] for m in parent.messages for b in m["content"] if "toolResult" in b]
+    check(results and "loader is in cfg.py:4" in results[-1]["content"][0]["text"], "the child's answer, built on the grandchild's, reaches the parent")
+
+    # The gate holds two levels down: a grandchild's shell call pauses the top parent, and the answer reaches it.
+    gate = AskForShell()
+    kids = Children([call("subagent", {"task": "run it", "agent_type": "debugger"}), text("child relays: ok")], [call("shell", {"command": "echo deep-ok"}), text("grandchild ran it")])
+    top = parent_with(subagent_tool.subagent_tool(interventions=[gate], model_factory=kids, max_depth=2), [call("subagent", {"task": "delegate"}), text("parent done")])
+    paused = top("go")
+    check(paused.stop_reason == "interrupt" and len(gate.asked) == 1 and "deep-ok" in gate.asked[0], "a grandchild's shell call asks through the session's gate and pauses the top")
+    done = top([{"interruptResponse": {"interruptId": paused.interrupts[0].id, "response": True}}])
+    check(str(done).strip() == "parent done" and len(kids.models) == 2, "the resume reaches the same grandchild — nothing rebuilt")
+    check("deep-ok" in (kids.models[1].calls[-1]["last_text"] or ""), "…and the approved command ran there")
+
+    # The depth guard: a child at the last level that tries anyway (a tool it does not have) cannot build another level.
+    deep = Children([call("subagent", {"task": "again"}), text("did it myself")], [text("never built")])
+    parent_with(subagent_tool.subagent_tool(model_factory=deep, max_depth=1), [call("subagent", {"task": "x"}), text("ok")])("go")
+    check(len(deep.models) == 1, "max_depth=1: children only, no grandchild is built")
+
+    reader = Children([call("subagent", {"task": "dig"}), text("found")], [text("dug a.py:1")])
+    parent_with(subagent_tool.subagent_tool(model_factory=reader, max_depth=2), [call("subagent", {"task": "where", "agent_type": "explorer"}), text("ok")])("go")
+    nested = subagent_tool.subagent_tool(model_factory=Children(), read_only=True).tool_spec["inputSchema"]["json"]["properties"]
+    check(set(nested["agent_type"]["enum"]) == {"explorer", "researcher", "architect"}, f"a read-only child delegates only to read-only roles ({nested['agent_type']['enum']})")
+    check(not set(nested["tools"]["items"]["enum"]) & subagent_tool.WRITE_TOOLS, "…with no write tool on offer")
+    check(reader.asked[1][1] == "explorer" and not set(reader.models[1].calls[0]["tools"]) & subagent_tool.WRITE_TOOLS, "an explorer's grandchild is an explorer, read-only")
+    check([subagent_tool.max_depth_from(p) for p in ({}, {"subagents.maxDepth": 9}, {"subagents.maxDepth": 0.4}, {"subagents.maxDepth": "x"})] == [2, 3, 1, 2], "maxDepth defaults to 2 and is clamped")
+    lab.reset()
+
+
+def research() -> None:
+    cited = Children([text("Strands caps depth on child state: subagent.py:529 and https://strandsagents.com/latest/")])
+    parent = parent_with(subagent_tool.subagent_tool(model_factory=cited), [call("subagent", {"task": "how is depth bounded", "agent_type": "researcher"}), text("ok")])
+    parent("go")
+    tools = set(cited.models[0].calls[0]["tools"])
+    check("web_fetch" in tools and not tools & subagent_tool.WRITE_TOOLS, f"the researcher reads the web and writes nothing ({sorted(tools)})")
+    check("Sources" in (cited.models[0].calls[0]["system_prompt"] or ""), "…under a prompt that demands sources")
+    answer = [b["toolResult"]["content"][0]["text"] for m in parent.messages for b in m["content"] if "toolResult" in b][-1]
+    check(subagent_tool.UNGROUNDED_NOTE not in answer, "a cited answer passes as it is")
+
+    bare = Children([text("Depth is probably bounded somewhere.")])
+    parent = parent_with(subagent_tool.subagent_tool(model_factory=bare), [call("subagent", {"task": "how is depth bounded", "agent_type": "researcher"}), text("ok")])
+    parent("go")
+    answer = [b["toolResult"]["content"][0]["text"] for m in parent.messages for b in m["content"] if "toolResult" in b][-1]
+    check(subagent_tool.UNGROUNDED_NOTE in answer, f"an answer citing nothing comes back marked unverified ({answer!r})")
+
+
 def main() -> None:
     schema()
     gate()
@@ -196,6 +261,8 @@ def main() -> None:
     watching()
     background()
     containment()
+    nesting()
+    research()
     print("\nPASS: subagent delegates through the session's gate, roles hold their kits, every call is watchable, background calls finish inside the turn")
 
 

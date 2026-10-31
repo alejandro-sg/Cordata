@@ -17,7 +17,7 @@ A map, not a manual: what runs where, how a turn flows, and which document holds
                                  ▼
  ┌──────────────────────── acp_server.py (one session's agent process) ─────────────────────────┐
  │ Laya router (route · risk · complexity, local model) ──► orchestrator Strands Agent          │
- │   tools · subagent (roles, Lab pod per call) · orchestrate · MCP plugins · LSP bridge      │
+ │   tools · subagent (roles, nested, Lab pod per call) · orchestrate · MCP plugins · LSP     │
  │   _ApprovalHandler: preflight → deny rules → vault → mode → Laya Guard → ask / proceed        │
  │   checkpoints (shadow git) · self-heal · outcomes / learning · rejection memory · KG sink     │
  └──────────────────────────────────────────────────────────────────────────────────────────────┘

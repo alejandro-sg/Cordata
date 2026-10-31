@@ -45,10 +45,10 @@ pub struct Terminal {
 
 impl Terminal {
     pub fn new(window: &mut Window, cx: &mut Context<Workspace>) -> Self {
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Run command in project… (e.g. git status, cargo test)"));
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Run a command in the project…"));
         Self {
             lines: vec![TerminalLine {
-                text: "Cordata Terminal — commands run in the active project directory.".into(),
+                text: "Commands run in the project folder, with your own rights.".into(),
                 kind: LineKind::Output,
             }],
             input,
@@ -87,17 +87,22 @@ impl Workspace {
             .bg(crate::theme::line(cx, cordata_theme::tokens::FILL_FAINT))
             .border_1()
             .border_color(crate::theme::line(cx, cordata_theme::tokens::LINE_DEFAULT))
+            .gap(px(8.))
             .child(
                 div()
+                    .flex_1()
+                    .min_w_0()
                     .flex()
                     .items_center()
                     .gap(px(8.))
                     .text_xs()
                     .child(
                         div()
+                            .min_w_0()
+                            .truncate()
                             .font_family(crate::theme::mono(cx))
                             .text_color(color(cx, Role::TextDim))
-                            .child(SharedString::from(format!("cwd: {}", shown(&self.cwd.display().to_string())))),
+                            .child(SharedString::from(shown(&super::tilde(&self.cwd)))),
                     )
                     .when(term.running, |el| {
                         el.child(
@@ -119,6 +124,7 @@ impl Workspace {
             )
             .child(
                 div()
+                    .flex_shrink_0()
                     .flex()
                     .items_center()
                     .gap(px(4.))
@@ -181,12 +187,13 @@ impl Workspace {
                 div()
                     .id(("term-line", ix))
                     .flex()
+                    .min_w_0()
                     .gap(px(4.))
                     .text_xs()
                     .font_family(crate::theme::mono(cx))
                     .text_color(color(cx, role))
-                    .child(prefix)
-                    .child(SharedString::from(line.text.clone()))
+                    .child(div().flex_shrink_0().child(prefix))
+                    .child(div().flex_1().min_w_0().child(SharedString::from(line.text.clone())))
             });
 
             div()
@@ -209,7 +216,7 @@ impl Workspace {
             .flex()
             .items_center()
             .gap(px(6.))
-            .child(div().flex_1().child(Input::new(&term.input)))
+            .child(div().flex_1().min_w_0().child(Input::new(&term.input)))
             .child(
                 Button::new("term-run-btn")
                     .label("Run")
@@ -225,8 +232,10 @@ impl Workspace {
 
         div()
             .id("terminal-dock-pane")
-            .flex_1()
+            .size_full()
             .min_h_0()
+            .min_w_0()
+            .overflow_hidden()
             .flex()
             .flex_col()
             .gap(px(8.))
@@ -252,13 +261,14 @@ impl Workspace {
         self.terminal.running_cancel = Some(cancel.clone());
 
         let cwd = self.cwd.clone();
+        let stop = cancel.clone();
         let background = cx.background_executor().clone();
 
         cx.spawn(async move |this, cx| {
             let start = Instant::now();
             let outcome = background
                 .spawn(async move {
-                    cordata_view::shell::run(&command_str, &cwd, std::time::Duration::from_secs(120))
+                    cordata_view::shell::run_cancellable(&command_str, &cwd, std::time::Duration::from_secs(120), &stop)
                 })
                 .await;
 
@@ -272,7 +282,9 @@ impl Workspace {
                     this.terminal.append(sanitized, LineKind::Output);
                 }
 
-                if outcome.timed_out {
+                if cancel.load(Ordering::Relaxed) {
+                    this.terminal.append("Stopped.".into(), LineKind::Error);
+                } else if outcome.timed_out {
                     this.terminal.append("Command timed out after 120s".into(), LineKind::Error);
                 } else if outcome.code == Some(0) {
                     this.terminal.append(format!("Process completed in {:.2}s", start.elapsed().as_secs_f32()), LineKind::Success);
@@ -289,10 +301,8 @@ impl Workspace {
 
     pub(super) fn stop_terminal_command(&mut self, cx: &mut Context<Self>) {
         if let Some(cancel) = &self.terminal.running_cancel {
+            // The runner kills the process and reports back; the line is written then.
             cancel.store(true, Ordering::Relaxed);
-            self.terminal.append("Interrupt signal sent.".into(), LineKind::Error);
-            self.terminal.running = false;
-            self.terminal.running_cancel = None;
             cx.notify();
         }
     }

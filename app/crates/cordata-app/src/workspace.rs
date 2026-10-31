@@ -277,6 +277,8 @@ pub struct Launch {
     pub selftest: bool,
     /// Open the project picker first (Settings → Open on launch).
     pub picker: bool,
+    /// `CORDATA_APP_SHOW`: open one surface at launch for layout checks — `terminal`, `about`, or `settings:<section>`.
+    pub show: Option<String>,
 }
 
 #[derive(Default)]
@@ -322,7 +324,7 @@ pub fn cordata_home() -> PathBuf {
 
 impl Workspace {
     pub fn new(connection: Connection, cwd: PathBuf, launch: Launch, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let Launch { prompt: initial_prompt, run: start_run, selftest, picker } = launch;
+        let Launch { prompt: initial_prompt, run: start_run, selftest, picker, show } = launch;
         let prefs = cx.try_global::<Prefs>().cloned().unwrap_or_default();
         let composer = cx.new(|cx| TextareaState::new(window, cx).auto_grow(2, 10).submit_on_enter(prefs.send_with != "cmd-enter").placeholder("Ask anything, @mention files, or type / for commands…"));
         let display = cx.try_global::<Display>().copied().unwrap_or_default();
@@ -482,7 +484,27 @@ impl Workspace {
         if picker {
             this.open_overlay(Overlay::Picker, window, cx);
         }
+        if let Some(show) = show {
+            this.show_at_launch(&show, window, cx);
+        }
         this
+    }
+
+    fn show_at_launch(&mut self, what: &str, window: &mut Window, cx: &mut Context<Self>) {
+        match what.split_once(':') {
+            Some(("settings", section)) => {
+                if let Some(&found) = settings_modal::Section::ALL.iter().find(|s| s.matches(section)) {
+                    self.settings_section = found;
+                }
+                self.open_overlay(Overlay::Settings, window, cx);
+            }
+            _ if what == "about" => self.open_overlay(Overlay::About, window, cx),
+            _ if what == "terminal" => {
+                self.panel_open = true;
+                self.dock_tab = DockTab::Terminal;
+            }
+            _ => {}
+        }
     }
 
     /// The quick-ask combination (prefs are normalised on load, so this parses).

@@ -65,7 +65,7 @@ impl Section {
     fn keywords(self) -> &'static str {
         match self {
             Section::General => "launch startup quick ask hotkey send enter cost notifications sound",
-            Section::Models => "model default fast thinking tokens compact orchestrator routing completions ollama vision image screenshot cloud",
+            Section::Models => "model default fast thinking tokens compact orchestrator routing completions ollama vision image screenshot cloud subagent sub-agent delegation depth research background",
             Section::Permissions => "allow commands trust project approvals mode",
             Section::Customize => "instructions prompt commands skills mcp",
             Section::Automations => "schedule cron daemon",
@@ -567,6 +567,9 @@ impl Workspace {
             |this, v, cx| this.set_user_setting("orchestrator.dispatch", json!(v), cx),
             cx,
         );
+        let depth = self.value("subagents.maxDepth").and_then(Value::as_f64).map(|v| format!("{v:.0}")).unwrap_or_else(|| "2".into());
+        let depth = self.segmented("subagent-depth", &[("1", "1"), ("2", "2"), ("3", "3")], &depth, |this, v, cx| this.set_user_setting("subagents.maxDepth", json!(v.parse::<f64>().unwrap_or(2.0)), cx), cx);
+        let background = self.toggle("subagent-background", self.value("subagents.background").and_then(Value::as_bool).unwrap_or(true), "Run sub-agents in the background", |this, on, cx| this.set_user_setting("subagents.background", json!(on), cx), cx);
         let mut local = vec![(String::new(), "off".to_owned())];
         local.extend(self.ollama_models.iter().map(|m| (m.clone(), m.clone())));
         let completion = self.select(Select::CompletionModel, &self.prefs.completion_model.clone(), local, cx);
@@ -581,13 +584,18 @@ impl Workspace {
         vec![
             setting_row("Default model", "Used by new conversations; the header's model chip changes the current one.", default_model, cx),
             setting_row("Orchestrator routing", "Auto Mode scores Claude, Antigravity and zero-download Ollama :cloud models by API cost, real context window, task capabilities and per-step RLAIF.", dispatch, cx),
-            setting_row("Inline completions", "Ghost text in the editor from a local Ollama model (a coder model with fill-in-the-middle, e.g. qwen2.5-coder). Code stays on this Mac. Tab accepts.", completion, cx),
-            setting_row("Vision model", "Reads attached images and menu-bar screenshots. Session model: Claude and Ollama :cloud vision models see attachments themselves; any other model needs one named here.", vision, cx),
-            setting_row("Send images to cloud vision models", "A :cloud vision model runs off this Mac: images go to it only with this on (capture.screenshotCloud).", vision_cloud, cx),
             setting_row("Fast model", "Titles, summaries and compaction.", fast, cx),
             setting_row("Extended thinking", "Anthropic models only. Auto: adaptive thinking (the model decides). Always: adaptive at high effort every turn.", thinking, cx),
             setting_row("Max output tokens", "The longest single reply.", max_tokens, cx),
             setting_row("Auto-compact at", "Summarise older turns when the context window is this full (unset: 70%).", compact, cx),
+            sub_heading("vision", cx),
+            setting_row("Vision model", "Reads attached images and menu-bar screenshots. Session model: Claude and Ollama :cloud vision models see attachments themselves; any other model needs one named here.", vision, cx),
+            setting_row("Send images to cloud vision models", "A :cloud vision model runs off this Mac: images go to it only with this on (capture.screenshotCloud).", vision_cloud, cx),
+            sub_heading("sub-agents", cx),
+            setting_row("Delegation depth", "How many levels of sub-agents a turn may build: 1 is children only; 2 lets a child hand part of its task to its own sub-agent. Read-only roles (explorer, researcher, architect) only delegate to read-only roles, and every level asks through the same approvals.", depth, cx),
+            setting_row("Background sub-agents", "The main agent keeps working while up to 3 sub-agents run; the turn waits for their answers before it ends.", background, cx),
+            sub_heading("editor", cx),
+            setting_row("Inline completions", "Ghost text in the editor from a local Ollama model (a coder model with fill-in-the-middle, e.g. qwen2.5-coder). Code stays on this Mac. Tab accepts.", completion, cx),
         ]
     }
 
@@ -764,7 +772,7 @@ impl Workspace {
             setting_row("Clear conversation history", "Deletes every conversation and its saved history from this Mac, in every project. Running ones are kept.", self.clear_history_button(cx), cx),
             setting_row("Reset all settings", "Restores this window's preferences (theme, layout, recents). Harness settings files are untouched.", ui::button("reset-prefs", "Reset…", Kind::Danger, cx).on_click(cx.listener(|this, _, window, cx| this.ask_confirm(Confirm::ResetPrefs, window, cx))).into_any_element(), cx),
             sub_heading("harness", cx),
-            div().pt(px(8.)).h(px(520.)).child(self.settings_panel(cx)).into_any_element(),
+            div().pt(px(8.)).child(self.settings_panel(cx)).into_any_element(),
         ]
     }
 

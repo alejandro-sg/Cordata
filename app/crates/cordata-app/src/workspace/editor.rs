@@ -690,7 +690,7 @@ impl Workspace {
 
 /// A frame for one of the dock's panes.
 pub(super) fn pane(title: &str, body: AnyElement, cx: &mut Context<Workspace>) -> AnyElement {
-    div().flex().flex_col().size_full().min_h_0().gap(px(6.)).child(hud::label(title, cx)).child(div().flex_1().min_h_0().child(body)).into_any_element()
+    div().flex().flex_col().size_full().min_h_0().min_w_0().gap(px(6.)).child(hud::label(title, cx)).child(div().flex_1().min_h_0().min_w_0().flex().flex_col().child(body)).into_any_element()
 }
 
 #[cfg(test)]

@@ -346,7 +346,13 @@ pub fn tracked_text(text: &str, tracking: Tracking, upper: bool) -> String {
     let mut out = String::with_capacity(text.len() * 4);
     let mut previous: Option<char> = None;
     for ch in text.chars() {
-        if previous.is_some_and(|p| p != ' ') && ch != ' ' {
+        if ch == ' ' {
+            // A plain space is about as wide as the letter gaps around it: words would run together.
+            out.push('\u{2002}');
+            previous = Some(ch);
+            continue;
+        }
+        if previous.is_some_and(|p| p != ' ') {
             out.push_str(gap);
         }
         previous = Some(ch);
@@ -444,7 +450,7 @@ mod tests {
 
     #[test]
     fn tracking_spaces_letters_not_words() {
-        assert_eq!(tracked_text("ab c", Tracking::Label, true), "A\u{2009}B C");
+        assert_eq!(tracked_text("ab c", Tracking::Label, true), "A\u{2009}B\u{2002}C");
         assert_eq!(tracked_text("", Tracking::Logo, false), "");
     }
 }

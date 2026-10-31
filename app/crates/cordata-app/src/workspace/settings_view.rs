@@ -252,60 +252,21 @@ impl Workspace {
         let view = &self.settings_view;
         const SUB_TABS: [SettingsSubTab; 3] = [SettingsSubTab::Trust, SettingsSubTab::Config, SettingsSubTab::Doctor];
 
-        let sub_nav = div()
-            .flex()
-            .items_center()
-            .gap(px(6.))
-            .border_b_1()
-            .border_color(color(cx, Role::Hairline))
-            .pb(px(6.))
-            .children(SUB_TABS.iter().map(|&tab| {
-                let selected = view.sub_tab == tab;
-                let label = match tab {
-                    SettingsSubTab::Trust => {
-                        if view.trusted {
-                            "Trust & Rules ✓"
-                        } else {
-                            "Trust & Rules ⚠"
-                        }
-                    }
-                    SettingsSubTab::Config => "Settings",
-                    SettingsSubTab::Doctor => "Doctor",
-                };
-                div()
-                    .id(("settings-subtab", tab as usize))
-                    .px(px(6.))
-                    .py(px(2.))
-                    .rounded(px(2.))
-                    .cursor_pointer()
-                    .text_xs()
-                    .font_family(crate::theme::mono(cx))
-                    .text_color(color(cx, if selected { Role::Accent } else { Role::TextSecondary }))
-                    .when(selected, |el| el.bg(tint(cx, Role::Accent, 0.1)))
-                    .hover(|el| el.text_color(color(cx, Role::Text)))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.settings_view.sub_tab = tab;
-                        if tab == SettingsSubTab::Doctor && this.settings_view.doctor_checks.is_empty() {
-                            this.run_doctor(cx);
-                        }
-                        cx.notify();
-                    }))
-                    .child(SharedString::from(label))
-            }));
-
-        let notice_element = view.notice.as_ref().map(|text| {
-            let role = if view.notice_error { Role::Danger } else { Role::Ok };
-            div()
-                .px(px(8.))
-                .py(px(4.))
-                .rounded(px(2.))
-                .bg(tint(cx, role, 0.12))
-                .border_1()
-                .border_color(tint(cx, role, 0.3))
-                .text_xs()
-                .text_color(color(cx, role))
-                .child(SharedString::from(text.clone()))
-        });
+        let sub_nav = crate::ui::segmented_row(cx).children(SUB_TABS.iter().map(|&tab| {
+            let label = match tab {
+                SettingsSubTab::Trust if view.trusted => "Trust & rules ✓",
+                SettingsSubTab::Trust => "Trust & rules ⚠",
+                SettingsSubTab::Config => "Raw settings",
+                SettingsSubTab::Doctor => "Doctor",
+            };
+            crate::ui::segment(("settings-subtab", tab as usize), label, view.sub_tab == tab, cx).on_click(cx.listener(move |this, _, _, cx| {
+                this.settings_view.sub_tab = tab;
+                if tab == SettingsSubTab::Doctor && this.settings_view.doctor_checks.is_empty() {
+                    this.run_doctor(cx);
+                }
+                cx.notify();
+            }))
+        }));
 
         let body = match view.sub_tab {
             SettingsSubTab::Trust => self.trust_subpanel(cx),
@@ -313,19 +274,8 @@ impl Workspace {
             SettingsSubTab::Doctor => self.doctor_subpanel(cx),
         };
 
-        div()
-            .id("settings-scroll")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .gap(px(10.))
-            .pb(px(16.))
-            .child(sub_nav)
-            .when_some(notice_element, |this, el| this.child(el))
-            .child(body)
-            .into_any_element()
+        // Inline in the settings body, which scrolls; its notices show at the top of that body.
+        div().flex().flex_col().gap(px(12.)).child(div().flex().child(sub_nav)).child(body).into_any_element()
     }
 
     // --------------------------------------------------------------------------------- Trust & Rules

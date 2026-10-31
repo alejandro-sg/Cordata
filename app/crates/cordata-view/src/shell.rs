@@ -7,6 +7,7 @@
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// How much of the output is kept (the end of it: that is where errors are).
@@ -29,6 +30,15 @@ pub fn run(command: &str, cwd: &Path, timeout: Duration) -> Outcome {
 
 /// `run`, keeping the end of up to `keep` bytes of output (a diff review wants far more than a `!command` echo).
 pub fn run_keeping(command: &str, cwd: &Path, timeout: Duration, keep: usize) -> Outcome {
+    run_inner(command, cwd, timeout, keep, None)
+}
+
+/// `run`, stopped early (killed, `code: None`) once `cancel` is set — a Stop button that really stops.
+pub fn run_cancellable(command: &str, cwd: &Path, timeout: Duration, cancel: &AtomicBool) -> Outcome {
+    run_inner(command, cwd, timeout, KEEP_BYTES, Some(cancel))
+}
+
+fn run_inner(command: &str, cwd: &Path, timeout: Duration, keep: usize, cancel: Option<&AtomicBool>) -> Outcome {
     let spawned = Command::new("sh")
         .arg("-c")
         .arg(format!("exec 2>&1\n{command}"))
@@ -65,6 +75,11 @@ pub fn run_keeping(command: &str, cwd: &Path, timeout: Duration, keep: usize) ->
     let (code, timed_out) = loop {
         match child.try_wait() {
             Ok(Some(status)) => break (status.code(), false),
+            Ok(None) if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break (None, false);
+            }
             Ok(None) if started.elapsed() >= timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -101,6 +116,20 @@ mod tests {
         std::fs::write(dir.path().join("marker.txt"), "x").unwrap();
         let out = run("ls", dir.path(), Duration::from_secs(5));
         assert!(out.output.contains("marker.txt"), "{out:?}");
+    }
+
+    #[test]
+    fn a_cancelled_command_is_killed() {
+        let dir = tempfile::tempdir().unwrap();
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let flag = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            flag.store(true, Ordering::Relaxed);
+        });
+        let started = Instant::now();
+        let out = run_cancellable("sleep 30", dir.path(), Duration::from_secs(60), &cancel);
+        assert!(started.elapsed() < Duration::from_secs(5) && out.code.is_none() && !out.timed_out, "{out:?}");
     }
 
     #[test]
