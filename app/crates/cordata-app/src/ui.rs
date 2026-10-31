@@ -7,32 +7,32 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{AnyView, App, Div, ElementId, FontWeight, InteractiveElement as _, ParentElement, SharedString, Stateful, StatefulInteractiveElement as _, Styled, Window, div, px, relative};
 use gpui_component::tooltip::Tooltip;
 
-use crate::theme::{amber, amber_glow, c, ca, inset_ring, line, mono, teal, tk};
+use crate::theme::{amber, amber_glow, c, ca, inset_ring, line, mono, sans, teal, tk};
 
-/// `PROJECT`: 10px mono, tracked capitals, the label colour.
+/// `PROJECT`: 10.5px semibold sans, subtly tracked capitals, the label colour.
 pub fn section_label(text: &str, cx: &App) -> Div {
     div()
         .flex_shrink_0()
         .whitespace_nowrap()
-        .font_family(mono(cx))
-        .text_size(px(t::TEXT_LABEL))
-        .font_weight(FontWeight::MEDIUM)
+        .font_family(sans(cx))
+        .text_size(px(t::TEXT_STATUS))
+        .font_weight(FontWeight::SEMIBOLD)
         .text_color(c(tk(cx).text_label))
         .child(SharedString::from(tracked_text(text, Tracking::Label, true)))
 }
 
-/// `// MISSION CONTROL`: a primary panel heading, the slashes in amber.
+/// `◆ MISSION CONTROL`: a primary panel heading with a subtle amber diamond marker.
 pub fn heading(text: &str, cx: &App) -> Div {
     div()
         .flex()
         .items_center()
         .gap(px(6.))
         .whitespace_nowrap()
-        .font_family(mono(cx))
-        .text_size(px(t::TEXT_LABEL))
-        .font_weight(FontWeight::MEDIUM)
-        .child(div().text_color(c(tk(cx).amber)).child("//"))
-        .child(div().text_color(c(tk(cx).text_secondary)).child(SharedString::from(tracked_text(text, Tracking::Label, true))))
+        .font_family(sans(cx))
+        .text_size(px(t::TEXT_META))
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(div().text_color(c(tk(cx).amber)).child("◆"))
+        .child(div().text_color(c(tk(cx).text_primary)).child(SharedString::from(tracked_text(text, Tracking::Label, true))))
 }
 
 /// Small mono meta text (shortcut hints, ages, counts).
@@ -120,7 +120,7 @@ pub fn badge(text: &str, tone: Tone, cx: &App) -> Div {
         .text_size(px(t::TEXT_TAG))
         .font_weight(FontWeight::MEDIUM)
         .text_color(ink)
-        .child(SharedString::from(tracked_text(text, Tracking::Label, true)))
+        .child(SharedString::from(text.to_ascii_uppercase()))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

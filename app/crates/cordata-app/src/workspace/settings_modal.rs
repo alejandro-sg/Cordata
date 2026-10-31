@@ -61,6 +61,28 @@ impl Section {
         }
     }
 
+    /// Words the settings search matches beyond the title and description: the rows each section holds.
+    fn keywords(self) -> &'static str {
+        match self {
+            Section::General => "launch startup quick ask hotkey send enter cost notifications sound",
+            Section::Models => "model default fast thinking tokens compact orchestrator routing completions ollama vision image screenshot cloud",
+            Section::Permissions => "allow commands trust project approvals mode",
+            Section::Customize => "instructions prompt commands skills mcp",
+            Section::Automations => "schedule cron daemon",
+            Section::Appearance => "theme dark light haze density font size",
+            Section::Shortcuts => "keys keyboard bindings hotkeys",
+            Section::Connections => "hub mcp servers plugins",
+            Section::Account => "api key anthropic sign out usage keychain",
+            Section::Advanced => "logs diagnostics reset clear history",
+        }
+    }
+
+    /// Whether every word of `query` appears in this section's title, description or keywords.
+    pub fn matches(self, query: &str) -> bool {
+        let haystack = format!("{} {} {}", self.title(), self.description(), self.keywords()).to_lowercase();
+        query.split_whitespace().all(|word| haystack.contains(&word.to_lowercase()))
+    }
+
     fn description(self) -> &'static str {
         match self {
             Section::General => "Launch, sending and notifications.",
@@ -87,17 +109,22 @@ pub enum Select {
     CodeFont,
     CompletionModel,
     QuickAskKey,
+    VisionModel,
 }
+
+/// The Vision Model choices: Ollama `:cloud` models that read images (the backend's `CLOUD_VISION_MODELS`).
+pub const VISION_MODELS: [&str; 3] = ["mistral-large-4:cloud", "gemma4:31b:cloud", "minimax-m3.1-flash:cloud"];
 
 /// Its keys are the person's choice, shown live rather than from this table.
 const QUICK_ASK_SHORTCUT: &str = "Quick ask, from any app";
 
 /// The read-only shortcut reference.
-pub const SHORTCUTS: [(&str, &str); 16] = [
+pub const SHORTCUTS: [(&str, &str); 18] = [
     ("Command palette", "⌘K"),
     ("Switch project", "⌘O"),
     ("New conversation", "⌘N"),
     ("Switch conversation", "⌘1–9"),
+    ("Toggle project sidebar", "⌘B"),
     ("Toggle side panel", "⌘\\"),
     ("Terminal", "⌃`"),
     ("Settings", "⌘,"),
@@ -110,6 +137,7 @@ pub const SHORTCUTS: [(&str, &str); 16] = [
     (QUICK_ASK_SHORTCUT, "⌃⌥Space"),
     ("Find a file", "⌘P"),
     ("Save the open file", "⌘S"),
+    ("Attach files or images", "⇧⌘A"),
 ];
 
 impl Workspace {
@@ -146,12 +174,25 @@ impl Workspace {
         }
     }
 
+    /// A new search: when the open section no longer matches, show the first one that does.
+    pub(super) fn on_settings_search(&mut self, query: &str, cx: &mut Context<Self>) {
+        if !self.settings_section.matches(query)
+            && let Some(&first) = Section::ALL.iter().find(|s| s.matches(query))
+        {
+            self.settings_section = first;
+            self.open_select = None;
+            self.on_settings_section(cx);
+        }
+        cx.notify();
+    }
+
     pub(super) fn settings_modal(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let tk = tk(cx);
         let size = window.viewport_size();
         let w = t::SETTINGS_W.min(size.width.as_f32() - 48.);
         let h = t::SETTINGS_H.min(size.height.as_f32() - 48.);
-        let nav: Vec<AnyElement> = Section::ALL.iter().map(|&section| {
+        let query = self.settings_search.read(cx).value().to_string();
+        let nav: Vec<AnyElement> = Section::ALL.iter().filter(|s| s.matches(&query)).map(|&section| {
             let active = self.settings_section == section;
             let hover = line(cx, t::HOVER);
             div()
@@ -234,6 +275,24 @@ impl Workspace {
                             .border_r_1()
                             .border_color(line(cx, t::LINE_DEFAULT))
                             .child(div().h(px(t::SETTINGS_HEADER_H)).flex().items_center().px(px(16.)).child(ui::heading("settings", cx)))
+                            .child(
+                                div()
+                                    .mx(px(8.))
+                                    .mb(px(8.))
+                                    .h(px(28.))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.))
+                                    .px(px(8.))
+                                    .rounded(px(t::RADIUS_CONTROL))
+                                    .bg(c(tk.bg_input))
+                                    .border_1()
+                                    .border_color(line(cx, t::LINE_CONTROL_STRONG))
+                                    .text_size(px(t::TEXT_UI))
+                                    .child(div().text_color(c(tk.text_muted)).child("⌕"))
+                                    .child(div().flex_1().min_w_0().child(Input::new(&self.settings_search).appearance(false).aria_label("Search settings"))),
+                            )
+                            .when(nav.is_empty(), |col| col.child(div().px(px(16.)).py(px(6.)).child(ui::meta("No settings match.", cx))))
                             .child(div().id("settings-nav-list").role(gpui::Role::TabList).flex().flex_col().gap(px(2.)).px(px(8.)).children(nav))
                             .child(div().flex_1())
                             .child(div().p(px(16.)).flex().flex_col().gap(px(2.)).child(ui::meta(SharedString::from(format!("Cordata v{}", env!("CARGO_PKG_VERSION"))), cx)).child(ui::meta("Changes save automatically", cx))),
@@ -372,6 +431,7 @@ impl Workspace {
             Select::MaxTokens if value.is_empty() => "16384".into(),
             Select::CodeFont => format!("{value} px"),
             Select::CompletionModel if value.is_empty() => "off".into(),
+            Select::VisionModel if value.is_empty() => "session model".into(),
             Select::QuickAskKey => crate::platform::Combo::parse(value).map(|c| c.label).unwrap_or_else(|_| value.into()),
             _ if value.is_empty() => "—".into(),
             _ => value.into(),
@@ -404,6 +464,7 @@ impl Workspace {
                     self.settings_view.set_notice(format!("{taken} is taken by another app; kept {}.", self.quick_ask_combo().label), true);
                 }
             }
+            Select::VisionModel => self.set_user_setting("capture.visionModel", json!(value), cx),
             Select::CompletionModel => {
                 self.prefs.completion_model = value;
                 self.save_prefs(cx);
@@ -509,10 +570,20 @@ impl Workspace {
         let mut local = vec![(String::new(), "off".to_owned())];
         local.extend(self.ollama_models.iter().map(|m| (m.clone(), m.clone())));
         let completion = self.select(Select::CompletionModel, &self.prefs.completion_model.clone(), local, cx);
+        let vision_value = self.value_str("capture.visionModel");
+        let mut vision = vec![(String::new(), "session model".to_owned())];
+        vision.extend(VISION_MODELS.iter().map(|m| ((*m).to_owned(), (*m).to_owned())));
+        if !vision_value.is_empty() && !VISION_MODELS.contains(&vision_value.as_str()) {
+            vision.push((vision_value.clone(), vision_value.clone()));
+        }
+        let vision = self.select(Select::VisionModel, &vision_value, vision, cx);
+        let vision_cloud = self.toggle("vision-cloud", self.value("capture.screenshotCloud").and_then(Value::as_bool).unwrap_or(false), "Send images to cloud vision models", |this, on, cx| this.set_user_setting("capture.screenshotCloud", json!(on), cx), cx);
         vec![
             setting_row("Default model", "Used by new conversations; the header's model chip changes the current one.", default_model, cx),
             setting_row("Orchestrator routing", "Auto Mode scores Claude, Antigravity and zero-download Ollama :cloud models by API cost, real context window, task capabilities and per-step RLAIF.", dispatch, cx),
             setting_row("Inline completions", "Ghost text in the editor from a local Ollama model (a coder model with fill-in-the-middle, e.g. qwen2.5-coder). Code stays on this Mac. Tab accepts.", completion, cx),
+            setting_row("Vision model", "Reads attached images and menu-bar screenshots. Session model: Claude and Ollama :cloud vision models see attachments themselves; any other model needs one named here.", vision, cx),
+            setting_row("Send images to cloud vision models", "A :cloud vision model runs off this Mac: images go to it only with this on (capture.screenshotCloud).", vision_cloud, cx),
             setting_row("Fast model", "Titles, summaries and compaction.", fast, cx),
             setting_row("Extended thinking", "Anthropic models only. Auto: adaptive thinking (the model decides). Always: adaptive at high effort every turn.", thinking, cx),
             setting_row("Max output tokens", "The longest single reply.", max_tokens, cx),

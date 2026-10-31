@@ -289,6 +289,153 @@ pub fn take_hotkey() -> bool {
     }
 }
 
+#[cfg(target_os = "macos")]
+#[link(name = "PDFKit", kind = "framework")]
+unsafe extern "C" {}
+
+/// Extract `(page_count, text)` from a PDF on macOS via Apple's native `PDFKit` (`PDFDocument`).
+#[cfg(target_os = "macos")]
+pub fn extract_pdf_text(path: &std::path::Path) -> Option<(usize, String)> {
+    use objc2::msg_send;
+    use objc2::rc::autoreleasepool;
+    use objc2::runtime::{AnyClass, AnyObject};
+    use objc2_foundation::NSString;
+
+    let path_str = path.to_str()?;
+    autoreleasepool(|_| unsafe {
+        let url_cls = AnyClass::get(c"NSURL")?;
+        let pdf_cls = AnyClass::get(c"PDFDocument")?;
+        let ns_path = NSString::from_str(path_str);
+        let url: *mut AnyObject = msg_send![url_cls, fileURLWithPath: &*ns_path];
+        if url.is_null() {
+            return None;
+        }
+        let alloc: *mut AnyObject = msg_send![pdf_cls, alloc];
+        if alloc.is_null() {
+            return None;
+        }
+        let doc: *mut AnyObject = msg_send![alloc, initWithURL: url];
+        if doc.is_null() {
+            return None;
+        }
+        let pages: usize = msg_send![doc, pageCount];
+        let raw_text: *const NSString = msg_send![doc, string];
+        let text = if raw_text.is_null() { String::new() } else { (*raw_text).to_string() };
+        let _: () = msg_send![doc, release];
+        Some((pages, text))
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn extract_pdf_text(_path: &std::path::Path) -> Option<(usize, String)> {
+    None
+}
+
+/// Convert in-memory raster image bytes (TIFF, BMP, HEIC, ICO, etc.) to PNG via AppKit `NSBitmapImageRep`.
+#[cfg(target_os = "macos")]
+pub fn image_bytes_to_png(bytes: &[u8]) -> Option<Vec<u8>> {
+    use std::ffi::c_void;
+    use objc2::msg_send;
+    use objc2::rc::autoreleasepool;
+    use objc2::runtime::{AnyClass, AnyObject};
+
+    if bytes.is_empty() {
+        return None;
+    }
+    /// `NSBitmapImageFileTypePNG` in AppKit.
+    const FILE_TYPE_PNG: usize = 4;
+    autoreleasepool(|_| unsafe {
+        let data_cls = AnyClass::get(c"NSData")?;
+        let rep_cls = AnyClass::get(c"NSBitmapImageRep")?;
+        let dict_cls = AnyClass::get(c"NSDictionary")?;
+        let ns_data: *mut AnyObject = msg_send![
+            data_cls,
+            dataWithBytes: bytes.as_ptr().cast::<c_void>(),
+            length: bytes.len()
+        ];
+        if ns_data.is_null() {
+            return None;
+        }
+        let rep: *mut AnyObject = msg_send![rep_cls, imageRepWithData: ns_data];
+        if rep.is_null() {
+            return None;
+        }
+        let empty_props: *mut AnyObject = msg_send![dict_cls, dictionary];
+        let png_data: *mut AnyObject = msg_send![
+            rep,
+            representationUsingType: FILE_TYPE_PNG,
+            properties: empty_props
+        ];
+        if png_data.is_null() {
+            return None;
+        }
+        let len: usize = msg_send![png_data, length];
+        let ptr: *const u8 = msg_send![png_data, bytes];
+        if ptr.is_null() || len == 0 {
+            return None;
+        }
+        Some(std::slice::from_raw_parts(ptr, len).to_vec())
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn image_bytes_to_png(_bytes: &[u8]) -> Option<Vec<u8>> {
+    None
+}
+
+/// Fallback clipboard image reader for macOS screenshots / Preview / browser image copies that put
+/// `public.tiff` or `public.heic` on `NSPasteboard` without plain text.
+#[cfg(target_os = "macos")]
+pub fn pasteboard_image_png() -> Option<Vec<u8>> {
+    use objc2::msg_send;
+    use objc2::rc::autoreleasepool;
+    use objc2::runtime::{AnyClass, AnyObject};
+    use objc2_foundation::NSString;
+
+    autoreleasepool(|_| unsafe {
+        let pb_cls = AnyClass::get(c"NSPasteboard")?;
+        let pb: *mut AnyObject = msg_send![pb_cls, generalPasteboard];
+        if pb.is_null() {
+            return None;
+        }
+        // Never intercept plain text pastes.
+        let utf8_ut = NSString::from_str("public.utf8-plain-text");
+        let existing_str: *mut AnyObject = msg_send![pb, dataForType: &*utf8_ut];
+        if !existing_str.is_null() {
+            return None;
+        }
+        let png_ut = NSString::from_str("public.png");
+        let png_data: *mut AnyObject = msg_send![pb, dataForType: &*png_ut];
+        if !png_data.is_null() {
+            let len: usize = msg_send![png_data, length];
+            let ptr: *const u8 = msg_send![png_data, bytes];
+            if !ptr.is_null() && len > 0 {
+                return Some(std::slice::from_raw_parts(ptr, len).to_vec());
+            }
+        }
+        for uti in ["public.tiff", "public.heic", "public.jpeg"] {
+            let ns_uti = NSString::from_str(uti);
+            let raw: *mut AnyObject = msg_send![pb, dataForType: &*ns_uti];
+            if !raw.is_null() {
+                let len: usize = msg_send![raw, length];
+                let ptr: *const u8 = msg_send![raw, bytes];
+                if !ptr.is_null() && len > 0 {
+                    let bytes = std::slice::from_raw_parts(ptr, len);
+                    if let Some(png) = image_bytes_to_png(bytes) {
+                        return Some(png);
+                    }
+                }
+            }
+        }
+        None
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn pasteboard_image_png() -> Option<Vec<u8>> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

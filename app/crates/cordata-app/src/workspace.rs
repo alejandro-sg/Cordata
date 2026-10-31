@@ -73,6 +73,7 @@ pub enum Overlay {
     Clone,
     Confirm,
     Rename,
+    About,
 }
 
 /// What the small naming dialog names.
@@ -104,6 +105,7 @@ actions!(
         CommandMenu,
         OpenPalette,
         SwitchProject,
+        ToggleSidebar,
         TogglePanel,
         ToggleTerminal,
         OpenSettings,
@@ -130,6 +132,14 @@ actions!(
         SwitchTo7,
         SwitchTo8,
         SwitchTo9,
+        About,
+        HideApp,
+        HideOthers,
+        ShowAll,
+        QuitApp,
+        Minimize,
+        Zoom,
+        AttachFiles,
     ]
 );
 
@@ -168,6 +178,8 @@ pub struct Workspace {
     hub_ok: Option<bool>,
     hub_latency: Option<Duration>,
     model_menu: bool,
+    model_menu_bottom: bool,
+    mode_menu: bool,
     /// `w` on an approval card: the next Enter sends the composer's text as the answer (the reason, or one's own words).
     saying: bool,
     /// Mission Control's state (the side panel).
@@ -180,6 +192,8 @@ pub struct Workspace {
     start_run: Option<String>,
     display: Display,
     pub(super) dock_tab: DockTab,
+    /// The left sidebar is shown (`⌘B`).
+    pub(super) sidebar_open: bool,
     /// The side panel is shown (the person's choice, or the width's default).
     pub(super) panel_open: bool,
     overflow_open: bool,
@@ -207,6 +221,8 @@ pub struct Workspace {
     api_key_input: Entity<InputState>,
     api_key_masked: Option<String>,
     allow_input: Entity<InputState>,
+    /// Settings' “Search settings…” box: narrows the section list.
+    pub(super) settings_search: Entity<InputState>,
     adding_allow: bool,
     /// The MCP servers (`_cordata/plugins/list`).
     plugins: Vec<Value>,
@@ -308,7 +324,7 @@ impl Workspace {
     pub fn new(connection: Connection, cwd: PathBuf, launch: Launch, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let Launch { prompt: initial_prompt, run: start_run, selftest, picker } = launch;
         let prefs = cx.try_global::<Prefs>().cloned().unwrap_or_default();
-        let composer = cx.new(|cx| TextareaState::new(window, cx).auto_grow(2, 10).submit_on_enter(prefs.send_with != "cmd-enter").placeholder("Ask Cordata…"));
+        let composer = cx.new(|cx| TextareaState::new(window, cx).auto_grow(2, 10).submit_on_enter(prefs.send_with != "cmd-enter").placeholder("Ask anything, @mention files, or type / for commands…"));
         let display = cx.try_global::<Display>().copied().unwrap_or_default();
         let first = cx.new(|cx| Session::start(&connection, Target::Default, cwd.clone(), initial_prompt, cx));
         let goal_input = cx.new(|cx| TextareaState::new(window, cx).rows(3).placeholder("A multi-step goal for the orchestrator…"));
@@ -319,6 +335,7 @@ impl Workspace {
         let clone_dest = cx.new(|cx| InputState::new(window, cx).placeholder("~/Development"));
         let api_key_input = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("sk-ant-…"));
         let allow_input = cx.new(|cx| InputState::new(window, cx).placeholder("pnpm test"));
+        let settings_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search settings…"));
         let rename_input = cx.new(|cx| InputState::new(window, cx).placeholder("Conversation title"));
         let git = git_ops::Git::new(window, cx);
         let customize = customize::Customize::new(window, cx);
@@ -348,6 +365,12 @@ impl Workspace {
                     cx.notify();
                 }
             }),
+            cx.subscribe_in(&settings_search, window, |this: &mut Self, input, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change | InputEvent::PressEnter { .. }) {
+                    let query = input.read(cx).value().to_string();
+                    this.on_settings_search(&query, cx);
+                }
+            }),
             cx.subscribe_in(&allow_input, window, |this: &mut Self, _, event: &InputEvent, window, cx| {
                 if matches!(event, InputEvent::PressEnter { .. }) {
                     this.add_allowed_command(window, cx);
@@ -367,6 +390,7 @@ impl Workspace {
         ];
         composer.update(cx, |state, cx| state.focus(window, cx));
         let width = window.viewport_size().width.as_f32();
+        let sidebar_open = prefs.sidebar_open.unwrap_or(true);
         let panel_open = prefs.panel_open.unwrap_or(width >= t::PANEL_AUTO_COLLAPSE_W);
         let mut this = Self {
             connection,
@@ -375,7 +399,7 @@ impl Workspace {
             session: first.clone(),
             subscriptions: Vec::new(),
             composer,
-            composer_placeholder: "Ask Cordata…",
+            composer_placeholder: "Ask anything, @mention files, or type / for commands…",
             transcript: ListState::new(0, ListAlignment::Bottom, px(1200.)),
             seen: (first.entity_id(), 0, 0),
             expanded: HashSet::new(),
@@ -384,6 +408,8 @@ impl Workspace {
             hub_ok: None,
             hub_latency: None,
             model_menu: false,
+            model_menu_bottom: false,
+            mode_menu: false,
             saying: false,
             mission: Mission::default(),
             goal_input,
@@ -391,6 +417,7 @@ impl Workspace {
             start_run,
             display,
             dock_tab: DockTab::default(),
+            sidebar_open,
             panel_open,
             overflow_open: false,
             files: editor::Files::default(),
@@ -416,6 +443,7 @@ impl Workspace {
             api_key_input,
             api_key_masked: None,
             allow_input,
+            settings_search,
             adding_allow: false,
             plugins: Vec::new(),
             trusted_projects: Vec::new(),
@@ -564,6 +592,7 @@ impl Workspace {
         }
         self.session = session;
         self.model_menu = false;
+        self.mode_menu = false;
         let len = self.session.read(cx).view.messages.len();
         self.transcript.reset(len);
         self.seen = (self.session.entity_id(), len, self.session.read(cx).version);
@@ -591,14 +620,24 @@ impl Workspace {
 
     fn close_active(&mut self, cx: &mut Context<Self>) {
         let id = self.session.entity_id();
-        if self.sessions.len() <= 1 {
+        if let Some(index) = self.sessions.iter().position(|s| s.entity_id() == id) {
+            self.close_session_at(index, cx);
+        }
+    }
+
+    pub(super) fn close_session_at(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.sessions.len() <= 1 || index >= self.sessions.len() {
             return; // the window always shows one session; ⌘Q quits
         }
-        let index = self.sessions.iter().position(|s| s.entity_id() == id).unwrap_or(0);
-        self.sessions.remove(index);
-        self.subscriptions.retain(|(sid, _)| *sid != id);
-        let next = self.sessions[index.min(self.sessions.len() - 1)].clone();
-        self.show(next, cx);
+        let removed = self.sessions.remove(index);
+        let removed_id = removed.entity_id();
+        self.subscriptions.retain(|(sid, _)| *sid != removed_id);
+        if self.session.entity_id() == removed_id {
+            let next = self.sessions[index.min(self.sessions.len() - 1)].clone();
+            self.show(next, cx);
+        } else {
+            cx.notify();
+        }
     }
 
     fn switch(&mut self, target: SwitchTarget, cx: &mut Context<Self>) {
@@ -989,8 +1028,9 @@ impl Workspace {
             self.close_overlay(top, window, cx);
             return;
         }
-        if self.model_menu || self.overflow_open || self.row_menu.is_some() {
+        if self.model_menu || self.mode_menu || self.overflow_open || self.row_menu.is_some() {
             self.model_menu = false;
+            self.mode_menu = false;
             self.overflow_open = false;
             self.row_menu = None;
             cx.notify();
@@ -1259,6 +1299,7 @@ impl Workspace {
 
     pub(super) fn open_overlay(&mut self, overlay: Overlay, window: &mut Window, cx: &mut Context<Self>) {
         self.model_menu = false;
+        self.mode_menu = false;
         self.overflow_open = false;
         self.overlays.retain(|o| *o != overlay);
         self.overlays.push(overlay);
@@ -1288,7 +1329,7 @@ impl Workspace {
                 self.on_settings_section(cx);
                 window.focus(&self.settings_focus, cx);
             }
-            Overlay::Confirm => window.focus(&self.settings_focus, cx),
+            Overlay::Confirm | Overlay::About => window.focus(&self.settings_focus, cx),
             Overlay::Rename => self.rename_input.update(cx, |s, cx| s.focus(window, cx)),
         }
         cx.notify();
@@ -1309,7 +1350,7 @@ impl Workspace {
             Some(Overlay::Palette) => self.palette_input.update(cx, |s, cx| s.focus(window, cx)),
             Some(Overlay::Picker) => self.picker_input.update(cx, |s, cx| s.focus(window, cx)),
             Some(Overlay::Clone) => self.clone_url.update(cx, |s, cx| s.focus(window, cx)),
-            Some(Overlay::Settings | Overlay::Confirm) => window.focus(&self.settings_focus, cx),
+            Some(Overlay::Settings | Overlay::Confirm | Overlay::About) => window.focus(&self.settings_focus, cx),
             Some(Overlay::Rename) => self.rename_input.update(cx, |s, cx| s.focus(window, cx)),
             None => self.composer.update(cx, |s, cx| s.focus(window, cx)),
         }
@@ -1345,6 +1386,7 @@ impl Workspace {
                 cx.set_global(self.prefs.clone());
                 crate::theme::set_theme(&self.prefs.theme, cx);
                 self.apply_send_with(cx);
+                self.sidebar_open = true;
                 self.settings_view.set_notice("This window's preferences are back to their defaults.".into(), false);
             }
         }
@@ -1424,7 +1466,68 @@ impl Workspace {
             .into_any_element()
     }
 
+    fn about_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
+        let tk = tk(cx);
+        let line_of = |text: SharedString, size: f32, color| div().text_size(px(size)).text_color(color).child(text);
+        div()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, window, cx| this.close_overlay(Overlay::About, window, cx)))
+            .child(
+                div()
+                    .id("about")
+                    .role(gpui::Role::Dialog)
+                    .aria_label("About Cordata")
+                    .track_focus(&self.settings_focus)
+                    .key_context("About")
+                    .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                        if matches!(event.keystroke.key.as_str(), "escape" | "enter") {
+                            this.close_overlay(Overlay::About, window, cx);
+                            cx.stop_propagation();
+                        }
+                    }))
+                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .w(px(340.))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(6.))
+                    .p(px(24.))
+                    .rounded(px(t::RADIUS_MODAL))
+                    .bg(c(tk.bg_input))
+                    .border_1()
+                    .border_color(line(cx, t::LINE_CONTROL_STRONG))
+                    .shadow(crate::theme::modal_shadow(cx))
+                    .child(div().text_size(px(28.)).text_color(c(tk.amber)).child("◆"))
+                    .child(div().text_size(px(t::TEXT_SETTINGS_TITLE)).font_weight(gpui::FontWeight::MEDIUM).text_color(c(tk.text_primary)).child("Cordata"))
+                    .child(line_of(SharedString::from(format!("Version {}", env!("CARGO_PKG_VERSION"))), t::TEXT_UI, c(tk.text_secondary)))
+                    .child(line_of("A native harness for coding agents.".into(), t::TEXT_UI, c(tk.text_secondary)))
+                    .child(line_of(SharedString::from(format!("Project: {}", self.cwd.display())), t::TEXT_UI, c(tk.text_muted)))
+                    .child(div().pt(px(10.)).child(ui::button("about-ok", "OK  ↵", Kind::Primary, cx).on_click(cx.listener(|this, _, window, cx| this.close_overlay(Overlay::About, window, cx))))),
+            )
+            .into_any_element()
+    }
+
     // -------------------------------------------------------------------------------------------- panel, project, trust
+
+    pub(super) fn set_sidebar(&mut self, open: bool, cx: &mut Context<Self>) {
+        if self.sidebar_open != open {
+            self.sidebar_open = open;
+            self.prefs.sidebar_open = Some(open);
+            self.prefs.save();
+        }
+        cx.notify();
+    }
+
+    pub(super) fn toggle_sidebar(&mut self, _: &ToggleSidebar, window: &mut Window, cx: &mut Context<Self>) {
+        let open = !self.sidebar_open;
+        self.set_sidebar(open, cx);
+        if !open {
+            self.composer.update(cx, |s, cx| s.focus(window, cx));
+        }
+    }
 
     pub(super) fn set_panel(&mut self, open: bool, cx: &mut Context<Self>) {
         if self.panel_open != open {
@@ -1560,24 +1663,47 @@ impl Workspace {
     /// The sidebar footer and status bar: is the connection well?
     pub(super) fn connection_status(&self, cx: &App) -> (Dot, String) {
         let session = self.session.read(cx);
-        match (&session.view.conn, self.hub_ok) {
-            (ConnState::Connecting, _) => (Dot::Hollow, "connecting…".into()),
-            (ConnState::Closed { .. }, _) | (_, Some(false)) => (Dot::Amber, "reconnecting…".into()),
-            _ => (Dot::Ok, format!("via {}", session.transport)),
+        match (&session.view.conn, self.hub_ok, &self.connection.transport) {
+            (ConnState::Connecting, _, _) => (Dot::Hollow, "Connecting…".into()),
+            (ConnState::Closed { .. }, _, _) | (_, Some(false), _) => (Dot::Amber, "Reconnecting…".into()),
+            (_, _, BackendTransport::Hub { .. }) => (Dot::Ok, "Daemon ready".into()),
+            _ => (Dot::Ok, format!("Local · {}", session.transport)),
         }
     }
 
     pub(super) fn hub_health(&self, cx: &App) -> (Dot, String) {
         let (dot, text) = self.connection_status(cx);
         match (dot, self.hub_latency, &self.connection.transport) {
-            (Dot::Ok, Some(latency), BackendTransport::Hub { .. }) => (Dot::Ok, format!("hub · {}ms", latency.as_millis())),
-            (Dot::Ok, _, BackendTransport::Hub { .. }) => (Dot::Ok, "hub".into()),
-            (Dot::Ok, ..) => (Dot::Ok, self.session.read(cx).transport.to_owned()),
+            (Dot::Ok, Some(latency), BackendTransport::Hub { .. }) => (Dot::Ok, format!("Daemon · {}ms", latency.as_millis())),
+            (Dot::Ok, _, BackendTransport::Hub { .. }) => (Dot::Ok, "Daemon".into()),
+            (Dot::Ok, ..) => (Dot::Ok, "Local engine".into()),
             _ => (dot, text),
         }
     }
 
     // -------------------------------------------------------------------------------------------- composer helpers
+
+    pub(super) fn begin_saying(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.saying = true;
+        self.composer.update(cx, |s, cx| s.focus(window, cx));
+        cx.notify();
+    }
+
+    pub(super) fn apply_starter(&mut self, prompt: &str, mode: Option<&str>, send_now: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(mode) = mode {
+            self.session.update(cx, |session, cx| session.set_mode(mode, cx));
+        }
+        self.composer.update(cx, |s, cx| {
+            s.set_value(prompt.to_owned(), window, cx);
+            s.focus(window, cx);
+        });
+        self.session.update(cx, |session, cx| session.mirror_input(prompt, cx));
+        if send_now {
+            self.send_composer(window, cx);
+        } else {
+            cx.notify();
+        }
+    }
 
     pub(super) fn insert_trigger(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.composer.read(cx).value().to_string();
@@ -1665,15 +1791,19 @@ impl Workspace {
         for entry in item.entries() {
             match entry {
                 gpui::ClipboardEntry::Image(image) => {
-                    let (mime, ext) = match image.format {
-                        gpui::ImageFormat::Png => ("image/png", "png"),
-                        gpui::ImageFormat::Jpeg => ("image/jpeg", "jpg"),
-                        gpui::ImageFormat::Webp => ("image/webp", "webp"),
-                        gpui::ImageFormat::Gif => ("image/gif", "gif"),
-                        _ => continue,
+                    let ext = match image.format {
+                        gpui::ImageFormat::Png => "png",
+                        gpui::ImageFormat::Jpeg => "jpg",
+                        gpui::ImageFormat::Webp => "webp",
+                        gpui::ImageFormat::Gif => "gif",
+                        gpui::ImageFormat::Svg => "svg",
+                        gpui::ImageFormat::Tiff => "tiff",
+                        gpui::ImageFormat::Bmp => "bmp",
+                        gpui::ImageFormat::Ico => "ico",
+                        gpui::ImageFormat::Pnm => "pnm",
                     };
                     let name = format!("pasted-{}.{ext}", self.staged.len() + 1);
-                    self.stage(attachments::image(&name, mime, &image.bytes), cx);
+                    self.stage(attachments::clipboard_image(&name, image.format, &image.bytes), cx);
                     took = true;
                 }
                 gpui::ClipboardEntry::ExternalPaths(paths) => {
@@ -1682,6 +1812,15 @@ impl Workspace {
                 }
                 _ => {}
             }
+        }
+        // Screenshots and Preview copies can put only TIFF/HEIC on the pasteboard, which GPUI does not surface.
+        if !took
+            && item.text().is_none_or(|t| t.is_empty())
+            && let Some(png) = crate::platform::pasteboard_image_png()
+        {
+            let name = format!("pasted-{}.png", self.staged.len() + 1);
+            self.stage(attachments::image(&name, "image/png", &png), cx);
+            took = true;
         }
         took
     }
@@ -1945,7 +2084,7 @@ impl Workspace {
         }
         let tk = tk(cx);
         // A scrim under modals; the picker is a popover and keeps the window visible.
-        let modal = self.overlays.iter().any(|o| matches!(o, Overlay::Palette | Overlay::Settings | Overlay::Clone | Overlay::Confirm | Overlay::Rename));
+        let modal = self.overlays.iter().any(|o| matches!(o, Overlay::Palette | Overlay::Settings | Overlay::Clone | Overlay::Confirm | Overlay::Rename | Overlay::About));
         let mut layer = div().id("overlays").absolute().inset_0().when(modal, |l| l.bg(ca(tk.bg_window, t::SCRIM))).occlude();
         for overlay in &self.overlays {
             let element = match overlay {
@@ -1955,6 +2094,7 @@ impl Workspace {
                 Overlay::Clone => self.clone_sheet(cx),
                 Overlay::Confirm => self.confirm_dialog(cx),
                 Overlay::Rename => self.rename_dialog(cx),
+                Overlay::About => self.about_dialog(cx),
             };
             layer = layer.child(div().absolute().inset_0().child(element));
         }
@@ -1974,8 +2114,9 @@ impl Render for Workspace {
         let tk = tk(cx);
         let size = window.viewport_size();
         let window_w = size.width.as_f32();
+        let sidebar_w = if self.sidebar_open { t::SIDEBAR_W } else { 0. };
         let panel_w = if self.panel_open { side_panel::panel_width(self.dock_tab, window_w) } else { 0. };
-        let column_w = (window_w - t::SIDEBAR_W - panel_w).max(0.);
+        let column_w = (window_w - sidebar_w - panel_w).max(0.);
         let session = self.session.clone();
         let expanded = self.expanded.clone();
         let thoughts = session.read(cx).view.thoughts_expanded;
@@ -2024,11 +2165,13 @@ impl Render for Workspace {
                 .into_any_element()
         })
         .size_full();
-        let pending = self.session.clone().read(cx).view.pending.front().map(|pending| self.approval_card(pending, cx));
+        let pending_info = self.session.read(cx).view.pending.front().map(|p| p.info.clone());
+        let pending = pending_info.as_ref().map(|info| self.approval_card(info, cx));
         let actions_row = self.post_reply_actions(cx);
         let menu = self.slash_menu(cx);
         let model_menu = self.model_menu(cx);
-        let sidebar = self.sidebar(cx);
+        let mode_menu = self.mode_menu(cx);
+        let sidebar = self.sidebar_open.then(|| self.sidebar(cx));
         let header = self.header(column_w, cx);
         let composer = self.composer(cx);
         let status_bar = self.status_bar(cx);
@@ -2055,6 +2198,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::command_menu))
             .on_action(cx.listener(Self::open_palette))
             .on_action(cx.listener(Self::switch_project_action))
+            .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::toggle_panel))
             .on_action(cx.listener(Self::toggle_terminal))
             .on_action(cx.listener(Self::open_settings))
@@ -2081,6 +2225,10 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &SwitchTo7, _, cx| this.switch_slot(7, cx)))
             .on_action(cx.listener(|this, _: &SwitchTo8, _, cx| this.switch_slot(8, cx)))
             .on_action(cx.listener(|this, _: &SwitchTo9, _, cx| this.switch_slot(9, cx)))
+            .on_action(cx.listener(|this, _: &About, window, cx| this.open_overlay(Overlay::About, window, cx)))
+            .on_action(cx.listener(|this, _: &AttachFiles, window, cx| this.choose_attachments(window, cx)))
+            .on_action(cx.listener(|_, _: &Minimize, window, _| window.minimize_window()))
+            .on_action(cx.listener(|_, _: &Zoom, window, _| window.zoom_window()))
             .size_full()
             .relative()
             .flex()
@@ -2093,7 +2241,7 @@ impl Render for Workspace {
                     .flex()
                     .flex_1()
                     .min_h_0()
-                    .child(sidebar)
+                    .children(sidebar)
                     .child(
                         div()
                             .id("conversation")
@@ -2118,7 +2266,8 @@ impl Render for Workspace {
                                     .pb(px(16.))
                                     .child(div().w_full().max_w(px(t::CONTENT_MAX_W)).flex().flex_col().children(actions_row).children(pending).children(menu).child(composer)),
                             )
-                            .children(model_menu),
+                            .children(model_menu)
+                            .children(mode_menu),
                     )
                     .children(panel),
             )
@@ -2171,6 +2320,7 @@ pub fn bind_keys(cx: &mut App) {
         gpui::KeyBinding::new("cmd-k", OpenPalette, Some("Workspace")),
         gpui::KeyBinding::new("ctrl-k", CommandMenu, Some("Workspace")),
         gpui::KeyBinding::new("cmd-o", SwitchProject, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-b", ToggleSidebar, Some("Workspace")),
         gpui::KeyBinding::new("cmd-\\", TogglePanel, Some("Workspace")),
         gpui::KeyBinding::new("ctrl-`", ToggleTerminal, Some("Workspace")),
         gpui::KeyBinding::new("cmd-,", OpenSettings, Some("Workspace")),
@@ -2197,6 +2347,86 @@ pub fn bind_keys(cx: &mut App) {
         gpui::KeyBinding::new("cmd-s", SaveFile, Some("Workspace")),
         gpui::KeyBinding::new("cmd-s", SaveFile, Some("CordataEditor")),
         gpui::KeyBinding::new("cmd-i", InlineEdit, Some("CordataEditor")),
+        gpui::KeyBinding::new("cmd-shift-a", AttachFiles, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-m", Minimize, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-h", HideApp, None),
+        gpui::KeyBinding::new("cmd-alt-h", HideOthers, None),
+        gpui::KeyBinding::new("cmd-q", QuitApp, None),
+    ]);
+}
+
+/// The macOS menu bar and the Dock icon's menu. Call after [`bind_keys`]: each item shows the key its action is bound to.
+pub fn install_menus(cx: &mut App) {
+    use gpui::{Menu, MenuItem, OsAction, SystemMenuType};
+    use gpui_component::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
+    cx.on_action(|_: &HideApp, cx| cx.hide());
+    cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
+    cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
+    cx.on_action(|_: &QuitApp, cx| cx.quit());
+    cx.set_menus([
+        Menu::new("Cordata").items([
+            MenuItem::action("About Cordata", About),
+            MenuItem::separator(),
+            MenuItem::action("Settings…", OpenSettings),
+            MenuItem::separator(),
+            MenuItem::os_submenu("Services", SystemMenuType::Services),
+            MenuItem::separator(),
+            MenuItem::action("Hide Cordata", HideApp),
+            MenuItem::action("Hide Others", HideOthers),
+            MenuItem::action("Show All", ShowAll),
+            MenuItem::separator(),
+            MenuItem::action("Quit Cordata", QuitApp),
+        ]),
+        Menu::new("File").items([
+            MenuItem::action("New Thread", NewSession),
+            MenuItem::action("Open Project…", SwitchProject),
+            MenuItem::separator(),
+            MenuItem::action("Attach Files or Images…", AttachFiles),
+            MenuItem::action("Open File…", OpenFiles),
+            MenuItem::action("Save", SaveFile),
+            MenuItem::separator(),
+            MenuItem::action("Close", CloseSession),
+        ]),
+        Menu::new("Edit").items([
+            MenuItem::os_action("Undo", Undo, OsAction::Undo),
+            MenuItem::os_action("Redo", Redo, OsAction::Redo),
+            MenuItem::separator(),
+            MenuItem::os_action("Cut", Cut, OsAction::Cut),
+            MenuItem::os_action("Copy", Copy, OsAction::Copy),
+            MenuItem::os_action("Paste", Paste, OsAction::Paste),
+            MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
+        ]),
+        Menu::new("View").items([
+            MenuItem::action("Command Palette", OpenPalette),
+            MenuItem::separator(),
+            MenuItem::action("Toggle Sidebar", ToggleSidebar),
+            MenuItem::action("Toggle Panel", TogglePanel),
+            MenuItem::action("Terminal", ToggleTerminal),
+            MenuItem::separator(),
+            MenuItem::action("Show Thinking", ToggleThoughts),
+            MenuItem::action("Show Tool Output", ToggleTools),
+        ]),
+        Menu::new("Go").items([
+            MenuItem::action("Next Thread", NextSession),
+            MenuItem::action("Previous Thread", PrevSession),
+            MenuItem::separator(),
+            MenuItem::action("Mission Control", ShowMission),
+            MenuItem::action("Files", ShowFiles),
+            MenuItem::action("Editor", ShowEditor),
+            MenuItem::action("Review", ShowReview),
+            MenuItem::action("Terminal", ShowTerminal),
+            MenuItem::action("Browser", ShowBrowser),
+            MenuItem::action("Models", ShowModels),
+            MenuItem::separator(),
+            MenuItem::action("Focus Composer", FocusComposer),
+        ]),
+        Menu::new("Window").items([MenuItem::action("Minimize", Minimize), MenuItem::action("Zoom", Zoom)]),
+        Menu::new("Help").items([MenuItem::action("Cordata Help", Help), MenuItem::action("Command Palette", OpenPalette)]),
+    ]);
+    cx.set_dock_menu(vec![
+        MenuItem::action("New Thread", NewSession),
+        MenuItem::action("Open Project…", SwitchProject),
+        MenuItem::action("Settings…", OpenSettings),
     ]);
 }
 
@@ -2375,6 +2605,39 @@ mod window_tests {
         cx.simulate_keystrokes("ctrl-`");
         cx.run_until_parked();
         assert!(!view.read_with(cx, |this, _| this.panel_open), "…and again hides it");
+    }
+
+    #[gpui::test]
+    fn the_about_box_opens_from_the_menu_action_and_esc_closes_it(cx: &mut TestAppContext) {
+        let (view, cx) = workspace(cx);
+        cx.dispatch_action(super::About);
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |this, _| this.overlays.clone()), vec![super::Overlay::About], "Cordata ▸ About opens the about box");
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert!(view.read_with(cx, |this, _| this.overlays.is_empty()), "esc closes it");
+    }
+
+    #[gpui::test]
+    fn the_menu_bar_names_every_menu(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            super::bind_keys(cx);
+            super::install_menus(cx);
+        });
+        let names: Vec<String> = cx.update(|cx| cx.get_menus()).unwrap_or_default().iter().map(|m| m.name.to_string()).collect();
+        assert_eq!(names, ["Cordata", "File", "Edit", "View", "Go", "Window", "Help"]);
+    }
+
+    #[gpui::test]
+    fn settings_search_narrows_the_sections_and_jumps_to_a_match(cx: &mut TestAppContext) {
+        let (view, cx) = workspace(cx);
+        cx.simulate_keystrokes("cmd-,");
+        cx.run_until_parked();
+        view.update_in(cx, |this, window, cx| this.settings_search.update(cx, |s, cx| s.focus(window, cx)));
+        cx.simulate_input("vision");
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |this, _| this.settings_section), super::settings_modal::Section::Models, "“vision” finds the Models section");
+        assert!(super::settings_modal::Section::Appearance.matches("dark theme") && !super::settings_modal::Section::Account.matches("theme"));
     }
 
     #[gpui::test]
@@ -2651,6 +2914,28 @@ mod window_tests {
             });
             this.on_data(&tag, cx);
         });
+    }
+
+    #[gpui::test]
+    fn sidebar_toggles_and_starter_cards_prepare_the_composer(cx: &mut TestAppContext) {
+        let (view, cx) = workspace(cx);
+        assert!(view.read_with(cx, |this, _| this.sidebar_open), "sidebar starts open");
+        cx.simulate_keystrokes("cmd-b");
+        cx.run_until_parked();
+        assert!(!view.read_with(cx, |this, _| this.sidebar_open), "⌘B hides the sidebar");
+        assert_eq!(view.read_with(cx, |this, _| this.prefs.sidebar_open), Some(false), "…and remembers it");
+        cx.simulate_keystrokes("cmd-b");
+        cx.run_until_parked();
+        assert!(view.read_with(cx, |this, _| this.sidebar_open), "⌘B shows the sidebar again");
+
+        view.update_in(cx, |this, window, cx| {
+            this.mode_menu = true;
+            this.apply_starter("Explore key modules", Some("plan"), false, window, cx);
+        });
+        assert_eq!(view.read_with(cx, |this, app| this.composer.read(app).value().to_string()), "Explore key modules");
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert!(!view.read_with(cx, |this, _| this.mode_menu), "esc dismisses the mode popover");
     }
 
     fn tempfile_dir() -> std::path::PathBuf {

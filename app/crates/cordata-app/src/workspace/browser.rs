@@ -96,10 +96,11 @@ impl Workspace {
             .flex()
             .items_center()
             .gap(px(6.))
-            .p(px(4.))
-            .bg(color(cx, Role::Surface))
-            .border_b_1()
-            .border_color(color(cx, Role::Hairline))
+            .p(px(6.))
+            .rounded(px(cordata_theme::tokens::RADIUS_CARD))
+            .bg(crate::theme::line(cx, cordata_theme::tokens::FILL_FAINT))
+            .border_1()
+            .border_color(crate::theme::line(cx, cordata_theme::tokens::LINE_DEFAULT))
             .child(
                 Button::new("browser-prev-btn")
                     .label("◀")
@@ -154,14 +155,14 @@ impl Workspace {
                 };
                 div()
                     .id(("browser-subtab", tab as usize))
-                    .px(px(6.))
-                    .py(px(2.))
-                    .rounded(px(2.))
+                    .px(px(8.))
+                    .py(px(3.))
+                    .rounded(px(cordata_theme::tokens::RADIUS_CONTROL))
                     .cursor_pointer()
                     .text_xs()
                     .font_family(crate::theme::mono(cx))
                     .text_color(color(cx, if selected { Role::Accent } else { Role::TextSecondary }))
-                    .when(selected, |el| el.bg(tint(cx, Role::Accent, 0.1)))
+                    .when(selected, |el| el.bg(tint(cx, Role::Accent, 0.12)))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.browser_view.sub_tab = tab;
                         cx.notify();
@@ -197,8 +198,8 @@ impl Workspace {
                 let is_selected = browser.selected_step == ix;
                 div()
                     .id(("browser-step", ix))
-                    .p(px(6.))
-                    .rounded(px(2.))
+                    .p(px(8.))
+                    .rounded(px(cordata_theme::tokens::RADIUS_CARD))
                     .cursor_pointer()
                     .bg(color(cx, if is_selected { Role::Surface } else { Role::Ground }))
                     .border_1()
@@ -238,11 +239,11 @@ impl Workspace {
 
         let detail_panel = if let Some(step) = selected_step {
             div()
-                .p(px(8.))
-                .bg(color(cx, Role::Surface))
-                .rounded(px(2.))
+                .p(px(10.))
+                .bg(crate::theme::line(cx, cordata_theme::tokens::FILL_FAINT))
+                .rounded(px(cordata_theme::tokens::RADIUS_CARD))
                 .border_1()
-                .border_color(color(cx, Role::Hairline))
+                .border_color(crate::theme::line(cx, cordata_theme::tokens::LINE_DEFAULT))
                 .flex()
                 .flex_col()
                 .gap(px(4.))

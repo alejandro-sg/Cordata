@@ -34,20 +34,20 @@ pub fn panel_width(tab: DockTab, window_w: f32) -> f32 {
 }
 
 impl Workspace {
-    fn tab_name(&self, tab: DockTab) -> (&'static str, Option<String>) {
+    fn tab_name(&self, tab: DockTab) -> (&'static str, &'static str, Option<String>) {
         match tab {
-            DockTab::Mission => ("mission", Some(self.mission.runs.iter().filter(|r| r.get("live").and_then(Value::as_str) == Some("running")).count()).filter(|n| *n > 0).map(|n| n.to_string())),
-            DockTab::Files => ("files", None),
-            DockTab::Editor => ("editor", match (self.files.buffers.len(), self.files.dirty()) {
+            DockTab::Mission => ("Mission", "Mission Control  ⌘⌥1", Some(self.mission.runs.iter().filter(|r| r.get("live").and_then(Value::as_str) == Some("running")).count()).filter(|n| *n > 0).map(|n| n.to_string())),
+            DockTab::Files => ("Files", "Project files  ⌘⌥2 · ⌘P", None),
+            DockTab::Editor => ("Editor", "Code editor  ⌘⌥3", match (self.files.buffers.len(), self.files.dirty()) {
                 (0, _) => None,
                 (n, 0) => Some(n.to_string()),
                 (n, _) => Some(format!("{n}●")),
             }),
-            DockTab::Review => ("review", (self.review.file_count() > 0).then(|| self.review.file_count().to_string())),
-            DockTab::Terminal => ("terminal", None),
-            DockTab::Browser => ("browser", None),
-            DockTab::Models => ("models", None),
-            DockTab::History => ("history", None),
+            DockTab::Review => ("Changes", "Diff review & Git  ⌘⌥4", (self.review.file_count() > 0).then(|| self.review.file_count().to_string())),
+            DockTab::Terminal => ("Terminal", "Project terminal  ⌘⌥5 · ⌃`", None),
+            DockTab::Browser => ("Browser", "Browser agent  ⌘⌥6", None),
+            DockTab::Models => ("Models", "Models, Cloud Fleet & Voice  ⌘⌥7", None),
+            DockTab::History => ("History", "Checkpoints & undo", None),
         }
     }
 
@@ -57,29 +57,30 @@ impl Workspace {
         let in_overflow = overflow.contains(&self.dock_tab);
         let tab = |tab: DockTab, cx: &mut Context<Self>| {
             let selected = self.dock_tab == tab;
-            let (name, badge) = self.tab_name(tab);
+            let (name, tip, badge) = self.tab_name(tab);
             let hover = c(tk.text_primary);
             div()
                 .id(("dock-tab", tab as usize))
                 .role(gpui::Role::Tab)
                 .aria_selected(selected)
                 .aria_label(SharedString::from(name))
+                .tooltip(ui::tip(tip))
                 .flex()
                 .flex_shrink_0()
                 .items_center()
                 .gap(px(5.))
                 .h_full()
-                .px(px(8.))
+                .px(px(9.))
                 .whitespace_nowrap()
                 .cursor_pointer()
-                .font_family(mono(cx))
-                .text_size(px(t::TEXT_META))
-                .text_color(c(if selected { tk.amber } else { tk.text_muted }))
+                .text_size(px(t::TEXT_SMALL))
+                .font_weight(if selected { FontWeight::MEDIUM } else { FontWeight::NORMAL })
+                .text_color(c(if selected { tk.text_primary } else { tk.text_muted }))
                 .when(selected, |el| el.shadow(inset_bottom(c(tk.amber))))
                 .when(!selected, move |el| el.hover(move |s| s.text_color(hover)))
                 .on_click(cx.listener(move |this, _, _, cx| this.switch_dock(tab, cx)))
                 .child(name)
-                .when_some(badge, |el, badge| el.child(div().px(px(4.)).rounded(px(t::RADIUS_BADGE)).bg(amber(cx, t::AMBER_FILL_STRONG)).text_color(c(tk.amber)).text_size(px(t::TEXT_TAG)).child(SharedString::from(badge))))
+                .when_some(badge, |el, badge| el.child(div().px(px(5.)).py(px(1.)).rounded(px(t::RADIUS_BADGE)).bg(amber(cx, t::AMBER_FILL_STRONG)).font_family(mono(cx)).text_color(c(tk.amber)).text_size(px(t::TEXT_TAG)).child(SharedString::from(badge))))
         };
         let strip_el: Vec<AnyElement> = strip.iter().map(|&t| tab(t, cx).into_any_element()).collect();
         let more_label = if in_overflow { format!("{} ⌄", self.tab_name(self.dock_tab).0) } else { "⋯".to_owned() };
@@ -88,12 +89,18 @@ impl Workspace {
                 .iter()
                 .enumerate()
                 .map(|(index, &item)| {
+                    let (label, _, _) = self.tab_name(item);
+                    let shortcut = match item {
+                        DockTab::Terminal => "⌃`",
+                        DockTab::Browser => "⌘⌥6",
+                        DockTab::Models => "⌘⌥7",
+                        _ => "",
+                    };
                     ui::row(("overflow", index), self.dock_tab == item, cx)
-                        .font_family(mono(cx))
-                        .text_size(px(t::TEXT_SMALL))
+                        .text_size(px(t::TEXT_UI))
                         .text_color(c(tk.text_primary))
-                        .child(self.tab_name(item).0)
-                        .when(item == DockTab::Terminal, |r| r.child(div().flex_1()).child(ui::meta("⌃`", cx)))
+                        .child(label)
+                        .when(!shortcut.is_empty(), |r| r.child(div().flex_1()).child(ui::meta(shortcut, cx)))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.overflow_open = false;
                             this.switch_dock(item, cx);
@@ -101,7 +108,21 @@ impl Workspace {
                         .into_any_element()
                 })
                 .collect();
-            ui::popover(cx).id("overflow-menu").role(gpui::Role::Menu).aria_label("More panels").absolute().top(px(t::HEADER_H - 6.)).right(px(8.)).w(px(180.)).p(px(4.)).children(rows).into_any_element()
+            ui::popover(cx)
+                .id("overflow-menu")
+                .role(gpui::Role::Menu)
+                .aria_label("More panels")
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.overflow_open = false;
+                    cx.notify();
+                }))
+                .absolute()
+                .top(px(t::HEADER_H - 6.))
+                .right(px(8.))
+                .w(px(196.))
+                .p(px(4.))
+                .children(rows)
+                .into_any_element()
         });
         let body: AnyElement = match self.dock_tab {
             DockTab::Mission => self.mission_tab(cx),
@@ -154,15 +175,27 @@ impl Workspace {
                             .px(px(8.))
                             .cursor_pointer()
                             .whitespace_nowrap()
-                            .font_family(mono(cx))
-                            .text_size(px(t::TEXT_META))
-                            .text_color(c(if in_overflow { tk.amber } else { tk.text_muted }))
+                            .text_size(px(t::TEXT_SMALL))
+                            .text_color(c(if in_overflow { tk.text_primary } else { tk.text_muted }))
                             .when(in_overflow, |el| el.shadow(inset_bottom(c(tk.amber))))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.overflow_open = !this.overflow_open;
                                 cx.notify();
                             }))
                             .child(SharedString::from(more_label)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .pl(px(2.))
+                            .child(
+                                ui::icon_button("close-side-panel", "✕", cx)
+                                    .size(px(24.))
+                                    .aria_label("Hide inspector (⌘\\)")
+                                    .tooltip(ui::tip("Hide inspector  ⌘\\"))
+                                    .on_click(cx.listener(|this, _, window, cx| this.toggle_panel(&super::TogglePanel, window, cx))),
+                            ),
                     ),
             )
             .child(div().flex_1().min_h_0().p(px(14.)).child(body))

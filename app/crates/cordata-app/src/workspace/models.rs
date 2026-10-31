@@ -252,33 +252,28 @@ impl Workspace {
             })
             .collect();
         let router_card = div()
-            .p(px(8.))
-            .bg(color(cx, Role::Surface))
-            .rounded(px(2.))
+            .p(px(12.))
+            .bg(crate::theme::line(cx, cordata_theme::tokens::FILL_FAINT))
+            .rounded(px(cordata_theme::tokens::RADIUS_CARD))
             .border_1()
-            .border_color(color(cx, Role::Hairline))
+            .border_color(crate::theme::line(cx, cordata_theme::tokens::LINE_DEFAULT))
             .flex()
             .flex_col()
-            .gap(px(6.))
+            .gap(px(8.))
             .child(
                 div()
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(color(cx, Role::Accent))
-                            .child("AUTO MODE ROUTING"),
-                    )
+                    .child(ui::heading("auto mode routing", cx))
                     .child(ui::segmented_row(cx).children(dispatch_segments)),
             )
             .child(
                 div()
                     .text_xs()
+                    .line_height(gpui::relative(1.4))
                     .text_color(color(cx, Role::TextSecondary))
-                    .child("Routes sub-tasks across Claude, Antigravity and Ollama :cloud by API cost, real context window, capabilities and per-step RLAIF."),
+                    .child("Routes sub-tasks across Claude, Antigravity and Ollama :cloud by API cost, context window, capabilities and per-step RLAIF."),
             );
 
         // 2. Zero-Download Ollama Cloud Fleet Card
@@ -302,12 +297,12 @@ impl Workspace {
                 .id(("cloud-model", ix))
                 .flex()
                 .flex_col()
-                .gap(px(2.))
-                .p(px(6.))
-                .rounded(px(2.))
-                .bg(color(cx, if is_active { Role::Surface } else { Role::Ground }))
+                .gap(px(3.))
+                .p(px(8.))
+                .rounded(px(cordata_theme::tokens::RADIUS_CARD))
+                .bg(if is_active { crate::theme::amber(cx, cordata_theme::tokens::AMBER_FILL) } else { color(cx, Role::Ground) })
                 .border_1()
-                .border_color(color(cx, if is_active { Role::Accent } else { Role::Hairline }))
+                .border_color(if is_active { crate::theme::amber(cx, cordata_theme::tokens::AMBER_BORDER) } else { crate::theme::line(cx, cordata_theme::tokens::LINE_DEFAULT) })
                 .child(
                     div()
                         .flex()
@@ -460,26 +455,20 @@ impl Workspace {
         // 4. Unified Memory Budget (zero local downloads by default)
         let mem_fraction = (models.used_memory_gb / models.total_memory_gb.max(1.0)).clamp(0.0, 1.0);
         let mem_gauge = div()
-            .p(px(8.))
-            .bg(color(cx, Role::Surface))
-            .rounded(px(2.))
+            .p(px(12.))
+            .bg(crate::theme::line(cx, cordata_theme::tokens::FILL_FAINT))
+            .rounded(px(cordata_theme::tokens::RADIUS_CARD))
             .border_1()
-            .border_color(color(cx, Role::Hairline))
+            .border_color(crate::theme::line(cx, cordata_theme::tokens::LINE_DEFAULT))
             .flex()
             .flex_col()
-            .gap(px(4.))
+            .gap(px(6.))
             .child(
                 div()
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(color(cx, Role::Accent))
-                            .child("LOCAL MODEL MEMORY BUDGET"),
-                    )
+                    .child(ui::heading("memory budget", cx))
                     .child(
                         div()
                             .text_xs()
@@ -496,15 +485,15 @@ impl Workspace {
             .child(
                 div()
                     .w_full()
-                    .h(px(4.))
+                    .h(px(5.))
                     .bg(color(cx, Role::Ground))
-                    .rounded(px(2.))
+                    .rounded(px(3.))
                     .child(
                         div()
                             .h_full()
                             .w(gpui::relative(mem_fraction))
                             .bg(color(cx, if mem_fraction > 0.85 { Role::Attention } else { Role::Accent }))
-                            .rounded(px(2.)),
+                            .rounded(px(3.)),
                     ),
             )
             .child(
@@ -568,36 +557,26 @@ impl Workspace {
 
         // 5. Voice Section (macOS offline STT/TTS)
         let voice_card = div()
-            .p(px(8.))
-            .bg(color(cx, Role::Surface))
-            .rounded(px(2.))
+            .p(px(12.))
+            .bg(crate::theme::line(cx, cordata_theme::tokens::FILL_FAINT))
+            .rounded(px(cordata_theme::tokens::RADIUS_CARD))
             .border_1()
-            .border_color(color(cx, Role::Hairline))
+            .border_color(crate::theme::line(cx, cordata_theme::tokens::LINE_DEFAULT))
             .flex()
             .flex_col()
-            .gap(px(4.))
+            .gap(px(6.))
             .child(
                 div()
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(color(cx, Role::Agent))
-                            .child("OFFLINE VOICE & SPEECH (MACOS)"),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(color(cx, Role::Ok))
-                            .child("✓ Local STT/TTS Ready"),
-                    ),
+                    .child(ui::heading("voice & speech", cx))
+                    .child(ui::badge("● macOS Native", ui::Tone::Teal, cx)),
             )
             .child(
                 div()
                     .text_xs()
+                    .line_height(gpui::relative(1.4))
                     .text_color(color(cx, Role::TextSecondary))
                     .child("Zero cloud latency: speech recognition via Apple Dictation and speech synthesis via NSSpeechSynthesizer."),
             )
@@ -605,11 +584,10 @@ impl Workspace {
                 div()
                     .flex()
                     .justify_end()
-                    .pt(px(4.))
+                    .pt(px(2.))
                     .child(
-                        Button::new("voice-test-btn")
-                            .label("Test Voice Output ♫")
-                            .ghost()
+                        ui::button("voice-test-btn", "Test voice output ♫", Kind::Outline, cx)
+                            .h(px(26.))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.speak_text("Cordata systems operational.", cx);
                             })),

@@ -13,6 +13,8 @@ exact chat-completions request the model would have sent, and nothing leaves the
 4. **refused, and said** — a cloud vision model without `capture.screenshotCloud`, or a local tag that
    is not installed: the turn runs on the session's model with no image, and the model is told the
    screenshot did not come through.
+5. **attached to a model that sees** — with no `capture.visionModel`, an image the person attached goes as it is to a
+   session model that reads images itself (an Ollama `:cloud` vision model), and is forgotten after the turn.
 
     backend/.venv/bin/python _vision_turn_smoke_test.py
 """
@@ -165,10 +167,34 @@ async def test_a_screenshot_that_may_not_go_is_not_sent_and_the_model_is_told() 
             oc.installed_local_tags = real_tags
 
 
+# ----------------------------------------------------------------------------- 5. attached, to a model that sees
+
+
+async def test_an_attached_image_goes_to_a_session_model_that_sees() -> None:
+    daemon = FakeDaemon(text_reply("a red square"))
+    agent_common.build_model = lambda model_id=None: oc.OllamaCloudModel("mistral-large-4", transport=daemon.transport)
+    server, conn = fresh_server(ROUTE)
+    sid = (await server.new_session(cwd=str(project("vision-native")))).session_id
+    agent = server._sessions[sid].agent
+    check(acp_server._native_vision(agent) == "mistral-large-4:cloud", "a :cloud vision model sees images itself")
+    response = await server.prompt(sid, [acp.text_block("what is this?"), acp.schema.ImageContentBlock(type="image", data=B64, mime_type="image/jpeg")])
+    await settle()
+    bodies = [json.loads(r.content) for r in daemon.requests]
+    with_image = [body for body in bodies if images_in(body)]
+    check(response.stop_reason == "end_turn" and with_image, f"the turn ran with the image ({len(bodies)} request(s))")
+    check(all(body.get("model") == "mistral-large-4:cloud" for body in with_image), "…on the session's own model, no detour")
+    check("no vision model is configured" not in " ".join(str(u) for u in conn.updates), "…and nothing said it was refused")
+    held = [b for m in agent.messages for b in m.get("content") or [] if isinstance(b, dict) and "image" in b]
+    check(not held, "the image is out of the history afterwards")
+    agent_common.build_model = lambda model_id=None: oc.OllamaCloudModel("glm-5.3-flash", transport=daemon.transport)
+    check(acp_server._native_vision(server._sessions[(await server.new_session(cwd=str(project("vision-blind")))).session_id].agent) is None, "a text-only model does not")
+
+
 async def main() -> None:
     test_the_plan()
     await test_a_screenshot_turn_runs_on_the_vision_model_once()
     await test_a_screenshot_that_may_not_go_is_not_sent_and_the_model_is_told()
+    await test_an_attached_image_goes_to_a_session_model_that_sees()
     print("\nvision turn: all checks passed")
 
 

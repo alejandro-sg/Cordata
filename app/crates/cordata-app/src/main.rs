@@ -141,6 +141,7 @@ fn main() {
         gpui_component::init(cx);
         theme::install(display.increase_contrast, &prefs.theme, cx);
         workspace::bind_keys(cx);
+        workspace::install_menus(cx);
 
         // `CORDATA_APP_WINDOW=1280x800`: the size to open at (layout checks at fixed widths).
         let (w, h) = std::env::var("CORDATA_APP_WINDOW")

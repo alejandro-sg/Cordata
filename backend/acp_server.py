@@ -181,6 +181,7 @@ from acp_session import (  # noqa: E402,F401
     _settle_cancelled_turn,
     _LAYA_DECIDE_TIMEOUT,
     _model_for_vision,
+    _native_vision,
 )
 
 
@@ -1767,8 +1768,10 @@ class CordataAcpAgent:
     async def _attached_images(self, session_id: str, state: "_Session", prompt: list) -> dict | None:
         """Images attached to the prompt (a pasted screenshot, a dragged file in the app) as a vision turn — the same
         gate and the same detour as the menu bar's screenshot: the model named by ``capture.visionModel``, local unless
-        ``capture.screenshotCloud``, the image stripped from the history when the turn ends. ``None`` (and the person
-        told why) when there are none or they cannot be sent."""
+        ``capture.screenshotCloud``, the image stripped from the history when the turn ends. With no vision model
+        configured, a session whose own model sees images (Claude, an Ollama ``:cloud`` vision model —
+        `_native_vision`) takes them as they are: the person attached them to a model their words already go to.
+        ``None`` (and the person told why) when there are none or they cannot be sent."""
         images, dropped = _prompt_images(prompt)
         for reason in dropped:
             await self._say(session_id, f"[Not attached: {reason}.]\n")
@@ -1776,6 +1779,10 @@ class CordataAcpAgent:
             return None
         preferences = settings_store.current(state.cwd)
         model = str(preferences.get(os_context.VISION_KEY) or "").strip()
+        if not model:
+            native = _native_vision(state.agent)
+            if native is not None:
+                return {"bytes": images[0]["bytes"], "format": images[0]["format"], "images": images, "model": native, "native": True, "cloud_ok": True, "app": "the attached image"}
         cloud_ok = bool(preferences.get("capture.screenshotCloud", False))
         allowed, why = os_context.screenshot_plan(True, cloud_ok, model)
         if not allowed:

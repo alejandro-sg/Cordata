@@ -396,6 +396,8 @@ impl Workspace {
                         name: if branch { "branch.diff".into() } else { "uncommitted.diff".into() },
                         size: diff.len(),
                         image: false,
+                        kind: super::attachments::Kind::Code,
+                        preview: None,
                         attachment: acp_core::Attachment::Text { uri: "file:///review.diff".into(), text: diff },
                     };
                     this.staged.push(staged);

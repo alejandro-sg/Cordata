@@ -90,6 +90,32 @@ def _chat_system_prompt(cwd: str) -> str:
     )
 
 
+#: Ollama `:cloud` models that read images themselves: a picture the person attaches goes to them as it is, with no
+#: detour through ``capture.visionModel``. Also the Vision Model choices in the app's Settings → Models.
+CLOUD_VISION_MODELS = frozenset({"mistral-large-4:cloud", "gemma4:31b:cloud", "minimax-m3.1-flash:cloud"})
+
+
+def _native_vision(agent) -> str | None:
+    """The session's own model when it sees images itself — Claude (``AnthropicModel``), or an Ollama ``:cloud``
+    vision model (`CLOUD_VISION_MODELS`) — so an image the person attached can go to it without a vision model being
+    configured. ``None`` when it cannot see."""
+    import ollama_cloud
+
+    model = getattr(agent, "model", None)
+    if model is None:
+        return None
+    model_id = str((model.get_config() or {}).get("model_id") or "")
+    try:
+        from strands.models.anthropic import AnthropicModel
+    except ImportError:
+        AnthropicModel = None
+    if AnthropicModel is not None and isinstance(model, AnthropicModel):
+        return model_id or "claude"
+    if isinstance(model, ollama_cloud.OllamaCloudModel) and model_id in CLOUD_VISION_MODELS:
+        return model_id
+    return None
+
+
 def _model_for_vision(agent, vision: dict) -> tuple[object | None, str | None]:
     """Point the session's model at the vision model for one screenshot turn. Returns a function that
     puts the session's own model back, or ``None`` and the reason the image cannot be sent.
@@ -109,6 +135,11 @@ def _model_for_vision(agent, vision: dict) -> tuple[object | None, str | None]:
     """
     import ollama_cloud
 
+    if vision.get("native"):
+        # The session's own model sees the image (`_native_vision`): no detour, but it must still be forgettable.
+        if not isinstance(getattr(agent, "_session_manager", None), session_store.SnapshotSessionManager | type(None)):
+            return None, "the image was not sent: this session's store cannot remove an image after the turn"
+        return (lambda: None), None
     model = agent.model
     target = str(vision.get("model") or "").strip()
     if not isinstance(model, ollama_cloud.OllamaCloudModel):

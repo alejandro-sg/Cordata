@@ -16,6 +16,8 @@ pub const RECENTS_CAP: usize = 20;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Prefs {
+    /// The person's choice for the left sidebar; `None` defaults to open.
+    pub sidebar_open: Option<bool>,
     /// The person's choice for the side panel; `None` follows the window width.
     pub panel_open: Option<bool>,
     /// `system` (follow macOS Light/Dark) · `light` · `2049` · `graphite` · `dim`.
@@ -58,6 +60,7 @@ pub struct RecentProject {
 impl Default for Prefs {
     fn default() -> Self {
         Self {
+            sidebar_open: None,
             panel_open: None,
             theme: "system".into(),
             haze: true,

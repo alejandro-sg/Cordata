@@ -221,19 +221,19 @@ impl Tokens {
 // ------------------------------------------------------------------------------------------------ alphas
 
 /// Row dividers.
-pub const LINE_SUBTLE: f32 = 0.05;
+pub const LINE_SUBTLE: f32 = 0.06;
 /// Column borders, headers.
-pub const LINE_DEFAULT: f32 = 0.06;
+pub const LINE_DEFAULT: f32 = 0.08;
 /// Chip and button borders.
-pub const LINE_CONTROL: f32 = 0.08;
-pub const LINE_CONTROL_STRONG: f32 = 0.10;
+pub const LINE_CONTROL: f32 = 0.10;
+pub const LINE_CONTROL_STRONG: f32 = 0.14;
 /// What an opaque hairline is mixed at (the role palette has no alpha).
-pub const LINE_HAIRLINE_OPAQUE: f64 = 0.12;
+pub const LINE_HAIRLINE_OPAQUE: f64 = 0.13;
 /// Faint fills: cards, the user's bubble.
-pub const FILL_FAINT: f32 = 0.025;
+pub const FILL_FAINT: f32 = 0.03;
 /// Hover on rows and ghost buttons.
-pub const HOVER: f32 = 0.035;
-pub const HOVER_STRONG: f32 = 0.05;
+pub const HOVER: f32 = 0.045;
+pub const HOVER_STRONG: f32 = 0.07;
 
 pub const AMBER_FILL_FAINT: f32 = 0.04;
 pub const AMBER_FILL: f32 = 0.05;
@@ -261,7 +261,7 @@ pub const HAZE_TEAL: (u32, f32) = (0x468C96, 0.07);
 
 pub const HEADER_H: f32 = 52.;
 pub const STATUS_H: f32 = 28.;
-pub const SIDEBAR_W: f32 = 248.;
+pub const SIDEBAR_W: f32 = 256.;
 pub const PANEL_MIN_W: f32 = 300.;
 pub const PANEL_MAX_W: f32 = 380.;
 /// The side panel's share of the window, clamped to `PANEL_MIN_W..=PANEL_MAX_W`.
@@ -270,16 +270,16 @@ pub const PANEL_VW: f32 = 0.28;
 pub const PANEL_WIDE_MIN_W: f32 = 380.;
 pub const PANEL_WIDE_MAX_W: f32 = 560.;
 pub const PANEL_WIDE_VW: f32 = 0.38;
-pub const CONTENT_MAX_W: f32 = 760.;
-pub const PALETTE_W: f32 = 560.;
+pub const CONTENT_MAX_W: f32 = 768.;
+pub const PALETTE_W: f32 = 580.;
 /// The palette's distance from the top, as a share of the window height.
 pub const PALETTE_TOP_VH: f32 = 0.14;
-pub const PICKER_W: f32 = 360.;
+pub const PICKER_W: f32 = 368.;
 pub const SETTINGS_W: f32 = 960.;
 pub const SETTINGS_H: f32 = 680.;
 pub const SETTINGS_NAV_W: f32 = 220.;
 pub const SETTINGS_HEADER_H: f32 = 56.;
-pub const SEND_BUTTON: f32 = 30.;
+pub const SEND_BUTTON: f32 = 32.;
 pub const SWITCH_W: f32 = 34.;
 pub const SWITCH_H: f32 = 20.;
 pub const SELECT_MIN_W: f32 = 150.;
@@ -304,12 +304,12 @@ pub const TERMINAL_OVERFLOW_W: f32 = 1240.;
 pub const HEADER_HIDE_BRANCH_W: f32 = 560.;
 pub const HEADER_SHORT_MODEL_W: f32 = 480.;
 
-pub const RADIUS_BADGE: f32 = 3.;
-pub const RADIUS_ROW: f32 = 4.;
-pub const RADIUS_CONTROL: f32 = 5.;
-pub const RADIUS_CARD: f32 = 6.;
-pub const RADIUS_POPOVER: f32 = 8.;
-pub const RADIUS_MODAL: f32 = 10.;
+pub const RADIUS_BADGE: f32 = 4.;
+pub const RADIUS_ROW: f32 = 6.;
+pub const RADIUS_CONTROL: f32 = 6.;
+pub const RADIUS_CARD: f32 = 8.;
+pub const RADIUS_POPOVER: f32 = 10.;
+pub const RADIUS_MODAL: f32 = 12.;
 pub const RADIUS_CAP: f32 = 4.;
 
 // ------------------------------------------------------------------------------------------------ type (px)

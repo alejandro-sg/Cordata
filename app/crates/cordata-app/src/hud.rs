@@ -6,7 +6,7 @@ use cordata_theme::tokens::{self as t, HAZE_AMBER, HAZE_TEAL, Tracking, tracked_
 use gpui::prelude::FluentBuilder as _;
 use gpui::{AnyElement, App, Div, IntoElement, ParentElement, SharedString, Styled, div, linear_color_stop, linear_gradient, px, relative, rgb};
 
-use crate::theme::{c, color, line, mono, tk};
+use crate::theme::{c, color, line, mono, sans, tk};
 use crate::ui;
 
 /// A mode, a state, a risk band: the word as a badge in its role's tint.
@@ -20,19 +20,20 @@ pub fn pill(label: &str, role: Role, cx: &App) -> Div {
     ui::badge(label, tone, cx)
 }
 
-/// `⌜CORDATA⌝`: 12px mono, wide tracking, amber; the brackets in the dim amber.
+/// `⌜CORDATA⌝`: 12px proportional sans with crisp thin-space tracking, amber; the brackets in dim amber.
 pub fn bracket_title(text: &str, cx: &App) -> Div {
     let tk = tk(cx);
     div()
         .flex()
         .items_center()
+        .gap(px(2.))
         .whitespace_nowrap()
-        .font_family(mono(cx))
+        .font_family(sans(cx))
         .text_size(px(t::TEXT_LOGO))
-        .font_weight(gpui::FontWeight::MEDIUM)
-        .child(div().text_color(c(tk.amber_dim)).child("⌜"))
-        .child(div().text_color(c(tk.amber)).child(SharedString::from(tracked_text(text, Tracking::Logo, true))))
-        .child(div().text_color(c(tk.amber_dim)).child("⌝"))
+        .font_weight(gpui::FontWeight::BOLD)
+        .child(div().font_family(mono(cx)).text_color(c(tk.amber_dim)).child("⌜"))
+        .child(div().text_color(c(tk.amber)).child(SharedString::from(tracked_text(text, Tracking::Label, true))))
+        .child(div().font_family(mono(cx)).text_color(c(tk.amber_dim)).child("⌝"))
 }
 
 /// The context gauge: label, an 80×3 bar (amber fill = share used), the value.
@@ -49,7 +50,7 @@ pub fn gauge(label: &str, fraction: Option<f64>, value: &str, cx: &App) -> Div {
         .whitespace_nowrap()
         .font_family(mono(cx))
         .text_size(px(t::TEXT_STATUS))
-        .child(div().text_color(c(tk.text_label)).child(SharedString::from(tracked_text(label, Tracking::Label, true))))
+        .child(div().text_color(c(tk.text_label)).child(SharedString::from(label.to_ascii_uppercase())))
         .child(
             div()
                 .relative()

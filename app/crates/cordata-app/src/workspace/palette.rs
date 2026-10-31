@@ -16,6 +16,7 @@ use crate::ui;
 pub enum Action {
     NewConversation,
     ResumeLast,
+    ToggleSidebar,
     TogglePanel,
     OpenTerminal,
     Tab(DockTab),
@@ -74,13 +75,14 @@ impl Workspace {
             Item { group: "chat", label: "Cycle permission mode".into(), shortcut: "⇧Tab", action: Action::CycleMode },
             Item { group: "chat", label: "Stop the run".into(), shortcut: "esc esc", action: Action::StopRun },
             Item { group: "panel", label: "Toggle side panel".into(), shortcut: "⌘\\", action: Action::TogglePanel },
+            Item { group: "panel", label: "Show or hide project sidebar".into(), shortcut: "⌘B", action: Action::ToggleSidebar },
             Item { group: "panel", label: "Open terminal".into(), shortcut: "⌃`", action: Action::OpenTerminal },
-            Item { group: "panel", label: "Mission control".into(), shortcut: "", action: Action::Tab(DockTab::Mission) },
+            Item { group: "panel", label: "Mission control".into(), shortcut: "⌘⌥1", action: Action::Tab(DockTab::Mission) },
             Item { group: "panel", label: "Files".into(), shortcut: "⌘P", action: Action::Tab(DockTab::Files) },
-            Item { group: "panel", label: "Editor".into(), shortcut: "", action: Action::Tab(DockTab::Editor) },
-            Item { group: "panel", label: "Review changes".into(), shortcut: "", action: Action::Tab(DockTab::Review) },
-            Item { group: "panel", label: "Browser agent".into(), shortcut: "", action: Action::Tab(DockTab::Browser) },
-            Item { group: "panel", label: "Models & voice".into(), shortcut: "", action: Action::Tab(DockTab::Models) },
+            Item { group: "panel", label: "Editor".into(), shortcut: "⌘⌥3", action: Action::Tab(DockTab::Editor) },
+            Item { group: "panel", label: "Review changes".into(), shortcut: "⌘⌥4", action: Action::Tab(DockTab::Review) },
+            Item { group: "panel", label: "Browser agent".into(), shortcut: "⌘⌥6", action: Action::Tab(DockTab::Browser) },
+            Item { group: "panel", label: "Models & voice".into(), shortcut: "⌘⌥7", action: Action::Tab(DockTab::Models) },
             Item { group: "chat", label: "History: go back, fork, undo files".into(), shortcut: "", action: Action::Tab(DockTab::History) },
             Item { group: "chat", label: "Attach files…".into(), shortcut: "", action: Action::Attach },
             Item { group: "chat", label: "New conversation in a worktree…".into(), shortcut: "", action: Action::Worktree },
@@ -139,6 +141,7 @@ impl Workspace {
                     self.open(row.target, window, cx);
                 }
             }
+            Action::ToggleSidebar => self.toggle_sidebar(&super::ToggleSidebar, window, cx),
             Action::TogglePanel => self.toggle_panel(&super::TogglePanel, window, cx),
             Action::OpenTerminal => self.toggle_terminal(&super::ToggleTerminal, window, cx),
             Action::Tab(tab) => {
