@@ -25,10 +25,12 @@ pub const SKILLS_TAG: &str = "gui-skills";
 pub const SKILL_RETIRE_TAG: &str = "gui-skill-retire";
 pub const MCP_CATALOG_TAG: &str = "gui-mcp-catalog";
 pub const MCP_INSTALL_TAG: &str = "gui-mcp-install";
+pub const MCP_REMOVE_TAG: &str = "gui-mcp-remove";
 pub const SKILL_CATALOG_TAG: &str = "gui-skill-catalog";
 pub const SKILL_INSTALL_TAG: &str = "gui-skill-install";
+pub const SKILL_REMOVE_TAG: &str = "gui-skill-remove";
 /// Every tag `on_customize_data` answers (the workspace routes these here).
-pub const TAGS: [&str; 6] = [SKILLS_TAG, SKILL_RETIRE_TAG, MCP_CATALOG_TAG, MCP_INSTALL_TAG, SKILL_CATALOG_TAG, SKILL_INSTALL_TAG];
+pub const TAGS: [&str; 8] = [SKILLS_TAG, SKILL_RETIRE_TAG, MCP_CATALOG_TAG, MCP_INSTALL_TAG, MCP_REMOVE_TAG, SKILL_CATALOG_TAG, SKILL_INSTALL_TAG, SKILL_REMOVE_TAG];
 
 pub struct Customize {
     pub skills: Vec<Value>,
@@ -100,7 +102,7 @@ impl Workspace {
         session.request("_cordata/skills/catalog", json!({}), SKILL_CATALOG_TAG);
     }
 
-    fn install_mcp(&mut self, spec: String, cx: &mut Context<Self>) {
+    pub(super) fn install_mcp(&mut self, spec: String, cx: &mut Context<Self>) {
         if spec.trim().is_empty() {
             return;
         }
@@ -109,12 +111,30 @@ impl Workspace {
         cx.notify();
     }
 
-    fn install_skill(&mut self, source: String, cx: &mut Context<Self>) {
+    pub(super) fn remove_mcp(&mut self, name: String, project: bool, cx: &mut Context<Self>) {
+        if name.trim().is_empty() {
+            return;
+        }
+        self.customize.registry_note = Some((format!("Removing {name}…"), false));
+        self.session.read(cx).request("_cordata/plugins/remove", json!({ "name": name, "project": project }), MCP_REMOVE_TAG);
+        cx.notify();
+    }
+
+    pub(super) fn install_skill(&mut self, source: String, cx: &mut Context<Self>) {
         if source.trim().is_empty() {
             return;
         }
         self.customize.registry_note = Some((format!("Installing {source}…"), false));
         self.session.read(cx).request("_cordata/skills/install", json!({ "source": source }), SKILL_INSTALL_TAG);
+        cx.notify();
+    }
+
+    pub(super) fn remove_skill(&mut self, name: String, project: bool, cx: &mut Context<Self>) {
+        if name.trim().is_empty() {
+            return;
+        }
+        self.customize.registry_note = Some((format!("Removing {name}…"), false));
+        self.session.read(cx).request("_cordata/skills/remove", json!({ "name": name, "project": project }), SKILL_REMOVE_TAG);
         cx.notify();
     }
 
@@ -133,6 +153,19 @@ impl Workspace {
             SKILL_CATALOG_TAG => {
                 self.customize.skill_catalog = value.get("catalog").and_then(Value::as_array).cloned().unwrap_or_default();
                 self.customize.skills_installed = value.get("installed").and_then(Value::as_array).cloned().unwrap_or_default();
+            }
+            MCP_REMOVE_TAG | SKILL_REMOVE_TAG => {
+                let ok = value.get("ok").and_then(Value::as_bool).unwrap_or(false);
+                let name = value.get("name").and_then(Value::as_str).unwrap_or("entry");
+                self.customize.registry_note = Some(if ok {
+                    (format!("Removed {name}."), false)
+                } else {
+                    (value.get("reason").and_then(Value::as_str).unwrap_or("not removed").to_owned(), true)
+                });
+                if tag == MCP_REMOVE_TAG {
+                    self.session.read(cx).request("_cordata/plugins/list", json!({}), super::PLUGINS_TAG);
+                }
+                self.load_skills(cx);
             }
             MCP_INSTALL_TAG | SKILL_INSTALL_TAG => {
                 let ok = value.get("ok").and_then(Value::as_bool).unwrap_or(false);
@@ -481,15 +514,28 @@ impl Workspace {
         if let Some((note, error)) = self.customize.registry_note.clone() {
             rows.push(div().py(px(6.)).text_size(px(t::TEXT_SMALL)).text_color(c(if error { tk.danger } else { tk.teal })).child(SharedString::from(note)).into_any_element());
         }
-        let installed: Vec<&str> = self.customize.mcp_installed.iter().filter_map(|r| r.get("name").and_then(Value::as_str)).collect();
+        let installed: Vec<(&str, &str)> = self
+            .customize
+            .mcp_installed
+            .iter()
+            .filter_map(|r| Some((r.get("name")?.as_str()?, r.get("scope").and_then(Value::as_str).unwrap_or("user"))))
+            .collect();
         for (index, entry) in self.customize.mcp_catalog.iter().enumerate() {
             let id = entry.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
             let needs: Vec<&str> = entry.get("needs").and_then(Value::as_array).map(|n| n.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
             let description = format!("{}{}", entry.get("description").and_then(Value::as_str).unwrap_or_default(), if needs.is_empty() { String::new() } else { format!(" · needs {}", needs.join(", ")) });
-            let have = installed.contains(&id.as_str());
+            let found = installed.iter().find(|&&(n, _)| n == id.as_str()).copied();
+            let have = found.is_some();
             let target = id.clone();
-            let control = if have {
-                ui::meta("installed", cx).into_any_element()
+            let control = if let Some((_, scope)) = found {
+                let is_proj = scope == "project";
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(ui::meta("installed", cx))
+                    .child(ui::button(("mcp-remove", index), "Remove", Kind::Ghost, cx).h(px(24.)).on_click(cx.listener(move |this, _, _, cx| this.remove_mcp(target.clone(), is_proj, cx))))
+                    .into_any_element()
             } else {
                 ui::button(("mcp-install", index), "Install", Kind::Outline, cx).h(px(24.)).on_click(cx.listener(move |this, _, _, cx| this.install_mcp(target.clone(), cx))).into_any_element()
             };
@@ -510,23 +556,47 @@ impl Workspace {
                 .into_any_element(),
         );
         rows.push(sub(cx, "skills — one click"));
-        let have_skills: Vec<&str> = self.customize.skills_installed.iter().filter_map(|r| r.get("name").and_then(Value::as_str)).collect();
+        let have_skills: Vec<(&str, &str)> = self
+            .customize
+            .skills_installed
+            .iter()
+            .filter_map(|r| Some((r.get("name")?.as_str()?, r.get("scope").and_then(Value::as_str).unwrap_or("user"))))
+            .collect();
         for (index, entry) in self.customize.skill_catalog.iter().enumerate() {
             let id = entry.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let skill_name = entry.get("name").and_then(Value::as_str).unwrap_or(id.as_str()).to_owned();
             let description = entry.get("description").and_then(Value::as_str).unwrap_or_default().to_owned();
-            let have = have_skills.iter().any(|name| id.ends_with(name));
+            let found = have_skills.iter().find(|&&(n, _)| n == skill_name.as_str()).copied();
+            let have = found.is_some();
             let target = id.clone();
-            let control = if have {
-                ui::meta("installed", cx).into_any_element()
+            let rm_target = skill_name.clone();
+            let control = if let Some((_, scope)) = found {
+                let is_proj = scope == "project";
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(ui::meta("installed", cx))
+                    .child(ui::button(("skill-cat-rm", index), "Remove", Kind::Ghost, cx).h(px(24.)).on_click(cx.listener(move |this, _, _, cx| this.remove_skill(rm_target.clone(), is_proj, cx))))
+                    .into_any_element()
             } else {
                 ui::button(("skill-install", index), "Install", Kind::Outline, cx).h(px(24.)).on_click(cx.listener(move |this, _, _, cx| this.install_skill(target.clone(), cx))).into_any_element()
             };
             rows.push(row(SharedString::from(id), SharedString::from(description), control, have, cx));
         }
-        for skill in &self.customize.skills_installed {
+        for (index, skill) in self.customize.skills_installed.iter().enumerate() {
             let name = skill.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
             let scope = skill.get("scope").and_then(Value::as_str).unwrap_or("user");
-            rows.push(row(SharedString::from(name), SharedString::from(format!("installed · {scope} · {}", shown(skill.get("description").and_then(Value::as_str).unwrap_or_default()))), ui::meta(scope, cx).into_any_element(), true, cx));
+            let is_proj = scope == "project";
+            let rm_name = name.clone();
+            let control = div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(ui::meta(scope, cx))
+                .child(ui::button(("skill-inst-rm", index), "Remove", Kind::Ghost, cx).h(px(24.)).on_click(cx.listener(move |this, _, _, cx| this.remove_skill(rm_name.clone(), is_proj, cx))))
+                .into_any_element();
+            rows.push(row(SharedString::from(name), SharedString::from(format!("installed · {scope} · {}", shown(skill.get("description").and_then(Value::as_str).unwrap_or_default()))), control, true, cx));
         }
         rows.push(
             div()

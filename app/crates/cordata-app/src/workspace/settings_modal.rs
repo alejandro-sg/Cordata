@@ -299,7 +299,10 @@ impl Workspace {
     /// Loads what a section shows when it opens.
     pub(super) fn on_settings_section(&mut self, cx: &mut Context<Self>) {
         match self.settings_section {
-            Section::Connections => self.load_plugins(cx),
+            Section::Connections => {
+                self.load_plugins(cx);
+                self.load_skills(cx);
+            }
             Section::Permissions => self.load_trusted_projects(cx),
             Section::Customize => self.load_skills(cx),
             Section::Automations => self.load_automations(cx),
@@ -495,11 +498,20 @@ impl Workspace {
         let max_tokens = self.select(Select::MaxTokens, &max_tokens, ["4096", "8192", "16384", "32000", "64000"].iter().map(|v| ((*v).to_owned(), (*v).to_owned())).collect(), cx);
         let compact = self.value_str("context.autoCompact");
         let compact = self.segmented("auto-compact", &[("80", "80%"), ("90", "90%"), ("off", "off")], &compact, |this, v, cx| this.set_user_setting("context.autoCompact", json!(v), cx), cx);
+        let dispatch = self.value_str("orchestrator.dispatch");
+        let dispatch = self.segmented(
+            "orch-dispatch",
+            &[("auto", "auto"), ("shadow", "shadow"), ("off", "static")],
+            if dispatch.is_empty() { "shadow" } else { &dispatch },
+            |this, v, cx| this.set_user_setting("orchestrator.dispatch", json!(v), cx),
+            cx,
+        );
         let mut local = vec![(String::new(), "off".to_owned())];
         local.extend(self.ollama_models.iter().map(|m| (m.clone(), m.clone())));
         let completion = self.select(Select::CompletionModel, &self.prefs.completion_model.clone(), local, cx);
         vec![
             setting_row("Default model", "Used by new conversations; the header's model chip changes the current one.", default_model, cx),
+            setting_row("Orchestrator routing", "Auto Mode scores Claude, Antigravity and zero-download Ollama :cloud models by API cost, real context window, task capabilities and per-step RLAIF.", dispatch, cx),
             setting_row("Inline completions", "Ghost text in the editor from a local Ollama model (a coder model with fill-in-the-middle, e.g. qwen2.5-coder). Code stays on this Mac. Tab accepts.", completion, cx),
             setting_row("Fast model", "Titles, summaries and compaction.", fast, cx),
             setting_row("Extended thinking", "Anthropic models only. Auto: adaptive thinking (the model decides). Always: adaptive at high effort every turn.", thinking, cx),
@@ -577,7 +589,7 @@ impl Workspace {
         let size = format!("{:.0}", self.prefs.code_font_size);
         let font = self.select(Select::CodeFont, &size, ["11", "12", "13", "14", "15", "16"].iter().map(|v| ((*v).to_owned(), format!("{v} px"))).collect(), cx);
         vec![
-            setting_row("Theme", "2049 is the reference look; graphite is neutral; dim lifts the ground for bright rooms.", theme, cx),
+            setting_row("Theme", "system follows macOS Light/Dark live; light uses the WCAG DAY palette; 2049, graphite and dim are dark.", theme, cx),
             setting_row("Ambient haze", "The amber and teal glow behind the conversation. Off with Reduce Motion or Reduce Transparency.", haze, cx),
             setting_row("Density", "Spacing in lists and the transcript.", density, cx),
             setting_row("Code font size", "The editor and code blocks.", font, cx),
@@ -592,8 +604,11 @@ impl Workspace {
             setting_row("Hub status", "", status_control(kind, &health, cx), cx),
             sub_heading("mcp servers", cx),
         ];
+        if let Some((note, error)) = self.customize.registry_note.clone() {
+            rows.push(div().py(px(6.)).text_size(px(t::TEXT_SMALL)).text_color(c(if error { tk.danger } else { tk.teal })).child(SharedString::from(note)).into_any_element());
+        }
         if self.plugins.is_empty() {
-            rows.push(div().py(px(12.)).text_size(px(t::TEXT_SMALL)).text_color(c(tk.text_muted)).child("No MCP servers configured for this project.").into_any_element());
+            rows.push(div().py(px(12.)).text_size(px(t::TEXT_SMALL)).text_color(c(tk.text_muted)).child("No MCP servers configured yet. Add one below in one click or browse the catalog.").into_any_element());
         }
         for (index, plugin) in self.plugins.iter().enumerate() {
             let name = plugin.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
@@ -601,20 +616,46 @@ impl Workspace {
             let error = plugin.get("error").and_then(Value::as_str).filter(|e| !e.is_empty()).map(str::to_owned);
             let tools = plugin.get("tools").and_then(Value::as_array).map_or(0, Vec::len);
             let transport = plugin.get("transport").and_then(Value::as_str).unwrap_or_default();
-            let source = plugin.get("source").and_then(Value::as_str).unwrap_or_default();
+            let source = plugin.get("source").and_then(Value::as_str).unwrap_or_default().to_owned();
             let on = matches!(status.as_str(), "running" | "starting" | "enabled");
             let desc = match &error {
                 Some(e) => shown(e),
                 None => format!("{transport} · {source} · {tools} tool{}", if tools == 1 { "" } else { "s" }),
             };
             let target = name.clone();
-            let switch = ui::switch(("mcp-switch", index), on, cx).aria_label(SharedString::from(format!("{name} enabled"))).on_click(cx.listener(move |this, _, _, cx| this.toggle_plugin(&target, !on, cx))).into_any_element();
-            rows.push(setting_row_owned(name, desc, error.is_some(), switch, cx));
+            let rm_target = name.clone();
+            let removable = matches!(source.as_str(), "user" | "project");
+            let is_proj = source == "project";
+            let controls = div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .when(removable, |el| {
+                    el.child(ui::button(("mcp-conn-rm", index), "Remove", Kind::Ghost, cx).h(px(24.)).on_click(cx.listener(move |this, _, _, cx| this.remove_mcp(rm_target.clone(), is_proj, cx))))
+                })
+                .child(ui::switch(("mcp-switch", index), on, cx).aria_label(SharedString::from(format!("{name} enabled"))).on_click(cx.listener(move |this, _, _, cx| this.toggle_plugin(&target, !on, cx))))
+                .into_any_element();
+            rows.push(setting_row_owned(name, desc, error.is_some(), controls, cx));
         }
         rows.push(
             div()
-                .pt(px(10.))
-                .child(ui::button("mcp-add", "+ Add server", Kind::Outline, cx).tooltip(ui::tip("Opens the project .mcp.json in the editor")).on_click(cx.listener(|this, _, window, cx| this.add_mcp_server(window, cx))))
+                .pt(px(12.))
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(px(8.))
+                .child(div().w(px(300.)).h(px(28.)).flex().items_center().px(px(8.)).rounded(px(t::RADIUS_CONTROL)).bg(c(tk.bg_input)).border_1().border_color(line(cx, t::LINE_CONTROL_STRONG)).font_family(mono(cx)).text_size(px(t::TEXT_SMALL)).child(Input::new(&self.customize.mcp_quick).appearance(false)))
+                .child(ui::button("mcp-conn-quick", "+ Add server", Kind::Tint, cx).tooltip(ui::tip("Zero-config: catalog id, @scope/pkg, uvx:pkg or https://host/mcp — attaches live")).on_click(cx.listener(|this, _, window, cx| {
+                    let spec = this.customize.mcp_quick.read(cx).value().trim().to_owned();
+                    this.customize.mcp_quick.update(cx, |s, cx| s.set_value("", window, cx));
+                    this.install_mcp(spec, cx);
+                })))
+                .child(ui::button("mcp-browse-catalog", "Browse catalog →", Kind::Outline, cx).on_click(cx.listener(|this, _, _, cx| {
+                    this.settings_section = Section::Customize;
+                    this.on_settings_section(cx);
+                    cx.notify();
+                })))
+                .child(ui::button("mcp-edit-json", "Edit .mcp.json", Kind::Ghost, cx).tooltip(ui::tip("Opens project .mcp.json in the editor")).on_click(cx.listener(|this, _, window, cx| this.add_mcp_server(window, cx))))
                 .into_any_element(),
         );
         rows

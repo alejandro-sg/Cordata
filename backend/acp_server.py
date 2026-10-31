@@ -754,7 +754,11 @@ class CordataAcpAgent:
             extra_tools=[
                 patch_tool.apply_patch,
                 # Long commands that should not block the turn (background_tasks.py; gated exactly like `shell`).
-                *background_tasks.TOOLS,
+                *background_tasks.build_tools(
+                    cwd,
+                    session_id=session_id,
+                    on_event=lambda payload: harness_events.emit("task", {**payload, "sessionId": session_id}),
+                ),
                 # The specialists are `subagent` presets (architect, debugger); `specialist_agents` stay for the
                 # router's direct dispatch and the Lab's standing pods.
                 delegate,
@@ -1209,8 +1213,6 @@ class CordataAcpAgent:
             return {"goal": goal.public() if goal else None}
         if name == "goal/clear":
             return {"cleared": self._clear_goal(session_id, "cleared by the person") if session_id else False}
-        if name == "tasks/list":
-            return {"items": task_tool.restore(session_id) if session_id else []}
         if name == "session/history":
             # A page of a conversation's history, newest first, read from its snapshot — no agent is built for it, so
             # this answers for a conversation no process is running too (`session_history.page`).
@@ -1259,6 +1261,16 @@ class CordataAcpAgent:
             return {"episodes": episodes, "config": config.__dict__, "memory": memory}
         if name.startswith("ollama/"):
             action = name.removeprefix("ollama/")
+            if action in ("pull", "rm"):
+                return {
+                    "status": "error",
+                    "content": [
+                        {"text": "Cordata runs zero-download Ollama :cloud models through the signed-in proxy; unapproved pull/rm over RPC is disabled."},
+                        {"json": {"ok": False, "action": action, "reason": "zero_download_cloud_only"}},
+                    ],
+                }
+            if action in ("status", "fleet"):
+                return await run_blocking(self._ollama_fleet_status, cwd)
             model = str(params.get("model") or "")
             needed_gb = float(params.get("needed_gb") or 0.0)
             return await run_blocking(ollama_resource_tool.ollama_resource_manager, action, model, needed_gb)
@@ -1514,12 +1526,51 @@ class CordataAcpAgent:
         row["plugins"] = host.status()
         return row
 
+    @staticmethod
+    def _ollama_fleet_status(cwd: str) -> dict:
+        """Zero-download Ollama Cloud fleet, live daemon health, Auto Mode dispatch setting and real memory budget."""
+        import ollama_cloud as oc  # noqa: PLC0415
+
+        reply = ollama_resource_tool.ollama_resource_manager("status", "", 0.0)
+        problem = oc.daemon_problem(timeout=1.5)
+        local_tags = sorted(oc.installed_local_tags(timeout=1.5)) if problem is None else []
+        roles = {role: {"model": prof.model, "effort": prof.effort} for role, prof in oc.ROLES.snapshot().items()}
+        fleet = [
+            {
+                "alias": spec.alias,
+                "wireId": spec.wire_id,
+                "hosting": spec.hosting,
+                "tier": spec.tier,
+                "cost": spec.cost,
+                "contextWindow": spec.context_window,
+                "family": spec.family,
+                "capabilities": sorted(spec.capabilities),
+                "summary": spec.summary,
+            }
+            for spec in oc.REGISTRY.values()
+        ]
+        dispatch = str(settings_store.current(cwd).get("orchestrator.dispatch", "shadow"))
+        for item in reply.get("content") or []:
+            if isinstance(item, dict) and isinstance(item.get("json"), dict):
+                snap = item["json"]
+                snap["total_gb"] = snap.get("ceiling_gb") or snap.get("budget_gb") or 48.0
+                snap["daemon"] = {"ok": problem is None, "baseUrl": oc.default_base_url(), "problem": problem}
+                snap["local_installed"] = local_tags
+                snap["cloud_fleet"] = fleet
+                snap["roles"] = roles
+                snap["dispatch"] = dispatch
+        return reply
+
     def _tasks_control(self, action: str, params: dict, session_id: str | None) -> dict:
         """``tasks/list`` · ``tasks/status`` · ``tasks/kill``: the background shell tasks this server started
-        (background_tasks.py). ``list`` with ``all`` shows every session's; a kill ends the task's whole process group."""
+        (background_tasks.py), plus the session's ``todo_write`` ``items`` on ``list``. ``list`` with ``all`` shows every
+        session's; a kill ends the task's whole process group."""
         manager = background_tasks.MANAGER
         if action == "list":
-            return {"tasks": manager.list(None if params.get("all") else session_id)}
+            return {
+                "tasks": manager.list(None if params.get("all") else session_id),
+                "items": task_tool.restore(session_id) if session_id else [],
+            }
         task_id = str(params.get("taskId") or "")
         if action == "status":
             task = manager.get(task_id)
@@ -2771,13 +2822,10 @@ class CordataAcpAgent:
 
 
 async def _main() -> None:
-    # Runs inside this process's one real, long-running event loop — see
-    # start_mcp_clients' own docstring for why that matters: whichever
-    # CordataAcpAgent session first calls build_agent_for_session already
-    # tries to start these same MCP clients itself, from a throwaway
-    # thread/loop that doesn't survive to serve a real tool call afterward.
+    # PluginHost (per session, trust-gated, hot-swappable) manages MCP servers for ACP sessions;
+    # the legacy process-wide start_mcp_clients() snapshot is not started here so untrusted or
+    # duplicate MCP subprocesses are never spawned outside PluginHost.
     _protect_protocol_stdout()
-    asyncio.create_task(start_mcp_clients())
     # One JSON-RPC message is one line, and asyncio's default line limit is 64 KiB: a prompt with a
     # large embedded file, or the menu bar's screenshot (`_cordata/os-context`, up to 4 MiB of
     # JPEG as base64), would otherwise end the connection. The supervisor's side reads with a far

@@ -225,6 +225,7 @@ pub fn run_detail(mission: &Mission, cx: &App) -> AnyElement {
         .children(envelope)
         .when(!board.steps.is_empty(), |this| this.child(hud::label("steps", cx)).child(div().flex().flex_col().gap(px(3.)).children(steps)))
         .when(!board.pods.is_empty(), |this| this.child(hud::label("pods", cx)).child(div().flex().flex_col().gap(px(6.)).children(pods)))
+        .when_some(board.synthesis.clone(), |this, synthesis| this.child(div().text_xs().text_color(color(cx, Role::Accent)).child(SharedString::from(format!("⊕ {}", shown(&synthesis))))))
         .when_some(board.handoff.clone(), |this, handoff| this.child(div().text_xs().text_color(color(cx, Role::Agent)).child(SharedString::from(format!("⇄ {}", shown(&handoff))))))
         .when_some(mission.notice.clone(), |this, notice| this.child(div().text_xs().text_color(color(cx, Role::Attention)).child(SharedString::from(shown(&notice)))))
         .into_any_element()

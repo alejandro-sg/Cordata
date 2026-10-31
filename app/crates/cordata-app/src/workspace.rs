@@ -823,6 +823,12 @@ impl Workspace {
             models::OLLAMA_STATUS_TAG => {
                 self.models_view.take_status(&value);
             }
+            models::TASKS_LIST_TAG => {
+                self.models_view.take_tasks(&value);
+            }
+            models::TASKS_KILL_TAG | models::OLLAMA_STOP_TAG => {
+                self.refresh_models_and_tasks(cx);
+            }
             _ => {}
         }
         self.step_selftest(cx);
@@ -1100,7 +1106,7 @@ impl Workspace {
             DockTab::Review => self.load_review(cx),
             DockTab::History => self.load_history(cx),
             DockTab::Models => {
-                self.session.read(cx).request("_cordata/ollama/status", serde_json::json!({}), models::OLLAMA_STATUS_TAG);
+                self.refresh_models_and_tasks(cx);
             }
             _ => {}
         }

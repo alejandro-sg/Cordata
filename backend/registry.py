@@ -307,7 +307,10 @@ def skill_list(project: str | None = None) -> list[dict[str, Any]]:
 
 
 def skill_catalog() -> list[dict[str, Any]]:
-    return [{"id": key, "description": what, "source": f"{url}#{subdir}"} for key, (url, subdir, what) in SKILL_CATALOG.items()]
+    return [
+        {"id": key, "name": subdir.rsplit("/", 1)[-1] or key, "description": what, "source": f"{url}#{subdir}"}
+        for key, (url, subdir, what) in SKILL_CATALOG.items()
+    ]
 
 
 def _reload() -> int:

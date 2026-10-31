@@ -89,6 +89,8 @@ def load_skills(sources: Sequence[str | Path]) -> list[Skill]:
     found: dict[str, Skill] = {}
     for source in sources:
         path = Path(source)
+        if not path.exists():
+            continue
         try:
             skills = [Skill.from_file(path)] if (path / "SKILL.md").is_file() else Skill.from_directory(path)
         except (OSError, ValueError):

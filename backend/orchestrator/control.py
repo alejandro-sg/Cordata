@@ -168,6 +168,8 @@ def show_run(run_id: str) -> dict[str, Any] | None:
         "warnings": [secret_patterns.scrub(w)[0] for w in record.warnings],
         "history": record.history[-60:],
         "audit": {k: (record.audit or {}).get(k) for k in ("tier1_ok", "verdict", "tier2_used", "failures", "items")} if record.audit else None,
+        "synthesis": record.synthesis,
+        "synthFixes": record.synth_fixes,
         "rounds": record.rounds,
         "artifacts": artifacts_list(run_id),
         "control": {

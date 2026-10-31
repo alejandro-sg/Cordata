@@ -339,8 +339,10 @@ class SelfHealHooks(HookProvider):
     # --------------------------------------------------------------- hooks
 
     async def _after_tool(self, event: AfterToolCallEvent) -> None:
+        import outcome_hooks
+
         config = self.config
-        if not config.enabled:
+        if not config.enabled or outcome_hooks.was_denied(event.result, getattr(event, "cancel_message", None)):
             return
         name = event.tool_use.get("name")
         if name in ("editor", "apply_patch") and isinstance(event.result, dict) and event.result.get("status") == "error":

@@ -236,6 +236,14 @@ class TaskManager:
 
     def _notify(self, task: Task) -> None:
         event = {"event": "task_exit", **task.to_json(tail=20)}
+        if task.session_id:
+            event["sessionId"] = task.session_id
+        try:
+            import harness_events
+
+            harness_events.emit("task", event)
+        except Exception:
+            logger.debug("background task harness event failed", exc_info=True)
         for listener in list(self.listeners):
             try:
                 listener(event)
@@ -252,6 +260,90 @@ BACKGROUND_DESCRIPTION = (
 )
 
 
+def _format_started(task: Task) -> str:
+    if task.state == "failed":
+        return f"Not started: {task.output()}"
+    return f"Started background task {task.task_id} (pid {task.pid}, timeout {task.timeout_s:g}s). Check it with task_output(task_id=\"{task.task_id}\")."
+
+
+def _format_output(manager: TaskManager, task_id: str, lines: int, session_id: str | None = None) -> str:
+    task = manager.get(task_id)
+    if task is None:
+        known = ", ".join(t["taskId"] for t in manager.list(session_id)[:8]) or "none"
+        return f"No background task {task_id!r} (known: {known})."
+    info = task.to_json(tail=max(0, min(int(lines), TAIL_LINES + HEAD_LINES)))
+    exit_text = f", exit code {info['exitCode']}" if info["exitCode"] is not None else ""
+    return f"Task {task_id}: {info['state']}{exit_text}, {info['elapsedS']}s, {info['lines']} line(s).\n{info['output']}"
+
+
+def _format_kill(manager: TaskManager, task_id: str) -> tuple[dict[str, Any], str]:
+    result = manager.kill(task_id)
+    if not result.get("ok"):
+        return result, str(result.get("reason"))
+    return result, f"Task {task_id}: {result.get('already') or result.get('state')}."
+
+
+def build_tools(
+    cwd: str | Callable[[], str],
+    *,
+    session_id: str | None = None,
+    manager: TaskManager | Callable[[], TaskManager] | None = None,
+    on_event: Callable[[dict[str, Any]], None] | None = None,
+) -> list[Any]:
+    """Per-session background task tools bound to ``cwd`` and ``session_id`` (never ``os.getcwd()``)."""
+    resolve_cwd: Callable[[], str] = cwd if callable(cwd) else (lambda: cwd)
+    resolve_mgr: Callable[[], TaskManager] = manager if callable(manager) else (lambda: manager if manager is not None else MANAGER)
+
+    def _emit(event: dict[str, Any]) -> None:
+        payload = {**event, **({"sessionId": session_id} if session_id else {})}
+        if on_event is not None:
+            try:
+                on_event(payload)
+                return
+            except Exception:
+                logger.debug("background task on_event failed", exc_info=True)
+        try:
+            import harness_events
+
+            harness_events.emit("task", payload)
+        except Exception:
+            logger.debug("background task harness event failed", exc_info=True)
+
+    @tool(name="background_shell", description=BACKGROUND_DESCRIPTION)
+    def session_background_shell(command: str, timeout: int = DEFAULT_TIMEOUT_S) -> str:
+        """Args:
+            command: the shell command, run with `sh -c` in the project directory.
+            timeout: seconds before the task's whole process group is killed (default 3600).
+        """
+        try:
+            task = resolve_mgr().start(command, resolve_cwd(), timeout_s=timeout, session_id=session_id)
+        except (RuntimeError, ValueError) as error:
+            return f"Not started: {error}"
+        if task.state == "running":
+            _emit({"event": "task_start", **task.to_json(tail=None)})
+        return _format_started(task)
+
+    @tool(name="task_output", description="Status and the last lines of output of a background task started with background_shell.")
+    def session_task_output(task_id: str, lines: int = 60) -> str:
+        """Args:
+            task_id: the id background_shell returned.
+            lines: how many of the last output lines to show (default 60).
+        """
+        return _format_output(resolve_mgr(), task_id, lines, session_id=session_id)
+
+    @tool(name="task_kill", description="Ends a background task (and every process it started).")
+    def session_task_kill(task_id: str) -> str:
+        """Args:
+            task_id: the id background_shell returned.
+        """
+        result, message = _format_kill(resolve_mgr(), task_id)
+        if result.get("ok"):
+            _emit({"event": "task_kill", **result})
+        return message
+
+    return [session_background_shell, session_task_output, session_task_kill]
+
+
 @tool(name="background_shell", description=BACKGROUND_DESCRIPTION)
 def background_shell(command: str, timeout: int = DEFAULT_TIMEOUT_S) -> str:
     """Args:
@@ -262,9 +354,7 @@ def background_shell(command: str, timeout: int = DEFAULT_TIMEOUT_S) -> str:
         task = MANAGER.start(command, os.getcwd(), timeout_s=timeout)
     except (RuntimeError, ValueError) as error:
         return f"Not started: {error}"
-    if task.state == "failed":
-        return f"Not started: {task.output()}"
-    return f"Started background task {task.task_id} (pid {task.pid}, timeout {task.timeout_s:g}s). Check it with task_output(task_id=\"{task.task_id}\")."
+    return _format_started(task)
 
 
 @tool(name="task_output", description="Status and the last lines of output of a background task started with background_shell.")
@@ -273,13 +363,7 @@ def task_output(task_id: str, lines: int = 60) -> str:
         task_id: the id background_shell returned.
         lines: how many of the last output lines to show (default 60).
     """
-    task = MANAGER.get(task_id)
-    if task is None:
-        known = ", ".join(t["taskId"] for t in MANAGER.list()[:8]) or "none"
-        return f"No background task {task_id!r} (known: {known})."
-    info = task.to_json(tail=max(0, min(int(lines), TAIL_LINES + HEAD_LINES)))
-    exit_text = f", exit code {info['exitCode']}" if info["exitCode"] is not None else ""
-    return f"Task {task_id}: {info['state']}{exit_text}, {info['elapsedS']}s, {info['lines']} line(s).\n{info['output']}"
+    return _format_output(MANAGER, task_id, lines)
 
 
 @tool(name="task_kill", description="Ends a background task (and every process it started).")
@@ -287,10 +371,8 @@ def task_kill(task_id: str) -> str:
     """Args:
         task_id: the id background_shell returned.
     """
-    result = MANAGER.kill(task_id)
-    if not result.get("ok"):
-        return str(result.get("reason"))
-    return f"Task {task_id}: {result.get('already') or result.get('state')}."
+    _, message = _format_kill(MANAGER, task_id)
+    return message
 
 
 TOOLS = [background_shell, task_output, task_kill]

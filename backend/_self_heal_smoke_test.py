@@ -262,6 +262,28 @@ def test_claude_code_failing_check() -> None:
     check(diagnose.calls == [] and "passes in a clean copy" in tool_texts(agent)[0], "when it passes in a clean copy the Debugger is not engaged, and the model is told to check for itself")
 
 
+def test_refused_calls_never_trigger_self_heal() -> None:
+    print("\n=== 9. refused / cancelled calls never trigger self-heal ===")
+    import asyncio
+    from types import SimpleNamespace
+
+    diagnose = FakeDiagnose([GOOD_PATCH])
+    hooks = SelfHealHooks(config=HealConfig(max_attempts=3), diagnose=diagnose)
+    for label, text_msg, cancel_msg in (
+        ("user reject", 'CONFIRMATION_FAILED: {"name": "shell"}', 'CONFIRMATION_FAILED: {"name": "shell"}'),
+        ("cancelled", "Tool execution cancelled", "Tool execution cancelled"),
+        ("plan mode", "Plan mode: shell was not run.", None),
+        ("PreToolUse hook", "Blocked by the project's PreToolUse hook: no shell here", "Blocked by the project's PreToolUse hook: no shell here"),
+    ):
+        ev = SimpleNamespace(
+            tool_use={"name": "shell", "input": {"command": CHECK}},
+            result={"status": "error", "content": [{"text": text_msg}]},
+            cancel_message=cancel_msg,
+        )
+        asyncio.run(hooks._after_tool(ev))
+        check(diagnose.calls == [] and hooks.open_episodes() == [], f"{label} never engages the Debugger or opens a self-heal episode")
+
+
 def main() -> None:
     test_heal()
     test_iterates_on_a_failed_verification()
@@ -272,7 +294,8 @@ def main() -> None:
     test_preapproval()
     test_state_mismatch()
     test_claude_code_failing_check()
-    print("\nPASS: self-healing — diagnose, sandbox-verify, iterate, auto-continue, escalate, pre-approval bounds")
+    test_refused_calls_never_trigger_self_heal()
+    print("\nPASS: self-healing — diagnose, sandbox-verify, iterate, auto-continue, escalate, pre-approval bounds, refusal guard")
 
 
 if __name__ == "__main__":

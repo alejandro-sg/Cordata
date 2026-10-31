@@ -43,13 +43,21 @@ def result_ok(tool_name: str, result: Any, exception: Any) -> bool:
     return True
 
 
-def was_denied(result: Any) -> bool:
-    """Was this call refused rather than run? A person's "reject" comes back as ``CONFIRMATION_FAILED``;
-    a deny rule, plan mode or the vault's fail-closed refusal say "was not run"."""
+def was_denied(result: Any, cancel_message: str | None = None) -> bool:
+    """Was this call refused rather than run? A person's "reject" comes back as ``CONFIRMATION_FAILED``
+    (or ``cancel_message`` on ``AfterToolCallEvent``); a PreToolUse hook says ``Blocked by``, and a deny
+    rule, plan mode or the vault's fail-closed refusal say "was not run"."""
+    if cancel_message:
+        return True
     if not isinstance(result, dict) or result.get("status") != "error":
         return False
     text = " ".join(str(block.get("text", "")) for block in result.get("content") or [] if isinstance(block, dict))
-    return text.startswith("CONFIRMATION_FAILED") or " was not run" in text[:300]
+    return (
+        text.startswith("CONFIRMATION_FAILED")
+        or text.startswith("Tool execution cancelled")
+        or text.startswith("Blocked by the project's PreToolUse hook:")
+        or " was not run" in text[:300]
+    )
 
 
 def claude_code_steps(result: Any) -> tuple[list[dict[str, Any]], float | None]:
@@ -101,7 +109,7 @@ class OutcomeHooks(HookProvider):
             name = str(event.tool_use.get("name") or "")
             agent = self.agent_name or str(getattr(event.agent, "name", "") or "agent")
             ok = result_ok(name, event.result, event.exception)
-            denied = was_denied(event.result)
+            denied = was_denied(event.result, getattr(event, "cancel_message", None))
             command = None
             mutating = False
             if name == "shell":

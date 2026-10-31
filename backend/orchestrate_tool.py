@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 TOOL_NAME = "orchestrate"
 MAX_GOAL_CHARS = 20_000
-_PROGRESS_KINDS = ("state", "step_dispatch", "step_result", "handoff", "rollback", "paused", "budget_exhausted", "dispatch")
+_PROGRESS_KINDS = ("state", "step_dispatch", "step_result", "handoff", "rollback", "paused", "budget_exhausted", "dispatch", "synthesis")
 
 
 @dataclass
@@ -75,6 +75,8 @@ def _line(event: dict[str, Any]) -> str | None:
         return f"rolled back {event.get('step_id')}"
     if kind == "dispatch":
         return f"{event.get('role')} → {event.get('worker')}"
+    if kind == "synthesis":
+        return f"synthesis fix #{event.get('fix')}: {len(event.get('problems') or [])} interface issue(s)"
     if kind in ("paused", "budget_exhausted"):
         return kind
     return None
@@ -83,6 +85,7 @@ def _line(event: dict[str, Any]) -> str | None:
 def summary(record: Any) -> tuple[str, dict[str, Any]]:
     """The tool's text and JSON from a finished (or paused) run record."""
     audit = record.audit or {}
+    synthesis = getattr(record, "synthesis", None)
     data = {
         "tool": TOOL_NAME,
         "run_id": record.run_id,
@@ -91,6 +94,7 @@ def summary(record: Any) -> tuple[str, dict[str, Any]]:
         "reason": record.reason,
         "plan": None,
         "changed": audit.get("changed", []),
+        "synthesis": synthesis,
         "audit": {k: audit.get(k) for k in ("tier1_ok", "verdict", "failures", "warnings")} if audit else None,
         "workers": record.workers,
         "handoffs": len(record.handoffs),

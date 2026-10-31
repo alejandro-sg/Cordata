@@ -98,6 +98,31 @@ def test_tasks() -> None:
     finally:
         os.chdir(previous)
         bt.MANAGER = old
+    # Per-session build_tools binds cwd + session_id (never global os.getcwd()).
+    cwd_a = tempfile.mkdtemp(prefix="bg-sess-a-")
+    cwd_b = tempfile.mkdtemp(prefix="bg-sess-b-")
+    outside = tempfile.mkdtemp(prefix="bg-outside-")
+    seen_a: list[dict] = []
+    tools_a = bt.build_tools(cwd_a, session_id="sess-a", manager=manager, on_event=seen_a.append)
+    tools_b = bt.build_tools(cwd_b, session_id="sess-b", manager=manager)
+    previous = os.getcwd()
+    os.chdir(outside)
+    try:
+        started_a = tools_a[0]._tool_func(command="pwd", timeout=30)
+        tid_a = started_a.split()[3]
+        started_b = tools_b[0]._tool_func(command="sleep 30", timeout=30)
+        tid_b = started_b.split()[3]
+        check(wait_for(lambda: manager.get(tid_a).state == "exited"), "per-session background_shell runs to completion")
+        out_a = tools_a[1]._tool_func(task_id=tid_a, lines=10)
+        check(os.path.realpath(cwd_a) in out_a and os.path.realpath(outside) not in out_a, f"build_tools runs in session cwd, not os.getcwd() ({out_a.strip()})")
+        check(manager.get(tid_a).session_id == "sess-a" and manager.get(tid_b).session_id == "sess-b", "each task carries its session_id")
+        ids_a = {t["taskId"] for t in manager.list("sess-a")}
+        check(tid_a in ids_a and tid_b not in ids_a, f"manager.list(session_id) isolates sessions ({ids_a})")
+        killed_b = tools_b[2]._tool_func(task_id=tid_b)
+        check("killed" in killed_b and wait_for(lambda: manager.get(tid_b).state == "killed"), "per-session task_kill ends its process group")
+        check(any(e.get("event") == "task_start" and e.get("sessionId") == "sess-a" for e in seen_a), "build_tools emits task_start with sessionId")
+    finally:
+        os.chdir(previous)
     manager.shutdown()
 
 
@@ -122,16 +147,26 @@ def test_guarded_like_shell() -> None:
 def test_acp_surface() -> None:
     print("\n=== _cordata/tasks ===")
     import acp_server
+    import task_tool
 
     cls = acp_server.CordataAcpAgent
     instance = cls.__new__(cls)
     cwd = tempfile.mkdtemp(prefix="bg-acp-")
+    task_tool.configure(lambda: "s1")
+    task_tool.todo_write._tool_func(todos=[{"content": "audit branch", "status": "in_progress", "activeForm": "Auditing branch"}])
     task = bt.MANAGER.start("sleep 30", cwd, session_id="s1")
-    listed = instance._tasks_control("list", {}, "s1")["tasks"]
-    check(any(t["taskId"] == task.task_id for t in listed), "tasks/list shows the session's task")
+    other = bt.MANAGER.start("sleep 30", cwd, session_id="s2")
+    reply = instance._tasks_control("list", {}, "s1")
+    listed = reply["tasks"]
+    check(any(t["taskId"] == task.task_id for t in listed) and all(t["taskId"] != other.task_id for t in listed), "tasks/list shows only the session's background tasks")
+    check(any(item.get("content") == "audit branch" for item in reply.get("items") or []), "tasks/list also preserves todo_write checklist items")
     check(instance._tasks_control("status", {"taskId": task.task_id}, "s1")["state"] == "running", "tasks/status reads it")
     check(instance._tasks_control("kill", {"taskId": task.task_id}, "s1")["ok"] and wait_for(lambda: task.state == "killed"), "tasks/kill ends it")
+    bt.MANAGER.kill(other.task_id)
     check(not instance._tasks_control("status", {"taskId": "../x"}, "s1")["ok"], "a bad id is refused")
+    fleet = instance._ollama_fleet_status(cwd)
+    snap = next(c["json"] for c in fleet["content"] if "json" in c)
+    check(len(snap["cloud_fleet"]) >= 6 and any(m["alias"] == "mistral-large-4" for m in snap["cloud_fleet"]), "ollama/status exposes the zero-download :cloud fleet")
 
 
 def test_hooks() -> None:
@@ -173,6 +208,18 @@ def test_hooks() -> None:
     hooks._stop(SimpleNamespace())
     check(flag.exists() and any(e["hook"] == "Stop" for e in seen), "Stop runs when the turn ends")
     check(set(lh.KEYS) <= settings_store.TRUST_GATED_KEYS, "every hooks.* key is trust-gated: a cloned repo cannot run commands on every call")
+    untrusted = Path(tempfile.mkdtemp(prefix="hooks-untrusted-"))
+    (untrusted / ".cordata").mkdir()
+    pwned = untrusted / "pwned"
+    (untrusted / ".cordata" / "settings.json").write_text(
+        f'{{"hooks.preToolUse": "touch {pwned}", "hooks.postToolUse": "touch {pwned}", "hooks.stop": "touch {pwned}"}}'
+    )
+    real_hooks = lh.LifecycleHooks(lambda: settings_store.current(str(untrusted)), cwd=str(untrusted), session_id="u")
+    ev = before("shell", "ls")
+    real_hooks._before(ev)
+    real_hooks._after(SimpleNamespace(tool_use={"name": "shell", "input": {}}, result={"status": "success", "content": []}, cancel_message=None))
+    real_hooks._stop(SimpleNamespace())
+    check(not pwned.exists() and ev.cancel_tool is False, "end-to-end: an untrusted project's .cordata/settings.json hooks never execute")
     code, _, err = lh.run_hook("sleep 5", {}, cwd, timeout=0.5)
     check(code == 124 and "timed out" in err, "a hook has a timeout")
 

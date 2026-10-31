@@ -807,6 +807,12 @@ impl Workspace {
                                         .label("Cycle")
                                         .ghost()
                                         .on_click(cx.listener(move |this, _, _, cx| {
+                                            if key_enum == "app.theme" {
+                                                this.prefs.theme = next_val.into();
+                                                this.prefs.save();
+                                                cx.set_global(this.prefs.clone());
+                                                crate::theme::set_theme(next_val, cx);
+                                            }
                                             this.set_setting("user", &key_enum, Value::String(next_val.into()), cx);
                                         })),
                                 )

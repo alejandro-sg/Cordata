@@ -72,6 +72,8 @@ pub struct RunBoard {
     pub steps: Vec<RunStep>,
     /// The last handoff between workers, as one line.
     pub handoff: Option<String>,
+    /// The latest parallel-wave synthesis check or targeted fix pass, when isolated waves ran.
+    pub synthesis: Option<String>,
     pub pods: Vec<Pod>,
     pub pools: Vec<PoolGauge>,
     pub envelope: Option<Envelope>,
@@ -251,9 +253,9 @@ impl RunBoard {
                             requests += row.get("calls").or_else(|| row.get("requests")).and_then(Value::as_u64).unwrap_or(0);
                         }
                         (pod.tokens_in, pod.tokens_out, pod.cost_usd, pod.requests) = (tin, tout, cost, requests);
-                        // A one-shot call (plan, research, harden, audit, conformance) reports its usage when it ends:
+                        // A one-shot call (plan, research, synthesize, harden, audit, conformance) reports its usage when it ends:
                         // its pod is free again. An execute step is freed by its `step_result`.
-                        if pod.step.as_deref().is_some_and(|step| matches!(step, "plan" | "research" | "harden" | "audit" | "conformance")) {
+                        if pod.step.as_deref().is_some_and(|step| matches!(step, "plan" | "research" | "synthesize" | "harden" | "audit" | "conformance")) {
                             pod.busy = false;
                             pod.step = None;
                         }
@@ -293,6 +295,21 @@ impl RunBoard {
                     text("to_worker").unwrap_or_else(|| "none".into()),
                     text("reason").unwrap_or_default()
                 ));
+            }
+            Some("synthesis") => {
+                let fix = event.get("fix").and_then(Value::as_u64).unwrap_or(1);
+                let count = event.get("problems").and_then(Value::as_array).map_or(0, Vec::len);
+                let first = event
+                    .get("problems")
+                    .and_then(Value::as_array)
+                    .and_then(|arr| arr.first())
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                self.synthesis = Some(if first.is_empty() {
+                    format!("wave synthesis fix #{fix} ({count} issue{})", if count == 1 { "" } else { "s" })
+                } else {
+                    format!("wave synthesis fix #{fix} ({count}): {first}")
+                });
             }
             _ => {}
         }
@@ -378,5 +395,14 @@ mod tests {
         board.apply(&json!({"kind": "step_dispatch", "run_id": "old", "step_id": "s1", "worker": "w"}));
         board.apply(&json!({"kind": "state", "run_id": "new", "state": "planning"}));
         assert_eq!((board.run_id.as_str(), board.state.as_str(), board.steps.len(), board.planned), ("new", "planning", 0, None));
+    }
+
+    #[test]
+    fn synthesize_phase_and_synthesis_events_are_tracked_live() {
+        let mut board = RunBoard::default();
+        board.apply(&json!({"kind": "state", "run_id": "r-synth", "state": "synthesize"}));
+        assert!(board.is_live());
+        board.apply(&json!({"kind": "synthesis", "run_id": "r-synth", "fix": 1, "problems": ["calc/__init__.py:1: [import] missing add"]}));
+        assert_eq!(board.synthesis.as_deref(), Some("wave synthesis fix #1 (1): calc/__init__.py:1: [import] missing add"));
     }
 }

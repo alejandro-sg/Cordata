@@ -559,8 +559,10 @@ class RouterHooks(HookProvider):
             self._emit({"event": "command", "tool_use_id": tool_use_id, "p_ok": round(p_ok, 3)})
 
     def _after_tool(self, event: AfterToolCallEvent) -> None:
+        import outcome_hooks
+
         turn = self._turns.get(id(event.agent))
-        if turn is None or event.tool_use.get("name") != "shell":
+        if turn is None or event.tool_use.get("name") != "shell" or outcome_hooks.was_denied(event.result, getattr(event, "cancel_message", None)):
             return
         ok = command_ok(event.result)
         if ok is None:
