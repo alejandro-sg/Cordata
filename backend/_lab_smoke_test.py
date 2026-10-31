@@ -56,7 +56,7 @@ def test_statuses_and_model() -> None:
     pod = lab.pods["debugger"]
     check(seen == ["executing"], "pod is EXECUTING while its tool runs")
     check(pod.status == "idle", "pod returns to IDLE when the invocation ends")
-    check(pod.model == "kimi-k2.7-code" and pod.effort == "max", f"pod shows the model + effort the request carried ({pod.model} @ {pod.effort})")
+    check(pod.model == "mistral-large-4" and pod.effort == "max", f"pod shows the model + effort the request carried ({pod.model} @ {pod.effort})")
     check(pod.calls == 2 and pod.busy_ms >= 0, "two model calls counted")
     check([row["tool"] for row in pod.trace] == ["probe"] and pod.trace[0]["status"] == "completed", "tool trace records the call")
     check("done" in pod.stream, "stream tail holds the reply")
@@ -79,8 +79,8 @@ def test_delegation_link() -> None:
     link = lab.links[("orchestrator", "debugger")]
     check(link["kind"] == "delegation" and link["count"] == 1 and link["active"] is False, "orchestrator→debugger link was drawn and closed")
     check(any(any(l["from"] == "orchestrator" and l["to"] == "debugger" and l["active"] for l in e["links"]) for e in events), "an emitted snapshot showed the link active mid-flight")
-    check(lab.pods["orchestrator"].model == "kimi-k2.7-code" and lab.pods["orchestrator"].effort == "medium", "orchestrator pod = kimi @ medium")
-    check(lab.pods["debugger"].model == "kimi-k2.7-code" and lab.pods["debugger"].effort == "max", "debugger pod = kimi @ max (own model, own budget)")
+    check(lab.pods["orchestrator"].model == "gemma4:31b" and lab.pods["orchestrator"].effort == "medium", "orchestrator pod = gemma4:31b @ medium")
+    check(lab.pods["debugger"].model == "mistral-large-4" and lab.pods["debugger"].effort == "max", "debugger pod = mistral-large-4 @ max (own model, own budget)")
 
 
 def test_estop_between_iterations() -> None:

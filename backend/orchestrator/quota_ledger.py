@@ -86,7 +86,7 @@ DEFAULT_POOLS: tuple[Pool, ...] = (
     Pool("claude_code", "claude_code", ".*", unit="usd", window_limit=20.0, weekly_limit=150.0),
     Pool("antigravity_claude", "antigravity", "claude-.*", unit="tokens", window_limit=3_000_000),
     Pool("antigravity", "antigravity", ".*", unit="tokens", window_limit=8_000_000),
-    Pool("ollama_local", "ollama", r"laguna-.*|.*:local|local/.*", unit="requests"),
+    Pool("ollama_local", "ollama", r".*:local|local/.*", unit="requests"),
     Pool("ollama_cloud", "ollama", ".*", unit="requests", window_limit=600, window_seconds=3600),
 )
 

@@ -806,7 +806,7 @@ impl Workspace {
                     self.settings_view.set_notice(reason.to_owned(), true);
                 }
             }
-            customize::SKILLS_TAG | customize::SKILL_RETIRE_TAG => self.on_customize_data(tag, &value, cx),
+            tag if customize::TAGS.contains(&tag) => self.on_customize_data(tag, &value, cx),
             crate::session::STEER_TAG => {
                 if !value.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false) {
                     self.attach_note = Some(value.get("reason").and_then(|v| v.as_str()).unwrap_or("the note was not taken").to_owned());

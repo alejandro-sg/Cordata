@@ -2,10 +2,9 @@
 one dies.
 
 The invariant this module exists to hold: **the daemon never imports
-`agent_common`, and never hosts an agent in its own process.** `agent_common`
-calls `os.chdir(WORKSPACE_DIR)` at import time (`agent_common.py`), and
-`acp_server._build_session` does a second, per-session `os.chdir(cwd)`. Both are
-process-wide. A daemon that built agents in-process would have every session's
+`agent_common`, and never hosts an agent in its own process.**
+`acp_server._build_session` does a per-session `os.chdir(cwd)` (and the web door's
+`agent_common.enter_workspace()` another), and a chdir is A daemon that built agents in-process would have every session's
 tools running against whichever directory was set last — silently, and only for
 the sessions that happen to differ. Spawning is not an implementation detail
 here; it is the thing that makes two sessions for two projects possible at all.

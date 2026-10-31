@@ -3,7 +3,7 @@
 #
 # The generated files are committed, so running the daemon needs only `grpcio` + `protobuf`
 # (backend/requirements.txt); `grpcio-tools` is needed here, to *regenerate*. The Rust side
-# generates its own code at build time (lab/crates/harness-proto/build.rs, via protoc).
+# (the retired lab/ client) generated its own code at build time; nothing in the tree does now.
 #
 #   make proto
 set -euo pipefail

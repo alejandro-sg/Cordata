@@ -2,8 +2,11 @@
 //! (scheduled prompts, run by the daemon).
 //!
 //! Customize: the instruction files the agent reads (open, create, or generate with /init), the prompt commands
-//! (`.cordata/commands/*.md`, run as `/name`), and the skills the harness has learned (retire one). Everything is a
-//! file the person owns or a backend method; nothing here runs code.
+//! (`.cordata/commands/*.md`, run as `/name`), the skills the harness has learned (retire one), and the registry
+//! (`backend/registry.py`): MCP servers and skills installed with one click from a catalog, or from one token typed in
+//! (`@scope/pkg`, `uvx:pkg`, `https://…`, a skill folder or git URL). Installs go through the backend, which writes the
+//! user's own files, never trusts or pre-approves anything, and hot-registers into the running session.
+//! Everything is a file the person owns or a backend method; nothing here runs code.
 
 use std::path::{Path, PathBuf};
 
@@ -20,6 +23,12 @@ use crate::ui::{self, Dot, Kind};
 
 pub const SKILLS_TAG: &str = "gui-skills";
 pub const SKILL_RETIRE_TAG: &str = "gui-skill-retire";
+pub const MCP_CATALOG_TAG: &str = "gui-mcp-catalog";
+pub const MCP_INSTALL_TAG: &str = "gui-mcp-install";
+pub const SKILL_CATALOG_TAG: &str = "gui-skill-catalog";
+pub const SKILL_INSTALL_TAG: &str = "gui-skill-install";
+/// Every tag `on_customize_data` answers (the workspace routes these here).
+pub const TAGS: [&str; 6] = [SKILLS_TAG, SKILL_RETIRE_TAG, MCP_CATALOG_TAG, MCP_INSTALL_TAG, SKILL_CATALOG_TAG, SKILL_INSTALL_TAG];
 
 pub struct Customize {
     pub skills: Vec<Value>,
@@ -34,6 +43,14 @@ pub struct Customize {
     pub auto_day: &'static str,
     pub auto_minutes: u32,
     pub auto_note: Option<(String, bool)>,
+    // The registry
+    pub mcp_catalog: Vec<Value>,
+    pub mcp_installed: Vec<Value>,
+    pub skill_catalog: Vec<Value>,
+    pub skills_installed: Vec<Value>,
+    pub mcp_quick: Entity<InputState>,
+    pub skill_quick: Entity<InputState>,
+    pub registry_note: Option<(String, bool)>,
 }
 
 impl Customize {
@@ -50,6 +67,13 @@ impl Customize {
             auto_day: "mon",
             auto_minutes: 60,
             auto_note: None,
+            mcp_catalog: Vec::new(),
+            mcp_installed: Vec::new(),
+            skill_catalog: Vec::new(),
+            skills_installed: Vec::new(),
+            mcp_quick: cx.new(|cx| InputState::new(window, cx).placeholder("@scope/pkg · uvx:pkg · https://host/mcp")),
+            skill_quick: cx.new(|cx| InputState::new(window, cx).placeholder("~/skills/my-skill · https://github.com/o/r.git#path")),
+            registry_note: None,
         }
     }
 }
@@ -70,7 +94,28 @@ const INSTRUCTIONS_TEMPLATE: &str = "# Instructions for Cordata\n\n- How to buil
 
 impl Workspace {
     pub(super) fn load_skills(&mut self, cx: &mut Context<Self>) {
-        self.session.read(cx).request("_cordata/skills/list", json!({}), SKILLS_TAG);
+        let session = self.session.read(cx);
+        session.request("_cordata/skills/list", json!({}), SKILLS_TAG);
+        session.request("_cordata/plugins/catalog", json!({}), MCP_CATALOG_TAG);
+        session.request("_cordata/skills/catalog", json!({}), SKILL_CATALOG_TAG);
+    }
+
+    fn install_mcp(&mut self, spec: String, cx: &mut Context<Self>) {
+        if spec.trim().is_empty() {
+            return;
+        }
+        self.customize.registry_note = Some((format!("Adding {spec}…"), false));
+        self.session.read(cx).request("_cordata/plugins/install", json!({ "spec": spec }), MCP_INSTALL_TAG);
+        cx.notify();
+    }
+
+    fn install_skill(&mut self, source: String, cx: &mut Context<Self>) {
+        if source.trim().is_empty() {
+            return;
+        }
+        self.customize.registry_note = Some((format!("Installing {source}…"), false));
+        self.session.read(cx).request("_cordata/skills/install", json!({ "source": source }), SKILL_INSTALL_TAG);
+        cx.notify();
     }
 
     pub(super) fn on_customize_data(&mut self, tag: &str, value: &Value, cx: &mut Context<Self>) {
@@ -79,6 +124,38 @@ impl Workspace {
             SKILL_RETIRE_TAG => {
                 let ok = value.get("ok").and_then(Value::as_bool).unwrap_or(true);
                 self.customize.note = Some(if ok { ("Retired.".into(), false) } else { (value.get("reason").and_then(Value::as_str).unwrap_or("not retired").to_owned(), true) });
+                self.load_skills(cx);
+            }
+            MCP_CATALOG_TAG => {
+                self.customize.mcp_catalog = value.get("catalog").and_then(Value::as_array).cloned().unwrap_or_default();
+                self.customize.mcp_installed = value.get("installed").and_then(Value::as_array).cloned().unwrap_or_default();
+            }
+            SKILL_CATALOG_TAG => {
+                self.customize.skill_catalog = value.get("catalog").and_then(Value::as_array).cloned().unwrap_or_default();
+                self.customize.skills_installed = value.get("installed").and_then(Value::as_array).cloned().unwrap_or_default();
+            }
+            MCP_INSTALL_TAG | SKILL_INSTALL_TAG => {
+                let ok = value.get("ok").and_then(Value::as_bool).unwrap_or(false);
+                let name = value.get("name").and_then(Value::as_str).unwrap_or("it");
+                let warnings: Vec<&str> = value.get("warnings").and_then(Value::as_array).map(|w| w.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+                let note = if ok {
+                    let live = if tag == MCP_INSTALL_TAG {
+                        match value.get("status").and_then(|s| s.get("status")).and_then(Value::as_str) {
+                            Some("running") => " — running in this session now".to_owned(),
+                            Some(other) => format!(" — {other}"),
+                            None => String::new(),
+                        }
+                    } else {
+                        " — available to the agent now".to_owned()
+                    };
+                    (format!("Added {name}{live}.{}", if warnings.is_empty() { String::new() } else { format!(" {}", warnings.join(" ")) }), false)
+                } else {
+                    (value.get("reason").and_then(Value::as_str).unwrap_or("not added").to_owned(), true)
+                };
+                self.customize.registry_note = Some(note);
+                if tag == MCP_INSTALL_TAG {
+                    self.session.read(cx).request("_cordata/plugins/list", json!({}), super::PLUGINS_TAG);
+                }
                 self.load_skills(cx);
             }
             _ => {}
@@ -212,8 +289,9 @@ impl Workspace {
             };
             rows.push(row(SharedString::from(name), SharedString::from(format!("{status} · {}", shown(description))), control, status == "live", cx));
         }
+        rows.extend(self.registry_rows(cx));
         rows.push(sub(cx, "agents & hooks"));
-        rows.push(div().py(px(10.)).text_size(px(t::TEXT_SMALL)).text_color(c(tk.text_muted)).child("The harness's specialist agents and its lifecycle hooks are set in code today; editing them here is not available yet.").into_any_element());
+        rows.push(div().py(px(10.)).text_size(px(t::TEXT_SMALL)).text_color(c(tk.text_muted)).child("Lifecycle hooks are the hooks.preToolUse / hooks.postToolUse / hooks.stop settings (Advanced → Harness; trust-gated). The specialist agents are set in code.").into_any_element());
         rows
     }
 
@@ -391,6 +469,80 @@ fn day_name(day: &str) -> &'static str {
         "sat" => "Saturday",
         "sun" => "Sunday",
         _ => "Monday",
+    }
+}
+
+impl Workspace {
+    /// The registry: catalog cards with one-click install, and a quick-add field for anything else.
+    fn registry_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let tk = tk(cx);
+        let mut rows: Vec<AnyElement> = Vec::new();
+        rows.push(sub(cx, "mcp servers — one click"));
+        if let Some((note, error)) = self.customize.registry_note.clone() {
+            rows.push(div().py(px(6.)).text_size(px(t::TEXT_SMALL)).text_color(c(if error { tk.danger } else { tk.teal })).child(SharedString::from(note)).into_any_element());
+        }
+        let installed: Vec<&str> = self.customize.mcp_installed.iter().filter_map(|r| r.get("name").and_then(Value::as_str)).collect();
+        for (index, entry) in self.customize.mcp_catalog.iter().enumerate() {
+            let id = entry.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let needs: Vec<&str> = entry.get("needs").and_then(Value::as_array).map(|n| n.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+            let description = format!("{}{}", entry.get("description").and_then(Value::as_str).unwrap_or_default(), if needs.is_empty() { String::new() } else { format!(" · needs {}", needs.join(", ")) });
+            let have = installed.contains(&id.as_str());
+            let target = id.clone();
+            let control = if have {
+                ui::meta("installed", cx).into_any_element()
+            } else {
+                ui::button(("mcp-install", index), "Install", Kind::Outline, cx).h(px(24.)).on_click(cx.listener(move |this, _, _, cx| this.install_mcp(target.clone(), cx))).into_any_element()
+            };
+            rows.push(row(SharedString::from(id), SharedString::from(description), control, have, cx));
+        }
+        rows.push(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .pt(px(8.))
+                .child(field(&self.customize.mcp_quick, 300., cx))
+                .child(ui::button("mcp-quick-add", "Add server", Kind::Outline, cx).h(px(26.)).on_click(cx.listener(|this, _, window, cx| {
+                    let spec = this.customize.mcp_quick.read(cx).value().trim().to_owned();
+                    this.customize.mcp_quick.update(cx, |s, cx| s.set_value("", window, cx));
+                    this.install_mcp(spec, cx);
+                })))
+                .into_any_element(),
+        );
+        rows.push(sub(cx, "skills — one click"));
+        let have_skills: Vec<&str> = self.customize.skills_installed.iter().filter_map(|r| r.get("name").and_then(Value::as_str)).collect();
+        for (index, entry) in self.customize.skill_catalog.iter().enumerate() {
+            let id = entry.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let description = entry.get("description").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let have = have_skills.iter().any(|name| id.ends_with(name));
+            let target = id.clone();
+            let control = if have {
+                ui::meta("installed", cx).into_any_element()
+            } else {
+                ui::button(("skill-install", index), "Install", Kind::Outline, cx).h(px(24.)).on_click(cx.listener(move |this, _, _, cx| this.install_skill(target.clone(), cx))).into_any_element()
+            };
+            rows.push(row(SharedString::from(id), SharedString::from(description), control, have, cx));
+        }
+        for skill in &self.customize.skills_installed {
+            let name = skill.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let scope = skill.get("scope").and_then(Value::as_str).unwrap_or("user");
+            rows.push(row(SharedString::from(name), SharedString::from(format!("installed · {scope} · {}", shown(skill.get("description").and_then(Value::as_str).unwrap_or_default()))), ui::meta(scope, cx).into_any_element(), true, cx));
+        }
+        rows.push(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .pt(px(8.))
+                .child(field(&self.customize.skill_quick, 300., cx))
+                .child(ui::button("skill-quick-add", "Install skill", Kind::Outline, cx).h(px(26.)).on_click(cx.listener(|this, _, window, cx| {
+                    let source = this.customize.skill_quick.read(cx).value().trim().to_owned();
+                    this.customize.skill_quick.update(cx, |s, cx| s.set_value("", window, cx));
+                    this.install_skill(source, cx);
+                })))
+                .into_any_element(),
+        );
+        rows
     }
 }
 

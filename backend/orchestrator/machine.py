@@ -1,10 +1,15 @@
-"""The durable RESEARCH → PLAN → EXECUTE → HARDEN → AUDIT state machine.
+"""The durable RESEARCH → PLAN → EXECUTE → (SYNTHESIZE) → HARDEN → AUDIT state machine.
 
-    (RESEARCH) ─► PLAN ─► EXECUTE ─► HARDEN ─► AUDIT ─┬─► DONE
+    (RESEARCH) ─► PLAN ─► EXECUTE ─► (SYNTHESIZE) ─► HARDEN ─► AUDIT ─┬─► DONE
        │           ▲        │                        ├─► drift: a fix pass (≤ 2), then AUDIT again
        │ refused   │        ▼ (quota)                └─► replan (≤ 1): back to the plan-start checkpoint, PLAN with the reasons
        ▼ twice     │     safe-point handoff (executor.py)
      FAILED        └──────────── replan (≤ 1) ───────────────
+
+SYNTHESIZE runs when EXECUTE harvested isolated parallel steps (``synthesizer.py``: each step of a wave of several ran
+in its own copy-on-write sandbox): the combined change is checked deterministically — syntax of every harvested file and
+imports between the project's own modules, the drift two agents writing two sides of one interface produce — and
+problems get ``max_synth_fixes`` targeted fix passes before HARDEN sees the change.
 
 RESEARCH runs only with ``RunConfig.research``: one planner-tier worker writes a brief whose findings cite the code,
 ``research.verify`` drops what it cannot check, and the plan must then ground its steps in the surviving finding ids.
@@ -49,13 +54,15 @@ from workers import TaskPacket, collect
 from . import audit as audit_mod
 from . import handoff
 from . import research as research_mod
+from . import rlaif
+from . import synthesizer
 from .executor import Candidate, ExecResult, StepExecutor
 from .plan_artifact import DRAFT_SCHEMA, Plan, PlanError, Step, from_draft
 from .quota_ledger import QuotaLedger
 
 logger = logging.getLogger(__name__)
 
-STATES = ("research", "plan", "execute", "harden", "audit", "conformance", "done", "failed", "paused", "budget_exhausted", "cancelled")
+STATES = ("research", "plan", "execute", "synthesize", "harden", "audit", "conformance", "done", "failed", "paused", "budget_exhausted", "cancelled")
 TERMINAL = frozenset({"done", "failed", "budget_exhausted", "cancelled"})
 
 
@@ -83,6 +90,9 @@ class RunConfig:
     conformance: bool = True
     max_rounds: int = 3
     max_parallel: int = 3
+    #: Run a multi-step wave's steps in copy-on-write sandboxes, and check the harvested change (SYNTHESIZE).
+    isolate_waves: bool = True
+    max_synth_fixes: int = 1
 
 
 @dataclass
@@ -111,6 +121,11 @@ class RunRecord:
     session_id: str | None = None
     #: The phase a person's pause stopped it in: a resume goes back there, not to EXECUTE.
     resume_state: str | None = None
+    #: What SYNTHESIZE reads and found: ``{"harvested": [...], "conflicts": [...], "problems": [...]}``.
+    synthesis: dict[str, Any] | None = None
+    synth_fixes: int = 0
+    #: step id → every attempt at it (worker, status, cost, files, scope escapes): what per-step rewards are read from.
+    step_log: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     created: float = field(default_factory=time.time)
     updated: float = field(default_factory=time.time)
 
@@ -300,19 +315,46 @@ class OrchestratorMachine:
             self._credit(state == "done")
 
     def _credit(self, ok: bool) -> None:
-        """The run's outcome is every role's reward: a step that "completed" but failed the audit was not a success,
-        and a planner whose plan could not be executed was not either. Paused and budget stops credit no one."""
+        """Rewards at the end of a run (rlaif.py). Each executor is scored per step on what it did — scope, first-pass,
+        recoveries, cost — blended with the conformance rubric, and debited by a failed run only where the failing checks
+        implicate its files. The planner, reviewer and auditor still earn the run's verdict (their work is the whole
+        change), as a continuous value. Paused and budget stops credit no one."""
+        audit = self.record.audit or {}
+        tier1_ok = bool(audit.get("tier1_ok", ok))
         by_role: dict[str, list[str]] = {}
         for role in ("research", "plan", "execute", "harden", "audit", "conformance"):
             observed = "plan" if role in ("research", "conformance") else role  # the planner researches and checks conformance
             by_role.setdefault(observed, []).extend(self.record.workers.get(role, []))
+        rewards = rlaif.attribute(
+            self.record.step_log, run_ok=ok, tier1_ok=tier1_ok, failing_files=self._failing_files(), step_scores=audit.get("step_scores") or []
+        ) if self.record.step_log else []
         for role, keys in by_role.items():
             used = list(dict.fromkeys(keys))
             if not used:
                 continue
-            for candidate in self.dispatcher.rank(role, self.record.task_class):
-                if candidate.key in used:
-                    self._observe(role, candidate, ok=ok, final=True)
+            ranked = {c.key: c for c in self.dispatcher.rank(role, self.record.task_class)}
+            if role == "execute" and rewards:
+                for reward in rewards:
+                    candidate = ranked.get(reward.worker)
+                    if candidate is None:
+                        continue
+                    self._observe(role, candidate, ok=reward.win, reward=reward.value, step_id=reward.step_id, reward_version=reward.reward_version, final=True)
+                    last = getattr(self.dispatcher, "_last", {}).get((role, self.record.task_class), {})
+                    rlaif.record(reward, run_id=self.record.run_id, task_class=self.record.task_class, context=last.get("context") or f"orch|{role}|{self.record.task_class}", propensity=last.get("propensity"))
+                continue
+            for key in used:
+                if key in ranked:
+                    self._observe(role, ranked[key], ok=ok, reward=rlaif.role_reward(ok, tier1_ok=tier1_ok), final=True)
+
+    def _failing_files(self) -> list[str]:
+        """Project paths the last audit's failing checks name — what a failed run's blame is aimed at."""
+        import re
+
+        report = self._last_report
+        if report is None:
+            return []
+        text = "\n".join(report.failures)
+        return sorted(set(re.findall(r"[\w./-]+\.(?:py|rs|ts|tsx|js|go|java|rb|toml|json|ya?ml|md)\b", text)))
 
     def _emit(self, kind: str, **payload: Any) -> None:
         event = {"kind": kind, "run_id": self.record.run_id, **payload}
@@ -485,6 +527,8 @@ class OrchestratorMachine:
             on_usage=self._emit_usage,
             controls=self.controls,
             on_worker_event=self.worker_event,
+            isolate=self.config.isolate_waves,
+            rerank=(lambda step, candidates: self.dispatcher.rerank_step(step, candidates, self.record.task_class)) if hasattr(self.dispatcher, "rerank_step") else None,
             # A drift fix is the hard case — the plan was done and was not good enough — so it goes to the strongest
             # worker still allowed, not to whichever pool has the most room.
             strongest_first=recovering or steps is not None,
@@ -495,6 +539,8 @@ class OrchestratorMachine:
         if steps is None:
             self.plan = plan
         self.record.handoffs.extend(p.handoff_id for p in result.handoffs)
+        for step_id, rows in result.results.items():
+            self.record.step_log.setdefault(step_id, []).extend(rows)
         for key in result.workers_used:
             self.record.workers.setdefault("execute", []).append(key)
         for candidate in executor.candidates:
@@ -617,6 +663,9 @@ class OrchestratorMachine:
         items = [f"{g['ref']}: {g['missing']} ({g['severity']})" for g in gaps]
         if self.record.audit is not None:
             self.record.audit.update(conformance=verdict or None, conformance_worker=candidate.key, gaps=gaps)
+            scores = result.structured.get("step_scores") if isinstance(getattr(result, "structured", None), dict) else None
+            if isinstance(scores, list):
+                self.record.audit["step_scores"] = [s for s in scores if isinstance(s, dict)][:100]
         if not verdict:
             problem = (result.error_message or result.status) if result.status != "completed" else "no usable verdict in the answer"
             self.record.warnings.append(f"conformance check by {candidate.key} unavailable ({problem}); accepted on the deterministic checks")
@@ -736,7 +785,10 @@ class OrchestratorMachine:
                     self._fail(self.record.reason)
             elif state == "execute":
                 result = await self._execute()
-                if result.status == "completed":
+                if result.status == "completed" and result.harvested:
+                    self.record.synthesis = {"harvested": sorted(set(result.harvested)), "conflicts": sorted(set(result.conflicts)), "problems": []}
+                    self._transition("synthesize", harvested=len(self.record.synthesis["harvested"]))
+                elif result.status == "completed":
                     self._transition("harden" if self.config.harden else "audit")
                 elif result.status == "cancelled" and self.controls is not None and self.controls.pending() is not None:
                     self._cancel(self.controls.pending())
@@ -762,6 +814,8 @@ class OrchestratorMachine:
                 else:
                     self._replan_or_fail([result.reason], "execution failed")
                     feedback = [result.reason]
+            elif state == "synthesize":
+                await self._synthesize()
             elif state == "harden":
                 await self._harden()
                 self._transition("audit")
@@ -795,6 +849,38 @@ class OrchestratorMachine:
                 if reasons is not None:
                     feedback = reasons
         return self.record
+
+    async def _synthesize(self) -> None:
+        """Check the change isolated steps harvested, fix what does not fit together (bounded), then go on to HARDEN.
+        A problem still there after the fixes is a warning, not a failure: HARDEN and AUDIT run the real tests."""
+        assert self.plan is not None
+        synthesis = self.record.synthesis or {"harvested": [], "conflicts": [], "problems": []}
+        # The combined change: what the sandboxes handed back and what every other step (a dependent one that ran in
+        # the shared tree, a fix pass) wrote — the two sides of an interface are usually one of each.
+        files = sorted({*(synthesis.get("harvested") or []), *(f for rows in self.record.step_log.values() for row in rows for f in (row.get("files_changed") or []))})
+        problems = synthesizer.check(self.project, files)
+        while problems and self.record.synth_fixes < self.config.max_synth_fixes:
+            self.record.synth_fixes += 1
+            items = [p.render() for p in problems]
+            self._emit("synthesis", problems=items[:30], fix=self.record.synth_fixes)
+            step = Step(
+                step_id=f"synth-{self.record.synth_fixes}",
+                name="Make the parallel steps fit together",
+                description="Several steps of this plan were written in parallel, each in isolation. Their combined change has "
+                "these problems; fix them (signatures, imports, names) without undoing what the steps did:\n- " + "\n- ".join(items[:30]),
+                file_scope=self.plan.scope_union(),
+            )
+            result = await self._execute(steps=[step])
+            if result.status in ("paused", "budget_exhausted", "cancelled"):
+                self.record.reason = result.reason
+                self._transition(result.status, reason=result.reason)
+                return
+            problems = synthesizer.check(self.project, files)
+        synthesis["problems"] = [p.render() for p in problems]
+        self.record.synthesis = synthesis
+        if problems:
+            self.record.warnings.append(f"synthesis: {len(problems)} problem(s) left for harden/audit: " + "; ".join(synthesis["problems"][:3]))
+        self._transition("harden" if self.config.harden else "audit", synthesized=len(files), problems=len(problems))
 
     async def _fix(self, items: list[str], *, from_conformance: bool = False) -> None:
         """One drift retry (or conformance round): a single extra step over the whole plan scope, told exactly what the

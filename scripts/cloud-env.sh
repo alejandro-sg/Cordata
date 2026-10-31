@@ -6,7 +6,7 @@
 #     make tui-cloud            make stress-cloud SCENARIOS=...
 #
 # Provider, endpoint and model are not secrets and are set here (override any
-# of them in your shell: CLOUD_OPENAI_MODEL_ID=nemotron-3-super make tui-cloud).
+# of them in your shell: CLOUD_OPENAI_MODEL_ID=gemma4:31b make tui-cloud).
 # The API key is the one thing that must NOT live in a project file — the
 # agent's own file tools can read backend/.env — so it comes from, in order:
 #   1. OLLAMA_API_KEY / CLOUD_OPENAI_API_KEY already exported in your shell
@@ -24,11 +24,11 @@ if [[ $# -eq 0 ]]; then
   exit 2
 fi
 
-# Cheapest verified: gpt-oss:20b ($0.07 in / $0.30 out per 1M tokens), ~1 s, tool
-# calls work. nemotron-3-super is cheaper on input ($0.015) — see docs/laya-triage.md.
+# Default: minimax-m3.1-flash — the fast tier of the zero-download cloud roster (1M context, tool calls work).
+# gemma4:31b (262k) and mistral-large-4 (1M, the strong tier) are the alternatives — see backend/ollama_cloud.py.
 export MODEL_PROVIDER=openai_compatible
 export CLOUD_OPENAI_BASE_URL="${CLOUD_OPENAI_BASE_URL:-https://ollama.com/v1}"
-export CLOUD_OPENAI_MODEL_ID="${CLOUD_OPENAI_MODEL_ID:-gpt-oss:20b}"
+export CLOUD_OPENAI_MODEL_ID="${CLOUD_OPENAI_MODEL_ID:-minimax-m3.1-flash}"
 
 if [[ -z "${OLLAMA_API_KEY:-}" && -z "${CLOUD_OPENAI_API_KEY:-}" ]]; then
   if command -v security >/dev/null 2>&1 \

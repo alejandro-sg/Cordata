@@ -50,7 +50,10 @@ import provider_settings
 # see that module's own comment): every bare-name backend import this file
 # needs has to come before this line.
 from sandbox_functions_api import register_sandbox_routes
-from agent_common import GENERATED_TOOL_NAMES, MCP_TOOL_NAMES, build_plugins, build_template_agent, start_mcp_clients
+from agent_common import GENERATED_TOOL_NAMES, MCP_TOOL_NAMES, build_plugins, build_template_agent, enter_workspace, start_mcp_clients
+
+# The web front door's tools run in backend/workspace/ (agent_common no longer moves the process on import).
+enter_workspace()
 from settings import EXTRA_CORS_ORIGINS
 
 # Tools whose real-world impact (arbitrary shell/code execution, overwriting

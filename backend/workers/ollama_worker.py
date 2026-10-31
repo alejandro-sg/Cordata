@@ -54,7 +54,7 @@ MAX_LIST = 400
 
 def model_family(model: str | None) -> str:
     name = (model or "").lower()
-    for prefix, family in (("glm", "zhipu"), ("kimi", "moonshot"), ("qwen", "alibaba"), ("gpt", "openai"), ("gemma", "google"), ("llama", "meta"), ("deepseek", "deepseek"), ("laguna", "poolside")):
+    for prefix, family in (("mistral", "mistral"), ("minimax", "minimax"), ("glm", "zhipu"), ("kimi", "moonshot"), ("qwen", "alibaba"), ("gpt", "openai"), ("gemma", "google"), ("llama", "meta"), ("deepseek", "deepseek"), ("laguna", "poolside")):
         if name.startswith(prefix):
             return family
     return "open-weights"
@@ -212,7 +212,7 @@ class OllamaWorker(Worker):
         model_factory: Callable[[TaskPacket, str | None], Any] | None = None,
         default_model: str | None = None,
         base_url: str | None = None,
-        models: tuple[str, ...] = ("glm-5.3-flash", "kimi-k2.7-code", "deepseek-v4.1-flash", "laguna-xs-2.1"),
+        models: tuple[str, ...] = ("minimax-m3.1-flash", "gemma4:31b", "mistral-large-4", "kimi-k2.7-code", "deepseek-v4.1-flash", "glm-5.3-flash"),
         worker_id: str = "ollama",
         cost_basis: str = "subscription",
     ) -> None:

@@ -6,11 +6,15 @@ Ollama's hosted inference. This module is the one place that knows how to talk t
 it from Strands:
 
 * **Registry** — the model tags this harness routes between, with the *wire id*
-  the daemon wants. Verified live against ollama 0.35: the bare tag
-  (``glm-5.3-flash``) is a 404 on the daemon; only ``glm-5.3-flash:cloud`` is
-  offloaded to the cloud. ``laguna-xs-2.1`` has no ``:cloud`` tag at all — it is a
-  20 GB local-weights model — so it is registered as ``local`` and is only usable if
-  it is *already* on disk. This module never pulls.
+  the daemon wants, the real context window, the thinking shape and a capability
+  vector. Zero-download by construction: every entry is a ``<name>:cloud`` tag the
+  daemon offloads to hosted inference (verified live against ollama 0.40 with
+  ``POST /api/show``: 1,048,576 tokens for mistral-large-4 / deepseek-v4.1-flash /
+  glm-5.3-flash, 1,000,000 for minimax-m3.1-flash, 262,144 for gemma4:31b and
+  kimi-k2.7-code; ``ollama list`` stays empty). The bare tag (``glm-5.3-flash``) is a
+  404 on the daemon. The local-weights ``laguna-xs-2.1`` (20 GB) was retired; the
+  ``local`` hosting kind survives for a tag someone registers by hand, and this module
+  still never pulls.
 * **OllamaCloudModel** — ``strands.models.openai.OpenAIModel`` pointed at the daemon
   with a dummy key, whose HTTP transport refuses anything but
   ``POST <base>/chat/completions`` (so no code path here can reach ``/api/pull``)
@@ -59,13 +63,27 @@ DEFAULT_CONTEXT_WINDOW = 128_000
 
 REASONING_LEVELS = ("low", "medium", "high", "max")
 ReasoningEffort = Literal["low", "medium", "high", "max"]
+#: The capability vector a task profile is matched against (orchestrator/auto_router.py).
+CAPABILITIES = ("heavy_reasoning", "fast_syntax", "shell_verification", "long_context", "review", "vision", "structured_output")
 
 
 def default_base_url() -> str:
     return (os.getenv("OLLAMA_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
 
 
+def context_window_for(spec: "ModelSpec") -> int:
+    """The window handed to Strands for a model: its real one, capped by ``OLLAMA_CLOUD_CONTEXT_WINDOW`` when set
+    (a person who wants compression to start earlier, or a test that wants a small number)."""
+    cap = os.getenv("OLLAMA_CLOUD_CONTEXT_WINDOW")
+    return min(spec.context_window, int(cap)) if cap and cap.strip().isdigit() else spec.context_window
+
+
 # ------------------------------------------------------------------ registry
+
+
+#: How a model takes test-time compute: ``levels`` (``reasoning_effort`` low…max, clamped to ``efforts``), ``bool``
+#: (thinking on/off — any level turns it on, the daemon maps it), ``none`` (no thinking: the field is omitted).
+ThinkingShape = Literal["levels", "bool", "none"]
 
 
 @dataclass(frozen=True)
@@ -74,24 +92,76 @@ class ModelSpec:
     wire_id: str
     hosting: Literal["cloud", "local"]
     summary: str
+    #: The hosted model's real window (``/api/show`` → ``<arch>.context_length``), handed to Strands as
+    #: ``context_window_limit`` so proactive compression measures against it instead of a 128k guess.
+    context_window: int = DEFAULT_CONTEXT_WINDOW
+    family: str = "open-weights"
+    #: ``fast`` · ``standard`` · ``strong`` — the dispatch tier this model is priced in (orchestrator/dispatch.py).
+    tier: str = "standard"
+    #: Relative cost per step on the dispatch scale (0.02 fast … 0.10 strong); a planning number, not a bill.
+    cost: float = 0.04
+    thinking: ThinkingShape = "levels"
+    efforts: tuple[str, ...] = REASONING_LEVELS
+    capabilities: frozenset[str] = frozenset()
 
     @property
     def pulls_weights(self) -> bool:
         """True when serving this tag needs weights on the machine."""
         return self.hosting == "local"
 
+    def adapt_effort(self, level: str | None) -> ReasoningEffort | None:
+        """The level this model is actually sent for a requested one: omitted for a model that does not think,
+        passed through for an on/off thinker, clamped to the nearest supported level (rounding *up*: asking for more
+        compute than a model offers gets its most, never less) for a graded one."""
+        value = normalize_effort(level)
+        if value is None or self.thinking == "none":
+            return None
+        if self.thinking == "bool" or value in self.efforts:
+            return value
+        rank = REASONING_LEVELS.index(value)
+        higher = [e for e in self.efforts if REASONING_LEVELS.index(e) >= rank]
+        return (higher[0] if higher else self.efforts[-1]) if self.efforts else value  # type: ignore[return-value]
 
+
+_ALL = frozenset(CAPABILITIES)
 REGISTRY: dict[str, ModelSpec] = {
     spec.alias: spec
     for spec in (
-        ModelSpec("glm-5.3-flash", "glm-5.3-flash:cloud", "cloud", "GLM 5.3 Flash — fast general model (18B active)"),
-        ModelSpec("kimi-k2.7-code", "kimi-k2.7-code:cloud", "cloud", "Kimi K2.7 Code — long-horizon coding"),
-        ModelSpec("deepseek-v4.1-flash", "deepseek-v4.1-flash:cloud", "cloud", "DeepSeek V4.1 Flash — fast, cheap reasoning and coding"),
         ModelSpec(
-            "laguna-xs-2.1",
-            "laguna-xs-2.1",
-            "local",
-            "Laguna XS 2.1 — 33B MoE / 3B active; local weights only (no :cloud tag), never pulled by this harness",
+            "mistral-large-4", "mistral-large-4:cloud", "cloud",
+            "Mistral Large 4 — 1.05T MoE, 1M context; lead architect, deep research and plans, cross-family harden",
+            context_window=1_048_576, family="mistral", tier="strong", cost=0.10,
+            capabilities=frozenset({"heavy_reasoning", "long_context", "review", "vision", "structured_output"}),
+        ),
+        ModelSpec(
+            "minimax-m3.1-flash", "minimax-m3.1-flash:cloud", "cloud",
+            "MiniMax M3.1 Flash — 428B MoE, 1M context; fast repo scout, syntax edits, observer and audit",
+            context_window=1_000_000, family="minimax", tier="fast", cost=0.02,
+            capabilities=frozenset({"fast_syntax", "long_context", "review", "vision"}),
+        ),
+        ModelSpec(
+            "gemma4:31b", "gemma4:31b:cloud", "cloud",
+            "Gemma 4 31B — dense, 262k context; grounded synthesis, structured JSON plans, conformance judge",
+            context_window=262_144, family="google", tier="standard", cost=0.04, thinking="bool",
+            capabilities=frozenset({"structured_output", "review", "fast_syntax", "vision"}),
+        ),
+        ModelSpec(
+            "kimi-k2.7-code", "kimi-k2.7-code:cloud", "cloud",
+            "Kimi K2.7 Code — 1.04T MoE, 262k context; long-horizon coding and debugging",
+            context_window=262_144, family="moonshot", tier="standard", cost=0.05, thinking="bool",
+            capabilities=frozenset({"heavy_reasoning", "fast_syntax", "shell_verification", "review"}),
+        ),
+        ModelSpec(
+            "deepseek-v4.1-flash", "deepseek-v4.1-flash:cloud", "cloud",
+            "DeepSeek V4.1 Flash — 763B MoE, 1M context; fast, cheap reasoning and coding",
+            context_window=1_048_576, family="deepseek", tier="fast", cost=0.02, efforts=("low", "high", "max"),
+            capabilities=frozenset({"heavy_reasoning", "fast_syntax", "long_context", "review"}),
+        ),
+        ModelSpec(
+            "glm-5.3-flash", "glm-5.3-flash:cloud", "cloud",
+            "GLM 5.3 Flash — 321B MoE, 1M context; fast general fallback",
+            context_window=1_048_576, family="zhipu", tier="fast", cost=0.03, efforts=("low", "high", "max"),
+            capabilities=frozenset({"fast_syntax", "long_context", "structured_output"}),
         ),
     )
 }
@@ -300,9 +370,9 @@ class OllamaCloudModel(OpenAIModel):
             self.reasoning.set(reasoning_effort)
         self._transport = transport
         params = {"max_tokens": DEFAULT_MAX_TOKENS, **(model_config.pop("params", None) or {})}
-        # The window is set by the hosted model, not by this process. A planning number rather than a fact (see
-        # `agent_common.UNKNOWN_CONTEXT_WINDOW`) so Strands' proactive compression has something to measure against.
-        model_config.setdefault("context_window_limit", int(os.getenv("OLLAMA_CLOUD_CONTEXT_WINDOW") or DEFAULT_CONTEXT_WINDOW))
+        # The window is the hosted model's own (ModelSpec.context_window, read from /api/show), so Strands' proactive
+        # compression uses 262k–1M rather than truncating at a 128k guess. `OLLAMA_CLOUD_CONTEXT_WINDOW` caps it.
+        model_config.setdefault("context_window_limit", context_window_for(self.spec))
         super().__init__(
             client_args={"api_key": DUMMY_API_KEY, "base_url": self.base_url},
             model_id=self.spec.wire_id,
@@ -321,13 +391,13 @@ class OllamaCloudModel(OpenAIModel):
 
     # --- model switching
     def switch_model(self, alias: str, *, availability: Availability | None = None) -> ModelSpec:
-        """Point this instance at another registered model for its next request."""
+        """Point this instance at another registered model for its next request (and at its window)."""
         spec = resolve(alias)
         reason = (availability or default_availability(self.base_url))(spec)
         if reason:
             raise ModelUnavailable(reason)
         self.spec = spec
-        self.update_config(model_id=spec.wire_id)
+        self.update_config(model_id=spec.wire_id, context_window_limit=context_window_for(spec))
         return spec
 
     @property
@@ -343,12 +413,13 @@ class OllamaCloudModel(OpenAIModel):
     # --- request shape
     def format_request(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         request = super().format_request(*args, **kwargs)
-        effort = self.reasoning.level
+        spec = self.current_spec
+        # The shared control holds what the role asked for; each model gets the nearest level it supports.
+        effort = spec.adapt_effort(self.reasoning.level)
         if effort is not None:
             # extra_body is the SDK's escape hatch for fields its enum doesn't know
             # ("max"); it lands at the top level of the JSON body.
             request["extra_body"] = {**(request.get("extra_body") or {}), "reasoning_effort": effort}
-        spec = self.current_spec
         _notify_request({"alias": spec.alias, "wire_id": spec.wire_id, "effort": effort})
         return request
 
@@ -398,10 +469,10 @@ class RoleProfile:
 DEFAULT_ROLES: dict[str, RoleProfile] = {
     profile.role: profile
     for profile in (
-        RoleProfile("orchestrator", "kimi-k2.7-code", "medium"),
-        RoleProfile("architect", "glm-5.3-flash", "high"),
-        RoleProfile("debugger", "kimi-k2.7-code", "max"),
-        RoleProfile("observer", "glm-5.3-flash", "low"),
+        RoleProfile("orchestrator", "gemma4:31b", "medium"),
+        RoleProfile("architect", "mistral-large-4", "high"),
+        RoleProfile("debugger", "mistral-large-4", "max"),
+        RoleProfile("observer", "minimax-m3.1-flash", "low"),
     )
 }
 
@@ -442,9 +513,16 @@ def _env_overrides() -> dict[str, str]:
 
 
 def _parse_override(role: str, text: str, current: RoleProfile | None) -> RoleProfile:
-    """``OLLAMA_ROLE_DEBUGGER=kimi-k2.7-code:max`` — ``model``, ``model:effort`` or ``:effort``
-    (aliases never contain a colon, so the first one splits)."""
-    model, _, effort = text.strip().partition(":")
+    """``OLLAMA_ROLE_DEBUGGER=kimi-k2.7-code:max`` — ``model``, ``model:effort`` or ``:effort``.
+
+    An alias may itself contain a colon (``gemma4:31b``), so the split is on the *last* colon and only when what
+    follows it is a reasoning level: ``gemma4:31b`` is a model, ``gemma4:31b:high`` is that model at high."""
+    text = text.strip()
+    head, sep, tail = text.rpartition(":")
+    if sep and tail.strip().lower() in REASONING_LEVELS:
+        model, effort = head, tail
+    else:
+        model, effort = text, ""
     base = current or RoleProfile(role, CLOUD_ALIASES[0], "medium")
     return RoleProfile(role, resolve(model).alias if model else base.model, normalize_effort(effort or None) or base.effort)
 

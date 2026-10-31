@@ -67,7 +67,7 @@ impl Mission {
 
     pub fn live(&self) -> bool {
         let state = self.detail.as_ref().and_then(|d| d.get("live")).and_then(Value::as_str).unwrap_or(self.board.state.as_str());
-        matches!(state, "running" | "plan" | "research" | "execute" | "harden" | "audit" | "conformance")
+        matches!(state, "running" | "plan" | "research" | "execute" | "synthesize" | "harden" | "audit" | "conformance")
     }
 
     fn can(&self, what: &str) -> bool {

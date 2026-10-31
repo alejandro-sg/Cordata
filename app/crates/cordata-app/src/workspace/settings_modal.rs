@@ -66,7 +66,7 @@ impl Section {
             Section::General => "Launch, sending and notifications.",
             Section::Models => "Which models answer, and how much they think.",
             Section::Permissions => "What Cordata may do without asking.",
-            Section::Customize => "Instructions, prompt commands and learned skills.",
+            Section::Customize => "Instructions, prompt commands, skills and one-click MCP servers.",
             Section::Automations => "Prompts the daemon runs on a schedule.",
             Section::Appearance => "Theme, haze and density.",
             Section::Shortcuts => "Every key the window answers to.",
@@ -561,7 +561,7 @@ impl Workspace {
     }
 
     fn appearance_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let theme = self.segmented("theme", &[("2049", "2049"), ("graphite", "graphite"), ("dim", "dim")], &self.prefs.theme.clone(), |this, v, cx| {
+        let theme = self.segmented("theme", &[("system", "system"), ("light", "light"), ("2049", "2049"), ("graphite", "graphite"), ("dim", "dim")], &self.prefs.theme.clone(), |this, v, cx| {
             this.prefs.theme = v.into();
             this.save_prefs(cx);
             crate::theme::set_theme(v, cx);
@@ -647,13 +647,8 @@ impl Workspace {
     }
 
     fn advanced_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let diag = self.toggle("diagnostics", self.prefs.share_diagnostics, "Share anonymous diagnostics", |this, on, cx| {
-            this.prefs.share_diagnostics = on;
-            this.save_prefs(cx);
-        }, cx);
         vec![
             setting_row("Logs folder", "The harness's state, trajectories and logs (~/.cordata).", ui::button("open-logs", "Reveal in Finder", Kind::Outline, cx).on_click(cx.listener(|_, _, _, cx| cx.reveal_path(&super::cordata_home()))).into_any_element(), cx),
-            setting_row("Share anonymous diagnostics", "Nothing is sent today; this records your choice for when it exists.", diag, cx),
             setting_row("Clear conversation history", "Deletes every conversation and its saved history from this Mac, in every project. Running ones are kept.", self.clear_history_button(cx), cx),
             setting_row("Reset all settings", "Restores this window's preferences (theme, layout, recents). Harness settings files are untouched.", ui::button("reset-prefs", "Reset…", Kind::Danger, cx).on_click(cx.listener(|this, _, window, cx| this.ask_confirm(Confirm::ResetPrefs, window, cx))).into_any_element(), cx),
             sub_heading("harness", cx),

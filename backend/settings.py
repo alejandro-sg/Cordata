@@ -36,8 +36,8 @@ MODEL_PROVIDER = os.getenv("MODEL_PROVIDER", "local")
 # MODEL_PROVIDER=ollama_cloud (ollama_cloud.py): cloud models served through the
 # *local* Ollama daemon's OpenAI proxy — no API key (the daemon is signed in), no
 # weights pulled. OLLAMA_BASE_URL defaults to http://localhost:11434/v1;
-# OLLAMA_MODEL_ID is a registry alias (glm-5.3-flash | kimi-k2.7-code |
-# laguna-xs-2.1) for the orchestrator, empty = its role profile's model;
+# OLLAMA_MODEL_ID is a registry alias (mistral-large-4 | minimax-m3.1-flash |
+# gemma4:31b | kimi-k2.7-code | deepseek-v4.1-flash | glm-5.3-flash) for the orchestrator, empty = its role profile's model;
 # OLLAMA_ROLE_<ROLE>=<alias>[:low|medium|high|max] overrides one role's model/effort.
 OLLAMA_MODEL_ID = os.getenv("OLLAMA_MODEL_ID", "")
 # Provider API keys are credentials the *agent* must never be able to read —

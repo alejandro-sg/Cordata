@@ -68,6 +68,9 @@ import session_history
 import session_store
 import task_tool
 import ask_user
+import background_tasks
+import lifecycle_hooks
+import registry
 import plan_mode
 import mode_advisor
 import skill_search
@@ -111,8 +114,8 @@ from laya_router import BASE_TARGETS, LayaRouter, RouteDecision, RouterHooks, pl
 from plugin_host import PluginHost, PluginSpec, run_blocking
 from self_heal import HealConfig, SelfHealHooks
 
-# Last: importing agent_common chdirs the process into backend/workspace/, after
-# which bare-module imports only resolve when this file runs as a script.
+# agent_common pins relative sys.path entries on import (no chdir any more), so the per-session chdir into a project
+# (_build_session) never breaks a later bare-module import.
 from agent_common import SESSIONS_DIR, build_agent_for_session, start_mcp_clients  # noqa: E402
 from model_control_tool import _context_window_limit, _fetch_available_models  # noqa: E402
 
@@ -430,6 +433,7 @@ def _release_leases() -> None:
 
 
 atexit.register(_release_leases)
+atexit.register(background_tasks.MANAGER.shutdown)  # a background task never outlives the server that started it
 
 
 _PLUGIN_HOSTS: dict[tuple[str, bool], PluginHost] = {}
@@ -700,6 +704,7 @@ class CordataAcpAgent:
             "shell", "editor", "file_read", "file_write", "python_repl", "http_request", "web_fetch", "apply_patch", "architect", "debugger", subagent_tool.TOOL_NAME,
             claude_code_tool.TOOL_NAME, orchestrate_tool.TOOL_NAME, "omlx_resource_manager", "ollama_resource_manager", "context_digest", "enable_tools", "search_skills",
             context_offload.RETRIEVE_TOOL, "code_search", "code_outline", "environment_profile", plugin_host.RESOURCE_TOOL, plan_mode.TOOL_NAME, ask_user.TOOL_NAME,
+            *(t.tool_name for t in background_tasks.TOOLS),
         }
         plugins = _plugin_host(cwd, reserved, trace_store.enabled(preferences))
         heal = SelfHealHooks(config=lambda: _heal_config(settings_store.current(cwd)), session_id=session_id, root=cwd)
@@ -748,6 +753,8 @@ class CordataAcpAgent:
             # door has no vault status to route the CLI's egress through, no approval gate for it.
             extra_tools=[
                 patch_tool.apply_patch,
+                # Long commands that should not block the turn (background_tasks.py; gated exactly like `shell`).
+                *background_tasks.TOOLS,
                 # The specialists are `subagent` presets (architect, debugger); `specialist_agents` stay for the
                 # router's direct dispatch and the Lab's standing pods.
                 delegate,
@@ -784,6 +791,8 @@ class CordataAcpAgent:
                     notify=lambda payload: harness_events.emit("effort", {**payload, "sessionId": session_id}),
                 ),
                 steer,
+                # The person's own pre/post/stop commands (trust-gated settings `hooks.*`).
+                lifecycle_hooks.LifecycleHooks(lambda: settings_store.current(cwd), cwd=cwd, session_id=session_id, notify=lambda payload: harness_events.emit("hook", {**payload, "sessionId": session_id})),
                 lsp_bridge.LspEditHooks(), router_hooks, heal, outcome_hooks.OutcomeHooks(session_id, "orchestrator"), stall_guard.StallHooks(session_id, "orchestrator"),
                 # Last, so it reads the route the router just set (BeforeInvocation runs in order) and caps a
                 # tool result before the hooks registered earlier see it (AfterToolCall runs in reverse).
@@ -792,7 +801,8 @@ class CordataAcpAgent:
             exclude_tools={"agent_memory"},
             use_triage=False,
             untrusted_tools=plugins.untrusted_names,
-            skill_dirs=learned.live_dirs(cwd),
+            # A project's own installed skills (`cordata skill add --project`) are text a cloned repo wrote: only once trusted.
+            skill_dirs=[*learned.live_dirs(cwd), *registry.project_skill_dirs(cwd, trusted=settings_store.current(cwd).trusted)],
             checkpointing=True,
             # `subagent` calls may run in the background while the orchestrator keeps working; the turn waits for them.
             background_tasks=subagent_tool.BACKGROUND_TASKS if preferences.get("subagents.background", True) is not False else None,
@@ -1111,10 +1121,14 @@ class CordataAcpAgent:
             fn = host.enable if name.endswith("enable") else host.disable
             row = await run_blocking(fn, target, persist)
             return row
+        if name in ("plugins/catalog", "plugins/install", "plugins/remove"):
+            return await self._plugins_registry(name.removeprefix("plugins/"), params, state, cwd)
         if name == "plugins/reload":
             host = state.plugins if state else _plugin_host(cwd, set())
             host.discover()
             return {"plugins": host.status(), "warnings": host.warnings}
+        if name.startswith("tasks/"):
+            return self._tasks_control(name.removeprefix("tasks/"), params, session_id)
         if name == "lsp/status":
             manager = lsp_bridge.manager_for(cwd)
             return {"servers": manager.status(), "enabled": manager.enabled, "trusted": lsp_bridge.folder_trusted(cwd)}
@@ -1474,6 +1488,48 @@ class CordataAcpAgent:
 
         threading.Thread(target=run, name=f"watch-{run_id}", daemon=True).start()
 
+    async def _plugins_registry(self, action: str, params: dict, state: "_Session | None", cwd: str) -> dict:
+        """``plugins/catalog`` · ``plugins/install`` · ``plugins/remove`` (registry.py): one token in, a server written to
+        the user's (or, with ``project``, the project's) MCP file, then discovered and enabled in this session's host —
+        its tools register into the live agent with no restart. A project server stays blocked until the folder is
+        trusted; nothing here trusts or pre-approves anything."""
+        if action == "catalog":
+            return {"catalog": registry.mcp_catalog(), "installed": registry.mcp_list(cwd)}
+        scope = "project" if params.get("project") else "user"
+        try:
+            if action == "install":
+                env = {str(k): str(v) for k, v in (params.get("env") or {}).items()}
+                row = await run_blocking(registry.mcp_add, str(params.get("spec") or ""), scope=scope, project=cwd, env=env, name=params.get("name") or None)
+            else:
+                row = await run_blocking(registry.mcp_remove, str(params.get("name") or ""), scope=scope, project=cwd)
+        except registry.RegistryError as error:
+            return {"ok": False, "reason": str(error)}
+        host = state.plugins if state else _plugin_host(cwd, set())
+        await run_blocking(host.discover)
+        if action == "install" and row.get("ok"):
+            status = await run_blocking(host.enable, row["name"], False)
+            row["status"] = status
+        elif action == "remove" and row.get("ok"):
+            await run_blocking(host.disable, row["name"], False)
+        row["plugins"] = host.status()
+        return row
+
+    def _tasks_control(self, action: str, params: dict, session_id: str | None) -> dict:
+        """``tasks/list`` · ``tasks/status`` · ``tasks/kill``: the background shell tasks this server started
+        (background_tasks.py). ``list`` with ``all`` shows every session's; a kill ends the task's whole process group."""
+        manager = background_tasks.MANAGER
+        if action == "list":
+            return {"tasks": manager.list(None if params.get("all") else session_id)}
+        task_id = str(params.get("taskId") or "")
+        if action == "status":
+            task = manager.get(task_id)
+            if task is None:
+                return {"ok": False, "reason": f"no background task {task_id!r}"}
+            return {"ok": True, **task.to_json(tail=max(0, min(int(params.get("lines") or 80), 440)))}
+        if action == "kill":
+            return manager.kill(task_id)
+        raise acp.RequestError.method_not_found(f"_cordata/tasks/{action}")
+
     async def _skills_control(self, action: str, params: dict, cwd: str) -> dict:
         """``skills/list`` · ``skills/show`` · ``skills/promote`` · ``skills/reject`` · ``skills/retire``: the learned skills
         for this project. A person's promote goes through the same filter as the gate's; it skips the evaluation,
@@ -1494,6 +1550,17 @@ class CordataAcpAgent:
             return await run_blocking(learned.reject, name, cwd, str(params.get("reason") or "rejected by a person"))
         if action == "retire":
             return await run_blocking(learned.retire, name, cwd, str(params.get("reason") or "retired by a person"), "person")
+        # Installed skills (registry.py): a folder, a git URL or a catalog id; live sessions reload in one swap.
+        if action == "catalog":
+            return {"catalog": registry.skill_catalog(), "installed": registry.skill_list(cwd)}
+        scope = "project" if params.get("project") else "user"
+        try:
+            if action == "install":
+                return await run_blocking(registry.skill_add, str(params.get("source") or ""), scope=scope, project=cwd)
+            if action == "remove":
+                return await run_blocking(registry.skill_remove, name, scope=scope, project=cwd)
+        except registry.RegistryError as error:
+            return {"ok": False, "reason": str(error)}
         raise acp.RequestError.method_not_found(f"_cordata/skills/{action}")
 
     async def _checkpoint_control(self, action: str, params: dict, session_id: str | None, cwd: str) -> dict:

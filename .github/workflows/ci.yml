@@ -1,8 +1,7 @@
 # Runs what's actually runnable off this machine: agent/tool construction,
 # the denylist/graph-structure/sandbox-token/model-control/proposer-guardrail
 # smoke tests (all pure Python, no external service but Qdrant, which the
-# `services:` block below provides). The frozen web UI builds in its own
-# workflow (frontend.yml), only when frontend/ changes.
+# `services:` block below provides).
 #
 # Deliberately NOT run here: _acp_smoke_test.py (spawns a real ACP session
 # and expects the local oMLX model to actually respond and call tools —
@@ -142,6 +141,14 @@ jobs:
           # and by replay) and the orchestration eval suite with its promotion gate.
           python _dispatch_smoke_test.py
           python _orchestration_eval_smoke_test.py
+          # Auto Mode routing, copy-on-write wave sandboxes + SYNTHESIZE, per-step RLAIF rewards (orchestrator/auto_router.py,
+          # synthesizer.py, rlaif.py); background shell tasks and lifecycle hooks; the zero-config MCP/skills registry;
+          # and that importing agent_common has no side effects (no chdir, no MCP spawn).
+          python _auto_router_smoke_test.py
+          python _background_tasks_smoke_test.py
+          python _registry_mcp_skills_smoke_test.py
+          python _agent_common_import_smoke_test.py
+          python _ollama_cloud_smoke_test.py
           python _os_context_smoke_test.py
           python _grpc_bridge_smoke_test.py
           python _vision_turn_smoke_test.py

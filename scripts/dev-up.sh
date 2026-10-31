@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Starts the local dev environment: Qdrant (container), backend, frontend.
+# Starts the local dev environment: Qdrant (container) and the backend.
 # Does NOT start your oMLX model server — that's an external process this
 # repo doesn't manage (see README.md) — but checks it's reachable and warns
 # if not, since nothing else here will work without it.
@@ -19,10 +19,6 @@ done
 
 if ! [[ -x "$ROOT/backend/.venv/bin/python" ]]; then
   err "backend/.venv not found — run scripts/setup.sh first."
-  exit 1
-fi
-if ! [[ -d "$ROOT/frontend/node_modules" ]]; then
-  err "frontend/node_modules not found — run scripts/setup.sh first."
   exit 1
 fi
 
@@ -66,10 +62,6 @@ fi
 
 (cd "$ROOT/backend" && start_bg backend "$RUN_DIR/backend.log" .venv/bin/python main.py)
 
-# --- frontend ---------------------------------------------------------------
-
-(cd "$ROOT/frontend" && start_bg frontend "$RUN_DIR/frontend.log" npm run dev)
-
 log ""
-ok "Up. Frontend: http://localhost:3000  Backend: http://localhost:8001"
+ok "Up. Backend: http://localhost:8001"
 dim "scripts/dev-status.sh to check, scripts/dev-down.sh to stop, tail -f .dev/*.log for logs."

@@ -43,6 +43,7 @@ import math
 import os
 import re
 import threading
+import weakref
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -408,6 +409,22 @@ class _Turn:
     activated_before: set[str]
 
 
+#: Every live session's skill plugin in this process, so an install can refresh them all (``reload_all``).
+LIVE: "weakref.WeakSet[SemanticSkills]" = weakref.WeakSet()
+
+
+def reload_all() -> int:
+    """Reload every live session's skills; returns how many sessions were refreshed."""
+    count = 0
+    for plugin in list(LIVE):
+        try:
+            plugin.reload()
+            count += 1
+        except Exception:
+            logger.warning("skills: a live reload failed", exc_info=True)
+    return count
+
+
 class SemanticSkills(Plugin):
     """Chooses which skills `AgentSkills` lists on each user turn, and gives the agent `search_skills`.
 
@@ -436,7 +453,26 @@ class SemanticSkills(Plugin):
         self._preferences = preferences
         self._notify = notify
         self._turns: dict[int, _Turn] = {}
+        #: Where the skills came from (``build_skill_plugins``), so ``reload`` can read them again.
+        self.sources: list[str] = []
+        self._reload_lock = threading.Lock()
         super().__init__()
+        LIVE.add(self)
+
+    def reload(self, sources: Sequence[str | Path] | None = None) -> int:
+        """Read the skill sources again — a skill installed (``registry.py``: ``cordata skill add``) or removed while
+        the session runs — and swap the library in one step: a new ``SkillIndex`` is built and warmed aside, then this
+        plugin's index and ``AgentSkills``' list are replaced together under a lock. A search already running finishes
+        on the old index; the next one sees the new. Returns how many skills are now available."""
+        with self._reload_lock:
+            if sources is not None:
+                self.sources = [str(s) for s in sources]
+            fresh = SkillIndex(load_skills(self.sources))
+            fresh.warm()
+            self.index = fresh
+            self.pinned = [name for name in self.pinned if name in fresh.skills]
+            self.agent_skills.set_available_skills(list(fresh.skills.values()))
+            return len(fresh)
 
     # -- settings --------------------------------------------------------------
 
@@ -572,5 +608,6 @@ def build_skill_plugins(
     pinned = [skill.name for skill in load_skills(pinned_sources)]
     agent_skills = AgentSkills(skills=list(index.skills.values()))
     semantic = SemanticSkills(index, agent_skills, decider, preferences=preferences, notify=notify, pinned=pinned)
+    semantic.sources = [str(s) for s in [*sources, *pinned_sources]]
     injector = ContextInjector(lambda context: semantic.hint(context.agent), name="cordata:skill-hint", trigger="userTurn")
     return [semantic, agent_skills, injector]

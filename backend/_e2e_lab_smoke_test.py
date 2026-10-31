@@ -28,6 +28,7 @@ os.environ["LAYA_TRIAGE_LOG"] = str(ROOT / "laya.jsonl")
 os.environ.setdefault("BYPASS_TOOL_CONSENT", "true")
 # The scenario scripts a GLM orchestrator delegating to a Kimi debugger; the product default orchestrator is Kimi.
 os.environ["OLLAMA_ROLE_ORCHESTRATOR"] = "glm-5.3-flash:low"
+os.environ["OLLAMA_ROLE_DEBUGGER"] = "kimi-k2.7-code:max"  # the scripted fake answers the debugger as kimi (the default is mistral-large-4 now)
 
 import acp  # noqa: E402
 
@@ -191,7 +192,7 @@ async def scenario(fake: FakeOllama) -> None:
     options = await server.set_config_option("model", sid, KIMI)
     model_option = next(o for o in options.config_options if o.id == "model")
     offered = [choice.value for choice in model_option.options]
-    check(offered == [GLM, KIMI, "deepseek-v4.1-flash:cloud"] and model_option.current_value == KIMI, f"the picker offers the cloud tags only and shows the swap ({offered})")
+    check(offered == [spec.wire_id for spec in ollama_cloud.REGISTRY.values()] and model_option.current_value == KIMI, f"the picker offers the zero-download cloud roster and shows the swap ({offered})")
     fake.scripts.setdefault(KIMI, []).append(text("swapped and answering"))
     before = len(fake.chats())
     await server.prompt(sid, [acp.text_block("say hi")])
@@ -199,7 +200,7 @@ async def scenario(fake: FakeOllama) -> None:
     swapped = fake.chats()[before]
     check(swapped["model"] == KIMI and swapped["reasoning_effort"] == "low", "the next orchestrator call went to kimi, still on the orchestrator's low budget")
     check(pod(conn.states()[-1], "orchestrator")["model"] == "kimi-k2.7-code", "the Lab shows the swap")
-    refused = await server.set_config_option("model", sid, "laguna-xs-2.1")
+    refused = await server.set_config_option("model", sid, "laguna-xs-2.1")  # retired: no longer a registered tag at all
     check(next(o for o in refused.config_options if o.id == "model").current_value == KIMI, "a local-only tag that is not installed is refused, not 404'd later")
 
     # ----------------------------------------------- 3. E-Stop while parked at the station

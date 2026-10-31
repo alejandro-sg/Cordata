@@ -10,10 +10,12 @@ backend restarts regardless of which door was used.
 """
 
 import asyncio
+import collections.abc
 import importlib.util
 import logging
 import os
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +29,7 @@ import code_nav
 import code_search
 import core_tools
 import session_store
-# Imported here, before the chdir below, because their callers import them lazily (`build_plugins`, the offloader's
+# Imported here, eagerly, because their callers import them lazily (`build_plugins`, the offloader's
 # store path, the skill index cache) — and a bare-module import after the process has moved into workspace/ finds nothing
 # when the entry point put a *relative* directory on sys.path (the `uvicorn main:app` of the Dockerfile).
 import settings_store  # noqa: F401
@@ -182,9 +184,21 @@ SKILLS_GENERATED_DIR = BACKEND_DIR / "skills_generated"
 WORKSPACE_DIR.mkdir(exist_ok=True)
 SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 # A relative sys.path entry ('' or '.', from `python -m` or PYTHONPATH=.) means "the directory we started in";
-# pin it to that directory before moving, or every bare-module import after the chdir looks in workspace/ instead.
+# pin it to that directory now, or every bare-module import after a later chdir (enter_workspace below, or the ACP
+# server's per-session chdir into the project) looks in the wrong place. Pure bookkeeping: nothing moves at import.
 sys.path[:] = [os.path.abspath(entry) if not os.path.isabs(entry) else entry for entry in sys.path]
-os.chdir(WORKSPACE_DIR)
+
+
+def enter_workspace() -> Path:
+    """Move the process into ``backend/workspace/`` — the sandboxed working directory of the AG-UI (web) front door.
+
+    This used to happen as a side effect of importing this module, which moved *every* importer: the ACP server (which
+    chdirs per session into the editor's project anyway), the orchestrator CLI, tests and tools that only wanted a
+    constant. Now the one entry point that wants it (``main.py``) asks; everyone else keeps the directory they were
+    started in, and a session's tools are scoped by its explicit ``project_root``.
+    """
+    os.chdir(WORKSPACE_DIR)
+    return WORKSPACE_DIR
 
 
 def discover_generated_tools() -> list:
@@ -217,44 +231,41 @@ def discover_generated_tools() -> list:
 
 _GENERATED_TOOLS = discover_generated_tools()
 
-# One MCPClient (a ToolProvider — Agent(tools=...) loads its real tools
-# directly, no manual extraction) per configured, enabled server in
-# backend/mcp_servers.json. Computed once at process start, same as
-# _GENERATED_TOOLS — unlike skills_generated/*.py, an MCP server list has no
-# "changed mid-process by a hot-reload" case to stay fresh against
-# (mcp_manager.add_server/remove_server only edit the on-disk config; see
-# their own docstrings), so both front doors below share this one snapshot
-# rather than build_agent_for_session re-running discover_generated_tools()
-# style freshness for it too.
-_MCP_CLIENTS = load_configured_mcp_clients()
+# One MCPClient (a ToolProvider — Agent(tools=...) loads its real tools directly, no manual extraction) per
+# configured, enabled server in backend/mcp_servers.json. Built on first use, not at import: importing this module
+# must not read config files or spawn MCP servers (an import is what a test, a tool, the orchestrator CLI and the
+# daemon's children all do before they know whether they need a single MCP tool).
+_MCP_CLIENTS: list | None = None
+
+
+def mcp_clients() -> list:
+    """The process's shared MCP clients (``backend/mcp_servers.json``), built once on first call. Constructing an
+    MCPClient does not start its server; ``start_mcp_clients`` (or the Agent's own tool registry) does."""
+    global _MCP_CLIENTS
+    if _MCP_CLIENTS is None:
+        _MCP_CLIENTS = load_configured_mcp_clients()
+    return _MCP_CLIENTS
 
 
 def _mcp_tool_names() -> frozenset[str]:
     """Every tool name across all configured MCP servers, for
     UntrustedToolResultHooks' extra_untrusted_tools (prompt_security.py)
-    and _APPROVAL_REQUIRED_TOOLS (main.py/acp_server.py) — a user-configured
+    and the approval-required sets (main.py/acp_approval.py) — a user-configured
     MCP server can be literally anything, so its tools default to both
     untrusted-output-wrapped and approval-gated, same reasoning
     GENERATED_TOOL_NAMES already applies to skills_generated/*.py.
 
     Builds and connects its own throwaway MCPClient objects (a fresh
-    load_configured_mcp_clients() call) rather than reusing _MCP_CLIENTS —
-    an earlier version of this function called load_tools() directly on
-    _MCP_CLIENTS's own client objects, reasoning that load_tools()'s
-    documented caching meant a later, real call on the same object would
-    just reuse the cached result. Confirmed live in production that this
-    was wrong: every real pihole tool call afterward failed with
-    MCPClientInitializationError("the client session is not running"),
-    even though the priming call itself had appeared to succeed and cache
-    the tool names correctly. load_tools()/start()'s session and
-    add_consumer/remove_consumer bookkeeping isn't meant to be driven by
-    anything other than the real Agent's own ToolProvider usage — an
-    additional untracked caller against the same object corrupts state
-    that later real usage depends on. Using independent client objects
-    here, then stopping them immediately after listing, means this
-    function can never affect the objects _MCP_CLIENTS/TOOLS below actually
-    hand to Agent(tools=...), at the cost of connecting to each configured
-    server twice at process start (once here, once for real).
+    load_configured_mcp_clients() call) rather than reusing mcp_clients() —
+    an earlier version called load_tools() directly on the shared client
+    objects, and every real tool call afterward failed with
+    MCPClientInitializationError("the client session is not running"):
+    load_tools()/start()'s session and add_consumer/remove_consumer bookkeeping
+    is not meant to be driven by anything but the real Agent's own ToolProvider
+    usage. Independent clients, stopped right after listing, cannot corrupt the
+    shared ones, at the cost of connecting to each server twice.
+
+    Runs at most once, on first *use* of MCP_TOOL_NAMES (below) — never at import.
     """
     names: set[str] = set()
     for client in load_configured_mcp_clients():
@@ -271,7 +282,49 @@ def _mcp_tool_names() -> frozenset[str]:
     return frozenset(names)
 
 
-MCP_TOOL_NAMES = _mcp_tool_names()
+class LazyNames(collections.abc.Set):
+    """A read-only set of tool names computed on first use and cached — ``in``, iteration, ``len`` and the set
+    operators all work, and none of them run until something asks. ``static`` names are known up front and answered
+    without forcing the computation, so a membership check for a built-in tool never spawns an MCP server."""
+
+    def __init__(self, compute, static: collections.abc.Iterable[str] = ()) -> None:
+        self._compute = compute
+        self._static = frozenset(static)
+        self._value: frozenset[str] | None = None
+        self._lock = threading.Lock()
+
+    def _names(self) -> frozenset[str]:
+        if self._value is None:
+            with self._lock:
+                if self._value is None:
+                    computed = self._compute()
+                    self._value = self._static | frozenset(computed)
+        return self._value
+
+    @property
+    def resolved(self) -> bool:
+        """Whether the names have been computed (tests use this to prove an import stayed zero-I/O)."""
+        return self._value is not None
+
+    @classmethod
+    def _from_iterable(cls, iterable):
+        return frozenset(iterable)
+
+    def __contains__(self, name: object) -> bool:
+        return name in self._static or name in self._names()
+
+    def __iter__(self):
+        return iter(self._names())
+
+    def __len__(self) -> int:
+        return len(self._names())
+
+    def __repr__(self) -> str:
+        return f"LazyNames({sorted(self._value) if self._value is not None else '<unresolved>'})"
+
+
+#: Every configured MCP server's tool names. Zero I/O until first used (see LazyNames).
+MCP_TOOL_NAMES = LazyNames(_mcp_tool_names)
 
 _MCP_CLIENTS_STARTED = False
 
@@ -300,9 +353,9 @@ async def start_mcp_clients() -> None:
     doors share _MCP_CLIENTS and both need to call this once at startup.
     """
     global _MCP_CLIENTS_STARTED
-    if _MCP_CLIENTS_STARTED or not _MCP_CLIENTS:
+    if _MCP_CLIENTS_STARTED or not mcp_clients():
         return
-    for client in _MCP_CLIENTS:
+    for client in mcp_clients():
         try:
             client.stop(None, None, None)
         except Exception:
@@ -341,7 +394,8 @@ _STATIC_TOOLS = [
     set_sandbox_mode,
 ]
 
-TOOLS = [*_STATIC_TOOLS, *_GENERATED_TOOLS, *_MCP_CLIENTS]
+# MCP clients are not in this list (they are built lazily, see mcp_clients); the AG-UI template adds them itself.
+TOOLS = [*_STATIC_TOOLS, *_GENERATED_TOOLS]
 
 # Tool names loaded from skills_generated/ at process start — main.py and
 # acp_server.py extend their approval-required gating with this, same as
@@ -391,8 +445,12 @@ def build_plugins(
 
     from_env = [p for p in os.environ.get("CORDATA_EXTRA_SKILLS", "").split(os.pathsep) if p]
     # `from_env` are candidates under measurement (promote.py's A/B arms): pinned, so the arm really shows the model the lesson.
+    import registry  # noqa: PLC0415
+
+    # The user's installed skills (`cordata skill add`, ~/.cordata/skills) come after the shipped ones: on a name
+    # collision the shipped skill wins, so an install cannot quietly replace one (registry.py refuses that anyway).
     plugins = skill_search.build_skill_plugins(
-        [str(SKILLS_DIR), *(extra_skill_dirs or [])], decider=decider, preferences=preferences, notify=notify, pinned_sources=from_env
+        [str(SKILLS_DIR), *(extra_skill_dirs or []), *([str(registry.user_skills_dir())] if registry.user_skills_dir().is_dir() else [])], decider=decider, preferences=preferences, notify=notify, pinned_sources=from_env
     )
     # What `current_time` was for, without the tool: the date and time ride along with each message (core_tools.clock).
     return [*plugins, core_tools.clock()]
@@ -482,7 +540,7 @@ def build_template_agent() -> Agent:
     return Agent(
         model=build_model(),
         system_prompt=SYSTEM_PROMPT,
-        tools=TOOLS,
+        tools=[*TOOLS, *mcp_clients()],
         conversation_manager=build_conversation_manager(),
     )
 
@@ -648,7 +706,7 @@ def build_agent_for_session(
         static.append(core_tools.web_fetch_tool(mode=web_fetch_mode, model=_fast_model() or model, tally=web_usage))
     # With a plugin host (untrusted_tools given) MCP servers are hot-swappable
     # plugins it registers itself; the process-start MCP snapshot is not added.
-    mcp = [] if untrusted_tools is not None else _MCP_CLIENTS
+    mcp = [] if untrusted_tools is not None else mcp_clients()
     # The SDK's local environment, whose running commands also end when the turn is cancelled (core_tools.HarnessSandbox).
     sandbox = HarnessSandbox()
     agent = Agent(

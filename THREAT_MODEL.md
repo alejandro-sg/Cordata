@@ -433,7 +433,7 @@ content is the most sensitive input this harness has, and the requirement is the
   it. The daemon's log line carries a short masked excerpt so a person can confirm what was sent.
 * **The OS is the real boundary.** Accessibility and Screen Recording are TCC grants the person makes
   in System Settings; the deck only ever asks when its Grant button is clicked. A bundled, signed
-  build (`make lab-menubar-app`) is what keeps those grants attached to this app rather than to a
+  build (`make app`, with `SIGN_IDENTITY`) is what keeps those grants attached to this app rather than to a
   terminal.
 
 ### The Claude Code CLI runs as a sandboxed child, egress only through the vault

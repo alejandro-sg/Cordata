@@ -288,6 +288,8 @@ fn run_lines(app: &App, width: usize) -> Vec<Row> {
         "done" => ("◉", Color::Green),
         "failed" | "budget_exhausted" => ("✕", Color::Red),
         "paused" => ("◈", Color::Yellow),
+        // Folding isolated parallel steps back together (orchestrator/synthesizer.py).
+        "synthesize" => ("⧉", Color::Magenta),
         _ => ("◉", Color::Cyan),
     };
     let progress = match run.planned {

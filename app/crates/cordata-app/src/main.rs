@@ -158,6 +158,12 @@ fn main() {
                 ..Default::default()
             },
             |window, cx| {
+                // `system` theme: follow macOS Light/Dark while the app runs (a no-op for any other choice).
+                window
+                    .observe_window_appearance(|window, cx| {
+                        theme::appearance_changed(window.appearance(), cx);
+                    })
+                    .detach();
                 let view = cx.new(|cx| Workspace::new(
                     connection.clone(),
                     args.cwd.clone(),

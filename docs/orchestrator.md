@@ -250,3 +250,24 @@ Not done from the plan, and why:
 * **Memory consolidation** (retire Qdrant for LanceDB): agent memory lives in Qdrant on `mini` today;
   moving it is a data migration of the person's memories, not a refactor — left for a decision.
 * **`backend/workspace/*`**: gitignored runtime scratch on this machine (nothing tracked); not deleted.
+
+## Auto Mode, isolated waves and per-step rewards (2026-10-30)
+
+* **`orchestrator.dispatch: auto`** — `orchestrator/auto_router.py`. The learned dispatcher plus each step's profile:
+  `Utility = Q̂ + γ·CapMatch − λ·NormCost − μ·QuotaScarcity − ν·ContextPressure`. A step's needs (`heavy_reasoning`,
+  `fast_syntax`, `shell_verification`, `long_context`, `review`) and context footprint (`bytes(file_scope)/3.6 + prompt +
+  brief + 2·tool headroom + output`) are matched against each model's real window (`ollama_cloud.REGISTRY`, verified with
+  `/api/show`) and capabilities. A model too small for a step is dropped only while another can hold it; the router only
+  reorders what the gates let through, per step (`StepExecutor(rerank=…)`).
+* **Isolated waves + SYNTHESIZE** — `orchestrator/synthesizer.py`. Each step of a multi-step wave runs in an APFS
+  `clonefile` copy of the dirty tree (dependency dirs linked, `.git` left out; a plain copy on Linux). A completed step is
+  harvested back (in-scope files only; a file changed meanwhile is a conflict and the step retries; writes through
+  symlinks are refused). EXECUTE → **SYNTHESIZE** → HARDEN: syntax and cross-module import checks over the combined change,
+  one targeted fix pass (`max_synth_fixes`), problems left over become warnings for HARDEN/AUDIT.
+* **Per-step RLAIF** — `orchestrator/rlaif.py` replaces the run-wide binary credit: 70 % deterministic telemetry (scope,
+  first pass, recoveries, cost vs budget, penalties for escapes/timeouts/rescues), 30 % the conformance pass's
+  `step_scores` rubric (no extra model call); a failed run debits only the steps its failing checks name. Rewards reach
+  `LearnedDispatcher.observe` as `reward` (mapped onto the old [0, 1] scale; `win` stays binary; `bandit.py` untouched)
+  and are logged as `rlaif_reward` events (`REWARD_VERSION = 2`).
+* **Grounded research on the cloud roster** — `python -m orchestrator.cloud_research`: minimax-m3.1-flash scouts (1M
+  context), `research.verify` drops bad citations, gemma4:31b synthesizes the plan, mistral-large-4 critiques it.

@@ -1,6 +1,7 @@
 //! Mask what a credential looks like, before the GUI draws it.
 //!
-//! Lifted from lab/crates/harness-client (frozen) for the native app and the terminal.
+//! Lifted from the retired `lab/` client (harness-client) for the native app and the terminal, with the
+//! never-read bundle-id list ([`ALWAYS_DENY_BUNDLE_IDS`]) the screen capture honours.
 //!
 //! The third layer of three (the agent masks registered secrets and credential-shaped spans in
 //! `intervention_view.py`; the daemon masks again in `daemon/telemetry.py`). This one exists
@@ -98,6 +99,44 @@ fn has_digit(value: &str) -> bool {
     value.bytes().any(|b| b.is_ascii_digit())
 }
 
+/// Apps whose content is never read, whatever any allowlist says (`capture.allowlist` included).
+///
+/// The Rust mirror of `backend/os_context.py::ALWAYS_DENY_BUNDLE_IDS` (it moved here with the frozen
+/// `lab/` client). `backend/_os_context_smoke_test.py` parses this constant out of this file and
+/// compares, so a denylist that drifts on one side fails CI: a drift is a password manager's window
+/// title in a prompt. Matched on bundle id, never on the app's name — a name is localized and a
+/// person can rename a bundle. An entry also covers its helpers; see [`is_denied`].
+pub const ALWAYS_DENY_BUNDLE_IDS: &[&str] = &[
+    "com.1password.1password",
+    "com.agilebits.onepassword7",
+    "com.bitwarden.desktop",
+    "com.dashlane.Dashlane",
+    "com.lastpass.LastPass",
+    "com.apple.keychainaccess",
+    "com.apple.Passwords",
+    "org.keepassxc.keepassxc",
+    "com.nordsec.nordpass",
+    "in.sinew.Enpass-Desktop",
+    "me.proton.pass",
+];
+
+/// Is this an app whose content is never read?
+///
+/// Looser than an allowlist on purpose, because a miss here is the expensive mistake: ASCII case is
+/// ignored and every id *under* an entry at a label boundary is covered (`com.apple.Passwords.MenuBarExtra`),
+/// but never a sibling that merely shares a prefix (`com.apple.PasswordsX`). `backend/os_context.py::is_denied`
+/// applies the same rule.
+pub fn is_denied(bundle_id: &str) -> bool {
+    !bundle_id.is_empty()
+        && ALWAYS_DENY_BUNDLE_IDS.iter().any(|entry| {
+            bundle_id.eq_ignore_ascii_case(entry)
+                || (bundle_id.len() > entry.len()
+                    && bundle_id.as_bytes()[entry.len()] == b'.'
+                    && bundle_id.is_char_boundary(entry.len())
+                    && bundle_id[..entry.len()].eq_ignore_ascii_case(entry))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,5 +172,12 @@ mod tests {
         let (out, n) = scrub("a=sk-ABCDEF0123456789ABCDEF0123456789 b=ghp_abcdefghijklmnopqrstuvwxyz0123456789");
         assert_eq!(n, 2, "{out}");
         assert_eq!(scrub(""), (String::new(), 0));
+    }
+
+    #[test]
+    fn never_read_apps_are_denied_by_id_and_helper_but_not_by_sibling() {
+        assert!(is_denied("com.1password.1password") && is_denied("com.apple.keychainaccess"));
+        assert!(is_denied("ORG.KEEPASSXC.KEEPASSXC") && is_denied("com.apple.Passwords.MenuBarExtra"));
+        assert!(!is_denied("") && !is_denied("com.apple.Safari") && !is_denied("com.apple.PasswordsX"));
     }
 }

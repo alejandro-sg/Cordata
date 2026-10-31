@@ -165,9 +165,9 @@ pub const SCHEMA: &[Entry] = &[
     // The native app's own preferences (user file only, `USER_ONLY_PREFIXES`).
     Entry {
         key: "app.theme",
-        kind: Kind::Enum(&["night", "high-contrast", "system"]),
+        kind: Kind::Enum(&["system", "light", "2049", "graphite", "dim", "night", "high-contrast"]),
         applies: Applies::Now,
-        help: "Cordata.app's palette (system follows Increase Contrast)",
+        help: "Cordata.app's palette: system follows macOS Light/Dark (and Increase Contrast); night = 2049, high-contrast = its AAA variant",
     },
     Entry {
         key: "app.density",
@@ -552,9 +552,9 @@ pub const SCHEMA: &[Entry] = &[
     },
     Entry {
         key: "orchestrator.dispatch",
-        kind: Kind::Enum(&["off", "shadow", "live"]),
+        kind: Kind::Enum(&["off", "shadow", "live", "auto"]),
         applies: Applies::NextSession,
-        help: "dispatch policy: off = strongest first, shadow = learn without acting, live = act on it",
+        help: "dispatch policy: off = strongest first, shadow = learn without acting, live = act on it, auto = live + capability and context-window routing",
     },
     Entry {
         key: "orchestrator.maxUsd",
@@ -597,6 +597,30 @@ pub const SCHEMA: &[Entry] = &[
         kind: Kind::Float(0.0, 2.0),
         applies: Applies::NextSession,
         help: "dispatch quota-scarcity weight (higher avoids pools near their limit)",
+    },
+    Entry {
+        key: "hooks.preToolUse",
+        kind: Kind::Str,
+        applies: Applies::Now,
+        help: "shell command run before each tool call (JSON on stdin); exit 2 blocks the call",
+    },
+    Entry {
+        key: "hooks.postToolUse",
+        kind: Kind::Str,
+        applies: Applies::Now,
+        help: "shell command run after each tool call; its output is appended to the result",
+    },
+    Entry {
+        key: "hooks.stop",
+        kind: Kind::Str,
+        applies: Applies::Now,
+        help: "shell command run when a turn ends",
+    },
+    Entry {
+        key: "hooks.matcher",
+        kind: Kind::Str,
+        applies: Applies::Now,
+        help: "regex on the tool name the pre/post hooks run for (empty: every tool)",
     },
     Entry {
         key: "context.coldTools",
@@ -748,6 +772,10 @@ const TRUST_GATED_KEYS: &[&str] = &[
     "orchestrator.tier2",
     "orchestrator.lambda",
     "orchestrator.mu",
+    "hooks.preToolUse",
+    "hooks.postToolUse",
+    "hooks.stop",
+    "hooks.matcher",
     "learning.rejections",
     "capture.enabled",
     "capture.allowlist",

@@ -3,7 +3,7 @@
 Two things are asserted here that matter more than the rest:
 
 * the never-read bundle ids are **the same list** in Python and in the Rust client
-  (``lab/crates/harness-client/src/policy.rs``), parsed out of the Rust source — a denylist that
+  (``app/crates/cordata-view/src/redact.rs``), parsed out of the Rust source — a denylist that
   drifts is a password manager with its title in a prompt;
 * what reaches the model is *masked* and *wrapped* — a window title is a third party's text, and a
   selected line can read "ignore your instructions".
@@ -17,7 +17,7 @@ from pathlib import Path
 import os_context
 from harness_testing import check
 
-POLICY_RS = Path(__file__).resolve().parent.parent / "lab" / "crates" / "harness-client" / "src" / "policy.rs"
+POLICY_RS = Path(__file__).resolve().parent.parent / "app" / "crates" / "cordata-view" / "src" / "redact.rs"
 GUARD_OPEN = "<<<UNTRUSTED_TOOL_OUTPUT>>>"
 
 

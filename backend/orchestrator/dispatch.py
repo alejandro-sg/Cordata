@@ -227,8 +227,13 @@ class LearnedDispatcher:
         state = self.ledger.state(self.ledger.pool_for(spec.candidate.family, spec.candidate.model))
         return max(0.0, min(1.0, state.pct))
 
+    def adjust(self, spec: Spec, role: str, task_class: str) -> float:
+        """Extra utility a subclass adds to a candidate (the Auto Mode router: capability match minus context
+        pressure). Zero here, so the learned policy is exactly the formula in the module docstring."""
+        return 0.0
+
     def score(self, spec: Spec, role: str, task_class: str) -> float:
-        return self.quality(spec, role, task_class) - self.lam * self.cost(spec, role, task_class) - self.mu * self.scarcity(spec)
+        return self.quality(spec, role, task_class) - self.lam * self.cost(spec, role, task_class) - self.mu * self.scarcity(spec) + self.adjust(spec, role, task_class)
 
     def _evidence(self, spec: Spec, role: str, task_class: str) -> int:
         return int(self._stat(ctx(role, task_class, POINT_FOR_ROLE.get(role, "executor_pool")), spec.key).get("n", 0) or 0)
@@ -277,7 +282,7 @@ class LearnedDispatcher:
                     continue  # this arm is significantly worse than its tier
             competent.append(spec)
         rest = [s for s in specs if s not in competent]
-        competent.sort(key=lambda s: (self.cost(s, role, task_class) + self.mu * self.scarcity(s), -self.quality(s, role, task_class)))
+        competent.sort(key=lambda s: (self.cost(s, role, task_class) + self.mu * self.scarcity(s) - self.adjust(s, role, task_class), -self.quality(s, role, task_class)))
         rest.sort(key=lambda s: (-scored[s.key], -TIER_RANK.get(s.tier, 1)))
         return competent + rest
 
@@ -320,7 +325,11 @@ class LearnedDispatcher:
             return
         ok = bool(outcome.get("ok"))
         cost = float(outcome.get("norm_cost", spec.unit_price))
-        value = (1.0 if ok else 0.0) - self.lam * cost
+        # A continuous per-step reward in [-1, 1] (rlaif.py) is mapped onto the same [0, 1] scale the binary outcome
+        # used, so the table's means stay comparable with every row learned before it; ``win`` stays the binary bit.
+        reward = outcome.get("reward")
+        quality = (max(-1.0, min(1.0, float(reward))) + 1.0) / 2.0 if isinstance(reward, (int, float)) else (1.0 if ok else 0.0)
+        value = quality - self.lam * cost
         point = POINT_FOR_ROLE.get(role, "executor_pool")
         for point_name, arm in ((point, spec.key), ("tier", spec.tier), ("effort", candidate.effort or "default")):
             self.table.observe_arm(ctx(role, task_class, point_name), arm, value=value, win=ok, cost=cost, save=False)
@@ -331,7 +340,8 @@ class LearnedDispatcher:
             state_store.append_event(
                 "orch_outcome",
                 {"role": role, "task_class": task_class, "arm": spec.key, "tier": spec.tier, "effort": candidate.effort, "ok": ok, "cost": round(cost, 4),
-                 "mode": self.mode, "propensity": decision.get("propensity"), "default": decision.get("default")},
+                 "mode": self.mode, "propensity": decision.get("propensity"), "default": decision.get("default"),
+                 **({"reward": round(float(reward), 4), "step_id": outcome.get("step_id"), "reward_version": outcome.get("reward_version")} if isinstance(reward, (int, float)) else {})},
                 source="orchestrator",
             )
 

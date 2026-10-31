@@ -7,8 +7,9 @@
 #
 # A regular Dock app (LSUIElement false) with the `cordata://` URL scheme, the hardened runtime and the entitlements in
 # app/assets/Cordata.entitlements (empty on purpose). Signing decides whether macOS privacy grants survive a rebuild —
-# see scripts/package-menubar.sh for the full story: ad-hoc (the default) changes the designated requirement every
-# build; a self-signed "Code Signing" certificate named in SIGN_IDENTITY keeps it. This script never creates one.
+# ad-hoc (the default) changes the designated requirement every build, so TCC forgets the grant; a self-signed
+# "Code Signing" certificate named in SIGN_IDENTITY (Keychain Access → Certificate Assistant) keeps it. This script
+# never creates one.
 #
 # The bundle finds the harness through the daemon (~/.cordata/daemon.json), not through the checkout it was built
 # from: launched from Finder it has no repo around it and a cwd of /.

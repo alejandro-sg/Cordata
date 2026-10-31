@@ -1,6 +1,6 @@
 """What the person attached from the menu bar: their screen's context, for one turn.
 
-The menu-bar deck (`lab/crates/harness-menubar`) reads the frontmost app, its window title, the
+The menu-bar deck (the retired `lab/` harness-menubar; its capture contract lives on) reads the frontmost app, its window title, the
 selected text and — only when asked — a screenshot, and hands them to the daemon with a prompt. This
 module is the agent-process half of that: it holds the context the daemon registered for the *next*
 turn and folds it into the model input, then forgets it.
@@ -33,7 +33,7 @@ import secret_patterns
 logger = logging.getLogger(__name__)
 
 #: Apps whose content is never context, whatever the person's allowlist says. Matched on bundle id,
-#: mirrored verbatim in `lab/crates/harness-capture/src/policy.rs` — `_os_context_smoke_test` holds the
+#: mirrored verbatim in `app/crates/cordata-view/src/redact.rs` — `_os_context_smoke_test` holds the
 #: two to the same list, the way `MODES` is held to `acp_server._MODE_IDS`, so neither can drift alone.
 #: The Rust client is what *captures*; this is the daemon's second look, because a scripted gRPC client
 #: could otherwise send a password manager's window by skipping the Rust policy. The daemon only ever

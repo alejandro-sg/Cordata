@@ -16,7 +16,6 @@ check() {
 }
 
 check backend "http://localhost:8001/models"
-check frontend "http://localhost:3000"
 
 if port_open 6333; then
   ok "qdrant: reachable on :6333"

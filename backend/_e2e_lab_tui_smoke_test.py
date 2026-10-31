@@ -157,7 +157,8 @@ def main() -> None:
     }
     env = {
         **os.environ,
-        "OLLAMA_ROLE_ORCHESTRATOR": "glm-5.3-flash:low",  # scripted GLM orchestrator → Kimi debugger; the product default is Kimi
+        "OLLAMA_ROLE_ORCHESTRATOR": "glm-5.3-flash:low",  # scripted GLM orchestrator → Kimi debugger (the product defaults are gemma4:31b and mistral-large-4)
+        "OLLAMA_ROLE_DEBUGGER": "kimi-k2.7-code:max",
         "TERM": "xterm-256color",
         "MODEL_PROVIDER": "ollama_cloud",
         "LAYA_TRIAGE_MODE": "off",

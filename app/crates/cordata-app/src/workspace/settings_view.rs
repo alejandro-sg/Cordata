@@ -691,7 +691,7 @@ impl Workspace {
 
         // Group known configurable settings
         let target_keys = [
-            ("app.theme", "Theme (Night / High-Contrast)"),
+            ("app.theme", "Theme (System / Light / 2049 / Graphite / Dim)"),
             ("app.density", "Density (Comfortable / Compact)"),
             ("temperature", "Model Temperature (Precise / Balanced / Creative)"),
             ("tui.thinking", "Thought Bubbles"),
@@ -785,8 +785,11 @@ impl Workspace {
                         .when(is_enum && !is_bool, |el| {
                             let key_enum = key_owned.clone();
                             let next_val = match (key, current.and_then(Value::as_str).unwrap_or("")) {
-                                ("app.theme", "night") => "high-contrast",
-                                ("app.theme", _) => "night",
+                                ("app.theme", "system") => "light",
+                                ("app.theme", "light") => "2049",
+                                ("app.theme", "2049" | "night") => "graphite",
+                                ("app.theme", "graphite") => "dim",
+                                ("app.theme", _) => "system",
                                 ("app.density", "comfortable") => "compact",
                                 ("app.density", _) => "comfortable",
                                 ("temperature", "precise") => "balanced",

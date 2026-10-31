@@ -3,8 +3,8 @@ signin`; costs a few hundred cloud tokens). Not part of the offline suite.
 
 Proves: streaming from each cloud tag through /v1/chat/completions, model +
 reasoning_effort switching through Strands' ModelRouter on real traffic, a tool
-call through the proxy, and that nothing here pulls weights (``ollama list`` is
-unchanged, ``laguna-xs-2.1`` is refused rather than downloaded).
+call through the proxy, every model of the zero-download roster answering, and that
+nothing here pulls weights (``ollama list`` is unchanged — empty on a cloud-only machine).
 
     backend/.venv/bin/python _ollama_cloud_live_test.py
 """
@@ -75,23 +75,23 @@ async def main() -> None:
     check(set(bundle.models) == set(oc.CLOUD_ALIASES), f"candidates: {list(bundle.models)}; unavailable: {list(bundle.unavailable)}")
     agent = Agent(name="orchestrator", model=bundle.router, callback_handler=None)
 
-    # 1. glm via the router's role default, low effort, streamed
+    # 1. the orchestrator's role default (gemma4:31b @ medium), streamed
     text, deltas = await stream_text(agent, "Reply with one short sentence about the sea.")
-    check(bool(text.strip()) and deltas > 1, f"glm streamed {deltas} deltas: {text.strip()[:60]!r}")
+    check(bool(text.strip()) and deltas > 1, f"gemma4 streamed {deltas} deltas: {text.strip()[:60]!r}")
     first = recorder.calls[-1]
-    check(first["path"] == "/v1/chat/completions" and first["status"] == 200 and first["stream"] is True, f"glm request ok {first}")
-    check(first["model"] == "glm-5.3-flash:cloud" and first["effort"] == "low", "orchestrator = glm-5.3-flash @ low on the wire")
+    check(first["path"] == "/v1/chat/completions" and first["status"] == 200 and first["stream"] is True, f"gemma4 request ok {first}")
+    check(first["model"] == "gemma4:31b:cloud" and first["effort"] == "medium", "orchestrator = gemma4:31b @ medium on the wire")
 
-    # 2. swap to kimi for one call, and raise the effort live
+    # 2. swap to minimax for one call, and raise the effort live
     bundle.control.set("max")
-    text, deltas = await stream_text(agent, "Reply with one short sentence about mountains.", ollama_model="kimi-k2.7-code")
-    check(bool(text.strip()) and deltas > 1, f"kimi streamed {deltas} deltas: {text.strip()[:60]!r}")
+    text, deltas = await stream_text(agent, "Reply with one short sentence about mountains.", ollama_model="minimax-m3.1-flash")
+    check(bool(text.strip()), f"minimax streamed {deltas} deltas: {text.strip()[:60]!r}")
     second = recorder.calls[-1]
-    check(second["model"] == "kimi-k2.7-code:cloud" and second["effort"] == "max" and second["status"] == 200, f"swapped to kimi @ max {second}")
+    check(second["model"] == "minimax-m3.1-flash:cloud" and second["effort"] == "max" and second["status"] == 200, f"swapped to minimax @ max {second}")
 
     # 3. back to the default for the next call
     await stream_text(agent, "Say ok.")
-    check(recorder.calls[-1]["model"] == "glm-5.3-flash:cloud", "the swap did not stick past its call")
+    check(recorder.calls[-1]["model"] == "gemma4:31b:cloud", "the swap did not stick past its call")
 
     # 4. a debugger-role agent through the same machinery, with a tool call
     debugger_models = oc.build_models("debugger", transport=recorder)
@@ -100,24 +100,18 @@ async def main() -> None:
     text, _ = await stream_text(debugger, "Use the add tool to compute 17 + 25, then state the result.")
     check("42" in text, f"tool call round-trips through the proxy: {text.strip()[:80]!r}")
     new = recorder.calls[n:]
-    check(len(new) >= 2 and all(c["model"] == "kimi-k2.7-code:cloud" and c["effort"] == "max" for c in new), f"debugger = kimi @ max across {len(new)} loop iterations")
+    check(len(new) >= 2 and all(c["model"] == "mistral-large-4:cloud" and c["effort"] == "max" for c in new), f"debugger = mistral-large-4 @ max across {len(new)} loop iterations")
 
-    # 5. only chat/completions was ever requested, all 200
+    # 5. every model of the roster answers through its :cloud tag, at an effort it accepts
+    for alias in oc.CLOUD_ALIASES:
+        single = Agent(model=oc.OllamaCloudModel(alias, reasoning_effort="medium", transport=recorder), callback_handler=None)
+        text, _ = await stream_text(single, "Say ok.")
+        call = recorder.calls[-1]
+        check(call["status"] == 200 and bool(text.strip()), f"{alias} answered at {call['effort']} ({text.strip()[:30]!r})")
+
+    # 6. only chat/completions was ever requested, all 200
     check({c["path"] for c in recorder.calls} == {"/v1/chat/completions"}, "only /v1/chat/completions was requested")
     check(all(c["status"] == 200 for c in recorder.calls), "every request returned 200")
-
-    # 6. laguna: refused, never pulled
-    try:
-        oc.build_models(model="laguna-xs-2.1")
-        check("laguna-xs-2.1" in ollama_list(), "laguna routable only because it is already installed")
-    except oc.ModelUnavailable as error:
-        check("never runs `ollama pull`" in str(error), "laguna-xs-2.1 refused with a no-pull message")
-    direct = Agent(model=oc.OllamaCloudModel("laguna-xs-2.1", transport=recorder), callback_handler=None)
-    try:
-        await stream_text(direct, "hi")
-        check("laguna-xs-2.1" in ollama_list(), "laguna answered (it was already installed)")
-    except Exception as error:
-        check("not found" in str(error).lower() or "404" in str(error), f"direct laguna request is a clean 404, not a download ({type(error).__name__})")
 
     after = ollama_list()
     check(after == before, f"`ollama list` unchanged — no weights pulled ({after or 'none'})")

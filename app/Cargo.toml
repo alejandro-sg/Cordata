@@ -4,11 +4,10 @@
 #   cordata-theme  the Blade Runner 2049 tokens, with WCAG checks; adapters for ratatui and GPUI
 #   cordata-app    the GPUI application
 #
-# `spike/` is the D1 gate's throwaway (its own workspace, see spike/GATE.md).
+# The D1 gate's spike was retired; its report is archived in docs/app.md (Appendix: D1 gate report).
 [workspace]
 resolver = "3"
 members = ["crates/cordata-view", "crates/cordata-theme", "crates/cordata-app"]
-exclude = ["spike"]
 
 [workspace.package]
 edition = "2024"

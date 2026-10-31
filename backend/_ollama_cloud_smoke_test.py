@@ -86,11 +86,19 @@ def run(agent: Agent, prompt: str = "hi", **state) -> str:
 
 
 def test_registry() -> None:
-    check(set(oc.REGISTRY) == {"glm-5.3-flash", "kimi-k2.7-code", "deepseek-v4.1-flash", "laguna-xs-2.1"}, "registry exposes the four tags")
+    roster = ("mistral-large-4", "minimax-m3.1-flash", "gemma4:31b", "kimi-k2.7-code", "deepseek-v4.1-flash", "glm-5.3-flash")
+    check(tuple(oc.REGISTRY) == roster, "registry is the six-model zero-download cloud roster")
+    check(oc.CLOUD_ALIASES == roster and not any(spec.pulls_weights for spec in oc.REGISTRY.values()), "every tag is cloud-hosted: nothing needs weights on disk")
     check(oc.resolve("glm-5.3-flash").wire_id == "glm-5.3-flash:cloud", "glm wire id carries :cloud (bare tag 404s on the daemon)")
     check(oc.resolve("kimi-k2.7-code:cloud").alias == "kimi-k2.7-code", "wire id resolves back to its alias")
-    check(oc.resolve("laguna-xs-2.1").hosting == "local" and oc.resolve("laguna-xs-2.1").pulls_weights, "laguna is local-weights, flagged as needing a pull")
-    check(oc.CLOUD_ALIASES == ("glm-5.3-flash", "kimi-k2.7-code", "deepseek-v4.1-flash"), "three tags are cloud-hosted")
+    check(oc.resolve("gemma4:31b").wire_id == "gemma4:31b:cloud" and oc.resolve("gemma4:31b:cloud").alias == "gemma4:31b", "a colon-bearing alias resolves both ways")
+    windows = {alias: spec.context_window for alias, spec in oc.REGISTRY.items()}
+    check(windows == {"mistral-large-4": 1_048_576, "minimax-m3.1-flash": 1_000_000, "gemma4:31b": 262_144, "kimi-k2.7-code": 262_144, "deepseek-v4.1-flash": 1_048_576, "glm-5.3-flash": 1_048_576}, "real context windows, as /api/show reports them")
+    check(len({spec.family for spec in oc.REGISTRY.values()}) == 6, "six distinct vendor families (cross-family harden has somewhere to go)")
+    check(oc.REGISTRY["deepseek-v4.1-flash"].adapt_effort("medium") == "high" and oc.REGISTRY["deepseek-v4.1-flash"].adapt_effort("low") == "low", "a graded thinker gets the nearest level at or above the one asked for")
+    check(oc.REGISTRY["gemma4:31b"].adapt_effort("medium") == "medium" and oc.REGISTRY["mistral-large-4"].adapt_effort(None) is None, "an on/off thinker passes the level through; None stays None")
+    import dataclasses
+    check(dataclasses.replace(oc.REGISTRY["gemma4:31b"], thinking="none").adapt_effort("max") is None, "a model that does not think is sent no level")
     try:
         oc.resolve("gpt-9")
         check(False, "unknown model rejected")
@@ -143,20 +151,38 @@ def test_endpoint_guard() -> None:
     asyncio.run(go())
 
 
+LOCAL = "local-test-xs"
+
+
+def with_local_tag(fn):
+    """The roster is cloud-only; the `local` hosting kind (a tag someone registers by hand) is still guarded."""
+
+    def wrapped() -> None:
+        oc.REGISTRY[LOCAL] = oc.ModelSpec(LOCAL, LOCAL, "local", "hand-registered local weights")
+        try:
+            fn()
+        finally:
+            oc.REGISTRY.pop(LOCAL, None)
+
+    wrapped.__name__ = fn.__name__
+    return wrapped
+
+
+@with_local_tag
 def test_local_only_is_never_pulled() -> None:
     reason_for = lambda spec: None if spec.hosting == "cloud" else "not installed"  # noqa: E731
     bundle = oc.build_models("orchestrator", availability=reason_for)
     check(set(bundle.models) == set(oc.CLOUD_ALIASES), "router candidates are the cloud tags only")
-    check("laguna-xs-2.1" in bundle.unavailable, "laguna is reported unavailable")
-    reason = oc.default_availability("http://127.0.0.1:1/v1")(oc.REGISTRY["laguna-xs-2.1"])  # unreachable daemon: nothing installed
+    check(LOCAL in bundle.unavailable, "a local-weights tag is reported unavailable")
+    reason = oc.default_availability("http://127.0.0.1:1/v1")(oc.REGISTRY[LOCAL])  # unreachable daemon: nothing installed
     check(bool(reason) and "never runs `ollama pull`" in reason, "the reason says it will not pull")
     try:
-        oc.build_models(model="laguna-xs-2.1", availability=reason_for)
+        oc.build_models(model=LOCAL, availability=reason_for)
         check(False, "explicitly requesting an uninstalled local model raises")
     except oc.ModelUnavailable:
         check(True, "explicitly requesting an uninstalled local model raises ModelUnavailable (no pull)")
-    present = oc.build_models(model="laguna-xs-2.1", availability=lambda spec: None)
-    check(list(present.models)[0] == "laguna-xs-2.1", "an installed local model is routable and declared first")
+    present = oc.build_models(model=LOCAL, availability=lambda spec: None)
+    check(list(present.models)[0] == LOCAL, "an installed local model is routable and declared first")
 
 
 # ------------------------------------------------------------- phase 2
@@ -218,14 +244,17 @@ def test_role_budgets() -> None:
         daemon = FakeDaemon()
         bundle = oc.build_models(role, transport=daemon.transport, availability=lambda s: None if s.hosting == "cloud" else "no")
         check(bundle.control.level == level, f"{role} budget is {level}")
-    check(oc.ROLES.get("debugger").model == "kimi-k2.7-code", "debugger defaults to kimi-k2.7-code")
+    check(oc.ROLES.get("debugger").model == "mistral-large-4" and oc.ROLES.get("orchestrator").model == "gemma4:31b", "debugger defaults to mistral-large-4, the orchestrator to gemma4:31b")
+    check(oc.ROLES.get("observer").model == "minimax-m3.1-flash" and oc.ROLES.get("architect").model == "mistral-large-4", "observer: minimax-m3.1-flash; architect: mistral-large-4")
     table = oc.RoleTable()
     table.set("architect", effort="max")
-    check(table.get("architect").effort == "max" and table.get("architect").model == "glm-5.3-flash", "RoleTable.set changes effort only")
+    check(table.get("architect").effort == "max" and table.get("architect").model == "mistral-large-4", "RoleTable.set changes effort only")
     table.set("architect", model="kimi-k2.7-code")
     check(table.get("architect").model == "kimi-k2.7-code" and table.get("architect").effort == "max", "RoleTable.set changes model only")
     check(oc._parse_override("x", "kimi-k2.7-code:max", None) == oc.RoleProfile("x", "kimi-k2.7-code", "max"), "env override: model:effort")
     check(oc._parse_override("x", ":high", oc.RoleProfile("x", "glm-5.3-flash", "low")) == oc.RoleProfile("x", "glm-5.3-flash", "high"), "env override: :effort only")
+    check(oc._parse_override("x", "gemma4:31b", oc.RoleProfile("x", "glm-5.3-flash", "low")) == oc.RoleProfile("x", "gemma4:31b", "low"), "env override: a colon-bearing alias is a model, not model:effort")
+    check(oc._parse_override("x", "gemma4:31b:high", None) == oc.RoleProfile("x", "gemma4:31b", "high"), "env override: colon-bearing alias with an effort")
 
 
 # ------------------------------------------------------------- phase 3 (offline)
@@ -235,7 +264,7 @@ CLOUD_ONLY = lambda spec: None if spec.hosting == "cloud" else "no"  # noqa: E73
 
 
 def test_router_picks_by_role() -> None:
-    for name, wire, effort in (("debugger", "kimi-k2.7-code:cloud", "max"), ("architect", "glm-5.3-flash:cloud", "high"), ("orchestrator", "kimi-k2.7-code:cloud", "medium")):
+    for name, wire, effort in (("debugger", "mistral-large-4:cloud", "max"), ("architect", "mistral-large-4:cloud", "high"), ("orchestrator", "gemma4:31b:cloud", "medium"), ("observer", "minimax-m3.1-flash:cloud", "low")):
         daemon = FakeDaemon()
         bundle = oc.build_models(name, transport=daemon.transport, availability=CLOUD_ONLY)
         run(Agent(name=name, model=bundle.router, callback_handler=None))
@@ -250,23 +279,27 @@ def test_router_per_invocation_swap() -> None:
     run(agent, "a")
     run(agent, "b", ollama_model="glm-5.3-flash")
     run(agent, "c")
-    check([daemon.body(i)["model"] for i in range(3)] == ["kimi-k2.7-code:cloud", "glm-5.3-flash:cloud", "kimi-k2.7-code:cloud"], "invocation_state['ollama_model'] swaps the model for that call only")
+    check([daemon.body(i)["model"] for i in range(3)] == ["gemma4:31b:cloud", "glm-5.3-flash:cloud", "gemma4:31b:cloud"], "invocation_state['ollama_model'] swaps the model for that call only")
 
 
 def test_router_delegation_override() -> None:
     daemon = FakeDaemon()
-    bundle = oc.build_models("debugger", model="glm-5.3-flash", effort="medium", transport=daemon.transport, availability=CLOUD_ONLY)
+    bundle = oc.build_models("debugger", model="kimi-k2.7-code", effort="medium", transport=daemon.transport, availability=CLOUD_ONLY)
     run(Agent(name="debugger", model=bundle.router, callback_handler=None))
     body = daemon.body()
-    check(body["model"] == "glm-5.3-flash:cloud" and body["reasoning_effort"] == "medium", "build_models(model=, effort=) overrides the role profile for one agent")
+    check(body["model"] == "kimi-k2.7-code:cloud" and body["reasoning_effort"] == "medium", "build_models(model=, effort=) overrides the role profile for one agent")
+    daemon = FakeDaemon()
+    bundle = oc.build_models("debugger", model="glm-5.3-flash", effort="medium", transport=daemon.transport, availability=CLOUD_ONLY)
+    run(Agent(name="debugger", model=bundle.router, callback_handler=None))
+    check(daemon.body()["reasoning_effort"] == "high", "…and a graded thinker without `medium` is sent its next level up")
 
 
 def test_router_failover() -> None:
     def respond(request: httpx.Request) -> httpx.Response:
         model = json.loads(request.content)["model"]
-        if model == "kimi-k2.7-code:cloud":
+        if model == "mistral-large-4:cloud":
             return httpx.Response(404, json={"error": {"message": "model not found", "type": "not_found_error"}})
-        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=text_reply("from glm"))
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=text_reply("from minimax"))
 
     seen: list[str] = []
 
@@ -276,10 +309,11 @@ def test_router_failover() -> None:
 
     bundle = oc.build_models("debugger", transport=httpx.MockTransport(handler), availability=CLOUD_ONLY)
     agent = Agent(name="debugger", model=bundle.router, callback_handler=None)
-    check(run(agent).strip() == "from glm", "a failing candidate falls through to the next")
-    check(seen[0] == "kimi-k2.7-code:cloud" and seen[-1] == "glm-5.3-flash:cloud", f"kimi tried first, glm served it ({seen})")
+    check(run(agent).strip() == "from minimax", "a failing candidate falls through to the next")
+    check(seen[0] == "mistral-large-4:cloud" and seen[-1] != "mistral-large-4:cloud", f"mistral tried first, another candidate served it ({seen})")
 
 
+@with_local_tag
 def test_switch_model() -> None:
     daemon = FakeDaemon()
     model = oc.OllamaCloudModel("glm-5.3-flash", transport=daemon.transport)
@@ -288,13 +322,17 @@ def test_switch_model() -> None:
     run(agent)
     check(daemon.body()["model"] == "kimi-k2.7-code:cloud", "switch_model repoints the next request")
     try:
-        model.switch_model("laguna-xs-2.1", availability=CLOUD_ONLY)
+        model.switch_model(LOCAL, availability=CLOUD_ONLY)
         check(False, "switch to an uninstalled local model refused")
     except oc.ModelUnavailable:
         check(True, "switch to an uninstalled local model refused")
     check(model.get_config()["model_id"] == "kimi-k2.7-code:cloud", "a refused switch leaves the model untouched")
+    check(model.get_config()["context_window_limit"] == 262_144, "switch_model carries the new model's real window")
+    model.switch_model("mistral-large-4", availability=CLOUD_ONLY)
+    check(model.get_config()["context_window_limit"] == 1_048_576, "…1M for mistral-large-4, not a 128k guess")
 
 
+@with_local_tag
 def test_picker_and_config_swap() -> None:
     daemon = FakeDaemon()
     model = oc.OllamaCloudModel("glm-5.3-flash", transport=daemon.transport)
@@ -310,7 +348,7 @@ def test_picker_and_config_swap() -> None:
     check([s["alias"] for s in seen] == ["glm-5.3-flash", "kimi-k2.7-code"], "request telemetry follows the live model_id, not a stale spec")
     check(model.current_spec.alias == "kimi-k2.7-code", "current_spec reads the config")
     offered = [spec.alias for spec in oc.routable(availability=lambda spec: None if spec.hosting == "cloud" else "no")]
-    check(offered == ["glm-5.3-flash", "kimi-k2.7-code", "deepseek-v4.1-flash"], "a picker offers cloud tags only while the local tag is not installed")
+    check(offered == list(oc.CLOUD_ALIASES), "a picker offers cloud tags only while the local tag is not installed")
     check([spec.alias for spec in oc.routable(availability=lambda spec: None)] == list(oc.REGISTRY), "…and the local one once it is")
 
 
@@ -327,14 +365,15 @@ def test_provider_integration() -> None:
         settings.MODEL_TIER_STRONG = settings.MODEL_TIER_FAST = ""
 
         orchestrator = agent_common.build_model()
-        check(isinstance(orchestrator, oc.OllamaCloudModel) and orchestrator.spec.alias == "kimi-k2.7-code", "build_model(): orchestrator is kimi-k2.7-code")
+        check(isinstance(orchestrator, oc.OllamaCloudModel) and orchestrator.spec.alias == "gemma4:31b", "build_model(): orchestrator is gemma4:31b")
+        check(orchestrator.get_config()["context_window_limit"] == 262_144, "…with its real 262k window")
         check(orchestrator.reasoning_effort == "medium", "orchestrator runs at medium effort")
         check(orchestrator.get_config()["params"]["max_tokens"] == agent_common._DEFAULT_MAX_TOKENS, "agent_common's max_tokens carried over")
         check(agent_common.build_model(model_id="kimi-k2.7-code").spec.alias == "kimi-k2.7-code", "build_model(model_id=alias) picks that registry model")
 
         router = sac.build_sub_agent_model("strong", role="debugger")
         check(isinstance(router, ModelRouter), "a roled sub-agent gets Strands' ModelRouter")
-        check(router.default_model.spec.alias == "kimi-k2.7-code" and router.default_model.reasoning_effort == "max", "debugger: kimi-k2.7-code @ max")
+        check(router.default_model.spec.alias == "mistral-large-4" and router.default_model.reasoning_effort == "max", "debugger: mistral-large-4 @ max")
         check(sac.build_sub_agent_model(None, role="architect").default_model.reasoning_effort == "high", "architect: high")
         check(sac.build_sub_agent_model(None, role="observer").default_model.reasoning_effort == "low", "observer: low")
 
@@ -345,12 +384,12 @@ def test_provider_integration() -> None:
         settings.MODEL_TIER_STRONG = ""
 
         debugger = specialists.build_specialist(specialists.DEBUGGER)
-        check(debugger.model.spec.alias == "kimi-k2.7-code" and debugger.model.reasoning_effort == "max", "specialists.DEBUGGER is built on kimi @ max")
+        check(debugger.model.spec.alias == "mistral-large-4" and debugger.model.reasoning_effort == "max", "specialists.DEBUGGER is built on mistral-large-4 @ max")
         architect = specialists.build_specialist(specialists.ARCHITECT)
-        check(architect.model.spec.alias == "glm-5.3-flash" and architect.model.reasoning_effort == "high", "specialists.ARCHITECT is built on glm @ high")
+        check(architect.model.spec.alias == "mistral-large-4" and architect.model.reasoning_effort == "high", "specialists.ARCHITECT is built on mistral-large-4 @ high")
 
         state = provider_settings.get_provider_state()["ollama_cloud"]
-        check(state["models"] == list(oc.REGISTRY) and state["roles"]["debugger"] == {"model": "kimi-k2.7-code", "effort": "max"}, "provider state exposes the registry and role table")
+        check(state["models"] == list(oc.REGISTRY) and state["roles"]["debugger"] == {"model": "mistral-large-4", "effort": "max"}, "provider state exposes the registry and role table")
         check("ollama_cloud" in provider_settings._VALID_PROVIDERS, "ollama_cloud is a valid provider")
 
         import os

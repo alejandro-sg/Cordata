@@ -29,7 +29,11 @@ strongest usable tier and a ``low`` one to the cheapest; ties go to the pool wit
 
 **Parallel waves.** A plan with no ``depends_on`` runs strictly in order, as above. Otherwise the executor runs waves:
 pending steps whose dependencies are done, taken greedily in plan order while their scopes are pairwise disjoint, at
-most ``max_parallel`` at a time. A step in a wave of several rolls back only its own scope, never the whole project.
+most ``max_parallel`` at a time. A step in a wave of several runs in its own **sandbox** (``synthesizer.py``: an APFS
+copy-on-write copy of the project as it is, dirty files included): it cannot see its siblings' half-written files, a
+failed attempt just gets a fresh sandbox, and a completed one is *harvested* — its in-scope changes copied back, a file
+someone else changed meanwhile reported as a conflict and retried rather than overwritten. A project too large to copy
+falls back to the shared tree, where a step rolls back only its own scope.
 """
 
 from __future__ import annotations
@@ -47,6 +51,7 @@ from workers import TaskPacket, Worker, WorkerResult, collect
 from workers import scope as scope_mod
 
 from . import handoff
+from . import synthesizer
 from .plan_artifact import Plan, Step
 from .quota_ledger import QuotaLedger
 
@@ -99,6 +104,9 @@ class ExecResult:
     results: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     last_packet: handoff.HandoffPacket | None = None
     workers_used: list[str] = field(default_factory=list)
+    #: Files copied back from isolated steps' sandboxes (what SYNTHESIZE checks), and harvest conflicts seen on the way.
+    harvested: list[str] = field(default_factory=list)
+    conflicts: list[str] = field(default_factory=list)
 
 
 def step_prompt(plan: Plan, index: int, extra: str = "") -> str:
@@ -131,6 +139,9 @@ class _StepContext:
     sibling_scope: list[str] = field(default_factory=list)
     reason: str = ""
     last_packet: handoff.HandoffPacket | None = None
+    #: Run in a sandbox of its own (a wave of several steps, ``StepExecutor.isolate``), and that sandbox while it lives.
+    isolated: bool = False
+    sandbox: "synthesizer.Sandbox | None" = None
 
 
 class StepExecutor:
@@ -153,6 +164,8 @@ class StepExecutor:
         strongest_first: bool = False,
         controls: Any | None = None,
         on_worker_event: Callable[..., None] | None = None,
+        isolate: bool = True,
+        rerank: Callable[[Step, list[Candidate]], list[Candidate]] | None = None,
     ) -> None:
         self.run_id = run_id
         self.project = project
@@ -177,6 +190,11 @@ class StepExecutor:
         #: stop *now* stops the calls in flight (``_stop_inflight``).
         self.controls = controls
         self.on_worker_event = on_worker_event
+        #: Run each step of a multi-step wave in its own copy-on-write sandbox (module docstring).
+        self.isolate = isolate
+        #: Per-step routing (the Auto Mode router's ``rerank_step``): reorders a step's candidates by its own profile
+        #: before its first attempt. It may only reorder; the list it returns must be the list it was given.
+        self.rerank = rerank
         #: task id → the worker running it, while it runs.
         self._inflight: dict[str, Worker] = {}
         if controls is not None:
@@ -293,7 +311,7 @@ class StepExecutor:
             contexts = []
             for step in wave:
                 siblings = [entry for other in wave if other is not step for entry in other.file_scope]
-                ctx = _StepContext(candidates=list(self.candidates), current=self.current, packet=start_packet, scoped=len(wave) > 1, sibling_scope=siblings)
+                ctx = _StepContext(candidates=list(self.candidates), current=self.current, packet=start_packet, scoped=len(wave) > 1, sibling_scope=siblings, isolated=self.isolate and len(wave) > 1)
                 start_packet = None  # the resume note belongs to the first step that runs
                 contexts.append(ctx)
             verdicts = await asyncio.gather(*(self._run_step(index_of[s.step_id], s, out, c) for s, c in zip(wave, contexts)), return_exceptions=True)
@@ -329,6 +347,43 @@ class StepExecutor:
             logger.debug("executor: usage listener failed", exc_info=True)
 
     async def _run_step(self, index: int, step: Step, out: ExecResult, ctx: _StepContext) -> str:
+        try:
+            return await self._attempts(index, step, out, ctx)
+        finally:
+            if ctx.sandbox is not None:
+                ctx.sandbox.discard()
+                ctx.sandbox = None
+
+    def _fresh_sandbox(self, step: Step, ctx: _StepContext) -> None:
+        """(Re)make an isolated step's sandbox from the primary tree as it is now; on failure, run it shared instead."""
+        if ctx.sandbox is not None:
+            ctx.sandbox.discard()
+            ctx.sandbox = None
+        try:
+            ctx.sandbox = synthesizer.create(self.project, label=step.step_id.replace("/", "-")[:24], scope=list(step.file_scope))
+            self._emit("sandbox", step_id=step.step_id, root=ctx.sandbox.root, cow=ctx.sandbox.cow, files=ctx.sandbox.cloned + ctx.sandbox.copied, linked=ctx.sandbox.linked[:10])
+        except (synthesizer.TooLarge, OSError) as error:
+            logger.warning("executor: step %s runs in the shared tree (no sandbox: %s)", step.step_id, error)
+            ctx.isolated = False
+            self._emit("sandbox", step_id=step.step_id, root=None, error=str(error))
+
+    def _undo(self, step: Step, ctx: _StepContext) -> None:
+        """Throw an attempt's work away: a fresh sandbox for an isolated step, the checkpoint for a shared one."""
+        if ctx.isolated:
+            self._fresh_sandbox(step, ctx)
+        else:
+            self._rollback(step, ctx.scoped)
+
+    async def _attempts(self, index: int, step: Step, out: ExecResult, ctx: _StepContext) -> str:
+        if self.rerank is not None and not step.attempts:
+            try:
+                ordered = self.rerank(step, list(ctx.candidates))
+                if sorted(c.key for c in ordered) == sorted(c.key for c in ctx.candidates):
+                    ctx.candidates = ordered
+            except Exception:
+                logger.debug("executor: rerank failed; keeping the phase order", exc_info=True)
+        if ctx.isolated:
+            self._fresh_sandbox(step, ctx)
         snap = checkpoints.take(self.project, kind="pre", tool="orchestrator", agent="executor", session_id=self.run_id, turn=step.step_id, call=f"step {index + 1}")
         step.checkpoint_hash = snap.id if snap.ok else None
         if not snap.ok:
@@ -372,11 +427,12 @@ class StepExecutor:
             budget_tokens = _min(allowance.get("budget_tokens"), envelope.remaining_tokens)
             step.status, step.worker = "running", candidate.key
             step.attempts += 1
+            root = ctx.sandbox.root if ctx.isolated and ctx.sandbox is not None else self.project
             task = TaskPacket(
                 task_id=f"{self.run_id}:{step.step_id}:{step.attempts}",
                 role="execute",
                 prompt=step_prompt(self.plan, index, self.extra_prompt + (("\n\nEarlier attempts at this step failed:\n- " + "\n- ".join(failures)) if failures else "")),
-                cwd=self.project,
+                cwd=root,
                 file_scope=list(step.file_scope),
                 budget_usd=budget_usd,
                 budget_tokens=int(budget_tokens) if budget_tokens is not None else None,
@@ -396,8 +452,8 @@ class StepExecutor:
                 self._inflight.pop(task.task_id, None)
             self._record(step, candidate, result)
             if ctx.sibling_scope:
-                result.out_of_scope = [p for p in result.out_of_scope if not scope_mod.matches(p, ctx.sibling_scope, self.project)]
-                result.files_changed = [p for p in result.files_changed if not scope_mod.matches(p, ctx.sibling_scope, self.project)]
+                result.out_of_scope = [p for p in result.out_of_scope if not scope_mod.matches(p, ctx.sibling_scope, root)]
+                result.files_changed = [p for p in result.files_changed if not scope_mod.matches(p, ctx.sibling_scope, root)]
             out.results.setdefault(step.step_id, []).append({"worker": candidate.key, **{k: getattr(result, k) for k in ("status", "error_message", "tokens_in", "tokens_out", "cost_usd", "files_changed", "out_of_scope", "rate_limited")}})
             self._emit(
                 "step_result",
@@ -412,12 +468,20 @@ class StepExecutor:
                 files=result.files_changed[:50],
             )
 
+            if result.status == "completed" and not result.out_of_scope and ctx.isolated and ctx.sandbox is not None:
+                taken = synthesizer.harvest(ctx.sandbox, result.files_changed, list(step.file_scope))
+                self._emit("harvest", step_id=step.step_id, written=taken.written[:50], deleted=taken.deleted[:50], conflicts=taken.conflicts[:50], skipped=taken.skipped[:50])
+                out.harvested.extend(taken.written + taken.deleted)
+                if taken.conflicts:
+                    # Someone changed these in the primary tree while the step ran: never overwrite, retry on top of them.
+                    out.conflicts.extend(taken.conflicts)
+                    result.status, result.error_message = "failed", "changed in the project while this step ran (not overwritten): " + ", ".join(taken.conflicts[:10])
             if result.status == "completed" and not result.out_of_scope:
                 step.status = "completed"
                 ctx.packet = None
                 return "completed"
             if result.status == "cancelled":
-                self._rollback(step, ctx.scoped)
+                self._undo(step, ctx)
                 if self._requested() == "pause":
                     # Stopped mid-call for a pause: the step goes back to pending and runs again on resume.
                     step.status = "pending"
@@ -427,9 +491,10 @@ class StepExecutor:
                 return "cancelled"
             if result.status == "quota_limit":
                 reason = "provider_rate_limit" if result.rate_limited else "quota_hard_limit_reached"
-                keep = step.rollback_policy == "keep_partial"
+                # An isolated step's partial work lives in a sandbox that is about to go: nothing to keep.
+                keep = step.rollback_policy == "keep_partial" and not ctx.isolated
                 if not keep:
-                    self._rollback(step, ctx.scoped)
+                    self._undo(step, ctx)
                 envelope = self._envelope()
                 if envelope.exhausted and not result.rate_limited:
                     # The cut-off was the plan's own envelope, not the pool: no other worker may spend more on it.
@@ -450,7 +515,7 @@ class StepExecutor:
             if result.out_of_scope:
                 why = f"wrote outside the step's scope: {', '.join(result.out_of_scope[:10])}"
             failures.append(f"{candidate.key}: {why}")
-            self._rollback(step, ctx.scoped)
+            self._undo(step, ctx)
             if len(failures) >= self.max_attempts:
                 step.status = "failed"
                 self._fail(ctx, out, f"step {step.step_id} failed {len(failures)} times: {failures[-1]}")

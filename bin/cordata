@@ -51,6 +51,11 @@ is_batch_cmd() {
   esac
 }
 
+# Zero-config MCP servers and skills (backend/registry.py): cordata mcp add memory · cordata skill add ./my-skill
+if [[ "${1:-}" == "mcp" || "${1:-}" == "skill" ]]; then
+  exec "$PYTHON" "$REPO_ROOT/backend/registry.py" "$@"
+fi
+
 # Explicit TUI invocation
 if [[ "${1:-}" == "tui" ]]; then
   shift
@@ -74,6 +79,11 @@ Autonomous Batch Commands:
   cordata resume RUN_ID            Continue a paused batch run
   cordata replay [OPTIONS]         Benchmark learned dispatch policy against baseline
   cordata doctor                   Check the CLIs, services and settings Cordata leans on
+
+MCP servers and skills (no JSON to edit):
+  cordata mcp catalog | list       What can be added, what is installed
+  cordata mcp add ID|@pkg|uvx:pkg|https://…  [--env K=V] [--project]
+  cordata mcp remove NAME          (also: cordata skill catalog | list | add PATH|GIT-URL|ID | remove NAME)
 
 Options:
   --cwd DIR                        Target project directory (default: current directory)

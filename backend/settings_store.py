@@ -109,7 +109,7 @@ SCHEMA: dict[str, tuple] = {
     # pools (`pools`, a JSON list — orchestrator/quota_ledger.py), and whether harden and the Tier-2 audit run.
     # Trust-gated, every one: they decide what is spent, by whom, and how much checking happens.
     "orchestrator.workers": ("str",),
-    "orchestrator.dispatch": ("enum", ("off", "shadow", "live")),
+    "orchestrator.dispatch": ("enum", ("off", "shadow", "live", "auto")),
     "orchestrator.maxUsd": ("float", 0.0, 100.0),
     "orchestrator.maxTokens": ("float", 0.0, 100000000.0),
     "orchestrator.pools": ("str",),
@@ -117,6 +117,13 @@ SCHEMA: dict[str, tuple] = {
     "orchestrator.tier2": ("bool",),
     "orchestrator.lambda": ("float", 0.0, 2.0),
     "orchestrator.mu": ("float", 0.0, 2.0),
+    # Lifecycle hooks (lifecycle_hooks.py): a shell command run before a tool call (exit 2 blocks it), after one (its
+    # output is appended to the result), and when a turn ends; `matcher` is a regex on the tool name. Trust-gated: a
+    # hook is a command a cloned repository would run on every tool call.
+    "hooks.preToolUse": ("str",),
+    "hooks.postToolUse": ("str",),
+    "hooks.stop": ("str",),
+    "hooks.matcher": ("str",),
     "lsp.enabled": ("bool",),
     # Large files (code_nav.py): a whole-file read of a file over this many lines comes back as an outline of its
     # classes and functions plus how to read a range or one symbol, instead of the file. Trust-gated like the other
@@ -234,7 +241,7 @@ SCHEMA: dict[str, tuple] = {
     "tui.showLaya": ("bool",),
     # The native app's own preferences (docs/app.md §6.4). User file only (``USER_ONLY_PREFIXES``): how one person's
     # window looks and behaves is not a repository's to decide.
-    "app.theme": ("enum", ("night", "high-contrast", "system")),
+    "app.theme": ("enum", ("system", "light", "2049", "graphite", "dim", "night", "high-contrast")),
     "app.density": ("enum", ("comfortable", "compact")),
     "app.notifications": ("enum", ("all", "approvals", "off")),
     "app.restoreWindows": ("bool",),
@@ -269,7 +276,9 @@ TRUST_GATED_KEYS = frozenset(
      "capture.enabled", "capture.allowlist", "capture.denylist", "capture.screenshot", "capture.screenshotCloud", "capture.visionModel",
      # What the orchestrator may spend, on whom, and how much it checks.
      "orchestrator.workers", "orchestrator.dispatch", "orchestrator.maxUsd", "orchestrator.maxTokens", "orchestrator.pools",
-     "orchestrator.harden", "orchestrator.tier2", "orchestrator.lambda", "orchestrator.mu"}
+     "orchestrator.harden", "orchestrator.tier2", "orchestrator.lambda", "orchestrator.mu",
+     # Commands the project would run on every tool call (lifecycle_hooks.py).
+     "hooks.preToolUse", "hooks.postToolUse", "hooks.stop", "hooks.matcher"}
 )
 
 #: A bundle id as `capture.allowlist` accepts it: reverse-DNS labels, nothing that could be a path, a
@@ -679,6 +688,10 @@ def load_instructions(cwd: str | os.PathLike) -> str:
 
 # --------------------------------------------------------- permission rules
 
+#: Tools a permission rule names by another tool's name: a detached shell command is a shell command, so
+#: `shell(git *)` and `deny: shell(rm -rf *)` cover `background_shell` too.
+TOOL_ALIASES = {"background_shell": "shell"}
+
 _SPECIFIER = {
     "shell": "command",
     "python_repl": "code",
@@ -769,6 +782,7 @@ def _normalise_path(value: str, cwd: str) -> str:
 def rule_matches(rule: Rule, tool: str, tool_input, cwd: str, *, allow: bool = False) -> bool:
     """Does ``rule`` apply to this call? ``allow`` selects the stricter reading
     used for allow rules (see the module docstring on shell commands)."""
+    tool = TOOL_ALIASES.get(tool, tool)
     if rule.tool != tool:
         return False
     pattern = rule.pattern
@@ -808,6 +822,7 @@ class Verdict:
 def evaluate(settings: Settings, tool: str, tool_input, cwd: str) -> Verdict | None:
     """First matching verdict, ``deny`` before ``ask`` before ``allow``; None if
     no rule says anything (the mode's default applies)."""
+    tool = TOOL_ALIASES.get(tool, tool)
     for kind in ("deny", "ask", "allow"):
         rules = settings.rules_for(kind)
         if kind == "allow":

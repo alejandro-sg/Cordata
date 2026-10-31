@@ -296,9 +296,20 @@ async def test_waves(root: Path) -> None:
     worker = ollama_fake(steps=scripts, delay=0.2)
     events: list[dict[str, Any]] = []
     result = await execute(project, parallel_draft(), worker, "w3", on_event=events.append)
-    rollbacks = [e for e in events if e.get("kind") == "rollback"]
+    sandboxes = [e for e in events if e.get("kind") == "sandbox"]
+    harvests = {e["step_id"]: e for e in events if e.get("kind") == "harvest"}
     check(result.status == "failed", f"a failing step fails the wave ({result.status})")
-    check(rollbacks and {e["step_id"] for e in rollbacks} == {"s2"} and not (project / "calc" / "sub.py").exists(), "the failing step (and only it) is rolled back")
+    check(sandboxes and all(e.get("root") for e in sandboxes) and {e["step_id"] for e in sandboxes} >= {"s1", "s2", "s3", "s4"}, "each step of the wave ran in a sandbox of its own")
+    check("s2" not in harvests and not (project / "calc" / "sub.py").exists(), "the failing step's work never reaches the project (its sandbox is discarded, not rolled back)")
+    check((project / "calc" / "add.py").read_text() == steps_script()["s1"].writes["calc/add.py"] and "calc/add.py" in harvests["s1"]["written"], "…while its sibling's harvested file is on disk")
+    check(not [e for e in sandboxes if e.get("root") and Path(e["root"]).exists()], "no sandbox outlives its step")
+
+    project = make_project(root, "waves-fail-shared")
+    worker = ollama_fake(steps=scripts, delay=0.2)
+    events = []
+    result = await execute(project, parallel_draft(), worker, "w3s", on_event=events.append, isolate=False)
+    rollbacks = [e for e in events if e.get("kind") == "rollback"]
+    check(result.status == "failed" and rollbacks and {e["step_id"] for e in rollbacks} == {"s2"} and not (project / "calc" / "sub.py").exists(), "shared tree (isolate=False): the failing step (and only it) is rolled back")
     check((project / "calc" / "add.py").read_text() == steps_script()["s1"].writes["calc/add.py"], "…while its sibling's written file stays on disk")
 
     project = make_project(root, "sequence")

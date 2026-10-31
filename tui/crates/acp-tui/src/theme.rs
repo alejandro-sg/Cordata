@@ -8,8 +8,10 @@
 //!
 //! * truecolor terminals (`COLORTERM=truecolor|24bit`) get the full palette;
 //! * 256-colour terminals (`TERM=*256color`, Terminal.app) get the nearest cube colours;
-//! * `CORDATA_THEME=terminal`, a light terminal (`COLORFGBG`) or anything else keep the terminal's own 16 colours —
-//!   a palette tuned for a dark background would be unreadable on a light one;
+//! * a light terminal (`CORDATA_THEME=light`, or `COLORFGBG` naming a light background) gets the `light` palette
+//!   (`cordata_theme::tokens::DAY`: the accents darkened to WCAG AA on paper) instead of the night one, which would be
+//!   unreadable there; `CORDATA_THEME=dark` keeps the night palette whatever `COLORFGBG` says. Decided once, at start;
+//! * `CORDATA_THEME=terminal` or a terminal without 256 colours keeps the terminal's own 16 colours;
 //! * `NO_COLOR` strips colour and keeps bold/dim/reverse.
 //!
 //! The roles, so a new widget picks the right name: **Cyan = sodium amber** (Cordata, the live thing, the prompt),
@@ -50,10 +52,6 @@ fn detect(env: impl Fn(&str) -> Option<String>) -> Level {
     if env("CORDATA_THEME").is_some_and(|v| v.eq_ignore_ascii_case("terminal")) {
         return Level::Ansi;
     }
-    // `COLORFGBG=15;0` is foreground;background. A light background (7 or 15) wants the terminal's own palette.
-    if env("COLORFGBG").is_some_and(|v| matches!(v.rsplit(';').next(), Some("7" | "15"))) {
-        return Level::Ansi;
-    }
     let colorterm = env("COLORTERM").unwrap_or_default().to_ascii_lowercase();
     if colorterm.contains("truecolor") || colorterm.contains("24bit") {
         return Level::TrueColor;
@@ -65,9 +63,32 @@ fn detect(env: impl Fn(&str) -> Option<String>) -> Level {
     Level::Ansi
 }
 
+/// Is the terminal's background light? Decided once.
+pub fn light() -> bool {
+    if cfg!(test) {
+        return false;
+    }
+    static LIGHT: OnceLock<bool> = OnceLock::new();
+    *LIGHT.get_or_init(|| detect_light(|key| std::env::var(key).ok()))
+}
+
+fn detect_light(env: impl Fn(&str) -> Option<String>) -> bool {
+    match env("CORDATA_THEME").map(|v| v.to_ascii_lowercase()).as_deref() {
+        Some("light" | "day") => return true,
+        Some("dark" | "night" | "2049") => return false,
+        _ => {}
+    }
+    // `COLORFGBG=0;15` is foreground;background: a light background is 7 or 15. Unparseable or absent: dark.
+    env("COLORFGBG").is_some_and(|v| matches!(v.rsplit(';').next(), Some("7" | "15")))
+}
+
 /// The palette: what each semantic colour is, as RGB — read from `cordata-theme`, the one token source the native app
-/// uses too. `None` for colours the theme leaves alone.
+/// uses too (the night palette, or `DAY`'s on a light terminal). `None` for colours the theme leaves alone.
 fn palette(color: Color) -> Option<(u8, u8, u8)> {
+    palette_for(light(), color)
+}
+
+fn palette_for(light: bool, color: Color) -> Option<(u8, u8, u8)> {
     use cordata_theme::{NIGHT, Role};
     let role = match color {
         // accent — the one colour that means "Cordata": sodium-vapour amber
@@ -84,6 +105,9 @@ fn palette(color: Color) -> Option<(u8, u8, u8)> {
         Color::White => Role::Text,
         _ => return None,
     };
+    if light {
+        return Some(cordata_theme::tokens::DAY.palette().get(role).tuple());
+    }
     Some(NIGHT.get(role).tuple())
 }
 
@@ -156,9 +180,20 @@ mod tests {
         assert_eq!(detect(env(&[("NO_COLOR", "1"), ("COLORTERM", "truecolor")])), Level::Mono);
         assert_eq!(detect(env(&[("NO_COLOR", ""), ("COLORTERM", "truecolor")])), Level::TrueColor);
         assert_eq!(detect(env(&[("CORDATA_THEME", "terminal"), ("COLORTERM", "truecolor")])), Level::Ansi);
-        // A light background keeps the terminal's own colours: the pastels would vanish on it.
-        assert_eq!(detect(env(&[("COLORFGBG", "0;15"), ("COLORTERM", "truecolor")])), Level::Ansi);
-        assert_eq!(detect(env(&[("COLORFGBG", "15;0"), ("COLORTERM", "truecolor")])), Level::TrueColor);
+        // A light background no longer drops to the terminal's colours: it gets the light palette (below).
+        assert_eq!(detect(env(&[("COLORFGBG", "0;15"), ("COLORTERM", "truecolor")])), Level::TrueColor);
+    }
+
+    #[test]
+    fn a_light_terminal_gets_the_light_palette() {
+        assert!(detect_light(env(&[("COLORFGBG", "0;15")])));
+        assert!(detect_light(env(&[("CORDATA_THEME", "light")])));
+        assert!(!detect_light(env(&[("COLORFGBG", "15;0")])));
+        assert!(!detect_light(env(&[("COLORFGBG", "nonsense")])) && !detect_light(env(&[])));
+        assert!(!detect_light(env(&[("CORDATA_THEME", "dark"), ("COLORFGBG", "0;15")])), "an explicit dark wins");
+        let day = cordata_theme::tokens::DAY;
+        assert_eq!(palette_for(true, Color::Cyan), Some(day.amber.tuple()));
+        assert_ne!(palette_for(true, Color::Cyan), palette_for(false, Color::Cyan));
     }
 
     #[test]

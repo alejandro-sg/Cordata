@@ -34,7 +34,7 @@ import ask_user
 import plan_mode
 import preflight
 from laya_router import RouteDecision
-from agent_common import GENERATED_TOOL_NAMES, MCP_TOOL_NAMES, current_generated_tool_names  # noqa: E402
+from agent_common import GENERATED_TOOL_NAMES, MCP_TOOL_NAMES, LazyNames, current_generated_tool_names  # noqa: E402
 from acp_learning import _bandit_policy  # noqa: E402
 
 # Set-identical to main.py's _APPROVAL_REQUIRED_TOOLS — both gate `editor`
@@ -43,11 +43,16 @@ from acp_learning import _bandit_policy  # noqa: E402
 # lists, so keep them in sync by hand when either changes. apply_patch is
 # ACP-only (the harness's patch tool). Plugins added at runtime are gated by
 # PluginHost.requires_approval, not by this static set.
-APPROVAL_REQUIRED_TOOLS = {"shell", "python_repl", "file_write", "editor", "apply_patch", claude_code_tool.TOOL_NAME, orchestrate_tool.TOOL_NAME, plugin_host.RESOURCE_TOOL, *GENERATED_TOOL_NAMES, *MCP_TOOL_NAMES}
+# A LazyNames: membership of a built-in name is answered from the static part, and the MCP servers' tool names are
+# listed only the first time an unknown name is asked about — never at import.
+APPROVAL_REQUIRED_TOOLS = LazyNames(
+    lambda: MCP_TOOL_NAMES,
+    static={"shell", "background_shell", "python_repl", "file_write", "editor", "apply_patch", claude_code_tool.TOOL_NAME, orchestrate_tool.TOOL_NAME, plugin_host.RESOURCE_TOOL, *GENERATED_TOOL_NAMES},
+)
 
 # Plan mode runs only these (reading code is part of planning, as in Claude
 # Code's and OpenCode's plan modes); everything else is denied.
-PLAN_MODE_TOOLS = {"file_read", "code_search", "code_outline", "environment_profile", "architect", "context_digest", *(t.tool_name for t in lsp_bridge.LSP_TOOLS)}
+PLAN_MODE_TOOLS = {"file_read", "code_search", "code_outline", "environment_profile", "architect", "context_digest", "task_output", *(t.tool_name for t in lsp_bridge.LSP_TOOLS)}
 
 # editor's read-only commands: like file_read, they never ask (and run in plan mode).
 _EDITOR_READ_COMMANDS = {"view", "find_line"}
@@ -84,7 +89,7 @@ def _forced_ask(tool_name: str, tool_input) -> str | None:
 
 
 # A turn Laya rates destructive with confidence arms the gate for these, even in auto mode.
-_ARMABLE_TOOLS = {"shell", "python_repl", "file_write", "editor", "apply_patch", claude_code_tool.TOOL_NAME, orchestrate_tool.TOOL_NAME, "ollama_resource_manager"}
+_ARMABLE_TOOLS = {"shell", "background_shell", "python_repl", "file_write", "editor", "apply_patch", claude_code_tool.TOOL_NAME, orchestrate_tool.TOOL_NAME, "ollama_resource_manager"}
 
 
 _ALLOW_KINDS = {"allow_once", "allow_always"}

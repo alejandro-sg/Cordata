@@ -1,6 +1,8 @@
 //! The native app's design tokens (the "Cordata Harness" reference design): every colour, size, radius, type size and
 //! tracking a view may use. Views never write a literal — they ask for a token here, through `cordata-app`'s
-//! `theme` module. Three themes share one shape (`2049`, `graphite`, `dim`); the accents are the same in all of them.
+//! `theme` module. Four themes share one shape: three dark ones (`2049`, `graphite`, `dim`) with the same accents, and
+//! `light` (`DAY`) — warm paper, charcoal ink, the accents darkened until they hold WCAG AA on paper (AAA with Increase
+//! Contrast). `system` in the settings picks `DAY` or `2049` from the macOS appearance (cordata-app's `theme`).
 //!
 //! Lines are white at an alpha (the `LINE_*` constants), tints are an accent at an alpha (`AMBER_*`, `TEAL_*`): both
 //! are drawn translucent over whatever ground they sit on, so one value works on every surface.
@@ -55,6 +57,10 @@ pub struct Tokens {
     pub info: Rgb,
     /// What `LINE_*` and `HOVER_*` are drawn in.
     pub ink: Rgb,
+    /// A dark ground (white lines, light text) or a light one (charcoal lines, dark text).
+    pub is_dark: bool,
+    /// What a modal's or a popover's drop shadow is drawn in — never the window ground, which is near-white in `light`.
+    pub shadow: Rgb,
 }
 
 pub const T2049: Tokens = Tokens {
@@ -82,6 +88,8 @@ pub const T2049: Tokens = Tokens {
     danger: Rgb::hex(0xE56050),
     info: Rgb::hex(0x7F9BB8),
     ink: Rgb::hex(0xFFFFFF),
+    is_dark: true,
+    shadow: Rgb::hex(0x000000),
 };
 
 /// Neutral greys instead of the warm near-black; same accents.
@@ -122,12 +130,54 @@ pub const DIM: Tokens = Tokens {
     ..T2049
 };
 
-pub const THEMES: [&Tokens; 3] = [&T2049, &GRAPHITE, &DIM];
+/// Warm paper and charcoal ink for daylight and macOS Light appearance. Every accent is darkened to hold WCAG AA (4.5:1)
+/// on every ground, and text on an amber fill holds AAA; `high_contrast` lifts the text toward the ink (darker), so
+/// Increase Contrast reaches AAA (7:1) — the tests below compute both.
+pub const DAY: Tokens = Tokens {
+    name: "light",
+    bg_window: Rgb::hex(0xECE8E1),
+    bg_main: Rgb::hex(0xF7F6F2),
+    bg_panel: Rgb::hex(0xEFECE6),
+    bg_nav_deep: Rgb::hex(0xE6E2DA),
+    bg_input: Rgb::hex(0xFFFFFF),
+    text_primary: Rgb::hex(0x16181D),
+    text_body: Rgb::hex(0x262930),
+    text_secondary: Rgb::hex(0x474A52),
+    text_muted: Rgb::hex(0x585B62),
+    text_muted_2: Rgb::hex(0x63666C),
+    text_label: Rgb::hex(0x6A6C72),
+    text_faint: Rgb::hex(0x76787D),
+    text_faint_2: Rgb::hex(0x8A8C90),
+    amber: Rgb::hex(0x7F470B),
+    amber_hover: Rgb::hex(0x8F520F),
+    amber_soft: Rgb::hex(0x6E3D08),
+    amber_dim: Rgb::hex(0xA87A4A),
+    amber_dim_2: Rgb::hex(0xC29A70),
+    amber_on_fill: Rgb::hex(0xFFFFFF),
+    teal: Rgb::hex(0x0D6B73),
+    danger: Rgb::hex(0xA8231B),
+    info: Rgb::hex(0x3B5878),
+    ink: Rgb::hex(0x16181D),
+    is_dark: false,
+    shadow: Rgb::hex(0x2A2620),
+};
+
+pub const THEMES: [&Tokens; 4] = [&T2049, &GRAPHITE, &DIM, &DAY];
 
 impl Tokens {
-    /// A theme by its settings name; unknown names get `2049`.
+    /// A theme by its settings name (`day` and `light` are the same theme; `night` is `2049`); unknown names get
+    /// `2049`. `system` is resolved by the app against the OS appearance before it gets here (`for_appearance`).
     pub fn named(name: &str) -> &'static Tokens {
-        THEMES.iter().copied().find(|t| t.name == name).unwrap_or(&T2049)
+        match name {
+            "day" | "light" => &DAY,
+            "night" => &T2049,
+            _ => THEMES.iter().copied().find(|t| t.name == name).unwrap_or(&T2049),
+        }
+    }
+
+    /// The theme a `system` preference resolves to: `DAY` under a light appearance, `2049` under a dark one.
+    pub fn for_appearance(dark: bool) -> &'static Tokens {
+        if dark { &T2049 } else { &DAY }
     }
 
     /// macOS "Increase Contrast": every text step brighter, so labels and meta read as text.
@@ -333,6 +383,38 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn light_is_aa_everywhere_and_aaa_with_increase_contrast() {
+        let grounds = |t: &Tokens| [t.bg_window, t.bg_main, t.bg_panel, t.bg_nav_deep, t.bg_input];
+        for ground in grounds(&DAY) {
+            for (name, accent) in [("amber", DAY.amber), ("teal", DAY.teal), ("danger", DAY.danger), ("info", DAY.info)] {
+                let ratio = accent.contrast(ground);
+                assert!(ratio >= 4.5, "light {name} on {}: {ratio:.2}", ground.css());
+            }
+        }
+        let hc = DAY.high_contrast();
+        for ground in grounds(&hc) {
+            for (name, ink) in [("primary", hc.text_primary), ("body", hc.text_body), ("secondary", hc.text_secondary), ("muted", hc.text_muted)] {
+                let ratio = ink.contrast(ground);
+                assert!(ratio >= 7.0, "light high-contrast {name} on {}: {ratio:.2}", ground.css());
+            }
+        }
+        assert!(DAY.amber_on_fill.contrast(DAY.amber) >= 7.0);
+        assert!(!DAY.is_dark && THEMES.iter().filter(|t| t.is_dark).count() == 3);
+    }
+
+    #[test]
+    fn a_shadow_is_darker_than_the_ground_it_falls_on() {
+        for t in THEMES {
+            assert!(t.shadow.luminance() < t.bg_window.luminance() || t.shadow == Rgb::hex(0), "{}: shadow {} on {}", t.name, t.shadow.css(), t.bg_window.css());
+            assert!(t.shadow.contrast(t.bg_main) >= 3.0 || t.is_dark, "{}: the shadow must read on paper", t.name);
+        }
+        assert_eq!(Tokens::named("light").name, "light");
+        assert_eq!(Tokens::named("day").name, "light");
+        assert_eq!(Tokens::for_appearance(false).name, "light");
+        assert_eq!(Tokens::for_appearance(true).name, "2049");
     }
 
     #[test]

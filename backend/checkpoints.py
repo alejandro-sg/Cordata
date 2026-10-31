@@ -166,6 +166,8 @@ def writes_files(tool: str, tool_input: Any, extra_tools: Iterable[str] = ()) ->
     """Does this call possibly change files in the project? True for the edit tools, for Python and the Claude
     Code CLI, for any generated tool, and for a shell command that is not recognisably read-only."""
     data = tool_input if isinstance(tool_input, dict) else {}
+    if tool == "background_shell":
+        tool = "shell"
     if tool == "editor":
         return str(data.get("command") or "") not in _EDITOR_READ
     if tool in ("file_write", "apply_patch", "python_repl", "claude_code_engineer"):

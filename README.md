@@ -69,7 +69,7 @@ Set `orchestrator.pools` to your real plans there so handoffs happen at the righ
 | `<project>/.cordata/` | project settings and custom commands; `CORDATA.md` in a project is read as instructions |
 | `backend/` | the agent, the orchestrator (`backend/orchestrator/`), the workers, the daemon (Python) |
 | `tui/` | the terminal client (Rust) |
-| `lab/`, `frontend/` | a native monitoring window and a web UI — kept working, not developed |
+| `app/` | Cordata.app, the native macOS workspace (Rust/GPUI), sharing `cordata-view` / `cordata-theme` with the terminal |
 
 ## More
 

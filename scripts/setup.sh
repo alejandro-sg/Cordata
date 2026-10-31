@@ -3,11 +3,7 @@
 # overwritten), and a release build of the terminal client. Re-running is safe — every step is idempotent.
 #
 #   scripts/setup.sh           # what the terminal client and `cordata run` need
-#   scripts/setup.sh --web     # also install the web UI's dependencies (kept working, not developed)
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-
-WEB=0
-[[ "${1:-}" == "--web" ]] && WEB=1
 
 log "== backend =="
 cd "$ROOT/backend"
@@ -34,18 +30,6 @@ if command -v cargo >/dev/null 2>&1; then
   ok "acp-tui built"
 else
   warn "cargo not found — install Rust (https://rustup.rs), then re-run this script"
-fi
-
-if [[ "$WEB" == 1 ]]; then
-  log ""
-  log "== web UI =="
-  cd "$ROOT/frontend"
-  npm ci --silent
-  ok "frontend deps installed"
-  if ! [[ -f .env.local ]]; then
-    cp .env.local.example .env.local
-    ok "frontend/.env.local created from .env.local.example"
-  fi
 fi
 
 log ""

@@ -1,4 +1,4 @@
-.PHONY: app app-run app-test app-check app-selftest phase12-test gate-live setup up down restart status logs daemon daemon-install daemon-uninstall daemon-status deploy-mini deploy-mini-frontend deploy-mini-backend tui tui-build tui-test lab lab-demo lab-build lab-test lab-live lab-menubar lab-menubar-selftest lab-menubar-deck-selftest lab-menubar-demo lab-menubar-app proto evals evals-validate learning-test laya-test laya-export laya-eval stress tui-cloud tui-lab stress-cloud key check-key discord-key laya-watch settings install-cli cli secrets hooks
+.PHONY: app app-run app-test app-check app-selftest phase12-test gate-live setup up down restart status logs daemon daemon-install daemon-uninstall daemon-status deploy-mini deploy-mini-backend tui tui-build tui-test proto evals evals-validate learning-test laya-test laya-export laya-eval stress tui-cloud tui-lab test orchestrator-test evals-orchestration stress-cloud key check-key discord-key laya-watch settings install-cli cli secrets hooks
 
 setup:
 	@scripts/setup.sh
@@ -16,13 +16,10 @@ status:
 	@scripts/dev-status.sh
 
 logs:
-	@tail -f .dev/backend.log .dev/frontend.log
+	@tail -f .dev/backend.log
 
 deploy-mini:
 	@scripts/deploy-mini.sh
-
-deploy-mini-frontend:
-	@scripts/deploy-mini-frontend.sh
 
 deploy-mini-backend:
 	@scripts/deploy-mini-backend.sh
@@ -78,61 +75,9 @@ tui-build:
 tui-test:
 	@cd tui && cargo test --workspace
 
-# The GPUI Experimental Lab (lab/, docs/meta-harness.md): the native window onto the
-# daemon's telemetry bridge — containment modal, Laya gauge, memory unload, AST ingest.
-# Needs the daemon running with its gRPC bridge (make daemon).   make lab WATCH=~/proj
-lab:
-	@cd lab && cargo run -q -p harness-lab -- $(if $(WATCH),--watch $(WATCH),)
-
-# The same window against a scripted, self-contained daemon (backend/lab_demo.py): an approval
-# to answer, a 10,000-line diff, knobs that work, a fake oMLX to unload — no model, key or token
-# spent, and nothing touches ~/.cordata or a daemon you already run.   make lab-demo WATCH=~/proj
-lab-demo:
-	@scripts/lab-demo.sh
-
-lab-build:
-	@cd lab && cargo build --release
-
-# The menu-bar door (lab/crates/harness-menubar, docs/experimental-lab.md): the same harness in the
-# menu bar — a three-state icon driven by the same telemetry, and the deck on a hotkey. Needs the
-# daemon running with its gRPC bridge, exactly like `make lab`.   make lab-menubar
-lab-menubar:
-	@cd lab && cargo run -q -p harness-menubar
-
-# A ten-second eyeball check with no daemon at all: the icon cycles idle → working → needs you, then
-# starts over, so the three glyphs can be looked at side by side.   make lab-menubar-selftest
-lab-menubar-selftest:
-	@cd lab && cargo run -q -p harness-menubar -- --tray-selftest
-
-# Opens the deck itself, prints where it landed, closes it and exits. A popover window with a
-# transparent background cannot be created in a headless test, so this is the only check there is.
-#   make lab-menubar-deck-selftest
-lab-menubar-deck-selftest:
-	@cd lab && cargo run -q -p harness-menubar -- --deck-selftest
-
-# The menu bar against the same scripted daemon the window uses, plus a held destructive command —
-# which is what turns the icon amber.   make lab-menubar-demo WATCH=~/proj
-lab-menubar-demo:
-	@scripts/lab-demo.sh --menubar
-
-# The deck as a real menu-bar app (lab/target/Cordata.app, LSUIElement, signed), so the
-# Accessibility grant belongs to it rather than to your terminal. INSTALL=1 copies it to
-# ~/Applications; SIGN_IDENTITY="<cert>" keeps the grant across rebuilds (see the script).
-#   make lab-menubar-app INSTALL=1
-lab-menubar-app:
-	@scripts/package-menubar.sh $(if $(INSTALL),--install,)
-
-# The Rust client against the *real* Python bridge (not the Rust fake): wire compatibility, the
-# approval round trip, the knobs, the unload, the diff, ingest — then the ledger is checked.
-lab-live:
-	@backend/.venv/bin/python backend/_lab_gui_live_smoke_test.py
-
 # Regenerate the Python gRPC stubs after editing proto/harness.proto.
 proto:
 	@scripts/gen-proto.sh
-
-lab-test:
-	@cd lab && cargo test --workspace
 
 # The eval suite (backend/evals/, docs/evals.md): 42 tasks with verifiers, a held-out third, and the
 # attack suite that guards Laya Guard. Default driver is the oracle — offline, deterministic, no model.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Restarts backend + frontend (Qdrant untouched — it doesn't need to
+# Restarts the backend (Qdrant untouched — it doesn't need to
 # restart alongside the app, and stopping it would be needlessly slow).
 #
 # Usage: scripts/dev-restart.sh

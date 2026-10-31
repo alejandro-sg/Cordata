@@ -2,15 +2,17 @@
 //! the component library's theme built from the same tokens. Views read colours only through here — `tk(cx)` for a
 //! token, `line`/`amber`/`teal` for the translucent ones, `color(cx, Role)` for the older role-based panes.
 //!
-//! The theme (`2049` · `graphite` · `dim`) can change while the app runs (Settings → Appearance); Increase Contrast
-//! is read once at launch.
+//! The theme (`system` · `light` · `2049` · `graphite` · `dim`) can change while the app runs (Settings → Appearance).
+//! `system` follows macOS Light/Dark live: the window's appearance observer (`main.rs`, GPUI's
+//! `observe_window_appearance`) calls `appearance_changed`, which reinstalls only when the resolved theme actually
+//! changes — one reinstall per real switch, however many notifications arrive. Increase Contrast is read once at launch.
 
 use std::borrow::Cow;
 use std::rc::Rc;
 
 use cordata_theme::tokens::{self, Tokens, fonts};
 use cordata_theme::{Palette, Role, Rgb};
-use gpui::{App, BoxShadow, Hsla, Rgba, SharedString, point, px, rgb};
+use gpui::{App, BoxShadow, Hsla, Rgba, SharedString, WindowAppearance, point, px, rgb};
 use gpui_component::theme::{Theme, ThemeConfig, ThemeMode};
 
 /// What is in force.
@@ -20,6 +22,8 @@ pub struct Active {
     pub sans: SharedString,
     pub mono: SharedString,
     pub increase_contrast: bool,
+    /// The preference as written (`system`, or a theme name) — what an appearance change is resolved against.
+    pub choice: SharedString,
 }
 
 impl gpui::Global for Active {}
@@ -97,12 +101,16 @@ pub fn amber_glow(cx: &App) -> Vec<BoxShadow> {
 
 /// The modal shadow.
 pub fn modal_shadow(cx: &App) -> Vec<BoxShadow> {
-    vec![BoxShadow { color: ca(tk(cx).bg_window, tokens::MODAL_SHADOW), offset: point(px(0.), px(28.)), blur_radius: px(90.), spread_radius: px(0.), inset: false }]
+    let t = tk(cx);
+    // The shadow token, never the window ground: on paper that is near-white and the modal would cast a white halo.
+    let alpha = if t.is_dark { tokens::MODAL_SHADOW } else { 0.22 };
+    vec![BoxShadow { color: ca(t.shadow, alpha), offset: point(px(0.), px(28.)), blur_radius: px(90.), spread_radius: px(0.), inset: false }]
 }
 
 /// A soft shadow under popovers and the composer.
 pub fn soft_shadow(cx: &App) -> Vec<BoxShadow> {
-    vec![BoxShadow { color: ca(tk(cx).bg_window, 0.5), offset: point(px(0.), px(8.)), blur_radius: px(24.), spread_radius: px(0.), inset: false }]
+    let t = tk(cx);
+    vec![BoxShadow { color: ca(t.shadow, if t.is_dark { 0.5 } else { 0.12 }), offset: point(px(0.), px(8.)), blur_radius: px(24.), spread_radius: px(0.), inset: false }]
 }
 
 /// A 1px border drawn inside the box (the active row, an active settings item): no layout shift, no stripe.
@@ -155,23 +163,58 @@ pub fn load_fonts(cx: &mut App) -> (SharedString, SharedString) {
     (SharedString::from(sans), SharedString::from(mono))
 }
 
+/// Is this appearance a dark one?
+pub fn is_dark(appearance: WindowAppearance) -> bool {
+    matches!(appearance, WindowAppearance::Dark | WindowAppearance::VibrantDark)
+}
+
+/// The tokens a preference names under an appearance: `system` follows it, anything else is that theme.
+pub fn resolve(choice: &str, dark: bool) -> &'static Tokens {
+    if choice == "system" { Tokens::for_appearance(dark) } else { Tokens::named(choice) }
+}
+
 /// Install the tokens and the component theme. Call once after `gpui_component::init`, and again (`set_theme`) when
-/// the theme setting changes.
+/// the theme setting changes. `system` is resolved against the app's current appearance.
 pub fn install(increase_contrast: bool, theme: &str, cx: &mut App) {
+    let dark = is_dark(cx.window_appearance());
+    install_resolved(increase_contrast, theme, dark, cx);
+}
+
+fn install_resolved(increase_contrast: bool, choice: &str, dark: bool, cx: &mut App) {
     let (sans, mono) = match active(cx) {
         Some(a) => (a.sans.clone(), a.mono.clone()),
         None => load_fonts(cx),
     };
-    let base = *Tokens::named(theme);
+    let base = *resolve(choice, dark);
     let tokens = if increase_contrast { base.high_contrast() } else { base };
     let palette = tokens.palette();
+    let mode = if tokens.is_dark { ThemeMode::Dark } else { ThemeMode::Light };
     let config = Rc::new(component_theme(&tokens, &palette, &sans, &mono));
-    cx.set_global(Active { tokens, palette, sans, mono, increase_contrast });
+    cx.set_global(Active { tokens, palette, sans, mono, increase_contrast, choice: SharedString::from(choice.to_owned()) });
+    // The library's mode first — `Theme::change` loads its stock colours for that mode — then ours over them; the other
+    // order threw our colours away.
+    Theme::change(mode, None, cx);
     Theme::update(cx, |theme| {
         theme.apply_config(&config);
-        theme.mode = ThemeMode::Dark;
+        theme.mode = mode;
     });
-    Theme::change(ThemeMode::Dark, None, cx);
+}
+
+/// The window's appearance changed (System Settings → Appearance, or Auto at dusk). Reinstalls — and redraws every
+/// window — only when the preference is `system` and the resolved theme is a different one; returns whether it did.
+pub fn appearance_changed(appearance: WindowAppearance, cx: &mut App) -> bool {
+    let Some(current) = active(cx) else { return false };
+    if current.choice.as_ref() != "system" {
+        return false;
+    }
+    let dark = is_dark(appearance);
+    if current.tokens.is_dark == dark {
+        return false;
+    }
+    let (increase_contrast, choice) = (current.increase_contrast, current.choice.to_string());
+    install_resolved(increase_contrast, &choice, dark, cx);
+    cx.refresh_windows();
+    true
 }
 
 pub fn set_theme(theme: &str, cx: &mut App) {
@@ -208,13 +251,13 @@ fn component_theme(t: &Tokens, p: &Palette, sans: &str, mono: &str) -> ThemeConf
         ("secondary.hover.background", hairline.clone()),
         ("secondary.active.background", hairline.clone()),
         ("danger.background", hex(t.danger)),
-        ("danger.foreground", hex(t.bg_window)),
+        ("danger.foreground", hex(if t.is_dark { t.bg_window } else { t.bg_input })),
         ("warning.background", hex(t.amber)),
         ("warning.foreground", hex(t.amber_on_fill)),
         ("success.background", hex(t.teal)),
-        ("success.foreground", hex(t.bg_window)),
+        ("success.foreground", hex(if t.is_dark { t.bg_window } else { t.bg_input })),
         ("info.background", hex(t.info)),
-        ("info.foreground", hex(t.bg_window)),
+        ("info.foreground", hex(if t.is_dark { t.bg_window } else { t.bg_input })),
         ("link", hex(t.teal)),
         ("link.hover", hex(t.amber)),
         ("link.active", hex(t.amber)),
@@ -253,7 +296,7 @@ fn component_theme(t: &Tokens, p: &Palette, sans: &str, mono: &str) -> ThemeConf
     .collect();
     let config = serde_json::json!({
         "name": "Cordata",
-        "mode": "dark",
+        "mode": if t.is_dark { "dark" } else { "light" },
         "font.family": sans,
         "font.size": tokens::TEXT_BODY,
         "mono_font.family": mono,
@@ -265,7 +308,7 @@ fn component_theme(t: &Tokens, p: &Palette, sans: &str, mono: &str) -> ThemeConf
     });
     serde_json::from_value(config).unwrap_or_else(|error| {
         eprintln!("cordata: the component theme did not parse ({error}); using the library's dark theme");
-        ThemeConfig { mode: ThemeMode::Dark, ..Default::default() }
+        ThemeConfig { mode: if t.is_dark { ThemeMode::Dark } else { ThemeMode::Light }, ..Default::default() }
     })
 }
 
@@ -278,9 +321,18 @@ mod tests {
         for theme in tokens::THEMES {
             let p = theme.palette();
             let config = component_theme(theme, &p, "Geist", "Geist Mono");
-            assert!(config.mode.is_dark());
+            assert_eq!(config.mode.is_dark(), theme.is_dark, "{}", theme.name);
             assert_eq!(config.colors.background.as_ref().map(|s| s.to_string()), Some(theme.bg_main.css()));
             assert_eq!(config.colors.primary.as_ref().map(|s| s.to_string()), Some(theme.amber.css()));
         }
+    }
+
+    #[test]
+    fn system_follows_the_appearance_and_a_named_theme_does_not() {
+        assert_eq!(resolve("system", false).name, "light");
+        assert_eq!(resolve("system", true).name, "2049");
+        assert_eq!(resolve("graphite", false).name, "graphite");
+        assert_eq!(resolve("light", true).name, "light");
+        assert!(is_dark(WindowAppearance::VibrantDark) && !is_dark(WindowAppearance::VibrantLight));
     }
 }

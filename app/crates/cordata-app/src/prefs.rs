@@ -18,7 +18,7 @@ pub const RECENTS_CAP: usize = 20;
 pub struct Prefs {
     /// The person's choice for the side panel; `None` follows the window width.
     pub panel_open: Option<bool>,
-    /// `2049` · `graphite` · `dim`.
+    /// `system` (follow macOS Light/Dark) · `light` · `2049` · `graphite` · `dim`.
     pub theme: String,
     pub haze: bool,
     /// `compact` · `comfortable`.
@@ -30,7 +30,6 @@ pub struct Prefs {
     pub open_on_launch: String,
     pub notify_approval: bool,
     pub sound_on_completion: bool,
-    pub share_diagnostics: bool,
     /// The global quick-ask hotkey brings the window forward with the composer focused.
     pub quick_ask_hotkey: bool,
     /// Which combination it is, `ctrl-alt-space` form (`platform::Combo::parse`).
@@ -60,7 +59,7 @@ impl Default for Prefs {
     fn default() -> Self {
         Self {
             panel_open: None,
-            theme: "2049".into(),
+            theme: "system".into(),
             haze: true,
             density: "comfortable".into(),
             code_font_size: 13.0,
@@ -68,7 +67,6 @@ impl Default for Prefs {
             open_on_launch: "last".into(),
             notify_approval: true,
             sound_on_completion: false,
-            share_diagnostics: false,
             completion_model: String::new(),
             quick_ask_hotkey: true,
             quick_ask_key: "ctrl-alt-space".into(),
@@ -136,7 +134,7 @@ impl Prefs {
 
     fn normalise(&mut self) {
         let fallback = Self::default();
-        if !matches!(self.theme.as_str(), "2049" | "graphite" | "dim") {
+        if !matches!(self.theme.as_str(), "system" | "light" | "2049" | "graphite" | "dim") {
             self.theme = fallback.theme;
         }
         if !matches!(self.density.as_str(), "compact" | "comfortable") {
@@ -198,7 +196,7 @@ mod tests {
         assert_eq!(Prefs::load_from(&file), prefs);
         std::fs::write(&file, "theme = \"neon\"\ncode_font_size = 99.0\nquick_ask_key = \"k\"\n").unwrap();
         let repaired = Prefs::load_from(&file);
-        assert_eq!(repaired.theme, "2049");
+        assert_eq!(repaired.theme, "system");
         assert_eq!(repaired.quick_ask_key, "ctrl-alt-space");
         std::fs::write(&file, "[prices]\nok = [1.0, 2.0]\nnegative = [-1.0, 2.0]\n").unwrap();
         assert_eq!(Prefs::load_from(&file).prices.keys().collect::<Vec<_>>(), ["ok"]);

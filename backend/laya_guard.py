@@ -55,7 +55,7 @@ DEFAULT_GUARD = "full"
 
 #: The tools whose calls change something. Mirrors ``acp_server._ARMABLE_TOOLS`` (asserted equal in
 #: ``_laya_guard_smoke_test``); a tool that only reads has nothing to guard.
-GUARDED_TOOLS = frozenset({"shell", "python_repl", "file_write", "editor", "apply_patch", "claude_code_engineer", "orchestrate", "ollama_resource_manager"})
+GUARDED_TOOLS = frozenset({"shell", "background_shell", "python_repl", "file_write", "editor", "apply_patch", "claude_code_engineer", "orchestrate", "ollama_resource_manager"})
 
 #: A destructive reading from Laya counts only at the confidence the router needs to arm a turn.
 LAYA_MIN_CONFIDENCE = 0.8
@@ -597,6 +597,8 @@ def task_score(task: str) -> tuple[float, str]:
 def rule_score(tool_name: str, tool_input: Any, cwd: str) -> tuple[float, str] | None:
     """``(score, why)`` for one call, or None when the call only reads (nothing to guard)."""
     data = tool_input if isinstance(tool_input, dict) else {}
+    if tool_name == "background_shell":  # the same command, run detached: judged exactly like `shell`
+        tool_name = "shell"
     try:
         if tool_name == "shell":
             commands = shell_commands(tool_input)
@@ -644,6 +646,8 @@ def rule_score(tool_name: str, tool_input: Any, cwd: str) -> tuple[float, str] |
 def render_call(tool_name: str, tool_input: Any, cwd: str) -> str:
     """The call as text Laya can read: what it is and what it touches, redacted and short."""
     data = tool_input if isinstance(tool_input, dict) else {}
+    if tool_name == "background_shell":
+        tool_name = "shell"
     if tool_name == "shell":
         body = "\n".join(shell_commands(tool_input))
     elif tool_name == "python_repl":

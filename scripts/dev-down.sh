@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stops backend + frontend. Leaves Qdrant running by default (it's a
+# Stops the backend. Leaves Qdrant running by default (it's a
 # persistent data store, not something you want to tear down every time) —
 # pass --with-qdrant to stop that too.
 #
@@ -14,7 +14,6 @@ for arg in "$@"; do
   esac
 done
 
-stop_bg frontend
 stop_bg backend
 
 if [[ "$WITH_QDRANT" == "1" ]]; then

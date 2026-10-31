@@ -6,7 +6,12 @@ notional figure, which is the point: the dispatcher trades quality against *quot
 
     claude_code   haiku (fast) · sonnet (standard) · opus (strong)
     antigravity   gemini-3.8-flash (fast) · claude-sonnet-5-5 (standard) · gemini-3.1-pro (strong)
-    ollama        deepseek-v4.1-flash · glm-5.3-flash (fast) · kimi-k2.7-code (standard)
+    ollama        minimax-m3.1-flash · deepseek-v4.1-flash · glm-5.3-flash (fast) ·
+                  gemma4:31b · kimi-k2.7-code (standard) · mistral-large-4 (strong)   — all :cloud, zero download
+
+``orchestrator.dispatch`` picks the policy: ``off`` (the role prior), ``shadow`` (the default: learn, log, act on the
+prior), ``live`` (act on the learned order) or ``auto`` — the multi-objective Auto Mode router (auto_router.py), which
+also weighs each step's capability needs and context footprint against every model's real window.
 
 A family is in the roster when ``orchestrator.workers`` names it and it is usable here: its CLI is installed, or (for
 Ollama) the local daemon answers. Nothing is probed over the network beyond that.
@@ -21,6 +26,7 @@ from typing import Any
 
 from workers import WorkerFamily, build_worker
 
+from .auto_router import AutoRouter
 from .dispatch import LearnedDispatcher, Spec
 from .executor import Candidate
 from .machine import RunConfig
@@ -43,6 +49,12 @@ ROSTER: tuple[tuple[str, str, str, float, frozenset[str] | None], ...] = (
     ("ollama", "deepseek-v4.1-flash", "fast", 0.02, frozenset({"execute", "harden", "audit"})),
     ("ollama", "glm-5.3-flash", "fast", 0.03, frozenset({"plan", "execute", "audit"})),
     ("ollama", "kimi-k2.7-code", "standard", 0.05, None),
+    # The zero-download cloud roster's new members (ollama_cloud.REGISTRY; windows verified with /api/show): MiniMax as
+    # the 1M-context fast scout and syntax executor, Gemma for structured plans and conformance, Mistral Large as the
+    # strong cross-family architect and reviewer.
+    ("ollama", "minimax-m3.1-flash", "fast", 0.02, frozenset({"execute", "audit"})),
+    ("ollama", "gemma4:31b", "standard", 0.04, frozenset({"plan", "audit"})),
+    ("ollama", "mistral-large-4", "strong", 0.10, None),
 )
 
 
@@ -106,15 +118,18 @@ def dispatcher(preferences: Any, *, ledger: QuotaLedger | None = None, project: 
     import bandit
 
     fams = families if families is not None else enabled_families(preferences)
-    return LearnedDispatcher(
+    chosen = mode or str(setting(preferences, "orchestrator.dispatch", "shadow"))
+    common = dict(
         specs=roster(fams, workers=workers),
         ledger=ledger,
-        mode=mode or str(setting(preferences, "orchestrator.dispatch", "shadow")),
         lam=float(setting(preferences, "orchestrator.lambda", 0.3)),
         mu=float(setting(preferences, "orchestrator.mu", 0.5)),
         table=bandit.for_project(project),
         available=lambda spec: family_available(spec.candidate.family),
     )
+    if chosen == "auto":
+        return AutoRouter(**common, mode="auto", project=project or ".")
+    return LearnedDispatcher(**common, mode=chosen)
 
 
 def ledger(preferences: Any) -> QuotaLedger:

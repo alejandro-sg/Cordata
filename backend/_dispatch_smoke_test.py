@@ -65,7 +65,7 @@ def test_gates() -> None:
     ranked = [c.key for c in learner.rank("execute", "bugfix")]
     check(not [k for k in ranked if k.startswith("claude_code:")], f"a pool past its hard line removes every arm in it, however good ({ranked[:3]})")
     harden = [c.model_family for c in learner.rank("harden", "bugfix", exclude_model_families={"google", "anthropic"})]
-    check(harden and set(harden) <= {"zhipu", "moonshot", "deepseek"}, f"the harden family rule removes the executor families ({set(harden)})")
+    check(harden and set(harden) <= {"zhipu", "moonshot", "deepseek", "mistral", "minimax"}, f"the harden family rule removes the executor families ({set(harden)})")
     check(all(c.key != "ollama:glm-5.3-flash" for c in learner.rank("harden", "bugfix")), "a candidate that does not serve the role is never offered (glm does not harden)")
     learner.available = lambda spec: spec.candidate.family != "antigravity"
     check(all(c.family != "antigravity" for c in learner.rank("execute", "bugfix")), "an unavailable CLI is never offered")
@@ -77,11 +77,11 @@ def test_cold_and_shadow() -> None:
     specs = sim_roster()
     cold = D.LearnedDispatcher(specs=specs, mode="live", explore=0.0, table=table(), log_outcomes=False)
     first = cold.rank("execute", "feature")[0]
-    check(first.key == "antigravity:gemini-3.1-pro-high", f"no evidence: strongest first (cheapest of the strong tier) ({first.key})")
+    check(first.key == "ollama:mistral-large-4", f"no evidence: strongest first (cheapest of the strong tier) ({first.key})")
     learner = trained(specs, "ceiling", 3000, 5)
     learner.mode, learner.log_outcomes = "shadow", True
     shown = learner.rank("execute", "docs")
-    check(shown[0].key == "antigravity:gemini-3.1-pro-high", "shadow returns the default order")
+    check(shown[0].key == D.LearnedDispatcher.role_order(learner.eligible("execute"), "execute")[0].key == "ollama:mistral-large-4", "shadow returns the default order")
     decision = learner.decisions[-1]
     check(decision["arm"] != decision["default"] and decision["acted"] is False and decision["mode"] == "shadow", f"…and records what it would have chosen ({decision['arm']})")
     latest = state_store.recent_events(kind="bandit", limit=1)[0]["payload"]

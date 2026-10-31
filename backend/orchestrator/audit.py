@@ -272,6 +272,20 @@ CONFORMANCE_SCHEMA: dict[str, Any] = {
             },
         },
         "notes": {"type": "string"},
+        # The RLAIF rubric (rlaif.py), piggybacked on this pass so it costs no extra model call. Optional.
+        "step_scores": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["step_id"],
+                "properties": {
+                    "step_id": {"type": "string"},
+                    "cohesion": {"type": "number", "minimum": 0, "maximum": 1},
+                    "minimality": {"type": "number", "minimum": 0, "maximum": 1},
+                    "plan_adherence": {"type": "number", "minimum": 0, "maximum": 1},
+                },
+            },
+        },
     },
 }
 
@@ -297,7 +311,9 @@ def conformance_prompt(plan: Plan, brief: dict[str, Any] | None, report: AuditRe
         + "\n<<<END_UNTRUSTED_DIFF>>>\n\n"
         "Does the change conform to the plan and close what the research brief found, step by step? Answer verdict "
         "'accept' (nothing missing), 'gaps' (list each gap: ref — the step id or finding id it belongs to, missing — "
-        "what is not done, severity — high, medium or low) or 'replan' (the plan itself was wrong; say why in gaps)."
+        "what is not done, severity — high, medium or low) or 'replan' (the plan itself was wrong; say why in gaps). "
+        "Also score each step in step_scores: step_id, and cohesion (its change hangs together), minimality (nothing "
+        "beyond what the step needed) and plan_adherence (it did what the plan said), each from 0 to 1."
     )
 
 

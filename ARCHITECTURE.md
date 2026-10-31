@@ -12,7 +12,7 @@ A map, not a manual: what runs where, how a turn flows, and which document holds
         ▼                                                     ▼                           │
  ┌───────────────────────── orchestrator daemon (backend/daemon, `make daemon`) ─────────┴──────┐
  │  supervisor: one acp_server.py child per session · approvals fanned out to every front door  │
- │  gRPC bridge (tonic client in lab/) · observer (read-only, off by default) · telemetry hub   │
+ │  gRPC bridge (proto/harness.proto) · observer (read-only, off by default) · telemetry hub   │
  └───────────────────────────────┬──────────────────────────────────────────────────────────────┘
                                  ▼
  ┌──────────────────────── acp_server.py (one session's agent process) ─────────────────────────┐
@@ -27,9 +27,9 @@ A map, not a manual: what runs where, how a turn flows, and which document holds
  · OpenAI-compatible · oMLX local (Prism models,   (traces, knowledge graph; Cognee optional) ·
    loaded/unloaded through memory_budget)          ~/.cordata (or ~/.cordata; settings, sessions, checkpoints,
                                                    preferences, learned skills, state.db ledger)
- Native Lab (lab/, Rust GPUI): telemetry, the containment modal, E-Stop, effort dials — over gRPC (proto/harness.proto).
- Menu bar (lab/crates/harness-menubar): status icon + ⌘⇧Space deck; screen context (harness-capture, deny-by-default)
-   → SubmitTurn → os_context.py injector for one turn; a screenshot only to capture.visionModel, then forgotten.
+ Cordata.app (app/, Rust GPUI) and acp-tui: the Lab overlay drives pods over _cordata/lab/* (ACP).
+ Screen context (SubmitTurn over gRPC, deny-by-default; never-read list mirrored in cordata-view/src/redact.rs)
+   → os_context.py injector for one turn; a screenshot only to capture.visionModel, then forgotten.
 ```
 
 ## A turn
@@ -82,10 +82,11 @@ it works from any front door.
 | Tier | What | In default CI |
 | --- | --- | --- |
 | Core | daemon, `acp_server`, the orchestrator and workers, Laya, outcomes/bandit/promote/evals, checkpoints, self-heal, preflight, vault, sandbox, `acp-tui`, the native app (`app/`: `cordata-app`, and `cordata-view` / `cordata-theme`, which the terminal shares) | yes |
-| Frozen | the Next.js web UI (`frontend/`, its own workflow on `frontend/**` changes), the GPUI Lab and menu bar (`lab/`, `make lab-test`), oMLX (`omlx_*`, local Prism models on the mini) | no |
+| Frozen | oMLX (`omlx_*`, local Prism models on the mini); the AG-UI REST surface in `main.py` (its Next.js client was retired) | no |
 
-Frozen means kept working and built, not developed; nothing core depends on a frozen piece. The app lifts what it
-reuses from `lab/` (the secret-masking table, the Liquid Glass call) into its own crates rather than depending on it.
+Frozen means kept working and built, not developed; nothing core depends on a frozen piece. The legacy `lab/` GPUI
+window, the menu bar, `app/spike/` and the Next.js `frontend/` were deleted on 2026-10-30; what the app reused from
+`lab/` (the secret-masking table, the never-read bundle ids, the Liquid Glass call) lives in its own crates.
 
 ## Where the detail is
 
@@ -111,5 +112,5 @@ Every mechanism has a hermetic smoke test in `backend/_*_smoke_test.py` (scripte
 no network). `make test` runs all of them in parallel (`backend/run_tests.py`: each in its own throwaway
 `CORDATA_HOME`, longest first — about 3 minutes against ~21 one by one); CI runs the ones that need no local service
 (`.github/workflows/ci.yml`). Rust: `make tui-test`,
-`make lab-test`. Live checks (`_acp_smoke_test.py`, `_ollama_cloud_live_test.py`, `make lab-live`) need the real
+`make app-test`. Live checks (`_acp_smoke_test.py`, `_ollama_cloud_live_test.py`) need the real
 providers and are run by hand — with `CORDATA_DISCORD=off`, so a test turn does not page the operator.
