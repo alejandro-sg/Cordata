@@ -38,7 +38,7 @@ pub fn status_of(view: &cordata_view::app::App) -> Status {
 /// The permission mode in canonical lowercase form.
 pub fn mode_label(mode: &str) -> &str {
     match mode {
-        "plan" => "plan only",
+        "plan" => "tasks, guardrails & done",
         "build" => "ask first",
         "edit" => "auto-edit",
         "auto" => "auto",
@@ -50,7 +50,7 @@ pub fn mode_label(mode: &str) -> &str {
 /// Human-friendly icon and Title Case label for a permission mode.
 pub fn mode_badge(mode: &str) -> (&'static str, &'static str) {
     match mode {
-        "plan" => ("◎", "Plan only"),
+        "plan" => ("◎", "Contract"),
         "build" | "" => ("◈", "Ask first"),
         "edit" => ("✎", "Auto-edit"),
         "auto" => ("⚡", "Auto"),
@@ -285,7 +285,7 @@ impl Workspace {
         let current = if current.is_empty() { "build".to_owned() } else { current };
         let trusted = self.settings_view.trusted;
         let specs: [(&str, &str, &str, &str); 4] = [
-            ("plan", "◎", "Plan only", "Read, search, and design an implementation plan without changing files."),
+            ("plan", "◎", "Contract (Tasks, Guardrails & Done)", "Describe task(s), guardrails, and what Done looks like before running any changes."),
             ("build", "◈", "Ask first", "Ask for your approval before editing files or running shell commands."),
             ("edit", "✎", "Auto-edit", "Apply file edits automatically; still ask before shell commands."),
             ("auto", "⚡", "Auto", "Run edits and safe commands autonomously in trusted workspaces."),
@@ -463,9 +463,9 @@ impl Workspace {
             }))
             .into_any_element();
 
-        let card_plan = starter_card("starter-plan", "◎", "Plan a feature", "Draft a grounded step-by-step implementation plan".into(), cx)
+        let card_plan = starter_card("starter-plan", "◎", "Define contract", "Describe task(s), guardrails & what Done looks like".into(), cx)
             .on_click(cx.listener(|this, _, window, cx| {
-                this.apply_starter("Design a step-by-step implementation plan for: ", Some("plan"), false, window, cx);
+                this.apply_starter("Let's structure this work:\n1. Describe the task(s)\n2. Describe the Guardrails that surround the task(s)\n3. Describe what Done looks like\n\nTarget: ", Some("plan"), false, window, cx);
             }))
             .into_any_element();
 
@@ -662,16 +662,16 @@ impl Workspace {
         let place = tilde(&self.session.read(cx).cwd);
         let (label, sentence, block, buttons): (&str, String, Option<String>, Vec<AnyElement>) = match info.tool_name.as_str() {
             "present_plan" => (
-                "plan ready",
-                "The implementation plan is ready. Choose how you want Cordata to proceed:".into(),
+                "contract ready",
+                "Execution contract is ready (tasks, guardrails, definition of done). Choose how to proceed:".into(),
                 None,
                 [("approve_build", "Build (ask first)", Kind::Primary), ("approve_edit", "Auto-edit", Kind::AmberOutline), ("approve_auto", "Run autonomously", Kind::Outline)]
                     .into_iter()
                     .filter(|(id, ..)| info.option(id).is_some())
                     .map(|(id, label, kind)| ui::button(SharedString::from(id), label, kind, cx).on_click(answer(ApprovalDecision::Choose(id.into()))).into_any_element())
                     .chain([
-                        ui::button("reply-plan", "Refine plan  W", Kind::Ghost, cx)
-                            .tooltip(ui::tip("Type feedback to revise the plan"))
+                        ui::button("reply-plan", "Refine contract  W", Kind::Ghost, cx)
+                            .tooltip(ui::tip("Type feedback to revise tasks, guardrails, or definition of done"))
                             .on_click(cx.listener(|this, _, window, cx| this.begin_saying(window, cx)))
                             .into_any_element(),
                         div().flex_1().into_any_element(),
@@ -1091,7 +1091,7 @@ impl Workspace {
                         ui::chip("mode-chip", SharedString::from(mode_text), cx)
                             .role(gpui::Role::Button)
                             .aria_label(SharedString::from(format!("Execution mode: {}. Click to choose or press Shift+Tab", mode_label(&mode))))
-                            .tooltip(ui::tip("Choose execution mode (Plan / Ask first / Auto-edit / Auto)  ⇧Tab"))
+                            .tooltip(ui::tip("Choose execution mode (Contract / Ask first / Auto-edit / Auto)  ⇧Tab"))
                             .when(mode == "auto", |chip| chip.bg(amber(cx, t::AMBER_FILL)).border_color(amber(cx, t::AMBER_BORDER)).text_color(c(tk.amber)))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.model_menu = false;
@@ -1185,7 +1185,8 @@ mod tests {
         assert_eq!(always_prefix("shell(git status:*)"), "git status");
         assert_eq!(always_prefix("read"), "read");
         assert_eq!(mode_label("build"), "ask first");
-        assert_eq!(mode_label("plan"), "plan only");
+        assert_eq!(mode_label("plan"), "tasks, guardrails & done");
+        assert_eq!(mode_badge("plan"), ("◎", "Contract"));
         assert_eq!(mode_badge("build"), ("◈", "Ask first"));
         assert_eq!(mode_badge("auto"), ("⚡", "Auto"));
     }

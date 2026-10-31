@@ -26,19 +26,23 @@ Single-thread native plan→execute. You are main Claude. No swarm.
 
 High blast radius (shared module, auth, data, money, public §I)? Run `/review` first. Trivial & reversible? Skip planning ceremony, just do step EXECUTE.
 
-## PLAN
+## PLAN & EXECUTION CONTRACT
 
-Native plan mode — you delegate to it, you do not reinvent task breakdown. For chosen task(s):
+Instead of open-ended planning, structure the proposal strictly across three parts:
 
-1. Cite every §V invariant that applies. Plan must respect all.
-2. Cite every §I interface touched. Plan must preserve shape.
-3. List files to create / edit.
-4. **Verification contract** — name the EXACT test(s) / acceptance criteria that
-   prove each §V touched. Which test, not "add tests". "Do TDD" alone backfires;
-   the spec says *what to check*. Each §V touched → a named test that fails first.
-5. Name verification command (test, build, lint) — this is the external oracle. Green = done; ⊥ "looks done".
+1. **Describe the task(s)**:
+   - Specific tasks broken down in execution order.
+   - Files to create or edit.
+   - Cite every §I interface touched; must preserve interface shape.
+2. **Describe the Guardrails that surround the task(s)**:
+   - Cite every §V invariant that applies; plan must respect all without exception.
+   - Non-goals and blast radius bounds (shared modules, auth, credentials, fail-closed rules).
+   - Invariants that MUST NOT be regressed or modified.
+3. **Describe what Done looks like**:
+   - **Verification contract**: name the EXACT test(s) / acceptance criteria that prove each §V touched.
+   - Name the verification command (test, build, lint) — this is the external oracle. Green = done; ⊥ "looks done".
 
-Show plan. Wait for user OK unless auto mode.
+Present contract via `present_plan`. Wait for user OK unless auto mode.
 
 ## EXECUTE
 

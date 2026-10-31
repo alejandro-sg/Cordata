@@ -234,6 +234,8 @@ pub struct Workspace {
     esc_at: Option<Instant>,
     /// Whether each session was mid-turn when last seen (a finished turn plays the completion sound).
     turn_seen: HashMap<EntityId, bool>,
+    /// Sessions that already notified for their current pending approval (prevents notification flood).
+    pending_seen: HashSet<EntityId>,
     /// Sessions whose settings were loaded once connected.
     loaded: HashSet<EntityId>,
     /// Automatic reconnects tried for the shown session.
@@ -452,6 +454,7 @@ impl Workspace {
             settings_focus: cx.focus_handle(),
             esc_at: None,
             turn_seen: HashMap::new(),
+            pending_seen: HashSet::new(),
             loaded: HashSet::new(),
             reconnects: 0,
             staged: Vec::new(),
@@ -2073,8 +2076,12 @@ impl Workspace {
             self.load_settings_data(cx);
             self.load_plugins(cx);
         }
-        if pending && self.prefs.notify_approval && !window.is_window_active() {
-            crate::platform::notify("Cordata needs you", "A command is waiting for your approval.");
+        if pending {
+            if self.pending_seen.insert(id) && self.prefs.notify_approval && !window.is_window_active() {
+                crate::platform::notify("Cordata needs you", "A command is waiting for your approval.");
+            }
+        } else {
+            self.pending_seen.remove(&id);
         }
     }
 

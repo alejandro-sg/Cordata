@@ -69,14 +69,25 @@ def record(agent: Any, option_id: str | None, note: str = "") -> str | None:
 
 
 @tool(context=True, name=TOOL_NAME)
-def present_plan(plan: str, tool_context: ToolContext) -> str:
-    """Hand the finished plan to the person for approval. Use it in plan mode, once you have read what you need and
-    know what you would change; the person answers with approve (build), approve (auto) or keep planning. Do not
-    describe the plan in chat as well — this is how it is shown. After approval you are no longer in plan mode.
+def present_plan(
+    tasks: str = "",
+    guardrails: str = "",
+    done: str = "",
+    plan: str = "",
+    tool_context: ToolContext = None,
+) -> str:
+    """Hand the execution contract to the person for approval before making any changes.
+    Instead of loose planning, the contract is explicitly structured in three parts:
+      1. Describe the task(s): Specific scope, files to edit/create, and step-by-step implementation.
+      2. Describe the Guardrails that surround the task(s): What invariants, safety limits,
+         security/credential rules, or boundaries MUST NOT be violated (e.g. no secret leaks, preserve API shapes).
+      3. Describe what Done looks like: Exact verification command(s), test criteria, and measurable proof.
 
     Args:
-        plan: The plan in markdown. Start with one line stating the goal, then the steps — each naming the files it
-            touches and what changes — then how each step is verified, and the risks or open questions.
+        tasks: Detailed description of the task(s) and steps.
+        guardrails: Safety guardrails, invariants, and constraints surrounding the task(s).
+        done: Concrete definition of Done (exact test/build commands, expected output, verification criteria).
+        plan: Markdown execution contract (legacy or single-string fallback).
     """
     agent = tool_context.agent
     decision: dict[str, Any] = {}
@@ -95,5 +106,5 @@ def present_plan(plan: str, tool_context: ToolContext) -> str:
             + f" Carry the plan out step by step and check each step as you go.{extra}"
         )
     if note:
-        return f"The plan was not approved. The person wrote: {note}\nRevise the plan for that and call present_plan again."
+        return f"The plan was not approved. The person wrote: {note}\nRevise the tasks, guardrails, and definition of done, then call present_plan again."
     return "The plan was not approved yet. Ask what to change, or revise it from what you know, then call present_plan again."

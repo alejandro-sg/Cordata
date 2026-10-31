@@ -55,9 +55,10 @@ def _project_system_prompt(cwd: str) -> str:
         "(it runs the Claude Code CLI headless in this project and reports back); for multi-step work where a plan, "
         "an independent review and a check against the plan matter, use orchestrate. Judge either's result before "
         "you tell the user it is done. For planning, ask the architect; to condense bulk text, use context_digest. "
-        "In plan mode nothing changes: investigate with the read-only tools, then call present_plan with the plan "
-        "(goal, steps with the files each touches, how each is checked, risks) — the person approves it there and the "
-        "session leaves plan mode; do not just describe the plan in chat. If the person's change of mind comes back "
+        "In plan mode nothing changes: investigate with the read-only tools, then call present_plan specifying: "
+        "(1) Describe the task(s), (2) Describe the Guardrails that surround the task(s), and "
+        "(3) Describe what Done looks like. The person approves this execution contract before changes begin; "
+        "do not just describe the plan in chat. If the person's change of mind comes back "
         "as a revision request, revise and present again. When the work turns on a decision only the person can make, "
         "call ask_user with two to six short options instead of asking in prose; never ask_user for something you can read in the code. "
         + ollama_resource_tool.MEMORY_GUIDANCE

@@ -450,7 +450,8 @@ class _ApprovalHandler(InterventionHandler):
             if tool_name in PLAN_MODE_TOOLS or read_only:
                 return Proceed()
             return Deny(
-                reason=f"Plan mode is active — {tool_name} was not run. Investigate with read-only tools, then call present_plan with the plan; "
+                reason=f"Plan mode is active — {tool_name} was not run. Investigate with read-only tools, then call present_plan specifying: "
+                "1. Describe the task(s), 2. Describe the Guardrails that surround the task(s), and 3. Describe what Done looks like; "
                 "the person approves it there and the session leaves plan mode."
             )
         forced = _forced_ask(tool_name, tool_input)
