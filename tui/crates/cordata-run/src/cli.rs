@@ -13,6 +13,7 @@ use cordata_orchestrator::checkpoints::GitCheckpoints;
 use cordata_orchestrator::dispatch::Mode;
 use cordata_orchestrator::machine::{self, Machine, RunConfig, RunRecord, World};
 use cordata_orchestrator::plan::Plan;
+use cordata_orchestrator::research::FileResearch;
 use serde_json::Value;
 
 use crate::config;
@@ -33,6 +34,8 @@ pub struct RunArgs {
     pub max_rounds: Option<i64>,
     pub max_parallel: Option<usize>,
     pub no_harden: bool,
+    pub no_research: bool,
+    pub research: bool,
     pub no_conformance: bool,
     pub no_tier2: bool,
     pub json: bool,
@@ -143,6 +146,12 @@ pub fn run_args_to_config(args: &RunArgs, base: RunConfig) -> RunConfig {
         c.max_parallel = v.max(1);
     }
     c.conformance &= !args.no_conformance;
+    if args.no_research {
+        c.research = false;
+    }
+    if args.research {
+        c.research = true;
+    }
     c
 }
 
@@ -221,7 +230,7 @@ pub async fn run(args: RunArgs) -> i32 {
         ledger: &ledger,
         checkpoints: &checkpoints,
         audit_env: AuditEnv { checkpoints: &checkpoints, guard: &PatternGuard, environ: environ.clone() },
-        research: None,
+        research: Some(&FileResearch),
         synthesis: None,
         on_event: Some(printer(args.json)),
         controls,
@@ -284,7 +293,7 @@ pub async fn resume(run_id: &str, allow_direct: bool, max_usd: Option<f64>, as_j
         ledger: &ledger,
         checkpoints: &checkpoints,
         audit_env: AuditEnv { checkpoints: &checkpoints, guard: &PatternGuard, environ },
-        research: None,
+        research: Some(&FileResearch),
         synthesis: None,
         on_event: Some(printer(as_json)),
         controls: Some(controls),

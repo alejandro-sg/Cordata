@@ -51,9 +51,28 @@ pub fn valid(entry: &str) -> Option<String> {
     None
 }
 
-/// Python's `repr` for the strings that appear in messages (quotes only; enough for paths).
+/// Python's `repr` for a `str`: single quotes unless the text has a `'` and no `"`; backslash and control characters
+/// escaped; other printable characters (including non-ASCII) kept.
 pub(crate) fn py_repr(text: &str) -> String {
-    if text.contains('\'') && !text.contains('"') { format!("\"{text}\"") } else { format!("'{}'", text.replace('\'', "\\'")) }
+    let quote = if text.contains('\'') && !text.contains('"') { '"' } else { '\'' };
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push(quote);
+    for ch in text.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c == quote => {
+                out.push('\\');
+                out.push(c);
+            }
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => out.push_str(&format!("\\x{:02x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push(quote);
+    out
 }
 
 fn is_dir_entry(entry: &str, root: &str) -> bool {

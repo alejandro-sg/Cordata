@@ -76,8 +76,7 @@ pub fn run_config(settings: &Settings) -> RunConfig {
         max_tokens: (max_tokens > 0.0).then_some(max_tokens as i64),
         harden: setting_bool(settings, "orchestrator.harden", true),
         tier2: setting_bool(settings, "orchestrator.tier2", true),
-        // The research phase needs the evidence check, which is still Python's; `--research` asks for it explicitly.
-        research: false,
+        research: true, // a code default, not a setting: `run --no-research` turns it off for one run
         ..RunConfig::default()
     }
 }

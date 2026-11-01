@@ -34,6 +34,12 @@ enum Command {
         max_parallel: Option<usize>,
         #[arg(long)]
         no_harden: bool,
+        /// skip the research brief before planning
+        #[arg(long)]
+        no_research: bool,
+        /// write a research brief before planning (the default)
+        #[arg(long)]
+        research: bool,
         #[arg(long)]
         no_conformance: bool,
         #[arg(long)]
@@ -72,9 +78,9 @@ enum Command {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     let code = match Cli::parse().command {
-        Command::Run { goal, cwd, workers, dispatch, allow_direct, max_usd, max_rounds, max_parallel, no_harden, no_conformance, no_tier2, json, run_id, session_id } => {
+        Command::Run { goal, cwd, workers, dispatch, allow_direct, max_usd, max_rounds, max_parallel, no_harden, no_research, research, no_conformance, no_tier2, json, run_id, session_id } => {
             let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-            cli::run(RunArgs { goal, cwd, workers, dispatch, allow_direct, max_usd, max_rounds, max_parallel, no_harden, no_conformance, no_tier2, json, run_id, session_id }).await
+            cli::run(RunArgs { goal, cwd, workers, dispatch, allow_direct, max_usd, max_rounds, max_parallel, no_harden, no_research, research, no_conformance, no_tier2, json, run_id, session_id }).await
         }
         Command::Status { json } => cli::status_cmd(json),
         Command::Show { run_id, json } => cli::show_cmd(&run_id, json),

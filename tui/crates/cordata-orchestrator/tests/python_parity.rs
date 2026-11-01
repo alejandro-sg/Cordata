@@ -558,3 +558,64 @@ async fn tier1_and_the_review_prompts_agree() {
     assert_eq!(with.replace("The verified research brief the plan was grounded in:\nBRIEF-TEXT\n", ""), want["conf_nobrief"].as_str().unwrap());
     assert!(want["conf"].as_str().unwrap().contains("The verified research brief the plan was grounded in:"));
 }
+
+// ---------------------------------------------------------------------------------------------- research
+
+#[test]
+fn research_verification_rendering_and_prompts_agree() {
+    use cordata_orchestrator::research;
+    if backend().is_none() {
+        return eprintln!("skipped: backend/.venv not found");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    std::fs::create_dir_all(root.join("src/deep")).unwrap();
+    std::fs::write(root.join("src/lib.rs"), "line one\nfn   main() {\n    run();\n}\nlast é line\r\nwindows end\n").unwrap();
+    std::fs::write(root.join("src/deep/mod.rs"), "").unwrap();
+    std::fs::write(root.join("README.md"), "# readme\n").unwrap();
+    std::fs::write(root.join(".env"), "SECRET=1\n").unwrap();
+    std::fs::write(root.join(".env.example"), "KEY=\n").unwrap();
+    std::os::unix::fs::symlink("/etc/hosts", root.join("escape")).unwrap();
+    let root_s = root.to_string_lossy().into_owned();
+
+    let file = |r: &str, q: &str| json!({"kind": "file", "ref": r, "quote": q});
+    let f = |id: Value, ev: Value| json!({"id": id, "claim": "c", "evidence": ev});
+    let briefs: Vec<Value> = vec![
+        json!({"findings": [f(json!("f1"), json!([file("src/lib.rs:3", "run();")])), f(json!("f2"), json!([file("src/lib.rs:2", "fn main() {")])), f(json!("f3"), json!([file("src/lib.rs:5", "é line")]))], "approach": "a", "constraints": ["c"], "risks": "r", "open_questions": ["q1", 2]}),
+        json!({"findings": [f(json!("a"), json!([file("src/lib.rs:2", "nowhere")])), f(json!("b"), json!([file("src/lib.rs:0", "x")])), f(json!("c"), json!([file("src/lib.rs:+3", "run();")]))]}),
+        json!({"findings": [f(json!(1), json!([file("src/lib.rs:1_0", "x")])), f(json!("d"), json!([file("src/lib.rs: 3 ", "run();")])), f(json!("e"), json!([file("../../etc/hosts:1", "x")]))]}),
+        json!({"findings": [f(json!("g"), json!([file(".env:1", "SECRET")])), f(json!("h"), json!([file("escape:1", "x")])), f(json!("i"), json!([file("src:1", "x")])), f(json!("j"), json!([file("nope.rs:1", "x")]))]}),
+        json!({"findings": [f(json!("k"), json!([file("src/deep/mod.rs:1", "x")])), f(json!("l"), json!([file("src/lib.rs:1", "")])), f(json!("m"), json!([{"kind": "file", "ref": "src/lib.rs:1"}])), f(json!("n"), json!([{"kind": "file", "ref": 5}]))]}),
+        json!({"findings": [f(json!("p"), json!([{"kind": "doc", "ref": "README.md"}])), f(json!("q"), json!([{"kind": "doc", "ref": "README.md:12"}])), f(json!("r"), json!([{"kind": "doc", "ref": ""}])), f(json!("s"), json!([{"kind": "doc", "ref": ".env.example"}])), f(json!("t"), json!([{"kind": "doc", "ref": "."}]))]}),
+        json!({"findings": [f(json!("u"), json!([{"kind": "command", "ref": "make test"}])), f(json!("v"), json!([{"kind": "command", "ref": "make test"}, {"kind": "doc", "ref": "README.md"}])), f(json!("w"), json!([{"kind": "command", "ref": "README.md"}])), f(json!("x"), json!([{"kind": "web", "ref": "http://x"}, "junk", {"kind": null, "ref": "y"}])), f(json!(null), json!(null)), "bare"]}),
+        json!({"findings": []}),
+        json!({"findings": "nope", "x": 1}),
+        json!({"findings": [f(json!("only"), json!([]))]}),
+        json!([1, 2]),
+        json!("text"),
+        Value::Null,
+    ];
+    let want = python(
+        &json!({"briefs": briefs, "root": root_s}),
+        "import json,sys\nfrom orchestrator import research as r\nd=json.load(sys.stdin)\nout=[]\nfor b in d['briefs']:\n\tv=r.verify(b,d['root'])\n\tout.append({'brief':v.brief,'dropped':v.dropped,'refused':v.refused,'reasons':v.reasons,'render':r.render(v.brief) if isinstance(v.brief,dict) else None})\n\
+         print(json.dumps({'results':out,'prompts':[r.prompt('fix \"it\"'),r.prompt('g',['a','b']),r.prompt('g',[])],'schema':r.RESEARCH_SCHEMA}))",
+    );
+    for (i, b) in briefs.iter().enumerate() {
+        let v = research::verify_brief(Some(b).filter(|b| !b.is_null()), &root_s);
+        let got = json!({"brief": v.brief, "dropped": v.dropped, "refused": v.refused, "reasons": v.reasons});
+        for k in ["brief", "dropped", "refused", "reasons"] {
+            assert_eq!(got[k], want["results"][i][k], "brief {i}: {k}");
+        }
+        if v.brief.is_object() {
+            assert_eq!(Value::from(research::render_brief(&v.brief)), want["results"][i]["render"], "brief {i}: render");
+        }
+    }
+    // Rendering also agrees on briefs that were never verified (odd shapes straight in).
+    let odd = json!({"findings": [{"id": "", "claim": "no id", "evidence": [{"kind": "doc", "ref": "x", "quote": "it's \"q\"\n"}, 3]}, 5], "constraints": "one line", "risks": [], "approach": {"a": 1}, "open_questions": "q?"});
+    let py_render = python(&json!({"b": odd}), "import json,sys\nfrom orchestrator import research as r\nprint(json.dumps(r.render(json.load(sys.stdin)['b'])))");
+    assert_eq!(Value::from(research::render_brief(&odd)), py_render);
+    assert_eq!(Value::from(research::research_prompt("fix \"it\"", &[])), want["prompts"][0]);
+    assert_eq!(Value::from(research::research_prompt("g", &["a".to_owned(), "b".to_owned()])), want["prompts"][1]);
+    assert_eq!(Value::from(research::research_prompt("g", &[])), want["prompts"][2]);
+    assert_eq!(research::research_schema(), want["schema"]);
+}

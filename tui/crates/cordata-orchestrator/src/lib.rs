@@ -5,6 +5,7 @@
 //! * [`scope`]: which paths a step may change (`workers/scope.py`)
 //! * [`plan`]: the plan artifact, its validation and rendering (`plan_artifact.py`)
 //! * [`bandit`] + [`dispatch`]: the learned dispatch policy (`bandit.py` table, `dispatch.py`)
+//! * [`research`]: the evidence-checked research brief (`research.py`)
 //! * [`secrets`] + [`handoff`]: secret masking and the handoff packet (`secret_patterns.py`, `handoff.py`)
 //! * [`worker`] + [`checkpoints`]: the contracts the executor drives (`workers/base.py`, `checkpoints.py`)
 //! * [`workers`]: the Claude Code and `agy` subprocess workers (`workers/*.py`)
@@ -23,6 +24,7 @@ pub mod executor;
 pub mod handoff;
 pub mod machine;
 pub mod plan;
+pub mod research;
 pub mod scope;
 pub mod secrets;
 pub mod testkit;

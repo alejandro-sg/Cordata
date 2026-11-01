@@ -12,7 +12,17 @@ use serde_json::{Value, json};
 const FAKE_CLAUDE: &str = r##"#!/bin/bash
 PROMPT="$(cat)"
 echo "$@" >> "@DIR@/fake.log"
-if [[ "$PROMPT" == *"You are the PLANNER"* ]]; then
+if [[ "$PROMPT" == *"conform to the plan"* ]]; then
+  echo '{"type":"result","subtype":"success","total_cost_usd":0.01,"structured_output":{"verdict":"accept","gaps":[]}}'
+elif [[ "$PROMPT" == *"You are a research worker exploring the repository"* ]]; then
+  cat <<'STREAM'
+{"type":"result","subtype":"success","total_cost_usd":0.01,"structured_output":{"findings":[{"id":"f1","claim":"calc/base.txt holds the base","evidence":[{"kind":"file","ref":"calc/base.txt:1","quote":"base"}]},{"id":"f2","claim":"invented","evidence":[{"kind":"file","ref":"calc/base.txt:1","quote":"not there"}]},{"id":"f3","claim":"the readme","evidence":[{"kind":"doc","ref":"calc/base.txt"}]}],"approach":"write the files"}}
+STREAM
+elif [[ "$PROMPT" == *"You are the PLANNER"* && "$PROMPT" == *"verified research brief"* ]]; then
+  cat <<'STREAM'
+{"type":"result","subtype":"success","total_cost_usd":0.01,"structured_output":{"goal":"write the files","acceptance_criteria":[{"id":"c1","type":"regex_match","description":"a has its content","target":"calc/a.txt::ok a"}],"steps":[{"step_id":"s1","name":"write a","description":"write a","file_scope":["calc/a.txt"],"grounded_in":["f1"]}],"assumptions":["none"]}}
+STREAM
+elif [[ "$PROMPT" == *"You are the PLANNER"* ]]; then
   [[ -e "@DIR@/slow" ]] && sleep 30
   cat <<'STREAM'
 {"type":"result","subtype":"success","total_cost_usd":0.01,"structured_output":{"goal":"write the files","acceptance_criteria":[{"id":"c1","type":"regex_match","description":"a has its content","target":"calc/a.txt::ok a"},{"id":"c2","type":"file_exists","description":"b exists","target":"calc/b.txt"}],"steps":[{"step_id":"s1","name":"write a","description":"write a","file_scope":["calc/a.txt"]},{"step_id":"s2","name":"write b","description":"write b","file_scope":["calc/b.txt"]}],"assumptions":["none"]}}
@@ -65,7 +75,7 @@ impl Env {
     }
 
     fn run_ok(&self, extra: &[&str]) -> (Output, Vec<Value>) {
-        let mut args = vec!["run", "write the files", "--cwd", self.project.to_str().unwrap(), "--allow-direct", "--workers", "claude_code", "--json"];
+        let mut args = vec!["run", "write the files", "--cwd", self.project.to_str().unwrap(), "--allow-direct", "--workers", "claude_code", "--no-research", "--json"];
         args.extend(extra);
         let out = self.run(&args);
         let events = String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).collect();
@@ -242,4 +252,26 @@ fn an_empty_ledger_reports_zero_not_negative_zero() {
     if let Some(py) = python(&e) {
         assert_eq!(rendered.trim_end(), py_run(&py, &e, "from orchestrator.status import render\nimport json,sys\nprint(render(json.load(sys.stdin), marks=True))", Some(&data)).trim_end());
     }
+}
+
+#[test]
+fn the_research_loop_runs_natively_verifies_the_brief_and_grounds_the_plan() {
+    if !seatbelt_works() {
+        return eprintln!("skipped: sandbox-exec cannot be applied here");
+    }
+    let e = env();
+    let out = e.run(&["run", "write the files", "--cwd", e.project.to_str().unwrap(), "--allow-direct", "--workers", "claude_code", "--run-id", "run-research", "--json"]);
+    let events: Vec<Value> = String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+    assert_eq!(out.status.code(), Some(0), "stdout: {}\nstderr: {}", text(&out), String::from_utf8_lossy(&out.stderr));
+    assert_eq!(states(&events), ["research", "plan", "execute", "harden", "audit", "conformance", "done"]);
+    let record: Value = serde_json::from_slice(&e.run(&["show", "run-research", "--json"]).stdout).unwrap();
+    let ids: Vec<&str> = record["research"]["findings"].as_array().unwrap().iter().map(|f| f["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["f1", "f3"], "the finding whose quote is not in the file was dropped");
+    assert!(record["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().starts_with("research: 1 finding(s) without verifiable evidence dropped (f2)")), "{}", record["warnings"]);
+    assert_eq!(record["plan"]["steps"][0]["grounded_in"][0], "f1");
+    assert_eq!(record["audit"]["conformance"], "accept");
+    let research_md = std::fs::read_to_string(e.home.join("orchestrator/run-research/research.md")).unwrap();
+    assert!(research_md.starts_with("# Research Brief\n\n## Findings\n- **[f1]** calc/base.txt holds the base\n  - [file] `calc/base.txt:1`: 'base'"), "{research_md}");
+    let shown = text(&e.run(&["show", "run-research"]));
+    assert!(shown.contains("Research: 2 verified finding(s)"), "{shown}");
 }

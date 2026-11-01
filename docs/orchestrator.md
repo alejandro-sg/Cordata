@@ -50,8 +50,8 @@ CORDATA_RUN_NATIVE=1 cordata run "Add retries to the HTTP client" --allow-direct
 ```
 
 A native run uses the same ledger, checkpoints, run records and artifacts, so a run started by one can be shown, resumed
-or paused (`control.ndjson`) by the other. It does **not** have yet: the research phase (`--research` is ignored), the
-synthesis check after parallel steps, per-step reward attribution, the Auto Mode router (`auto` falls back to `shadow`),
+or paused (`control.ndjson`) by the other. The research phase and its evidence check are native (`--no-research` skips
+it, as in Python). It does **not** have yet: the synthesis check after parallel steps, per-step reward attribution, the Auto Mode router (`auto` falls back to `shadow`),
 Laya Guard (a conservative pattern guard scores the audit's commands instead) and the Ollama workers (a family that has
 no native worker is left out of the run, with a warning). Waves share the working tree. Ctrl+C stops the run where it is
 and records it `cancelled`.
