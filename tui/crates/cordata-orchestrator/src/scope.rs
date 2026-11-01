@@ -197,6 +197,29 @@ pub fn seatbelt_rules<S: AsRef<str>>(root: &str, scope: &[S]) -> Vec<String> {
     lines
 }
 
+const DENY_HOME: [&str; 6] = [".cordata/daemon.json", ".aws", ".netrc", ".config/gh", ".docker/config.json", ".kube/config"];
+
+/// `scrubbed_sandbox.seatbelt_profile`: `(allow default)` and then deny — the denials are the secrets.
+pub fn base_profile(home: &str) -> Vec<String> {
+    let mut lines = vec![
+        "(version 1)".to_owned(),
+        "(allow default)".to_owned(),
+        r#"(deny file-read* file-write* (regex #"(^|/)\.env($|\.[^/]*$)"))"#.to_owned(),
+        r#"(allow file-read* (regex #"(^|/)\.env\.(example|sample|template|dist)$"))"#.to_owned(),
+    ];
+    lines.extend(DENY_HOME.iter().map(|rel| format!("(deny file-read* file-write* (subpath {}))", sb_string(&format!("{home}/{rel}")))));
+    lines
+}
+
+/// The base profile with the scope rules spliced in after `(allow default)` and before the secret denials, so the
+/// denials still win (Seatbelt takes the last matching rule).
+pub fn scoped_profile<S: AsRef<str>>(root: &str, scope: &[S], home: &str) -> String {
+    let base = base_profile(home);
+    let (head, tail) = base.split_at(2);
+    let rules = seatbelt_rules(root, scope);
+    head.iter().chain(rules.iter()).chain(tail.iter()).cloned().collect::<Vec<_>>().join("\n") + "\n"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

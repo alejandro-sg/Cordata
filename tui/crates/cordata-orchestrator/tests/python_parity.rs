@@ -227,3 +227,187 @@ fn secret_scrubbing_agrees() {
         assert_eq!(json!([out, n]), want[i], "case {i}: {case:?}");
     }
 }
+
+// ---------------------------------------------------------------------------------------------- workers
+
+use cordata_orchestrator::worker::TaskPacket;
+use cordata_orchestrator::workers::cli::{Dialect, LineParser};
+use cordata_orchestrator::workers::{agy, claude, prompting};
+
+fn task_json(t: &TaskPacket) -> Value {
+    json!({"task_id": t.task_id, "role": t.role, "prompt": t.prompt, "cwd": t.cwd, "file_scope": t.file_scope, "budget_usd": t.budget_usd,
+           "budget_tokens": t.budget_tokens, "timeout_s": t.timeout_s, "model": t.model, "effort": t.effort, "handoff_context": t.handoff_context,
+           "json_schema": t.json_schema})
+}
+
+fn tasks() -> Vec<TaskPacket> {
+    let mk = |role: &str, scope: &[&str], f: &dyn Fn(&mut TaskPacket)| {
+        let mut t = TaskPacket::new("run:s1:1", role, "  Fix the thing é  ", "/tmp/p");
+        t.file_scope = scope.iter().map(|s| (*s).to_owned()).collect();
+        f(&mut t);
+        t
+    };
+    vec![
+        mk("execute", &["calc/a.py", "docs/"], &|_| {}),
+        mk("execute", &["calc/a.py"], &|t| {
+            t.budget_usd = Some(1.5);
+            t.model = Some("sonnet".into());
+            t.effort = Some("high".into());
+            t.timeout_s = 90.9;
+        }),
+        mk("audit", &["calc/a.py"], &|t| t.json_schema = Some(json!({"type": "object", "description": "résumé 😀", "properties": {"b": {"type": "string"}, "a": {}}}))),
+        mk("plan", &[], &|t| t.budget_usd = Some(0.0000001)),
+        mk("harden", &["x.rs"], &|t| {
+            t.budget_usd = Some(123456789.0);
+            t.model = Some("claude-sonnet-5-5-high".into());
+            t.effort = Some("max".into());
+        }),
+        mk("execute", &["a"], &|t| t.budget_usd = Some(1.23456789)),
+        mk("execute", &["a"], &|t| t.budget_usd = Some(0.5)),
+        mk("execute", &["a"], &|t| {
+            let secret = format!("sk-ant-api03-{}", "Q".repeat(40));
+            t.handoff_context = Some(json!({"reason": "worker_failed", "note": format!("é😀 {secret} {} end", prompting::FENCE_CLOSE), "list": [3, 1, {"z": 1, "a": [true, null]}], "failed_attempts": ["a", "b"]}));
+        }),
+    ]
+}
+
+#[test]
+fn argv_prompts_and_stdin_agree() {
+    if backend().is_none() {
+        return eprintln!("skipped: backend/.venv not found");
+    }
+    let ts = tasks();
+    let input = json!({"tasks": ts.iter().map(task_json).collect::<Vec<_>>()});
+    let want = python(
+        &input,
+        "import json,sys\nfrom workers.base import TaskPacket\nfrom workers.claude_worker import ClaudeCodeWorker\nfrom workers.agy_worker import AgyWorker\nfrom workers import prompting\n\
+         d=json.load(sys.stdin)\ncw,aw=ClaudeCodeWorker(),AgyWorker()\nout=[]\nfor raw in d['tasks']:\n\
+         \tt=TaskPacket(**raw)\n\
+         \trow={'claude':[cw.build_argv('claude',t,None),cw.build_argv('claude',t,'sess-9')],'agy':[aw.build_argv('agy',t,None),aw.build_argv('agy',t,'conv-9')],\n\
+         \t 'agy_stdin':aw.build_stdin(t,'P'),'prompt_native':prompting.compose(t,native_schema=True),'prompt_text':prompting.compose(t,native_schema=False,can_run_commands=False)}\n\
+         \tout.append(row)\nprint(json.dumps(out))",
+    );
+    let (cd, ad) = (claude::ClaudeDialect, agy::AgyDialect);
+    for (i, t) in ts.iter().enumerate() {
+        let model = t.model.as_deref();
+        let got = json!({
+            "claude": [cd.build_argv("claude", t, None, model), cd.build_argv("claude", t, Some("sess-9"), model)],
+            "agy": [ad.build_argv("agy", t, None, model), ad.build_argv("agy", t, Some("conv-9"), model)],
+            "agy_stdin": ad.build_stdin(t, "P"),
+            "prompt_native": prompting::compose(t, true, true),
+            "prompt_text": prompting::compose(t, false, false),
+        });
+        for key in ["claude", "agy", "agy_stdin", "prompt_native", "prompt_text"] {
+            assert_eq!(got[key], want[i][key], "task {i}: {key}");
+        }
+    }
+}
+
+fn state_json(p: &mut dyn LineParser) -> Value {
+    let s = p.st();
+    json!({"session_handle": s.session_handle, "model": s.model, "text": s.text, "structured": s.structured, "cost_usd": s.cost_usd, "tokens_in": s.tokens_in,
+           "tokens_out": s.tokens_out, "requests": s.requests, "rate_limited": s.rate_limited, "budget_exhausted": s.budget_exhausted, "error": s.error,
+           "ok": s.ok, "denied": s.denied, "quota_info": if s.quota_info.is_null() { json!({}) } else { s.quota_info.clone() }})
+}
+
+fn transcripts() -> (Vec<Vec<Value>>, Vec<Vec<Value>>) {
+    let claude = vec![
+        vec![
+            json!({"type": "system", "subtype": "init", "session_id": "s1", "model": "claude-sonnet-5-5"}),
+            json!({"type": "assistant", "message": {"id": "m1", "usage": {"input_tokens": 10, "cache_creation_input_tokens": 5, "cache_read_input_tokens": 85, "output_tokens": 3}, "content": [
+                {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "  pytest   -q  tests/  --maxfail=1 --tb=short -x -v -k 'a or b or c' --durations=10 --color=no end"}},
+                {"type": "tool_use", "id": "t2", "name": "StructuredOutput", "input": {"verdict": "pass"}},
+                {"type": "tool_use", "id": "t3", "name": "Grep", "input": {"pattern": "needle"}},
+                {"type": "text", "text": "first"}, {"type": "text", "text": ""}, "junk"]}}),
+            json!({"type": "assistant", "message": {"id": "m2", "usage": {"input_tokens": 1, "output_tokens": 9}, "content": [{"type": "text", "text": "second"}]}}),
+            json!({"type": "assistant", "message": {"id": "m1", "usage": {"input_tokens": 5, "output_tokens": 30}, "content": []}}),
+            json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "is_error": true}, {"type": "tool_result", "tool_use_id": "zz"}]}}),
+            json!({"type": "rate_limit_event", "rate_limit_info": {"status": "allowed", "rateLimitType": "five_hour", "unifiedWindows": {"five_hour": {"utilization": 0.5, "resetsAt": 1900000000}, "bad": {"utilization": "x"}}}}),
+            json!({"type": "result", "subtype": "success", "is_error": false, "result": "Final text é", "total_cost_usd": 0.4321, "session_id": "s1b", "num_turns": 3,
+                   "modelUsage": {"claude-sonnet-5-5": {"inputTokens": 200, "cacheReadInputTokens": 50, "cacheCreationInputTokens": 1, "outputTokens": 60}},
+                   "structured_output": {"verdict": "fail"}, "permission_denials": [{"tool_name": "Bash"}, "Write"]}),
+        ],
+        vec![
+            json!({"type": "rate_limit_event", "rate_limit_info": {"status": "REJECTED", "rateLimitType": "seven_day", "utilization": 0.99, "resetsAt": 1900000500}}),
+            json!({"type": "result", "subtype": "error_max_budget_usd", "is_error": true, "errors": ["over budget", "stop"]}),
+        ],
+        vec![json!({"type": "result", "subtype": "error_during_execution", "is_error": false, "result": "usage limit reached for today", "terminal_reason": "budget_exhausted"})],
+        vec![json!({"type": "result", "subtype": "success", "is_error": true})],
+        vec![json!({"type": "mystery"}), json!({"type": "system", "subtype": "other"})],
+    ];
+    let agy = vec![
+        vec![
+            json!({"event": "init", "conversation_id": "c1", "init": {"model": "gemini-3.8-flash-high"}}),
+            json!({"event": "step_update", "step_update": {"step_type": "tool", "state": "ACTIVE", "tool_name": "run_command", "tool_info": {"parameters": {"CommandLine": "  ls    -la   /tmp "}}}}),
+            json!({"event": "step_update", "step_update": {"step_type": "tool", "state": "DONE", "tool_name": "run_command"}}),
+            json!({"event": "step_update", "step_update": {"step_type": "tool", "state": "ACTIVE"}}),
+            json!({"event": "step_update", "step_update": {"step_type": "agent_response", "state": "ACTIVE", "text_delta": "he"}}),
+            json!({"event": "step_update", "step_update": {"step_type": "agent_response", "state": "DONE", "text_delta": "llo", "step_index": 2, "usage": {"input_tokens": 5, "cache_read_tokens": 7, "output_tokens": 2, "thinking_tokens": 1}}}),
+            json!({"event": "step_update", "step_update": {"step_type": "agent_response", "state": "DONE", "step_index": 2, "usage": {"input_tokens": 9, "output_tokens": 4}}}),
+            json!({"event": "step_update", "step_update": {"step_type": "system_message", "state": "DONE", "usage": {"input_tokens": 1, "output_tokens": 1}}}),
+            json!({"event": "result", "result": {"status": "SUCCESS", "response": "Done!", "conversation_id": "c1b", "usage": {"input_tokens": 100, "output_tokens": 1},
+                    "structured_output": {"a": 1, "toolAction": "x", "toolSummary": "y"}, "denied_actions": [{"action": "RUN", "display_name": "make"}, "raw", {"action": "EDIT"}], "num_turns": 4}}),
+        ],
+        vec![json!({"event": "result", "result": {"status": "error", "error": "429 Resource exhausted"}})],
+        vec![json!({"event": "result", "result": {"status": "ERROR"}})],
+    ];
+    (claude, agy)
+}
+
+#[test]
+fn stream_parsers_agree() {
+    if backend().is_none() {
+        return eprintln!("skipped: backend/.venv not found");
+    }
+    let (claude_t, agy_t) = transcripts();
+    let want = python(
+        &json!({"claude": claude_t, "agy": agy_t}),
+        "import json,sys\nfrom workers.base import TaskPacket\nfrom workers.claude_worker import ClaudeStream\nfrom workers.agy_worker import AgyStream\n\
+         d=json.load(sys.stdin)\nt=TaskPacket('t','execute','p','/tmp')\n\
+         def drive(cls,runs):\n\tout=[]\n\tfor events in runs:\n\t\tp=cls(t)\n\t\tevs=[[w.event_type,w.payload] for e in events for w in p.apply(e)]\n\
+         \t\tout.append({'events':evs,'state':{k:getattr(p,k) for k in ['session_handle','model','text','structured','cost_usd','tokens_in','tokens_out','requests','rate_limited','budget_exhausted','error','ok','denied','quota_info']}})\n\treturn out\n\
+         print(json.dumps({'claude':drive(ClaudeStream,d['claude']),'agy':drive(AgyStream,d['agy'])}))",
+    );
+    let drive = |mk: &dyn Fn() -> Box<dyn LineParser>, runs: &[Vec<Value>]| -> Vec<Value> {
+        runs.iter()
+            .map(|events| {
+                let mut p = mk();
+                let evs: Vec<Value> = events.iter().flat_map(|e| p.apply(e)).map(|w| json!([w.event_type, w.payload])).collect();
+                json!({"events": evs, "state": state_json(&mut *p)})
+            })
+            .collect()
+    };
+    let got_claude = drive(&|| claude::ClaudeDialect.new_parser(), &claude_t);
+    let got_agy = drive(&|| agy::AgyDialect.new_parser(), &agy_t);
+    for (i, g) in got_claude.iter().enumerate() {
+        assert_eq!(g["events"], want["claude"][i]["events"], "claude run {i}: events");
+        assert_eq!(g["state"], want["claude"][i]["state"], "claude run {i}: state");
+    }
+    for (i, g) in got_agy.iter().enumerate() {
+        assert_eq!(g["events"], want["agy"][i]["events"], "agy run {i}: events");
+        assert_eq!(g["state"], want["agy"][i]["state"], "agy run {i}: state");
+    }
+}
+
+#[test]
+fn scoped_profiles_answers_and_wire_helpers_agree() {
+    if backend().is_none() {
+        return eprintln!("skipped: backend/.venv not found");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("docs")).unwrap();
+    let root = dir.path().to_string_lossy().into_owned();
+    let scopes: Vec<Vec<&str>> = vec![vec![], vec!["calc/add.py", "docs/", "*.md"], vec!["src/**", "lib/*.py", "a/b/c.txt", "/abs", ".env", "docs"], vec!["x/[ab]/y.py", "./z//w.rs"]];
+    let answers = ["{\"a\":1}", "Here:\n```json\n{\"a\":2}\n```\nbye", "so {\"a\":3} it is", "[1,2]", "", "```\n{\"a\":4}\n```", "{broken} {\"a\":5}"];
+    let want = python(
+        &json!({"root": root, "scopes": scopes, "answers": answers}),
+        "import json,sys\nfrom workers import scope, prompting\nd=json.load(sys.stdin)\n\
+         print(json.dumps({'profiles':[scope.scoped_profile(d['root'],s,'/Users/x') for s in d['scopes']],'answers':[prompting.parse_json_answer(a) for a in d['answers']]}))",
+    );
+    for (i, s) in scopes.iter().enumerate() {
+        assert_eq!(Value::from(scope::scoped_profile(&root, s, "/Users/x")), want["profiles"][i], "profile {i}");
+    }
+    for (i, a) in answers.iter().enumerate() {
+        assert_eq!(prompting::parse_json_answer(a).unwrap_or(Value::Null), want["answers"][i], "answer {i}: {a:?}");
+    }
+}

@@ -29,6 +29,10 @@ tokio-tungstenite = "0.28"
 # SQLite for the quota ledger (~/.cordata/state.db). Bundled: the file is shared with the Python backend, and a
 # system libsqlite of unknown version must not decide whether WAL and the schema behave the same on both sides.
 rusqlite = { version = "0.37", features = ["bundled"] }
+# Process-group kill for the subprocess workers.
+libc = "0.2"
+# JSON Schema validation of a worker's structured answer (plan / audit roles).
+jsonschema = { version = "0.30", default-features = false }
 genai = "0.7"
 # Gitignore-aware directory walk for the native `code_search` tool.
 ignore = "0.4"
