@@ -66,6 +66,7 @@ impl Env {
             .env("HOME", self.dir.path())
             .env("CORDATA_HOME", &self.home)
             .env("CORDATA_CLAUDE_BIN", &self.claude)
+            .env("CORDATA_AGY_BIN", &self.claude)
             .env("TMPDIR", std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".into()));
         cmd
     }
@@ -154,7 +155,7 @@ fn a_pause_request_stops_the_run_and_resume_finishes_it() {
 
     // The request is answered; clear the file, then resume.
     std::fs::write(control_dir.join("control.ndjson"), "").unwrap();
-    let resumed = e.run(&["resume", "run-pause", "--allow-direct"]);
+    let resumed = e.run(&["resume", "run-pause", "--allow-direct", "--workers", "claude_code"]);
     assert_eq!(resumed.status.code(), Some(0), "{} {}", text(&resumed), String::from_utf8_lossy(&resumed.stderr));
     assert!(text(&resumed).contains("run-pause: done"));
     assert_eq!(e.read("calc/b.txt").unwrap(), "ok b");

@@ -65,6 +65,9 @@ enum Command {
     /// continue a paused or interrupted run
     Resume {
         run_id: String,
+        /// worker families to use (comma-separated; defaults to orchestrator.workers)
+        #[arg(long, value_name = "FAMILIES")]
+        workers: Option<String>,
         #[arg(long)]
         allow_direct: bool,
         #[arg(long)]
@@ -84,7 +87,7 @@ async fn main() -> ExitCode {
         }
         Command::Status { json } => cli::status_cmd(json),
         Command::Show { run_id, json } => cli::show_cmd(&run_id, json),
-        Command::Resume { run_id, allow_direct, max_usd, json } => cli::resume(&run_id, allow_direct, max_usd, json).await,
+        Command::Resume { run_id, workers, allow_direct, max_usd, json } => cli::resume(&run_id, workers, allow_direct, max_usd, json).await,
     };
     ExitCode::from(u8::try_from(code).unwrap_or(1))
 }

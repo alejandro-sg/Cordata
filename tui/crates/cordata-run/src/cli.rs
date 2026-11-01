@@ -257,7 +257,7 @@ pub async fn run(args: RunArgs) -> i32 {
     finish(&record, args.json)
 }
 
-pub async fn resume(run_id: &str, allow_direct: bool, max_usd: Option<f64>, as_json: bool) -> i32 {
+pub async fn resume(run_id: &str, workers: Option<String>, allow_direct: bool, max_usd: Option<f64>, as_json: bool) -> i32 {
     let mut environ: HashMap<String, String> = std::env::vars().collect();
     if allow_direct {
         environ.insert("CORDATA_VAULT_DIRECT".into(), "1".into());
@@ -284,7 +284,10 @@ pub async fn resume(run_id: &str, allow_direct: bool, max_usd: Option<f64>, as_j
         }
     };
     let home = cordata_home(&environ);
-    let families = config::enabled_families(&settings);
+    let families = match workers.as_deref() {
+        Some(w) => w.split(',').map(str::trim).filter(|f| config::KNOWN_FAMILIES.contains(f)).map(str::to_owned).collect(),
+        None => config::enabled_families(&settings),
+    };
     if !machine::TERMINAL.contains(&record.state.as_str()) && !has_native_worker(&families, &environ) {
         eprintln!("cordata-run: no worker is available to resume {run_id}");
         return NO_NATIVE_WORKER;
