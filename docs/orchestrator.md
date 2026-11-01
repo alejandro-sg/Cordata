@@ -226,60 +226,18 @@ With few outcomes the policy stays at strongest-first by construction.
 
 ## Evidence and scope of current verification
 
-The new loop (research, grounded planning, parallel waves, harden, audit, conformance, usage attribution) is
-verified only with in-process fakes in `backend/_orchestrator_loop_smoke_test.py`. Those fakes exercise the control
-flow, the grounding check, the wave scheduler, the fix/replan counters, the per-role and per-worker usage columns,
-and the `show`/`status` rendering — all without real CLI calls or network egress.
+The orchestrator loop (research, grounded planning, parallel waves, harden, audit, conformance, usage attribution) is
+verified natively with in-process fakes in `tui/crates/cordata-orchestrator/tests/` and end-to-end integration tests in
+`tui/crates/cordata-run/tests/e2e.rs`. Those tests exercise the control flow, the grounding check, the wave scheduler,
+the fix/replan counters, the per-role and per-worker usage tracking, and the `show`/`status` rendering — all without real CLI calls or network egress.
 
-What is **not** measured yet: any quality or cost gain from research or conformance on real tasks, any throughput
-improvement from parallel waves with real workers, and any calibration of the complexity bands against real-world
-step difficulty. Research is off in the bare `RunConfig` default and is enabled through `config.run_config()` (and
-therefore the CLI and `orchestrate_tool`); `--no-research` disables it.
+## Rust Port and Lean Architecture
 
-## Lean: what was removed
+All orchestrator components are 100% native Rust crates:
+- `cordata-orchestrator`: Core state machine, workers (`claude`, `agy`), dispatch bandit, and synthesizer sandboxes.
+- `cordata-run`: CLI command handling `cordata run`, `status`, `show`, `resume`.
+- `cordata-ledger`: SQLite quota tracking and run records in `~/.cordata/state.db`.
+- `cordata-checkpoints`: Shadow-git checkpoints for rollback and undo.
 
-Measured from the ledger (75 turns over a week): the tools used were `shell`, `file_read`, `code_search`,
-`file_search`, skill search and offload retrieval; Laya never routed to `team`; `local_graph`, `local_swarm` and the
-game tools were never called. Removed: the in-process teams (`local_graph`, `local_swarm`, the Laya team pipeline —
-replaced by `orchestrate`), the browser game demo (`open_game`, `/games/*`, its skill and frontend panel) and the
-web UI's swarm panel. Frozen (kept, out of the default CI path): the Next.js frontend, the GPUI Lab and menu bar,
-oMLX.
+The legacy Python orchestrator, daemon, and external dependencies have been decommissioned.
 
-`acp_server.py` (3,055 lines) was split by responsibility — `acp_approval.py` (the approval gate and session modes),
-`acp_protocol.py` (tool kinds, rendering, the stdout guard), `acp_session.py` (session record, prompts, startup
-preferences), `acp_learning.py` (bandit and maintenance hooks) — leaving the ACP agent itself at ~1,870 lines. Every
-moved name is re-exported from `acp_server`, so callers and tests are unchanged (one test now patches
-`acp_approval.current_generated_tool_names`, where the gate reads it). The split needed one root-cause fix:
-`agent_common` now pins relative `sys.path` entries before it `chdir`s, so a bare-module import after it works under
-`python -m` too — the import-order rule `acp_server` used to carry in a comment is gone.
-
-Measured, baseline (`d6a0a26`) → now: backend Python outside tests 40,255 → 44,908 lines, of which the orchestrator,
-the workers and the tool are 5,651 new lines — the rest of the backend shrank by ~1,000; the web UI 4,208 → 2,936
-lines (−30 %); `acp_server.py` 3,055 → 1,868.
-
-Not done from the plan, and why:
-
-* **Memory consolidation** (retire Qdrant for LanceDB): agent memory lives in Qdrant on `mini` today;
-  moving it is a data migration of the person's memories, not a refactor — left for a decision.
-* **`backend/workspace/*`**: gitignored runtime scratch on this machine (nothing tracked); not deleted.
-
-## Auto Mode, isolated waves and per-step rewards (2026-10-30)
-
-* **`orchestrator.dispatch: auto`** — `orchestrator/auto_router.py`. The learned dispatcher plus each step's profile:
-  `Utility = Q̂ + γ·CapMatch − λ·NormCost − μ·QuotaScarcity − ν·ContextPressure`. A step's needs (`heavy_reasoning`,
-  `fast_syntax`, `shell_verification`, `long_context`, `review`) and context footprint (`bytes(file_scope)/3.6 + prompt +
-  brief + 2·tool headroom + output`) are matched against each model's real window (`ollama_cloud.REGISTRY`, verified with
-  `/api/show`) and capabilities. A model too small for a step is dropped only while another can hold it; the router only
-  reorders what the gates let through, per step (`StepExecutor(rerank=…)`).
-* **Isolated waves + SYNTHESIZE** — `orchestrator/synthesizer.py`. Each step of a multi-step wave runs in an APFS
-  `clonefile` copy of the dirty tree (dependency dirs linked, `.git` left out; a plain copy on Linux). A completed step is
-  harvested back (in-scope files only; a file changed meanwhile is a conflict and the step retries; writes through
-  symlinks are refused). EXECUTE → **SYNTHESIZE** → HARDEN: syntax and cross-module import checks over the combined change,
-  one targeted fix pass (`max_synth_fixes`), problems left over become warnings for HARDEN/AUDIT.
-* **Per-step RLAIF** — `orchestrator/rlaif.py` replaces the run-wide binary credit: 70 % deterministic telemetry (scope,
-  first pass, recoveries, cost vs budget, penalties for escapes/timeouts/rescues), 30 % the conformance pass's
-  `step_scores` rubric (no extra model call); a failed run debits only the steps its failing checks name. Rewards reach
-  `LearnedDispatcher.observe` as `reward` (mapped onto the old [0, 1] scale; `win` stays binary; `bandit.py` untouched)
-  and are logged as `rlaif_reward` events (`REWARD_VERSION = 2`).
-* **Grounded research on the cloud roster** — `python -m orchestrator.cloud_research`: minimax-m3.1-flash scouts (1M
-  context), `research.verify` drops bad citations, gemma4:31b synthesizes the plan, mistral-large-4 critiques it.

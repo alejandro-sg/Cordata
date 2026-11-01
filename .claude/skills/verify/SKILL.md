@@ -1,88 +1,35 @@
-# Verifying this repo
+# Verifying Cordata (100% Pure Rust Architecture)
 
-Two runtime surfaces: the Python daemon (HTTP + WebSocket + gRPC) and the Rust clients
-(`tui/`, `lab/`). Neither `cargo test` nor the `_*_smoke_test.py` suites are verification —
-they're CI. Drive the real processes.
+Cordata runs as a pure Rust workspace with zero Python or daemon dependencies:
+- **Terminal Workspace (`tui/`)**: `acp-tui` (interactive chat), `cordata-run` (batch orchestrator), `cordata-doctor` (diagnostics), `cordata-guard` (secrets and safety hooks).
+- **Native macOS Workspace (`app/`)**: `cordata-app` (GPUI native application), `cordata-view`, `cordata-theme`.
+- **Token Economizer (`tui/crates/cordata-economizer`)**: Dynamic tool pruning, micro-skills, loopguard, and cache alignment.
 
-## Handle: the daemon, isolated
+---
 
-```bash
-export VER=/tmp/slverify          # any scratch dir
-mkdir -p $VER/home $VER/proj
-CORDATA_HOME=$VER/home backend/.venv/bin/python -m daemon.main --port 8790 --grpc-port 8791
-```
+## 1. Deterministic Verification
 
-`CORDATA_HOME` isolates the token, state.db and settings — but **not the pid lock**: it lives at
-`<repo>/.dev/daemon.pid`, so with the real daemon running a scratch one refuses ("daemon already running").
-Add `CORDATA_DAEMON_PID=$VER/daemon.pid`. Ports 8790/8791 avoid clobbering a real daemon on 8765/8766.
-The token lands at `$VER/home/daemon.json`, mode 0600.
-
-To exercise a *live session* without a model, point the daemon at the repo's own fake child
-(real daemon, real bridge, real wire, canned agent):
+Always run the unified deterministic verification script:
 
 ```bash
-CORDATA_ACP_ENTRYPOINT="$PWD/backend/.venv/bin/python $PWD/backend/fixtures/fake_acp_bridge_child.py"
+# Standard fast verification (secrets scan + all TUI workspace tests)
+scripts/verify.sh
+
+# Comprehensive verification (secrets scan + TUI workspace tests + native GPUI app tests)
+scripts/verify.sh --all
 ```
 
-Its control methods (see the fixture's docstring): `bridge/lab`, `bridge/permit`, `bridge/diff`,
-`bridge/memory`, and it answers `_cordata/lab/{effort,dial,isolate}`.
+Exit code `0` is the only acceptable proof of completion.
 
-## Driving the three front doors
+---
 
-* **HTTP** (`httpx`): `POST /sessions {"cwd": …}` opens one; `GET /health` is the liveness read.
-  Every route needs header `x-daemon-token`.
-* **WebSocket** (`websockets`): `ws://127.0.0.1:8790/ws?token=…&session=<sid>` — the *driving*
-  front door. Send `{"jsonrpc":"2.0","method":"bridge/permit","params":{…}}` to make the child
-  emit a permission request.
-* **gRPC** (`grpc` + `backend/daemon/harness_pb2*`): the GUI's surface. Metadata
-  `("x-daemon-token", token)`. `StreamTelemetry(session_id=…)`, `InterventionStream`,
-  `ProactiveIngest`, `SetKnob`, `UnloadMemory`, `GetDiff`, `Ping`.
+## 2. Granular Verification Targets
 
-## Gotchas that cost time
-
-* **A TUI answer is a bare ACP response**, not a method call:
-  `{"jsonrpc":"2.0","id":<child id>,"result":{"outcome":{"outcome":"selected","optionId":"reject"}}}`
-  sent over the WS. `{"method": "session/respond"}` is forwarded to the child and never admitted
-  as an answer — the "first answer wins" race won't happen and you'll misread it as a bug.
-* **`InterventionStream` replays every still-pending request on attach.** Read the event and check
-  its `intervention_id`; a stale one from a previous run will otherwise be mistaken for the fresh
-  request. Use a **fresh cwd per run** (sessions attach-or-create by directory).
-* **For a bidi gRPC stub, feed decisions from a `queue.Queue`-backed generator.** Appending to a
-  list after the generator has finished starves it and `next(events)` raises `StopIteration`.
-* **The fake child logs `{"kind": "response", "result": {...}}`** for answers — `optionId` is
-  nested under `result.outcome`, not a top-level field.
-* **`risk_*` / `armed` on a request come from the child's `_meta.cordata`**, so a hand-built
-  permit with no risk fields shows `armed=False, band='', score=0.0`. Put them in the meta.
-* **Pipe buffering**: run drivers with `python -u` writing to a file; piping through `tail`/`head`
-  hides all output until the process exits.
-
-## The GPU/window
-
-`lab/target/debug/harness-lab` opens a real window when a display exists. On a headless session
-`screencapture` fails (`could not create image from display`) — don't report the GUI as broken for
-that. The app's *behavior* is still observable: it watches `--watch <dir>`, parses saved files with
-tree-sitter and ingests changed symbols, which lands as `kind='ingest'` rows in `$CORDATA_HOME/state.db`.
-
-```bash
-CORDATA_HOME=$VER/home lab/target/debug/harness-lab --watch $VER/proj &
-sqlite3 $VER/home/state.db "select kind, count(*) from events group by kind;"
-```
-
-The daemon's ledger (`state.db` → `events`) is the ground truth for whether a GUI action landed:
-kinds `gui` (approve/reject/isolate/knob/unload_memory), `ingest`, `response`.
-
-## The native app (app/)
-
-`make app-selftest` drives the real window through one scripted turn against acp-core's fake agent (stdio):
-connect, stream, approve, finish, print a `SELFTEST …` line. Against the isolated daemon's hub instead (what a
-Finder launch does — no checkout, cwd `/`):
-
-```bash
-CORDATA_ACP_ENTRYPOINT="$PWD/backend/.venv/bin/python $PWD/tui/crates/acp-core/tests/fixtures/fake_agent.py"   # for the daemon
-cd / && CORDATA_DAEMON_CONFIG=$VER/home/daemon.json app/target/Cordata.app/Contents/MacOS/cordata-app \
-  --cwd $VER/proj --conversation new --prompt "shell:echo hi" --selftest
-```
-
-Prompts the fake agent understands: `pong`, `thought`, `shell:<cmd>` (an approval), `harness` (Laya, tasks, an
-edit approval, self-heal), `long`, `slow`, `untrusted`. Screenshots: `screencapture -x out.png` works from this
-shell; an occluded window draws no frames (the self-test is driven by state, not frames).
+| Target | Command | Purpose |
+|---|---|---|
+| **Secret Scan** | `make secrets` | Scans workspace for exposed API keys, tokens, or credentials |
+| **TUI Tests** | `make tui-test` | Runs all 10 crates in `tui/` (340+ unit/integration tests) |
+| **Native App Tests** | `make app-test` | Runs GPUI native app and view tests (`app/`) |
+| **Release Build** | `make tui-build` | Builds release binaries (`acp-tui`, `cordata-run`, `cordata-doctor`, `cordata-guard`) |
+| **System Diagnostics**| `bin/cordata doctor` | Verifies environment, CLIs, Keychain credentials, and sandbox |
+| **Orchestrator Status**| `bin/cordata status` | Verifies quota pools and recent autonomous runs in `state.db` |

@@ -27,6 +27,7 @@ process.
 | crate | what |
 |---|---|
 | `tui/crates/acp-core` | the session API both front ends use: `SessionHandle`, `AppEvent`, the permission round-trip, and the native engine (`native/`) |
+| `tui/crates/cordata-economizer` | token economizer: dynamic tool pruning, micro-skills, loopguard failure interception, prefix cache alignment, head/tail output compactor |
 | `tui/crates/acp-tui` | the inline terminal client |
 | `tui/crates/acp-stress` | scriptable concurrent runner |
 | `tui/crates/cordata-ledger` | quota pools, usage, handoffs, events, run records in `~/.cordata/state.db` |
