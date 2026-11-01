@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/acp-core", "crates/acp-tui", "crates/acp-stress", "crates/cordata-ledger"]
+members = ["crates/acp-core", "crates/acp-tui", "crates/acp-stress", "crates/cordata-ledger", "crates/cordata-doctor"]
 
 [workspace.package]
 edition = "2024"

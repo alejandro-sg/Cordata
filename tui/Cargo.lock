@@ -618,6 +618,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cordata-doctor"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "cordata-ledger"
 version = "0.1.0"
 dependencies = [

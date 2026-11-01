@@ -99,6 +99,14 @@ if [[ "$#" -eq 0 ]]; then
   exec "$TUI_BIN"
 fi
 
+# `doctor` is native: no Python start-up, and it works before `make setup` has run.
+if [[ "$1" == "doctor" ]]; then
+  for kind in release debug; do
+    DOCTOR_BIN="$REPO_ROOT/tui/target/$kind/cordata-doctor"
+    [[ -x "$DOCTOR_BIN" ]] && exec "$DOCTOR_BIN" "${@:2}"
+  done
+fi
+
 if is_batch_cmd "$1"; then
   # Explicit batch command: run python orchestrator
   exec "$PYTHON" -m orchestrator "$@"
