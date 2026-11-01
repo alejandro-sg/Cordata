@@ -30,7 +30,7 @@ environment or the macOS Keychain, never from a file:
 
 | provider | needs |
 |---|---|
-| Anthropic | `ANTHROPIC_API_KEY` exported in your shell, or the Keychain item `cordata-anthropic-api-key` |
+| Anthropic (the default, `claude-sonnet-5-5`; change with `CORDATA_NATIVE_MODEL`) | `ANTHROPIC_API_KEY` exported in your shell, or the Keychain item `cordata-anthropic-api-key` |
 | Ollama's API directly | `make key` (stores the key in the Keychain) |
 | a local Ollama | the server running |
 
