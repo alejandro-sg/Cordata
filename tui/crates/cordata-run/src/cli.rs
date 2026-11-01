@@ -14,6 +14,7 @@ use cordata_orchestrator::dispatch::Mode;
 use cordata_orchestrator::machine::{self, Machine, RunConfig, RunRecord, World};
 use cordata_orchestrator::plan::Plan;
 use cordata_orchestrator::research::FileResearch;
+use cordata_orchestrator::synthesizer::{CowIsolation, FileSynthesis};
 use serde_json::Value;
 
 use crate::config;
@@ -231,7 +232,8 @@ pub async fn run(args: RunArgs) -> i32 {
         checkpoints: &checkpoints,
         audit_env: AuditEnv { checkpoints: &checkpoints, guard: &PatternGuard, environ: environ.clone() },
         research: Some(&FileResearch),
-        synthesis: None,
+        synthesis: Some(&FileSynthesis),
+        isolation: Some(Arc::new(CowIsolation::default())),
         on_event: Some(printer(args.json)),
         controls,
         home: home.clone(),
@@ -294,7 +296,8 @@ pub async fn resume(run_id: &str, allow_direct: bool, max_usd: Option<f64>, as_j
         checkpoints: &checkpoints,
         audit_env: AuditEnv { checkpoints: &checkpoints, guard: &PatternGuard, environ },
         research: Some(&FileResearch),
-        synthesis: None,
+        synthesis: Some(&FileSynthesis),
+        isolation: Some(Arc::new(CowIsolation::default())),
         on_event: Some(printer(as_json)),
         controls: Some(controls),
         home,

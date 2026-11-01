@@ -458,6 +458,7 @@ pub struct Machine<'a> {
     synthesis: Option<&'a dyn Synthesis>,
     on_event: Option<EventListener>,
     controls: Option<Arc<dyn RunControls>>,
+    isolation: Option<Arc<dyn executor::Isolation>>,
     /// Where artifacts go: `$CORDATA_HOME` or `~/.cordata`.
     home: PathBuf,
     exec_families: HashSet<String>,
@@ -476,6 +477,8 @@ pub struct World<'a> {
     pub synthesis: Option<&'a dyn Synthesis>,
     pub on_event: Option<EventListener>,
     pub controls: Option<Arc<dyn RunControls>>,
+    /// Copy-on-write step sandboxes for multi-step waves; without one a wave shares the working tree.
+    pub isolation: Option<Arc<dyn executor::Isolation>>,
     pub home: PathBuf,
 }
 
@@ -512,6 +515,7 @@ impl<'a> Machine<'a> {
             synthesis: world.synthesis,
             on_event: world.on_event,
             controls: world.controls,
+            isolation: world.isolation,
             home: world.home,
             exec_families: HashSet::new(),
             resume_packet: None,
@@ -819,6 +823,7 @@ impl<'a> Machine<'a> {
             // worker still allowed, not to whichever pool has the most room.
             strongest_first: recovering || fix_pass,
             isolate: self.config.isolate_waves,
+            isolation: self.isolation.clone(),
             on_event: listener.map(|l| Box::new(move |e| l(e)) as Box<dyn Fn(Value) + Send + Sync>),
             controls: self.controls.clone().map(|c| Arc::new(ExecControls(c)) as Arc<dyn executor::Controls>),
             ..ExecConfig::default()

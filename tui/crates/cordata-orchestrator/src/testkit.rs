@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use futures::future::BoxFuture;
 
@@ -18,12 +19,20 @@ type Handler = Box<dyn Fn(&TaskPacket, usize) -> WorkerResult + Send + Sync>;
 pub struct ScriptedWorker {
     id: String,
     handler: Handler,
+    /// Awaited before the handler runs, so concurrent steps really overlap (a synchronous fake finishes a whole step the
+    /// first time it is polled).
+    delay: Duration,
     pub calls: Mutex<Vec<TaskPacket>>,
 }
 
 impl ScriptedWorker {
     pub fn new(id: &str, handler: impl Fn(&TaskPacket, usize) -> WorkerResult + Send + Sync + 'static) -> Arc<Self> {
-        Arc::new(Self { id: id.into(), handler: Box::new(handler), calls: Mutex::new(Vec::new()) })
+        Arc::new(Self { id: id.into(), handler: Box::new(handler), delay: Duration::ZERO, calls: Mutex::new(Vec::new()) })
+    }
+
+    /// Like [`new`](Self::new), but each call waits `delay` first.
+    pub fn slow(id: &str, delay: Duration, handler: impl Fn(&TaskPacket, usize) -> WorkerResult + Send + Sync + 'static) -> Arc<Self> {
+        Arc::new(Self { id: id.into(), handler: Box::new(handler), delay, calls: Mutex::new(Vec::new()) })
     }
 }
 
@@ -37,7 +46,12 @@ impl Worker for ScriptedWorker {
             calls.push(task.clone());
             calls.len()
         };
-        Box::pin(async move { (self.handler)(&task, n) })
+        Box::pin(async move {
+            if !self.delay.is_zero() {
+                tokio::time::sleep(self.delay).await;
+            }
+            (self.handler)(&task, n)
+        })
     }
     fn cancel<'a>(&'a self, _task_id: &'a str) -> BoxFuture<'a, bool> {
         Box::pin(async { true })

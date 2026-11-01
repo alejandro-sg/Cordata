@@ -2,7 +2,7 @@
 //! Free-text schema messages are not compared (the Rust draft check is hand-written); every semantic problem is.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use cordata_orchestrator::bandit::Bandit;
@@ -618,4 +618,101 @@ fn research_verification_rendering_and_prompts_agree() {
     assert_eq!(Value::from(research::research_prompt("g", &["a".to_owned(), "b".to_owned()])), want["prompts"][1]);
     assert_eq!(Value::from(research::research_prompt("g", &[])), want["prompts"][2]);
     assert_eq!(research::research_schema(), want["schema"]);
+}
+
+// ---------------------------------------------------------------------------------------------- synthesizer
+
+#[test]
+fn the_synthesis_check_and_harvest_agree_with_python() {
+    use cordata_orchestrator::synthesizer;
+    if backend().is_none() {
+        return eprintln!("skipped: backend/.venv not found");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let base = std::fs::canonicalize(dir.path()).unwrap();
+    let files: Vec<(&str, &str)> = vec![
+        ("calc/__init__.py", "from .add import add\nfrom .mul import mul, missing_helper\n"),
+        ("calc/add.py", "def add(a, b):\n    return a + b\n"),
+        ("calc/mul.py", "from calc.add import add, renamed_add\nimport os, sys as system\n\nCONSTANT: int = 1\nTHE, OTHER = 1, 2\nx = y = 3\n\n@decorated\ndef mul(a, b):\n    return a * b\n\nclass Thing:\n    pass\n"),
+        ("app.py", "from calc import add, mul, nope\nfrom calc.mul import Thing, THE, OTHER, CONSTANT, os, system, absent, x, y\nfrom calc import mul as mul_module\nfrom json import loads\nfrom third_party import anything\ndef late():\n    from calc.add import gone\n"),
+        ("cond.py", "import os\nif os.name == 'nt':\n    def conditional(): pass\n"),
+        ("star.py", "from calc.add import *\n"),
+        ("user.py", "from cond import conditional, whatever\nfrom star import anything_at_all\nfrom calc.add import add as plus\n"),
+        ("pkg/__init__.py", ""),
+        ("pkg/inner.py", "from . import sibling\nfrom .sibling import thing, nothing\nfrom .. import calc\nfrom ..calc.add import add\n"),
+        ("pkg/sibling.py", "thing = 1\n"),
+        ("bad.json", "{\"a\": 1,\n \"b\": }\n"),
+        ("bad.toml", "[a]\nb = \n"),
+        ("bad.py", "def f(:\n    pass\n"),
+        ("ok.yaml", "a: 1\n"),
+    ];
+    let names: Vec<String> = files.iter().map(|(n, _)| (*n).to_owned()).chain(["missing.py".to_owned()]).collect();
+    let proj = |tag: &str| {
+        let root = base.join(tag);
+        for (n, t) in &files {
+            let p = root.join(n);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, t).unwrap();
+        }
+        root
+    };
+    let (rust_root, py_root) = (proj("rust"), proj("py"));
+
+    let want = python(
+        &json!({"root": py_root, "files": names}),
+        "import json,sys\nfrom orchestrator import synthesizer as s\nd=json.load(sys.stdin)\nprint(json.dumps([[p.check,p.path,p.line,p.render()] for p in s.check(d['root'],d['files'])]))",
+    );
+    let got = synthesizer::check(&rust_root, &names);
+    let want_rows: Vec<&Value> = want.as_array().unwrap().iter().collect();
+    let got_imports: Vec<String> = got.iter().filter(|p| p.check == "import").map(|p| p.render()).collect();
+    let want_imports: Vec<String> = want_rows.iter().filter(|r| r[0] == "import").map(|r| r[3].as_str().unwrap().to_owned()).collect();
+    assert_eq!(got_imports, want_imports, "import drift is reported identically");
+    let key = |paths: Vec<(String, String)>| paths;
+    assert_eq!(
+        key(got.iter().filter(|p| p.check == "syntax").map(|p| (p.path.clone(), p.check.to_owned())).collect()),
+        key(want_rows.iter().filter(|r| r[0] == "syntax").map(|r| (r[1].as_str().unwrap().to_owned(), "syntax".to_owned())).collect()),
+        "the same files are syntax errors (messages are the parsers' own)"
+    );
+    let order: Vec<(&str, &str)> = got.iter().map(|p| (p.path.as_str(), p.check)).collect();
+    let want_order: Vec<(&str, &str)> = want_rows.iter().map(|r| (r[1].as_str().unwrap(), if r[0] == "import" { "import" } else { "syntax" })).collect();
+    assert_eq!(order, want_order, "same problems in the same order");
+
+    // Harvest: the same operations in a sandbox of each implementation give the same lists and the same project.
+    let ops = |root: &Path| {
+        for f in ["src/a.py", "src/b.py", "src/gone.py", "src/c.py", "other/z.py"] {
+            let p = root.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "original\n").unwrap();
+        }
+    };
+    let (h_rust, h_py) = (base.join("hr"), base.join("hp"));
+    ops(&h_rust);
+    ops(&h_py);
+    let changed = ["src/a.py", "src/gone.py", "src/new.py", "src/c.py", "other/z.py", "src/b.py", "../escape.txt", "src/a.py", "./src/d.py"];
+    let step = |sandbox: &Path, primary: &Path| {
+        std::fs::write(sandbox.join("src/a.py"), "edited\n").unwrap();
+        std::fs::remove_file(sandbox.join("src/gone.py")).unwrap();
+        std::fs::write(sandbox.join("src/new.py"), "new\n").unwrap();
+        std::fs::write(sandbox.join("src/c.py"), "mine\n").unwrap();
+        std::fs::write(sandbox.join("other/z.py"), "stray\n").unwrap();
+        std::fs::remove_file(sandbox.join("src/b.py")).unwrap();
+        std::fs::write(sandbox.join("src/d.py"), "d\n").unwrap();
+        std::fs::write(primary.join("src/c.py"), "theirs\n").unwrap();
+        std::fs::write(primary.join("src/new.py"), "theirs too\n").unwrap();
+    };
+    let sb = synthesizer::create(&h_rust, Some(dir.path()), "x", &["src/".to_owned()], 1000).unwrap();
+    step(&sb.root, &h_rust);
+    let rust_h = synthesizer::harvest(&sb, &changed.map(String::from), &["src/".to_owned()]);
+    let py = python(
+        &json!({"root": h_py, "parent": dir.path(), "changed": changed}),
+        "import json,sys,os\nfrom orchestrator import synthesizer as s\nd=json.load(sys.stdin)\nbox=s.create(d['root'],parent=d['parent'],label='x',scope=['src/'])\n\
+         root=d['root']\nsb=box.root\nopen(sb+'/src/a.py','w').write('edited\\n')\nos.remove(sb+'/src/gone.py')\nopen(sb+'/src/new.py','w').write('new\\n')\nopen(sb+'/src/c.py','w').write('mine\\n')\nopen(sb+'/other/z.py','w').write('stray\\n')\nos.remove(sb+'/src/b.py')\nopen(sb+'/src/d.py','w').write('d\\n')\n\
+         open(root+'/src/c.py','w').write('theirs\\n')\nopen(root+'/src/new.py','w').write('theirs too\\n')\nh=s.harvest(box,d['changed'],['src/'])\n\
+         print(json.dumps({'written':h.written,'deleted':h.deleted,'conflicts':h.conflicts,'skipped':h.skipped,'cloned':box.cloned,'copied':box.copied,'linked':box.linked}))",
+    );
+    assert_eq!(json!({"written": rust_h.written, "deleted": rust_h.deleted, "conflicts": rust_h.conflicts, "skipped": rust_h.skipped}), json!({"written": py["written"], "deleted": py["deleted"], "conflicts": py["conflicts"], "skipped": py["skipped"]}));
+    assert_eq!((sb.cloned + sb.copied) as u64, py["cloned"].as_u64().unwrap() + py["copied"].as_u64().unwrap());
+    for f in ["src/a.py", "src/c.py", "src/new.py", "src/b.py", "src/gone.py", "src/d.py", "other/z.py"] {
+        assert_eq!(std::fs::read_to_string(h_rust.join(f)).ok(), std::fs::read_to_string(h_py.join(f)).ok(), "{f}: the primary trees end up the same");
+    }
 }

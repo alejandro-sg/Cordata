@@ -129,6 +129,7 @@ impl Rig {
             synthesis,
             on_event: Some(Arc::new(move |e| events.lock().unwrap().push(e))),
             controls,
+            isolation: None,
             home: self.home.clone(),
         }
     }

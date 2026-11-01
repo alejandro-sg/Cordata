@@ -31,6 +31,11 @@ tokio-tungstenite = "0.28"
 rusqlite = { version = "0.37", features = ["bundled"] }
 # Process-group kill for the subprocess workers.
 libc = "0.2"
+# The SYNTHESIZE check: syntax of Python (tree-sitter), JSON, TOML and YAML files, and imports between project modules.
+tree-sitter = "0.25"
+tree-sitter-python = "0.25"
+toml = "0.8"
+serde_yaml = "0.9"
 # Checkpoint store keys: the shadow repository directory is the first 16 hex chars of the project path's SHA-1.
 sha1 = "0.10"
 # JSON Schema validation of a worker's structured answer (plan / audit roles).
