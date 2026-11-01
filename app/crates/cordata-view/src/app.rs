@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use std::time::Instant;
 
 use acp_core::{
-    AppEvent, ApprovalDecision, ConfigChoice, ConfigOptionInfo, FileDiff, HarnessEvent, HealInfo,
+    AppEvent, ApprovalDecision, ConfigOptionInfo, FileDiff, HarnessEvent, HealInfo,
     ModeInfo, PermissionInfo, SessionInfo, StopReason,
     TaskState, ToolCallInfo, ToolKind, ToolStatus,
 };
@@ -14,7 +14,6 @@ use serde_json::Value;
 use tokio::sync::oneshot;
 
 use crate::commands::{self, Command};
-use crate::config_ui::ConfigPanel;
 use crate::input::Input;
 use crate::settings::{Settings, Store};
 
@@ -75,13 +74,6 @@ impl PendingPermission {
             let _ = tx.send(decision);
         }
     }
-}
-
-pub struct Picker {
-    pub config_id: String,
-    pub title: String,
-    pub choices: Vec<ConfigChoice>,
-    pub selected: usize,
 }
 
 /// Side effects the event loop performs on the session (kept out of `App`
@@ -173,9 +165,6 @@ pub struct App {
     pub messages: Vec<Message>,
     pub input: Input,
     pub pending: VecDeque<PendingPermission>,
-    pub picker: Option<Picker>,
-    /// The `/config` panel, while open.
-    pub config: Option<ConfigPanel>,
     /// Where the settings files are (None in unit tests that don't need them).
     pub store: Option<Store>,
     /// Merged settings as last read.
@@ -276,8 +265,6 @@ impl App {
             messages: Vec::new(),
             input: Input::default(),
             pending: VecDeque::new(),
-            picker: None,
-            config: None,
             store: None,
             settings: Settings::default(),
             session: None,
@@ -351,8 +338,6 @@ impl App {
     pub fn can_type(&self) -> bool {
         self.conn == ConnState::Connected
             && self.pending.is_empty()
-            && self.picker.is_none()
-            && self.config.is_none()
             && self.overlay.is_none()
     }
 
@@ -792,7 +777,7 @@ impl App {
         if self.overlay.is_some() && !(ctrl && matches!(key.code, KeyCode::Char('n' | 'N'))) && !(alt || ctrl && matches!(key.code, KeyCode::Right | KeyCode::Left)) {
             return self.on_key_overlay(key);
         }
-        if self.pending.is_empty() && self.picker.is_none() && self.config.is_none() {
+        if self.pending.is_empty() {
             if ctrl && key.code == KeyCode::Char('k') {
                 return self.open_overlay(crate::overlay::Kind::Palette);
             }
@@ -823,27 +808,10 @@ impl App {
         if !self.pending.is_empty() {
             return self.on_key_permission(key);
         }
-        if self.picker.is_some() {
-            return self.on_key_picker(key);
-        }
-        if self.config.is_some() {
-            return self.on_key_config(key);
-        }
 
         if ctrl {
             return match key.code {
                 KeyCode::Char('c') => self.on_ctrl_c(),
-                KeyCode::Char('p') => self.cycle_mode(true),
-                // Ctrl+M is byte-identical to Enter in nearly every terminal,
-                // so the model picker also lives on Ctrl+O.
-                KeyCode::Char('o' | 'm') => {
-                    self.open_picker("model", "Model");
-                    None
-                }
-                KeyCode::Char('t') => {
-                    self.open_picker("temperature", "Temperature");
-                    None
-                }
                 KeyCode::Char('e') => {
                     self.expand_tools = !self.expand_tools;
                     None
@@ -904,14 +872,6 @@ impl App {
                 }
                 return None;
             }
-            KeyCode::Tab => {
-                // Writing a command is not the moment to change the mode.
-                if self.input.text().starts_with('/') {
-                    return None;
-                }
-                return self.cycle_mode(true);
-            }
-            KeyCode::BackTab => return self.cycle_mode(false),
             KeyCode::Esc => return self.on_escape(),
             _ => {}
         }
@@ -1187,29 +1147,6 @@ impl App {
                     "tool results collapsed"
                 });
             }
-            Command::Mode(None) => {
-                let ids: Vec<&str> = self.modes.iter().map(|m| m.id.as_str()).collect();
-                self.info(format!("mode: {} ({})", self.mode, ids.join(" | ")));
-            }
-            Command::Mode(Some(wanted)) => {
-                let wanted = wanted.to_ascii_lowercase();
-                if self.modes.iter().any(|mode| mode.id == wanted) {
-                    self.pending_mode = Some(wanted.clone());
-                    return Some(Effect::SetMode(wanted));
-                }
-                let ids: Vec<&str> = self.modes.iter().map(|m| m.id.as_str()).collect();
-                self.info(format!(
-                    "unknown mode '{wanted}' — choose one of: {}",
-                    ids.join(", ")
-                ));
-            }
-            Command::Model(None) => self.open_picker("model", "Model"),
-            Command::Temp(None) => self.open_picker("temperature", "Temperature"),
-            Command::Model(Some(query)) => return self.set_config_by_name("model", &query),
-            Command::Temp(Some(query)) => return self.set_config_by_name("temperature", &query),
-            Command::Config(arg) => return self.run_config(arg),
-            Command::Permissions(arg) => self.run_permissions(arg),
-            Command::Trust => self.run_trust(),
             Command::Memory => self.run_memory(),
             Command::Init => return self.run_init(),
             Command::Status => {
@@ -1224,7 +1161,6 @@ impl App {
             Command::Panes => return self.toggle_panes(),
             Command::Review => return self.open_overlay(crate::overlay::Kind::Review),
             Command::New => return Some(Effect::NewSession),
-            Command::Sessions => return Some(Effect::ListSessions),
             Command::Switch(arg) => {
                 return match arg.as_deref().map(str::parse::<usize>) {
                     Some(Ok(n)) if n > 0 => Some(Effect::SwitchSession(SwitchTarget::Slot(n))),
@@ -1239,51 +1175,6 @@ impl App {
             Command::Unknown(name) => self.info(format!("unknown command /{name} — try /help")),
         }
         None
-    }
-
-    /// Set a select option by the value or display name the user typed
-    /// (exact match first, then a unique substring).
-    fn set_config_by_name(&mut self, config_id: &str, query: &str) -> Option<Effect> {
-        let query = query.to_ascii_lowercase();
-        let Some(option) = self.config(config_id) else {
-            self.info(format!("no {config_id} option available"));
-            return None;
-        };
-        let matches = |choice: &ConfigChoice| {
-            choice.value.to_ascii_lowercase().contains(&query)
-                || choice.name.to_ascii_lowercase().contains(&query)
-        };
-        let exact = option.choices.iter().find(|c| {
-            c.value.to_ascii_lowercase() == query || c.name.to_ascii_lowercase() == query
-        });
-        let candidates: Vec<&ConfigChoice> = option.choices.iter().filter(|c| matches(c)).collect();
-        let choice = exact.or(if candidates.len() == 1 {
-            Some(candidates[0])
-        } else {
-            None
-        });
-        match choice {
-            Some(choice) => Some(Effect::SetConfig {
-                id: config_id.to_owned(),
-                value: choice.value.clone(),
-            }),
-            None => {
-                let names: Vec<&str> = option.choices.iter().map(|c| c.value.as_str()).collect();
-                let message = if candidates.is_empty() {
-                    format!(
-                        "no {config_id} matches '{query}' — choices: {}",
-                        names.join(", ")
-                    )
-                } else {
-                    format!(
-                        "'{query}' matches several {config_id} options — be more specific: {}",
-                        names.join(", ")
-                    )
-                };
-                self.info(message);
-                None
-            }
-        }
     }
 
     pub fn on_key_permission(&mut self, key: KeyEvent) -> Option<Effect> {
@@ -1400,27 +1291,6 @@ impl App {
         None
     }
 
-    pub fn on_key_picker(&mut self, key: KeyEvent) -> Option<Effect> {
-        let picker = self.picker.as_mut()?;
-        match key.code {
-            KeyCode::Esc => self.picker = None,
-            KeyCode::Up | KeyCode::Char('k') => picker.selected = picker.selected.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') => {
-                picker.selected = (picker.selected + 1).min(picker.choices.len().saturating_sub(1));
-            }
-            KeyCode::Enter => {
-                let picker = self.picker.take()?;
-                let choice = picker.choices.get(picker.selected)?;
-                return Some(Effect::SetConfig {
-                    id: picker.config_id,
-                    value: choice.value.clone(),
-                });
-            }
-            _ => {}
-        }
-        None
-    }
-
     fn on_ctrl_c(&mut self) -> Option<Effect> {
         if self.turn_active && !self.cancelling {
             self.cancelling = true;
@@ -1435,44 +1305,6 @@ impl App {
         None
     }
 
-    fn cycle_mode(&mut self, forward: bool) -> Option<Effect> {
-        if self.modes.is_empty() || self.conn != ConnState::Connected {
-            return None;
-        }
-        let base = self.pending_mode.as_deref().unwrap_or(&self.mode);
-        let current = self
-            .modes
-            .iter()
-            .position(|mode| mode.id == base)
-            .unwrap_or(0);
-        let len = self.modes.len();
-        let next = if forward {
-            (current + 1) % len
-        } else {
-            (current + len - 1) % len
-        };
-        let next = self.modes[next].id.clone();
-        self.pending_mode = Some(next.clone());
-        Some(Effect::SetMode(next))
-    }
-
-    fn open_picker(&mut self, config_id: &str, title: &str) {
-        let Some(option) = self.config(config_id) else {
-            self.hint = Some(format!("no {config_id} option available"));
-            return;
-        };
-        let selected = option
-            .choices
-            .iter()
-            .position(|choice| choice.value == option.current_value)
-            .unwrap_or(0);
-        self.picker = Some(Picker {
-            config_id: config_id.to_owned(),
-            title: title.to_owned(),
-            choices: option.choices.clone(),
-            selected,
-        });
-    }
 }
 
 /// What `/resume-turn` sends: the backend resumes the session's checkpoint.
@@ -1841,94 +1673,6 @@ mod tests {
     }
 
     #[test]
-    fn tab_cycles_modes_and_wraps() {
-        let mut app = connected();
-        assert_eq!(
-            app.on_key(key(KeyCode::Tab)),
-            Some(Effect::SetMode("auto".into()))
-        );
-        app.on_event(AppEvent::ModeChanged("auto".into()));
-        assert_eq!(
-            app.on_key(key(KeyCode::Tab)),
-            Some(Effect::SetMode("plan".into()))
-        );
-        app.on_event(AppEvent::ModeChanged("plan".into()));
-        assert_eq!(
-            app.on_key(key(KeyCode::BackTab)),
-            Some(Effect::SetMode("auto".into()))
-        );
-    }
-
-    #[test]
-    fn rapid_tabs_advance_from_the_requested_mode_not_the_stale_one() {
-        let mut app = connected();
-        assert_eq!(
-            app.on_key(key(KeyCode::Tab)),
-            Some(Effect::SetMode("auto".into()))
-        );
-        // No ModeChanged yet: the server hasn't answered.
-        assert_eq!(
-            app.on_key(key(KeyCode::Tab)),
-            Some(Effect::SetMode("plan".into()))
-        );
-        assert_eq!(app.mode, "build", "display stays on the confirmed mode");
-        app.on_event(AppEvent::ModeChanged("auto".into()));
-        assert_eq!(
-            app.pending_mode.as_deref(),
-            Some("plan"),
-            "an older confirmation doesn't clear a newer request"
-        );
-        app.on_event(AppEvent::ModeChanged("plan".into()));
-        assert_eq!(app.pending_mode, None);
-    }
-
-    #[test]
-    fn entering_auto_mode_warns_once_and_other_modes_do_not() {
-        let mut app = connected();
-        app.on_event(AppEvent::ModeChanged("plan".into()));
-        assert!(app.messages.is_empty());
-        app.on_event(AppEvent::ModeChanged("auto".into()));
-        assert_info(&app, "WITHOUT asking");
-        let count = app.messages.len();
-        app.on_event(AppEvent::ModeChanged("auto".into()));
-        assert_eq!(
-            app.messages.len(),
-            count,
-            "a repeat confirmation doesn't repeat the warning"
-        );
-        app.on_event(AppEvent::ModeChanged("build".into()));
-        assert_eq!(app.messages.len(), count);
-    }
-
-    #[test]
-    fn failed_mode_change_clears_the_pending_request() {
-        let mut app = connected();
-        app.on_key(key(KeyCode::Tab));
-        app.on_event(AppEvent::Notice("set_mode failed: nope".into()));
-        assert_eq!(app.pending_mode, None);
-        assert_eq!(
-            app.on_key(key(KeyCode::Tab)),
-            Some(Effect::SetMode("auto".into()))
-        );
-    }
-
-    #[test]
-    fn model_picker_selects_and_emits_set_config() {
-        let mut app = connected();
-        app.on_key(ctrl('o'));
-        assert!(app.picker.is_some());
-        app.on_key(key(KeyCode::Down));
-        assert_eq!(
-            app.on_key(key(KeyCode::Enter)),
-            Some(Effect::SetConfig {
-                id: "model".into(),
-                value: "b".into()
-            })
-        );
-        assert!(app.picker.is_none());
-    }
-
-    #[test]
     fn tool_update_replaces_content_and_flags_untrusted() {
         let mut app = connected();
         app.on_event(AppEvent::ToolCallStarted(ToolCallInfo {
@@ -2041,32 +1785,6 @@ mod tests {
     #[test]
     fn slash_commands_run_locally_and_are_never_sent_to_the_model() {
         let mut app = connected();
-        assert_eq!(
-            submit(&mut app, "/mode plan"),
-            Some(Effect::SetMode("plan".into()))
-        );
-        assert_eq!(app.pending_mode.as_deref(), Some("plan"));
-        assert!(!app.turn_active && app.messages.iter().all(|m| !matches!(m, Message::User(_))));
-
-        assert_eq!(submit(&mut app, "/mode yolo"), None);
-        assert_info(&app, "unknown mode 'yolo'");
-        submit(&mut app, "/mode");
-        assert_info(&app, "plan | build | auto");
-
-        assert_eq!(
-            submit(&mut app, "/model b"),
-            Some(Effect::SetConfig {
-                id: "model".into(),
-                value: "b".into()
-            })
-        );
-        assert_eq!(submit(&mut app, "/model zzz"), None);
-        assert_info(&app, "no model matches 'zzz'");
-
-        submit(&mut app, "/model");
-        assert!(app.picker.is_some(), "/model with no name opens the picker");
-        app.on_key(key(KeyCode::Esc));
-
         submit(&mut app, "/thinking");
         assert!(app.thoughts_expanded);
         submit(&mut app, "/tools");
@@ -2240,7 +1958,7 @@ mod tests {
         app.input.clear();
         type_text(&mut app, "/c");
         let labels: Vec<_> = app.menu.as_ref().unwrap().items.iter().map(|i| i.label.clone()).collect();
-        assert!(labels.contains(&"/config".to_owned()) && labels.contains(&"/copy".to_owned()), "{labels:?}");
+        assert!(labels.contains(&"/cost".to_owned()) && labels.contains(&"/copy".to_owned()), "{labels:?}");
         // Down moves the highlight instead of walking prompt history.
         app.on_key(key(KeyCode::Down));
         assert_eq!(app.menu.as_ref().unwrap().selected, 1);

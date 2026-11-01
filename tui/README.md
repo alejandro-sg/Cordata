@@ -53,19 +53,20 @@ live: the unfinished reply, running tool cards, the prompt box (or an approval b
 | `a` / `r` | allow / reject a pending tool call; `s` allows and saves the rule; `w` rejects and says why |
 | Esc / Ctrl+C | cancel the turn (inert while the approval box is open: answer it first) |
 | Ctrl+K | command deck: every model, view and command, searchable |
-| F3 | session HUD: context, usage, tasks, agents, the run, recent activity |
+| F3 | session HUD: the model, what it is doing, recent activity |
 | F4 | diff review: files, hunks, line numbers |
-| Ctrl+O / Ctrl+T | model / temperature picker |
 | `?` or F1 | all keys and commands |
 | Ctrl+Q | quit |
 
-### Not available in the chat yet
+### What the chat does not have
 
-The chat engine does not implement modes (plan, build, edit, auto) or permission rules: every edit and command asks,
-always. There is no undo, no goal loop, no context compaction and no saved sessions (`--resume` and `-c` start a fresh
-one), and `/config` changes are not read by the chat. The pre-tool hook in `.cordata/settings.json` (`scripts/guard.sh`,
-see [`docs/settings.md`](../docs/settings.md)) still blocks writes to `.env` and `.git/`. `cordata run` has its own
-checkpoints and rollback.
+No modes and no permission rules: every edit and command asks, always (`a` allows once, `s` allows that tool for the
+session). No undo, goal loop, context compaction or saved sessions, and no settings panel: the model comes from
+`CORDATA_NATIVE_MODEL`. A built-in guard refuses `.env` and `.git/` writes, recursive deletes and `.env` redirects before
+any prompt. `cordata run` has its own checkpoints and rollback.
+
+**Instructions.** The agent reads `CORDATA.md` (or `.cordata/CORDATA.md`, `AGENTS.md`, `CLAUDE.md`) from the project, plus
+`~/.cordata/CORDATA.md` and `CORDATA.local.md`, at the first prompt. `/memory` lists them and `/init` drafts one.
 
 ## Tests
 

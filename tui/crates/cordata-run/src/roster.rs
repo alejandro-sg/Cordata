@@ -29,6 +29,7 @@ pub struct LearnedRoster<'a> {
 
 impl<'a> LearnedRoster<'a> {
     /// `available` filters specs whose CLI is missing; `mode` is `off`, `shadow` or `live`.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(specs: Vec<Spec>, table: Bandit, ledger: &'a Ledger, workers: HashMap<String, Arc<dyn Worker>>, mode: Mode, lam: f64, mu: f64, available: impl Fn(&Spec) -> bool + 'static) -> Self {
         let mut dispatcher = LearnedDispatcher::new(specs, table);
         dispatcher.ledger = Some(ledger);

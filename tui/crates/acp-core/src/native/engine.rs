@@ -28,6 +28,40 @@ const SYSTEM_PROMPT: &str = "You are Cordata, a coding agent running in the user
 Answer concisely. Use the tools to read, search and edit the project and to run commands; \
 edits and commands are shown to the user for approval first.";
 
+const MAX_INSTRUCTION_CHARS: usize = 20_000;
+
+/// Guidance files, broad to specific: yours everywhere, then the project's (the first of its candidates that exists),
+/// then this machine's. Each is capped so a huge one cannot eat the window.
+fn project_instructions(cwd: &std::path::Path) -> Option<String> {
+    let home = std::env::var_os("CORDATA_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cordata")));
+    let groups: [(&str, Vec<std::path::PathBuf>); 3] = [
+        ("yours", home.into_iter().map(|h| h.join("CORDATA.md")).collect()),
+        (
+            "this project's",
+            ["CORDATA.md", ".cordata/CORDATA.md", "AGENTS.md", "CLAUDE.md"].iter().map(|n| cwd.join(n)).collect(),
+        ),
+        ("this machine's", vec![cwd.join("CORDATA.local.md")]),
+    ];
+    let parts: Vec<String> = groups
+        .iter()
+        .filter_map(|(who, paths)| {
+            paths.iter().find_map(|path| {
+                let text = std::fs::read_to_string(path).ok()?;
+                let text = text.trim();
+                if text.is_empty() {
+                    return None;
+                }
+                let name = path.file_name()?.to_string_lossy().into_owned();
+                let body: String = text.chars().take(MAX_INSTRUCTION_CHARS).collect();
+                Some(format!("Instructions from {who} {name}:\n{body}"))
+            })
+        })
+        .collect();
+    (!parts.is_empty()).then(|| parts.join("\n\n"))
+}
+
 type Events = mpsc::UnboundedSender<AppEvent>;
 type Commands = mpsc::UnboundedReceiver<Command>;
 
@@ -132,9 +166,6 @@ pub(crate) async fn drive(
     offload: PathBuf,
     state_dir: Option<PathBuf>,
 ) {
-    if options.resume.is_some() || options.continue_latest {
-        let _ = events.send(AppEvent::Notice("native sessions are not persisted yet; starting fresh".into()));
-    }
     let _ = events.send(AppEvent::Connected(SessionInfo {
         session_id: format!("native-{}", std::process::id()),
         cwd: options.cwd.display().to_string(),
@@ -183,7 +214,10 @@ impl Agent<'_> {
         for _ in 0..MAX_ROUNDS {
             let stream = match interruptible(self.provider.stream(&system, history.clone(), &specs), commands, events).await {
                 Ok(Ok(stream)) => stream,
-                Ok(Err(error)) => return Ok(self.fail(history, events, error)),
+                Ok(Err(error)) => return {
+                    self.fail(history, events, error);
+                    Ok(())
+                },
                 Err(interrupt) => return self.interrupted(interrupt, history, String::new(), events),
             };
             let mut stream = stream;
@@ -206,7 +240,10 @@ impl Agent<'_> {
                         if !text.is_empty() {
                             history.push(Msg::Assistant { text, calls: Vec::new() });
                         }
-                        return Ok(self.fail(history, events, error));
+                        return {
+                            self.fail(history, events, error);
+                            Ok(())
+                        };
                     }
                     None => break,
                 }
@@ -252,7 +289,11 @@ impl Agent<'_> {
         let eco = &mut self.economizer;
         eco.system.get_or_insert_with(|| {
             let facts = eco.skills.render(&self.cwd, prompt, 6);
-            cache_align::layout(SYSTEM_PROMPT, &facts, &[]).system
+            let base = match project_instructions(&self.cwd) {
+                Some(text) => format!("{SYSTEM_PROMPT}\n\n{text}"),
+                None => SYSTEM_PROMPT.to_owned(),
+            };
+            cache_align::layout(&base, &facts, &[]).system
         })
     }
 
@@ -295,6 +336,13 @@ impl Agent<'_> {
         let patch = |status, content: Option<String>| {
             AppEvent::ToolCallUpdated(ToolCallPatch { id: call.id.clone(), status: Some(status), content, ..Default::default() })
         };
+
+        // The pre-tool guard refuses without asking: `.env` and `.git/` writes, recursive deletes, redirects into `.env`.
+        let payload = serde_json::json!({"tool": call.name, "input": call.args}).to_string();
+        if let Some(reason) = cordata_guard::guard::check(&payload) {
+            let _ = events.send(patch(ToolStatus::Failed, Some(reason.clone())));
+            return Ok(reason);
+        }
 
         if tools::needs_approval(&call.name) && !self.always.contains(&call.name) {
             let (tx, rx) = oneshot::channel::<ApprovalDecision>();
@@ -411,9 +459,7 @@ mod tests {
         SessionOptions {
             cwd: cwd.to_path_buf(),
             transport: crate::transport::BackendTransport::Native,
-            resume: None,
             debug_log: None,
-            continue_latest: false,
         }
     }
 
@@ -514,6 +560,36 @@ mod tests {
         let started = events.iter().find_map(|e| if let AppEvent::ToolCallStarted(i) = e { Some(i) } else { None }).unwrap();
         assert_eq!(started.diffs[0].new_text, "new");
         assert!(matches!(&fake.seen.lock().unwrap()[1][2], Msg::ToolResult { output, .. } if output.contains("rejected")));
+    }
+
+    #[test]
+    fn instructions_load_broad_to_specific_from_the_first_project_file_and_are_capped() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(project_instructions(dir.path()).is_none() || std::env::var_os("HOME").is_some());
+        std::fs::write(dir.path().join("CLAUDE.md"), "use tabs").unwrap();
+        std::fs::write(dir.path().join("CORDATA.local.md"), "my machine").unwrap();
+        let text = project_instructions(dir.path()).unwrap();
+        assert!(text.contains("this project's CLAUDE.md:\nuse tabs"), "{text}");
+        assert!(text.find("CLAUDE.md").unwrap() < text.find("CORDATA.local.md").unwrap(), "{text}");
+        std::fs::write(dir.path().join("AGENTS.md"), "x".repeat(MAX_INSTRUCTION_CHARS + 500)).unwrap();
+        let text = project_instructions(dir.path()).unwrap();
+        assert!(text.contains("AGENTS.md") && !text.contains("CLAUDE.md:"), "the first project file wins");
+        assert!(text.chars().count() < MAX_INSTRUCTION_CHARS + 400);
+    }
+
+    #[tokio::test]
+    async fn the_guard_refuses_git_and_env_writes_and_recursive_deletes_without_asking() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Fake::new(vec![
+            vec![call("c1", "edit_file", json!({"path":".git/config","target":"","replacement":"x"}))],
+            vec![call("c2", "run_command", json!({"cmd":"rm -rf ~"}))],
+            vec![text("done")],
+        ]);
+        let events = session(&fake, dir.path(), &["go"], |_| ApprovalDecision::Allow).await;
+        assert!(asked(&events).is_empty(), "a blocked call is refused before any prompt");
+        let seen = fake.seen.lock().unwrap();
+        assert!(matches!(&seen[1][2], Msg::ToolResult { output, .. } if output.contains("GUARD REFUSAL")));
+        assert!(matches!(&seen[2][4], Msg::ToolResult { output, .. } if output.contains("GUARD REFUSAL")));
     }
 
     #[tokio::test]

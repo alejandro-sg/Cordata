@@ -126,11 +126,10 @@ pub fn parse_json_answer(text: &str) -> Option<Value> {
             });
         }
     }
-    if let (Some(first), Some(last)) = (raw.find('{'), raw.rfind('}')) {
-        if first < last {
+    if let (Some(first), Some(last)) = (raw.find('{'), raw.rfind('}'))
+        && first < last {
             candidates.push(raw[first..=last].to_owned());
         }
-    }
     candidates.iter().find_map(|c| serde_json::from_str::<Value>(c.trim()).ok().filter(Value::is_object))
 }
 

@@ -112,9 +112,6 @@ fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-/// The reply to `steer` (accepted, how many wait) and to `steer/drain` at a turn's end.
-pub const STEER_TAG: &str = "gui-steer";
-pub const STEER_DRAIN_TAG: &str = "gui-steer-drain";
 
 pub struct Session {
     pub view: View,
@@ -125,8 +122,6 @@ pub struct Session {
     pub target: Target,
     /// The project's saved sessions, when this session asked for them (stdio's `session/list`).
     pub listing: Option<Vec<Row>>,
-    /// Answers to the window's own requests (`gui-*` tags: Mission Control's runs, a run's events, an artifact).
-    pub data: std::collections::HashMap<String, Result<serde_json::Value, String>>,
     /// Bumped on every change, so a view can tell its cached layout is stale.
     pub version: u64,
     /// Images and files going out with the prompt being submitted right now (`submit_with`).
@@ -140,7 +135,7 @@ impl Session {
         let mut view = View::new();
         view.attach_store(cordata_view::settings::Store::discover(&cwd));
         view.initial_prompt = initial_prompt;
-        let mut session = Self { view, handle: None, cwd: cwd.clone(), transport: connection.describe(), target: target.clone(), listing: None, data: Default::default(), version: 0, outgoing: Vec::new(), local: local_tx };
+        let mut session = Self { view, handle: None, cwd: cwd.clone(), transport: connection.describe(), target: target.clone(), listing: None, version: 0, outgoing: Vec::new(), local: local_tx };
         if let Some(problem) = &connection.problem {
             session.view.messages.push(Message::Error(problem.clone()));
             return session;
@@ -150,16 +145,10 @@ impl Session {
         let (handle, mut events) = {
             // acp-core spawns its connection task with a bare `tokio::spawn`: it needs this runtime entered.
             let _guard = runtime.enter();
-            let resume = match &target {
-                Target::Resume(id) => Some(id.clone()),
-                _ => None,
-            };
             SessionHandle::spawn(SessionOptions {
                 cwd,
                 transport: connection.transport.clone(),
-                resume,
                 debug_log: std::env::var_os("CORDATA_APP_DEBUG_LOG").map(PathBuf::from),
-                continue_latest: false,
             })
         };
         session.handle = Some(handle);
@@ -201,24 +190,10 @@ impl Session {
                     self.listing = result.ok().map(|value| rows_from_session_list(&value));
                     cx.emit(SessionEvent::Listed);
                 }
-                AppEvent::ExtResult { tag, result } if tag.starts_with("gui-") => {
-                    self.data.insert(tag.clone(), result);
-                    cx.emit(SessionEvent::Data(tag));
-                }
                 event => self.view.on_event(event),
             }
         }
         self.settle(Vec::new(), cx);
-    }
-
-    /// A request of the window's own (`_cordata/…`); the answer lands in `data[tag]` and `SessionEvent::Data(tag)`.
-    pub fn request(&self, method: &str, params: serde_json::Value, tag: &str) -> bool {
-        debug_assert!(tag.starts_with("gui-"));
-        self.with_handle(|h| h.ext(method.to_owned(), params, tag.to_owned())).is_ok()
-    }
-
-    pub fn connected(&self) -> bool {
-        matches!(self.view.conn, cordata_view::app::ConnState::Connected)
     }
 
     /// Ask for the project's saved sessions (stdio); the answer lands in `listing`.
@@ -277,10 +252,6 @@ impl Session {
         self.view.input.text().to_owned()
     }
 
-    pub fn set_config(&mut self, id: &str, value: &str, cx: &mut Context<Self>) {
-        self.settle(vec![Effect::SetConfig { id: id.to_owned(), value: value.to_owned() }], cx);
-    }
-
     pub fn toggle_tools(&mut self, cx: &mut Context<Self>) {
         self.view.expand_tools = !self.view.expand_tools;
         self.version += 1;
@@ -323,11 +294,6 @@ impl Session {
         self.outgoing.clear();
     }
 
-    /// A note for the running turn: the agent reads it at its next model call.
-    pub fn steer(&self, text: &str) -> bool {
-        self.request("_cordata/steer", serde_json::json!({ "text": text }), STEER_TAG)
-    }
-
     pub fn answer(&mut self, decision: acp_core::ApprovalDecision, cx: &mut Context<Self>) {
         self.view.answer(decision);
         self.settle(Vec::new(), cx);
@@ -335,11 +301,6 @@ impl Session {
 
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
         self.settle(vec![Effect::Cancel], cx);
-    }
-
-    pub fn set_mode(&mut self, mode: &str, cx: &mut Context<Self>) {
-        self.view.pending_mode = Some(mode.to_owned());
-        self.settle(vec![Effect::SetMode(mode.to_owned())], cx);
     }
 
     fn run(&mut self, effect: Effect, cx: &mut Context<Self>) {
@@ -424,8 +385,6 @@ pub enum SessionEvent {
     Listed,
     /// A `/new`, `/close`, `/open` or session switch: the window's to carry out.
     Window(WindowRequest),
-    /// An answer to `request(…, tag)` arrived.
-    Data(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

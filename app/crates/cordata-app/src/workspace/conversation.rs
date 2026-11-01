@@ -35,34 +35,7 @@ pub fn status_of(view: &cordata_view::app::App) -> Status {
     }
 }
 
-/// The permission mode in canonical lowercase form.
-pub fn mode_label(mode: &str) -> &str {
-    match mode {
-        "plan" => "tasks, guardrails & done",
-        "build" => "ask first",
-        "edit" => "auto-edit",
-        "auto" => "auto",
-        "" => "ask first",
-        other => other,
-    }
-}
-
-/// Human-friendly icon and Title Case label for a permission mode.
-pub fn mode_badge(mode: &str) -> (&'static str, &'static str) {
-    match mode {
-        "plan" => ("◎", "Contract"),
-        "build" | "" => ("◈", "Ask first"),
-        "edit" => ("✎", "Auto-edit"),
-        "auto" => ("⚡", "Auto"),
-        _ => ("◈", "Custom"),
-    }
-}
-
 impl Workspace {
-    fn auto_routing_enabled(&self) -> bool {
-        self.settings_view.values.get("orchestrator.dispatch").and_then(|v| v.as_str()) == Some("auto")
-    }
-
     pub(super) fn header(&self, column_w: f32, cx: &mut Context<Self>) -> AnyElement {
         let tk = tk(cx);
         let view = &self.session.read(cx).view;
@@ -74,15 +47,13 @@ impl Workspace {
             Status::Waiting => (Dot::Live, "Needs approval", tk.amber),
             Status::Closed => (Dot::Amber, "Reconnecting…", tk.amber),
         };
-        let auto_on = self.auto_routing_enabled();
         let model = view.config("model").map(|option| option.current_name().to_owned());
         let window_k = view.context.as_ref().and_then(|g| g.window).map(|w| format!("{}k", w / 1000));
-        let model_text = model.map(|m| {
+        let _model_text = model.map(|m| {
             let m = short_model(&m);
-            let prefix = if auto_on { "⚡ " } else { "" };
             match (&window_k, column_w >= t::HEADER_SHORT_MODEL_W) {
-                (Some(k), true) => format!("{prefix}{m} · {k} ⌄"),
-                _ => format!("{prefix}{m} ⌄"),
+                (Some(k), true) => format!("{m} · {k}"),
+                _ => m.to_string(),
             }
         });
         let branch = view.branch.clone().or_else(|| self.git.branch.clone()).filter(|_| column_w >= t::HEADER_HIDE_BRANCH_W);
@@ -145,24 +116,6 @@ impl Workspace {
                 )
             })
             .children(self.pr_chip(cx))
-            .when_some(model_text, |row, text| {
-                row.child(
-                    ui::chip("model-picker", SharedString::from(text), cx)
-                        .role(gpui::Role::Button)
-                        .aria_label("Model and routing")
-                        .tooltip(ui::tip("Choose model or toggle Auto Mode routing"))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.mode_menu = false;
-                            if this.model_menu && !this.model_menu_bottom {
-                                this.model_menu = false;
-                            } else {
-                                this.model_menu = true;
-                                this.model_menu_bottom = false;
-                            }
-                            cx.notify();
-                        })),
-                )
-            })
             .child(
                 ui::chip("panel-toggle", "⊟ Inspector", cx)
                     .role(gpui::Role::Button)
@@ -175,199 +128,11 @@ impl Workspace {
             .into_any_element()
     }
 
-    pub(super) fn model_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if !self.model_menu {
-            return None;
-        }
-        let tk = tk(cx);
-        let option = self.session.read(cx).view.config("model")?.clone();
-        let auto_on = self.auto_routing_enabled();
-        let auto_hover = line(cx, t::HOVER_STRONG);
-        let rows = option.choices.iter().enumerate().map(|(index, choice)| {
-            let current = choice.value == option.current_value;
-            let value = choice.value.clone();
-            let is_cloud = choice.value.contains(":cloud") || choice.name.contains(":cloud");
-            ui::row(("model", index), current, cx)
-                .py(px(6.))
-                .child(div().w(px(12.)).text_color(c(tk.amber)).child(if current { "●" } else { "" }))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .font_family(mono(cx))
-                        .text_size(px(t::TEXT_SMALL))
-                        .text_color(c(if current { tk.amber } else { tk.text_primary }))
-                        .child(SharedString::from(shown(&choice.name))),
-                )
-                .when(is_cloud, |row| row.child(ui::badge("cloud", Tone::Teal, cx)))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    let value = value.clone();
-                    this.model_menu = false;
-                    this.session.update(cx, |session, cx| session.set_config("model", &value, cx));
-                }))
-        });
-        let popover = ui::popover(cx)
-            .id("model-menu")
-            .role(gpui::Role::Menu)
-            .aria_label("Models and Auto Mode")
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                this.model_menu = false;
-                cx.notify();
-            }))
-            .absolute()
-            .when(!self.model_menu_bottom, |p| p.top(px(t::HEADER_H - 4.)).right(px(90.)))
-            .when(self.model_menu_bottom, |p| p.bottom(px(88.)).right(px(32.)))
-            .w(px(340.))
-            .max_h(px(460.))
-            .overflow_y_scroll()
-            .p(px(6.))
-            .child(
-                div()
-                    .id("toggle-auto-routing")
-                    .role(gpui::Role::MenuItemCheckBox)
-                    .aria_label("Toggle Auto Mode routing")
-                    .flex()
-                    .items_start()
-                    .justify_between()
-                    .gap(px(10.))
-                    .p(px(8.))
-                    .mb(px(4.))
-                    .rounded(px(t::RADIUS_CARD))
-                    .bg(if auto_on { amber(cx, t::AMBER_FILL) } else { line(cx, t::FILL_FAINT) })
-                    .border_1()
-                    .border_color(if auto_on { amber(cx, t::AMBER_BORDER) } else { line(cx, t::LINE_SUBTLE) })
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(auto_hover))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        let next = if auto_on { "live" } else { "auto" };
-                        this.set_user_setting("orchestrator.dispatch", serde_json::json!(next), cx);
-                    }))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(6.))
-                                    .text_size(px(t::TEXT_UI))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(c(tk.text_primary))
-                                    .child("⚡ Auto Mode Routing"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(t::TEXT_META))
-                                    .line_height(relative(1.35))
-                                    .text_color(c(tk.text_muted))
-                                    .child("Dynamically selects Claude, Antigravity, or Ollama :cloud per task"),
-                            ),
-                    )
-                    .child(ui::badge(if auto_on { "ON" } else { "OFF" }, if auto_on { Tone::Amber } else { Tone::Neutral }, cx)),
-            )
-            .child(div().px(px(6.)).py(px(4.)).child(ui::section_label("primary model", cx)))
-            .children(rows);
-        Some(popover.into_any_element())
-    }
-
-    pub(super) fn mode_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if !self.mode_menu {
-            return None;
-        }
-        let tk = tk(cx);
-        let view = &self.session.read(cx).view;
-        let current = view.pending_mode.clone().unwrap_or_else(|| view.mode.clone());
-        let current = if current.is_empty() { "build".to_owned() } else { current };
-        let trusted = self.settings_view.trusted;
-        let specs: [(&str, &str, &str, &str); 4] = [
-            ("plan", "◎", "Contract (Tasks, Guardrails & Done)", "Describe task(s), guardrails, and what Done looks like before running any changes."),
-            ("build", "◈", "Ask first", "Ask for your approval before editing files or running shell commands."),
-            ("edit", "✎", "Auto-edit", "Apply file edits automatically; still ask before shell commands."),
-            ("auto", "⚡", "Auto", "Run edits and safe commands autonomously in trusted workspaces."),
-        ];
-        let available: Vec<String> = view.modes.iter().map(|m| m.id.clone()).collect();
-        let rows = specs.into_iter().enumerate().filter(|(_, (id, ..))| available.is_empty() || available.iter().any(|m| m == id)).map(|(index, (id, icon, title, desc))| {
-            let selected = current == id;
-            let needs_trust = id == "auto" && !trusted;
-            let mode_id = id.to_owned();
-            ui::row(("mode-choice", index), selected, cx)
-                .items_start()
-                .py(px(7.))
-                .child(div().w(px(16.)).pt(px(1.)).text_color(c(if selected { tk.amber } else { tk.text_secondary })).child(icon))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(6.))
-                                .child(
-                                    div()
-                                        .text_size(px(t::TEXT_UI))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(c(if selected { tk.amber } else { tk.text_primary }))
-                                        .child(title),
-                                )
-                                .when(needs_trust, |r| r.child(ui::badge("needs trust", Tone::Amber, cx))),
-                        )
-                        .child(div().text_size(px(t::TEXT_META)).line_height(relative(1.35)).text_color(c(tk.text_muted)).child(desc)),
-                )
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.mode_menu = false;
-                    if needs_trust {
-                        this.ask_trust(window, cx);
-                    } else {
-                        let mode_id = mode_id.clone();
-                        this.session.update(cx, |session, cx| session.set_mode(&mode_id, cx));
-                    }
-                    cx.notify();
-                }))
-        });
-        Some(
-            ui::popover(cx)
-                .id("mode-menu")
-                .role(gpui::Role::Menu)
-                .aria_label("Permission mode")
-                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                    this.mode_menu = false;
-                    cx.notify();
-                }))
-                .absolute()
-                .bottom(px(88.))
-                .right(px(136.))
-                .w(px(332.))
-                .p(px(6.))
-                .child(div().px(px(8.)).py(px(4.)).child(ui::section_label("execution mode", cx)))
-                .children(rows)
-                .child(
-                    div()
-                        .px(px(8.))
-                        .pt(px(6.))
-                        .pb(px(2.))
-                        .border_t_1()
-                        .border_color(line(cx, t::LINE_SUBTLE))
-                        .child(ui::meta("⇧Tab cycles Plan → Ask first → Auto-edit", cx)),
-                )
-                .into_any_element(),
-        )
-    }
-
     /// The column when there is nothing said yet: brand mark, greeting, context pills, folder trust banner,
     /// 2×2 clickable starter cards, resume thread card, and shortcut hints.
     pub(super) fn empty_state(&self, cx: &mut Context<Self>) -> AnyElement {
         let tk = tk(cx);
         let project = self.project_name();
-        let trusted = self.settings_view.trusted;
         let dirty_count = self.review.file_count();
         let branch = self.session.read(cx).view.branch.clone().or_else(|| self.git.branch.clone());
         let resume = self.listing.iter().find(|row| !self.sessions.iter().any(|s| super::matches_target(s.read(cx), &row.target))).cloned();
@@ -449,7 +214,7 @@ impl Workspace {
 
         let card_explore = starter_card("starter-explore", "⌕", "Explore codebase", "Map architecture, key modules, and main entry points".into(), cx)
             .on_click(cx.listener(|this, _, window, cx| {
-                this.apply_starter("Map out the architecture, key modules, and main entry points of this repository.", Some("plan"), false, window, cx);
+                this.apply_starter("Map out the architecture, key modules, and main entry points of this repository.", false, window, cx);
             }))
             .into_any_element();
 
@@ -458,20 +223,20 @@ impl Workspace {
                 if dirty_count > 0 {
                     this.request_review(false, window, cx);
                 } else {
-                    this.apply_starter("Review the most recent changes in this repository for bugs, edge cases, and test coverage gaps.", Some("plan"), false, window, cx);
+                    this.apply_starter("Review the most recent changes in this repository for bugs, edge cases, and test coverage gaps.", false, window, cx);
                 }
             }))
             .into_any_element();
 
         let card_plan = starter_card("starter-plan", "◎", "Define contract", "Describe task(s), guardrails & what Done looks like".into(), cx)
             .on_click(cx.listener(|this, _, window, cx| {
-                this.apply_starter("Let's structure this work:\n1. Describe the task(s)\n2. Describe the Guardrails that surround the task(s)\n3. Describe what Done looks like\n\nTarget: ", Some("plan"), false, window, cx);
+                this.apply_starter("Let's structure this work:\n1. Describe the task(s)\n2. Describe the Guardrails that surround the task(s)\n3. Describe what Done looks like\n\nTarget: ", false, window, cx);
             }))
             .into_any_element();
 
         let card_fix = starter_card("starter-fix", "⚡", "Run checks & fix issues", "Run tests or linters, diagnose failures, and patch".into(), cx)
             .on_click(cx.listener(|this, _, window, cx| {
-                this.apply_starter("Run the project's test suite and build checks, diagnose any failures, and propose clean fixes.", None, false, window, cx);
+                this.apply_starter("Run the project's test suite and build checks, diagnose any failures, and propose clean fixes.", false, window, cx);
             }))
             .into_any_element();
 
@@ -544,53 +309,6 @@ impl Workspace {
                                 )
                             }),
                     )
-                    .when(!trusted, |col| {
-                        col.child(
-                            div()
-                                .id("empty-trust-banner")
-                                .w_full()
-                                .flex()
-                                .items_center()
-                                .justify_between()
-                                .gap(px(12.))
-                                .px(px(14.))
-                                .py(px(10.))
-                                .rounded(px(t::RADIUS_CARD))
-                                .bg(amber(cx, t::AMBER_FILL))
-                                .border_1()
-                                .border_color(amber(cx, t::AMBER_BORDER))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .flex()
-                                        .flex_col()
-                                        .gap(px(2.))
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .items_center()
-                                                .gap(px(6.))
-                                                .text_size(px(t::TEXT_SMALL))
-                                                .font_weight(FontWeight::MEDIUM)
-                                                .text_color(c(tk.text_primary))
-                                                .child(ui::diamond(cx))
-                                                .child("Restricted folder mode"),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_size(px(t::TEXT_META))
-                                                .text_color(c(tk.text_secondary))
-                                                .child("Cordata asks before every file write or shell command, and holds back project MCP servers until you trust this folder."),
-                                        ),
-                                )
-                                .child(
-                                    ui::button("empty-trust-btn", "Trust folder", Kind::AmberOutline, cx)
-                                        .h(px(28.))
-                                        .on_click(cx.listener(|this, _, window, cx| this.ask_trust(window, cx))),
-                                ),
-                        )
-                    })
                     .child(
                         div()
                             .w_full()
@@ -854,15 +572,6 @@ impl Workspace {
         let tk = tk(cx);
         let view = &self.session.read(cx).view;
         let busy = view.turn_active || !view.pending.is_empty();
-        let mode = view.pending_mode.clone().unwrap_or_else(|| view.mode.clone());
-        let (mode_icon, mode_title) = mode_badge(&mode);
-        let mode_text = format!("{mode_icon} {mode_title} ⌄");
-        let auto_on = self.auto_routing_enabled();
-        let composer_model = view.config("model").map(|option| {
-            let short = short_model(option.current_name());
-            if auto_on { format!("⚡ {short} ⌄") } else { format!("{short} ⌄") }
-        });
-
         let typed = !self.composer.read(cx).value().trim().is_empty();
         let ready = typed || !self.staged.is_empty();
         let active_border = ready || busy || self.saying;
@@ -897,15 +606,6 @@ impl Workspace {
                 .child(div().font_weight(FontWeight::MEDIUM).text_color(c(tk.text_secondary)).child(key))
                 .child(word)
         };
-
-        let running = view.turn_active;
-        let steer = (running && typed).then(|| {
-            ui::button("steer", "Steer ⌥↵", Kind::Tint, cx)
-                .h(px(t::SEND_BUTTON))
-                .aria_label("Steer the running turn (Option+Enter)")
-                .tooltip(ui::tip("Send this to the running turn immediately; ↵ queues for after"))
-                .on_click(cx.listener(|this, _, window, cx| this.steer_composer(window, cx)))
-        });
 
         let chips: Vec<AnyElement> = self
             .staged
@@ -1081,37 +781,6 @@ impl Workspace {
                     .child(trigger("insert-at", "@", "files", cx))
                     .child(trigger("insert-bang", "!", "shell", cx))
                     .child(div().flex_1())
-                    .child(
-                        ui::chip("mode-chip", SharedString::from(mode_text), cx)
-                            .role(gpui::Role::Button)
-                            .aria_label(SharedString::from(format!("Execution mode: {}. Click to choose or press Shift+Tab", mode_label(&mode))))
-                            .tooltip(ui::tip("Choose execution mode (Contract / Ask first / Auto-edit / Auto)  ⇧Tab"))
-                            .when(mode == "auto", |chip| chip.bg(amber(cx, t::AMBER_FILL)).border_color(amber(cx, t::AMBER_BORDER)).text_color(c(tk.amber)))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.model_menu = false;
-                                this.mode_menu = !this.mode_menu;
-                                cx.notify();
-                            })),
-                    )
-                    .when_some(composer_model, |row, label| {
-                        row.child(
-                            ui::chip("composer-model-chip", SharedString::from(label), cx)
-                                .role(gpui::Role::Button)
-                                .aria_label("Choose model or Auto Mode")
-                                .tooltip(ui::tip("Choose model or toggle Auto Mode routing"))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.mode_menu = false;
-                                    if this.model_menu && this.model_menu_bottom {
-                                        this.model_menu = false;
-                                    } else {
-                                        this.model_menu = true;
-                                        this.model_menu_bottom = true;
-                                    }
-                                    cx.notify();
-                                })),
-                        )
-                    })
-                    .children(steer)
                     .child(send),
             )
             .into_any_element()
@@ -1125,7 +794,7 @@ impl Workspace {
         } else if !view.pending.is_empty() {
             "Approve above (↵), or press W to redirect in your own words…"
         } else if view.turn_active {
-            "Queue a follow-up (↵), or steer the active run immediately (⌥↵)…"
+            "Queue a follow-up (↵)…"
         } else if view.messages.iter().any(transcript::is_conversation) {
             "Ask a follow-up, @mention files, or type / for commands…"
         } else {
@@ -1172,16 +841,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn models_and_rules_read_short() {
+    fn models_read_short() {
         assert_eq!(short_model("claude-opus-4-20250514"), "opus-4");
         assert_eq!(short_model("kimi-k2.7-code"), "kimi-k2.7-code");
         assert_eq!(always_prefix("shell(pnpm test)"), "pnpm test");
         assert_eq!(always_prefix("shell(git status:*)"), "git status");
         assert_eq!(always_prefix("read"), "read");
-        assert_eq!(mode_label("build"), "ask first");
-        assert_eq!(mode_label("plan"), "tasks, guardrails & done");
-        assert_eq!(mode_badge("plan"), ("◎", "Contract"));
-        assert_eq!(mode_badge("build"), ("◈", "Ask first"));
-        assert_eq!(mode_badge("auto"), ("⚡", "Auto"));
     }
 }

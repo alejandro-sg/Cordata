@@ -235,6 +235,7 @@ pub struct LearnedDispatcher<'a> {
     pub rng: std::cell::RefCell<Box<dyn FnMut() -> f64>>,
     pub available: Box<dyn Fn(&Spec) -> bool>,
     /// Extra utility a subclass adds to a candidate (the Auto Mode router). Zero by default.
+    #[allow(clippy::type_complexity)]
     pub adjust: Box<dyn Fn(&Spec, &str, &str) -> f64>,
     pub decisions: Vec<Decision>,
     /// Write outcomes to the table's file and queue ledger events (off for offline training).

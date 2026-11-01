@@ -5,7 +5,7 @@ mod ui;
 
 // The state half moved to cordata-view (shared with the native app); kept at its old paths so `crate::app::App` and
 // friends still name it everywhere here.
-use cordata_view::{app, commands, config_ui, extras, menu, settings, shell};
+use cordata_view::{app, commands, extras, menu, settings, shell};
 
 use std::io;
 use std::panic;
@@ -34,15 +34,6 @@ use crate::ui::transcript;
 #[derive(Parser)]
 #[command(version)]
 struct Args {
-    /// Resume an existing session id (session/load). The backend replays text
-    /// only, and always comes back in build mode.
-    #[arg(long, value_name = "SESSION_ID")]
-    resume: Option<String>,
-
-    /// Resume the newest saved session for this folder (session/list).
-    #[arg(short = 'c', long = "continue", conflicts_with = "resume")]
-    continue_latest: bool,
-
     /// Project directory the agent works in [default: current directory].
     #[arg(long)]
     cwd: Option<PathBuf>,
@@ -84,13 +75,11 @@ struct Workspace {
 }
 
 impl Workspace {
-    fn spawn(&mut self, resume: Option<String>, continue_latest: bool, initial_prompt: Option<String>) -> usize {
+    fn spawn(&mut self, initial_prompt: Option<String>) -> usize {
         let (handle, mut rx) = SessionHandle::spawn(SessionOptions {
             cwd: self.cwd.clone(),
             transport: self.transport.clone(),
-            resume,
             debug_log: self.debug_log.clone(),
-            continue_latest,
         });
         let number = self.next_number;
         self.next_number += 1;
@@ -240,7 +229,7 @@ async fn main() -> Result<()> {
         events: tx,
         local: local_tx,
     };
-    workspace.spawn(args.resume, args.continue_latest, args.prompt);
+    workspace.spawn(args.prompt);
     if args.panes || workspace.app().settings.get("ui.panes").and_then(serde_json::Value::as_bool).unwrap_or(false) {
         workspace.app().open_overlay(crate::overlay::Kind::Panes);
     }
@@ -476,7 +465,7 @@ async fn run(
                     Ok(())
                 }
                 Effect::NewSession => {
-                    workspace.active = workspace.spawn(None, false, None);
+                    workspace.active = workspace.spawn(None);
                     banner = Some(workspace.banner());
                     last = None;
                     Ok(())

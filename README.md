@@ -48,8 +48,7 @@ cordata "why does the build fail?"   # …starting with a prompt
 
 In the prompt: `/` lists commands, `@` attaches a file, `!git status` runs a command and shows the agent its output, `?`
 shows every key. Typing while the agent works queues your message. The agent reads and searches freely, and asks before
-it edits a file or runs a command. Commands run under a macOS Seatbelt sandbox. Modes, undo, goal loops, compaction and
-saved sessions are not available in the chat yet; see [`tui/README.md`](tui/README.md).
+it edits a file or runs a command. Commands run under a macOS Seatbelt sandbox. There are no modes, undo, goal loops or saved sessions; see [`tui/README.md`](tui/README.md).
 
 ```bash
 cordata run "Add retries to the HTTP client and test them"   # research → plan → implement → review → check

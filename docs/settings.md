@@ -15,10 +15,12 @@ Three JSON files; a later one wins on a conflict. Objects merge key by key.
 Plain JSON, no comments. A file that is not valid JSON is ignored and reported (`cordata doctor` says which); it is never
 overwritten. A key can be nested (`{"vault": {"enabled": true}}`) or flat (`{"vault.enabled": true}`).
 
-## Chat agent (environment)
+**Only the user file may set `orchestrator.*` and `vault.*`** (and `app.*`). A repository's own files cannot raise the
+spend cap, change the pools or point worker traffic at another proxy; those keys are ignored there and reported.
 
-The terminal client and the app run the agent in their own process. It does not read the settings files; the model and
-keys come from the environment.
+## Chat agent
+
+The terminal client and the app run the agent in their own process. The model and keys come from the environment.
 
 | variable | meaning |
 |---|---|
@@ -26,8 +28,15 @@ keys come from the environment.
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OLLAMA_API_KEY` | provider key; wins over the Keychain |
 | Keychain `cordata-anthropic-api-key`, `cordata-ollama-api-key` | provider key (`make key` stores one: `PROVIDER=anthropic` by default, or `ollama`) |
 
-Every tool that changes files or runs a command asks first; "Always allow" lasts for the session. Reads and searches do
-not ask. Sessions are not saved yet, so `--resume` and `-c` start a fresh one.
+Every edit and command asks first; "Always allow" lasts for the session and is per tool. Reads and searches do not ask.
+There are no modes or permission rules, and sessions are not saved.
+
+**Instructions.** At the first prompt the agent reads, broad to specific: `~/.cordata/CORDATA.md`, the first of
+`CORDATA.md`, `.cordata/CORDATA.md`, `AGENTS.md`, `CLAUDE.md` in the project, then `CORDATA.local.md` (this machine).
+Each is capped at 20,000 characters. `/memory` lists what was found and `/init` has the agent draft a `CORDATA.md`.
+
+**Display preferences** in the user, project or local file: `tui.thinking` and `tui.toolOutput` (`collapsed` or
+`expanded`); `/thinking` and `/tools` flip them for the session.
 
 ## Orchestrator (`cordata run`)
 
@@ -45,19 +54,19 @@ A CLI that is not installed is left out. `CORDATA_CLAUDE_BIN` and `CORDATA_AGY_B
 
 ## Agent Vault (`vault.*`)
 
-Coding CLIs never run with direct network access: their traffic goes through the Agent Vault proxy, or the run is refused.
+The coding CLIs' traffic goes through the Agent Vault proxy, or the run is refused unless you pass `--allow-direct`.
 
 | key | what |
 |---|---|
-| `vault.enabled` | route worker traffic through the proxy (default off, so `cordata run` needs `--allow-direct` until it is on) |
+| `vault.enabled` | route worker traffic through an Agent Vault proxy you run (Cordata does not ship one; default off, so `cordata run` needs `--allow-direct`) |
 | `vault.addr` | the proxy address (default `http://127.0.0.1:14322`) |
 | `CORDATA_VAULT_DIRECT` | environment; allow direct egress for orchestrator runs |
 
-## Hooks
+## Built-in guard
 
-`hooks.preToolUse` names a command run before a tool call; `hooks.matcher` selects tools. Exit code 2 blocks the call and
-sends stderr to the model. `.cordata/settings.json` points it at `scripts/guard.sh`, which runs `cordata-guard`: no edits
-to `.env` or `.git/`, no `rm -rf` of `/`, `~` or `..`, no shell redirect into `.env`.
+Before the approval prompt, the chat engine refuses (without asking) edits to `.env` files and inside `.git/`,
+recursive deletes of `/`, `~` or `..`, and shell redirects into `.env`. It is not configurable. The same rules live in
+`tui/crates/cordata-guard`.
 
 ## The native app (`app.*`)
 

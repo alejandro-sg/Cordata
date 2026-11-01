@@ -143,7 +143,6 @@ impl Workspace {
 
     fn project_card(&self, cx: &mut Context<Self>) -> AnyElement {
         let tk = tk(cx);
-        let trusted = self.settings_view.trusted;
         let name_hover = line(cx, t::HOVER);
         let dirty_count = self.review.files.len();
         let dirty_hover = line(cx, t::HOVER_STRONG);
@@ -222,35 +221,6 @@ impl Workspace {
                         )
                     }),
             )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(8.))
-                    .pt(px(2.))
-                    .border_t_1()
-                    .border_color(line(cx, t::LINE_SUBTLE))
-                    .when(trusted, |row| {
-                        row.child(ui::badge("● Trusted", Tone::Teal, cx)).child(
-                            ui::button("revoke-trust", "Revoke", Kind::Ghost, cx)
-                                .h(px(22.))
-                                .px(px(6.))
-                                .text_size(px(t::TEXT_SMALL))
-                                .on_click(cx.listener(|this, _, _, cx| this.revoke_trust(None, cx))),
-                        )
-                    })
-                    .when(!trusted, |row| {
-                        row.child(ui::badge("◆ Restricted", Tone::Amber, cx)).child(
-                            ui::button("trust-project", "Trust folder", Kind::Outline, cx)
-                                .h(px(22.))
-                                .px(px(8.))
-                                .text_size(px(t::TEXT_SMALL))
-                                .on_click(cx.listener(|this, _, window, cx| this.ask_trust(window, cx))),
-                        )
-                    }),
-            )
-            .when(!trusted, |card| card.child(div().text_size(px(t::TEXT_SMALL)).text_color(c(tk.text_muted)).child("Prompts before file edits & shell commands.")))
             .into_any_element()
     }
 

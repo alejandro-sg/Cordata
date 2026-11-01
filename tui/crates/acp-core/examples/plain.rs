@@ -30,9 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (session, mut events) = SessionHandle::spawn(SessionOptions {
         cwd: std::env::current_dir()?,
         transport: acp_core::BackendTransport::Native,
-        resume: None,
         debug_log,
-        continue_latest: false,
     });
 
     let mut permission_cards = 0;

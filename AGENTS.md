@@ -8,7 +8,7 @@ Index and operational invariants for coding agents working on Cordata. Keep this
 
 | Command | Purpose |
 |---|---|
-| `make tui-build` | Builds the release binaries `cordata` runs (`acp-tui`, `cordata-run`, `cordata-doctor`, `cordata-guard`) |
+| `make tui-build` | Builds the release binaries `cordata` runs (`acp-tui`, `cordata-run`, `cordata-doctor`) |
 | `make cli` | Symlinks `cordata` binary to `~/.local/bin/cordata` |
 | `make tui-test` | Runs the Rust tests for the terminal workspace (`tui/`) |
 | `make app-test` | Runs Rust tests for native GPUI macOS application (`cordata-app`) |
@@ -41,16 +41,10 @@ Never instruct the model to "double-check" its work. Translate acceptance criter
 - Run `scripts/verify.sh` or `make tui-test`.
 - Hard Pass (exit 0) or Fail is the only acceptable proof of completion.
 
-### Autonomous Looping with `/goal`
-To run iterative remediation without interactive prompt loops:
-- Run `/goal "<condition>" --check "<command>" --turns N` (e.g. `/goal "tests pass" --check "make tui-test" --turns 8`).
-- The harness runs `--check` natively without spending tokens.
-- Turns are hard-capped at 30 (`DEFAULT_MAX_TURNS = 8`).
-
-### Deterministic Hooks, No Shouting
+### Deterministic Guards, No Shouting
 Do not rely on ALL CAPS or prompt pleadings. Invariants are enforced physically:
-- Pre-tool lifecycle hooks (`hooks.preToolUse`) execute `scripts/guard.sh`.
-- Exit code `2` blocks the tool execution and returns `stderr` directly to the model as the blocker reason.
+- The chat engine's built-in guard (`tui/crates/cordata-guard`) refuses `.env` and `.git/` writes, recursive deletes and `.env` redirects before any approval prompt.
+- Every edit and command asks first; the sandbox scopes what an approved command can touch.
 
 ### Sub-Agent Orchestration & The Goldfish Review
 - Main chat context must remain clean. Heavy research, external fetch, and binary analysis should run in sub-agents.

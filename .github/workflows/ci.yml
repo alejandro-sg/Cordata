@@ -34,9 +34,12 @@ jobs:
           workspaces: |
             tui
             app
-      - name: Terminal (acp-core, acp-tui, acp-stress)
+      - name: Terminal (acp-core, acp-tui, orchestrator and tools)
         working-directory: tui
         run: cargo test --workspace
+      - name: Clippy (terminal)
+        working-directory: tui
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Shared state, palette and app (headless)
         working-directory: app
         run: cargo test --workspace --features cordata-view/crossterm

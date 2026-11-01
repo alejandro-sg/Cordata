@@ -12,10 +12,6 @@ path = "src/lib.rs"
 name = "cordata-secrets"
 path = "src/bin/secrets.rs"
 
-[[bin]]
-name = "cordata-guard"
-path = "src/bin/guard.rs"
-
 [dependencies]
 regex.workspace = true
 serde_json.workspace = true

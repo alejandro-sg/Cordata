@@ -83,16 +83,6 @@ impl PanesView {
             return Outcome::stay_with(effect);
         }
 
-        // If a model/temp picker is open, delegate to picker handler.
-        if app.picker.is_some() {
-            return Outcome::stay_with(app.on_key_picker(key));
-        }
-
-        // If config panel is open, delegate to config handler.
-        if app.config.is_some() {
-            return Outcome::stay_with(app.on_key_config(key));
-        }
-
         // Regular input typing, navigation, tab-completion, and prompt submission.
         let is_enter = key.code == KeyCode::Enter && !key.modifiers.contains(KeyModifiers::ALT) && !key.modifiers.contains(KeyModifiers::SHIFT);
         let effect = app.handle_input_key(key);
@@ -121,7 +111,7 @@ impl PanesView {
             area,
             app,
             "WORKSPACE",
-            "F3 inline/panes · Tab mode · Ctrl+K deck · F4 diff · ? help · PgUp/PgDn scroll",
+            "F3 inline/panes · Ctrl+K deck · F4 diff · ? help · PgUp/PgDn scroll",
         );
 
         if body.width < 80 || body.height < 10 {

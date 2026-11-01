@@ -17,13 +17,8 @@ pub struct SessionOptions {
     pub cwd: PathBuf,
     /// How to reach the agent.
     pub transport: BackendTransport,
-    /// Resume an existing session id via `session/load` instead of creating one.
-    pub resume: Option<String>,
     /// Append diagnostics here. Never stdout/stdin — the TUI owns those.
     pub debug_log: Option<PathBuf>,
-    /// With no `resume`, ask the backend (`session/list`) for the newest session
-    /// in `cwd` and load that one; a fresh session when there is none.
-    pub continue_latest: bool,
 }
 
 /// Something sent with a prompt: an image (a pasted screenshot, a dropped picture) or a file's text.

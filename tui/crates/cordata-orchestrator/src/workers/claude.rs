@@ -65,12 +65,11 @@ pub fn provider_windows(info: &Value) -> Value {
             }
         }
     }
-    if windows.is_empty() {
-        if let Some(u) = info.get("utilization").and_then(Value::as_f64) {
+    if windows.is_empty()
+        && let Some(u) = info.get("utilization").and_then(Value::as_f64) {
             let name = info.get("rateLimitType").and_then(Value::as_str).unwrap_or("five_hour");
             windows.insert(name.to_owned(), json!({"utilization": u, "resets_at": info.get("resetsAt").cloned().unwrap_or(Value::Null)}));
         }
-    }
     json!({"status": info.get("status").cloned().unwrap_or(Value::Null), "limit_type": info.get("rateLimitType").cloned().unwrap_or(Value::Null),
            "resets_at": info.get("resetsAt").cloned().unwrap_or(Value::Null), "windows": windows})
 }

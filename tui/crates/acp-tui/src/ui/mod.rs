@@ -35,7 +35,7 @@ pub struct LiveFrame {
 ///  ⌜ CORDATA ⌝  ░▒▓  abcdef12
 ///  ▌ ~/proj  ⎇ main
 ///  ▌ kimi-k2.7-code · medium
-///  ╴ /  commands   @  files   !  shell   Tab  mode   Ctrl+K  palette   ?  help
+///  ╴ /  commands   @  files   !  shell   Ctrl+K  palette   ?  help
 /// ```
 pub fn welcome_lines(info: &SessionInfo, width: u16) -> Vec<Line<'static>> {
     let dim = Style::new().fg(Color::DarkGray);
@@ -60,7 +60,7 @@ pub fn welcome_lines(info: &SessionInfo, width: u16) -> Vec<Line<'static>> {
         .find(|option| option.id == "model")
         .map(|option| option.current_name().to_owned())
         .filter(|name| !name.is_empty());
-    let keys = ["/  commands", "@  files", "!  shell", "Tab  mode", "Ctrl+K  palette", "?  help"].join("   ");
+    let keys = ["/  commands", "@  files", "!  shell", "Ctrl+K  palette", "?  help"].join("   ");
 
     let mut lines = vec![Line::from(title), Line::from(place)];
     if let Some(model) = model {
@@ -636,15 +636,15 @@ mod tests {
     #[test]
     fn the_slash_menu_and_the_queue_sit_above_the_prompt() {
         let mut app = connected();
-        app.input.set_text("/mo");
+        app.input.set_text("/co");
         app.refresh_menu();
         let shown = screen(&mut app, 90, 24);
-        for needle in ["▸ /mode", "/model", "↑↓ choose · tab complete · enter run", "❯ /mo"] {
+        for needle in ["▸ /cost", "/copy", "↑↓ choose · tab complete · enter run", "❯ /co"] {
             assert!(shown.contains(needle), "missing {needle:?} in\n{shown}");
         }
         let rows: Vec<&str> = shown.lines().collect();
-        let menu = rows.iter().position(|r| r.contains("▸ /mode")).unwrap();
-        let prompt = rows.iter().position(|r| r.contains("❯ /mo")).unwrap();
+        let menu = rows.iter().position(|r| r.contains("▸ /cost")).unwrap();
+        let prompt = rows.iter().position(|r| r.contains("❯ /co")).unwrap();
         assert!(menu < prompt, "the menu is above the box:\n{shown}");
         eprintln!("{shown}");
 
@@ -762,8 +762,6 @@ mod tests {
         for needle in [
             "Keys",
             "Esc / Ctrl+C",
-            "Tab / Shift+Tab",
-            "/mode [plan|build|auto]",
             "/thinking",
             "Scroll with your terminal",
         ] {
@@ -837,109 +835,6 @@ mod tests {
             "{with}"
         );
         assert!(!ask(None).contains("Always allow"));
-    }
-
-    #[test]
-    fn the_config_panel_shows_each_setting_its_value_and_the_file_that_set_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = std::fs::canonicalize(dir.path()).unwrap();
-        let store = crate::settings::Store {
-            user_dir: root.join("home"),
-            cwd: root.join("project"),
-        };
-        std::fs::create_dir_all(&store.user_dir).unwrap();
-        std::fs::write(
-            store.path(crate::settings::Scope::User),
-            r#"{"tui":{"thinking":"expanded"}}"#,
-        )
-        .unwrap();
-        std::fs::create_dir_all(store.cwd.join(".cordata")).unwrap();
-        std::fs::write(
-            store.path(crate::settings::Scope::Project),
-            r#"{"tiers":{"fast":"small"}}"#,
-        )
-        .unwrap();
-        let mut app = connected();
-        app.attach_store(store.clone());
-        app.input.set_text("/config");
-        app.on_key(cordata_view::key::KeyEvent::from(
-            cordata_view::key::KeyCode::Enter,
-        ));
-        let rendered = screen(&mut app, 100, 30);
-        for needle in [
-            "Settings → user file",
-            "permissions.defaultMode",
-            "tui.thinking",
-            "expanded",
-            "tiers.fast",
-            "small",
-            "project",
-            "m1",
-            "session",
-            "default",
-            "next session",
-            "Enter change",
-        ] {
-            assert!(
-                rendered.contains(needle),
-                "missing {needle:?} in\n{rendered}"
-            );
-        }
-        assert!(
-            !rendered.contains("❯ "),
-            "the panel replaces the prompt box:\n{rendered}"
-        );
-
-        // The schema is taller than this terminal, so the list scrolls. The key
-        // hints and the selected entry's help must not scroll with it: as list
-        // items they were only visible when the selection happened to be near
-        // the bottom, which is every row except the ones a user actually lands
-        // on first.
-        for top in [true, false] {
-            let mut app = connected();
-            app.attach_store(store.clone());
-            app.input.set_text("/config");
-            app.on_key(cordata_view::key::KeyEvent::from(
-                cordata_view::key::KeyCode::Enter,
-            ));
-            if !top {
-                for _ in 0..crate::settings::SCHEMA.len() {
-                    app.on_key(cordata_view::key::KeyEvent::from(
-                        cordata_view::key::KeyCode::Down,
-                    ));
-                }
-            }
-            let rendered = screen(&mut app, 100, 30);
-            let where_ = if top { "top" } else { "bottom" };
-            assert!(
-                rendered.contains("Enter change"),
-                "the hints stay visible at the {where_} of the list:\n{rendered}"
-            );
-            assert!(
-                rendered.contains("next session"),
-                "the help line follows the selection at the {where_} of the list:\n{rendered}"
-            );
-        }
-
-        // And the row the selection moved to is on screen, not scrolled past.
-        let mut app = connected();
-        app.attach_store(store.clone());
-        app.input.set_text("/config");
-        app.on_key(cordata_view::key::KeyEvent::from(
-            cordata_view::key::KeyCode::Enter,
-        ));
-        for _ in 0..crate::settings::SCHEMA.len() {
-            app.on_key(cordata_view::key::KeyEvent::from(
-                cordata_view::key::KeyCode::Down,
-            ));
-        }
-        let rendered = screen(&mut app, 100, 30);
-        let last = crate::settings::SCHEMA.last().unwrap();
-        assert!(
-            rendered.contains(last.key),
-            "the last setting {:?} is reachable:\n{rendered}",
-            last.key
-        );
     }
 
     #[test]

@@ -1,24 +1,12 @@
 //! The HUD vocabulary the panes share, on the design tokens: badges for modes and states, the context gauge, framed
 //! cards with a `// TITLE` heading, turn dividers, the haze. Colour is never the only signal: every badge says its word.
 
-use cordata_theme::Role;
 use cordata_theme::tokens::{self as t, HAZE_AMBER, HAZE_TEAL, Tracking, tracked_text};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{AnyElement, App, Div, IntoElement, ParentElement, SharedString, Styled, div, linear_color_stop, linear_gradient, px, relative, rgb};
 
-use crate::theme::{c, color, line, mono, sans, tk};
+use crate::theme::{c, line, mono, sans, tk};
 use crate::ui;
-
-/// A mode, a state, a risk band: the word as a badge in its role's tint.
-pub fn pill(label: &str, role: Role, cx: &App) -> Div {
-    let tone = match role {
-        Role::Accent | Role::Attention => ui::Tone::Amber,
-        Role::Agent | Role::Ok => ui::Tone::Teal,
-        Role::Danger => ui::Tone::Danger,
-        _ => ui::Tone::Neutral,
-    };
-    ui::badge(label, tone, cx)
-}
 
 /// `⌜CORDATA⌝`: 12px proportional sans with crisp thin-space tracking, amber; the brackets in dim amber.
 pub fn bracket_title(text: &str, cx: &App) -> Div {
@@ -63,19 +51,6 @@ pub fn gauge(label: &str, fraction: Option<f64>, value: &str, cx: &App) -> Div {
         .child(div().text_color(c(tk.text_secondary)).child(SharedString::from(value.to_owned())))
 }
 
-/// A card with a `// TITLE` heading.
-pub fn frame(title: &str, body: impl IntoElement, cx: &App) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .rounded(px(t::RADIUS_CARD))
-        .border_1()
-        .border_color(line(cx, t::LINE_DEFAULT))
-        .bg(line(cx, t::FILL_FAINT))
-        .child(div().flex().items_center().px(px(12.)).py(px(10.)).border_b_1().border_color(line(cx, t::LINE_SUBTLE)).child(ui::heading(title, cx)))
-        .child(div().p(px(12.)).child(body))
-}
-
 /// A thin rule with a label in it, between turns: `── 14:02 · turn 3 ──`.
 pub fn divider(label: &str, cx: &App) -> Div {
     let rule = || div().flex_1().h(px(1.)).bg(line(cx, t::LINE_SUBTLE));
@@ -113,7 +88,3 @@ pub fn label(text: &str, cx: &App) -> Div {
     ui::section_label(text, cx)
 }
 
-/// A status dot in a role's colour (older panes).
-pub fn dot(role: Option<Role>, cx: &App) -> Div {
-    div().flex_shrink_0().w(px(t::DOT)).h(px(t::DOT)).rounded_full().when_some(role, |this, role| this.bg(color(cx, role)))
-}

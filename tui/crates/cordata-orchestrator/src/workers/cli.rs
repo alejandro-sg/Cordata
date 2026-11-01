@@ -541,13 +541,11 @@ impl CliWorker {
                 st.rate_limited = true;
             }
         }
-        if status == "completed" {
-            if let Some(schema) = &task.json_schema {
-                if let Some(problem) = schema_problem(structured.as_ref(), schema) {
+        if status == "completed"
+            && let Some(schema) = &task.json_schema
+                && let Some(problem) = schema_problem(structured.as_ref(), schema) {
                     (status, error) = ("failed", Some(format!("the answer does not match the schema: {problem}")));
                 }
-            }
-        }
         if status == "completed" && !task.writable_scope().is_empty() && changed.is_empty() && !st.denied.is_empty() {
             // The CLI said "success", changed nothing, and was refused something it asked for: it gave up, not finished.
             status = "failed";

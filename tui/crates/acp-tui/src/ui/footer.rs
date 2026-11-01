@@ -74,8 +74,7 @@ fn right_variants(app: &App) -> Vec<Vec<Span<'static>>> {
     }
     let hint = |text: &str| vec![Span::styled(text.to_owned(), Style::new().fg(Color::DarkGray))];
     vec![
-        hint("? help · Tab mode · Ctrl+K palette · Ctrl+O model · Ctrl+Q quit"),
-        hint("? help · Tab mode · Ctrl+K palette · Ctrl+Q quit"),
+        hint("? help · Ctrl+K palette · Ctrl+Q quit"),
         hint("? help · Ctrl+Q quit"),
         hint("? help"),
     ]

@@ -177,7 +177,7 @@ fn thousands(n: i64) -> String {
     let digits = n.abs().to_string();
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);
@@ -204,11 +204,10 @@ fn cycle(edges: &BTreeMap<String, Vec<String>>) -> Option<Vec<String>> {
                 found.push(dep.clone());
                 return Some(found);
             }
-            if !state.contains_key(dep) {
-                if let Some(found) = visit(dep, edges, state, path) {
+            if !state.contains_key(dep)
+                && let Some(found) = visit(dep, edges, state, path) {
                     return Some(found);
                 }
-            }
         }
         path.pop();
         state.insert(node.to_owned(), 2);
@@ -216,11 +215,10 @@ fn cycle(edges: &BTreeMap<String, Vec<String>>) -> Option<Vec<String>> {
     }
     let mut state = BTreeMap::new();
     for node in edges.keys() {
-        if !state.contains_key(node) {
-            if let Some(found) = visit(node, edges, &mut state, &mut Vec::new()) {
+        if !state.contains_key(node)
+            && let Some(found) = visit(node, edges, &mut state, &mut Vec::new()) {
                 return Some(found);
             }
-        }
     }
     None
 }
@@ -239,11 +237,10 @@ fn str_list(value: &Value, path: &str, out: &mut Vec<String>) {
 }
 
 fn want_enum(object: &Value, key: &str, allowed: &[&str], path: &str, out: &mut Vec<String>) {
-    if let Some(v) = object.get(key) {
-        if !v.as_str().is_some_and(|s| allowed.contains(&s)) {
+    if let Some(v) = object.get(key)
+        && !v.as_str().is_some_and(|s| allowed.contains(&s)) {
             out.push(format!("{path}/{key}: {v} is not one of {allowed:?}"));
         }
-    }
 }
 
 fn want_string(object: &Value, key: &str, path: &str, out: &mut Vec<String>) {

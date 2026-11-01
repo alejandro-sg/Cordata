@@ -20,10 +20,8 @@ use gpui::{
     StatefulInteractiveElement as _, Styled, Subscription, Window, actions, div, list, px,
 };
 use gpui_component::input::{InputEvent, InputState, TextareaState};
-use serde_json::Value;
 
 use crate::hud;
-use crate::mission::{self, Mission};
 use crate::platform::Display;
 use crate::prefs::{self, Prefs};
 use crate::session::{Connection, Row, Session, SessionEvent, Target, WindowRequest};
@@ -32,15 +30,9 @@ use crate::transcript::{self, GroupEdge};
 use crate::ui::{self, Dot, Kind};
 
 mod attachments;
-mod browser;
-mod completions;
 mod conversation;
-mod customize;
 mod editor;
 mod git_ops;
-mod history;
-mod inline_ai;
-mod models;
 mod palette;
 mod picker;
 mod review;
@@ -54,14 +46,10 @@ mod terminal;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DockTab {
     #[default]
-    Mission,
     Files,
     Editor,
     Review,
     Terminal,
-    Browser,
-    Models,
-    History,
 }
 
 /// What floats over the window; the last one is on top and esc closes it first.
@@ -86,7 +74,6 @@ pub enum Naming {
 /// A destructive or trust-changing action waiting for a yes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Confirm {
-    Trust,
     SignOut,
     ResetPrefs,
 }
@@ -95,7 +82,6 @@ actions!(
     cordata,
     [
         StopTurn,
-        CycleMode,
         FocusComposer,
         NewSession,
         CloseSession,
@@ -108,20 +94,15 @@ actions!(
         TogglePanel,
         ToggleTerminal,
         OpenSettings,
-        StartMission,
         ToggleThoughts,
         ToggleTools,
         Help,
-        ShowMission,
         ShowFiles,
         ShowEditor,
         ShowReview,
         ShowTerminal,
-        ShowBrowser,
-        ShowModels,
         OpenFiles,
         SaveFile,
-        InlineEdit,
         SwitchTo1,
         SwitchTo2,
         SwitchTo3,
@@ -151,10 +132,6 @@ const DOUBLE_ESC: Duration = Duration::from_millis(700);
 /// A dropped connection is opened again on its own this many times (with growing waits) before it waits for Retry.
 const AUTO_RECONNECTS: u32 = 4;
 
-pub(super) const PLUGINS_TAG: &str = "gui-plugins";
-pub(super) const PLUGIN_TOGGLE_TAG: &str = "gui-plugin-toggle";
-pub(super) const TRUST_LIST_TAG: &str = "gui-trust-list";
-pub(super) const TRUST_REVOKE_TAG: &str = "gui-trust-revoke";
 
 pub struct Workspace {
     connection: Connection,
@@ -173,19 +150,9 @@ pub struct Workspace {
     /// The project's conversations (the hub's, or the saved stdio sessions).
     listing: Vec<Row>,
     listing_error: Option<String>,
-    model_menu: bool,
-    model_menu_bottom: bool,
-    mode_menu: bool,
     /// `w` on an approval card: the next Enter sends the composer's text as the answer (the reason, or one's own words).
     saying: bool,
-    /// Mission Control's state (the side panel).
-    mission: Mission,
-    /// Mission Control's goal box.
-    goal_input: Entity<TextareaState>,
-    /// Ticks of Mission Control's poll (runs list every few, the selected run every one).
-    mission_tick: u64,
     /// `--run GOAL`: started once the session connects.
-    start_run: Option<String>,
     display: Display,
     pub(super) dock_tab: DockTab,
     /// The left sidebar is shown (`⌘B`).
@@ -197,8 +164,6 @@ pub struct Workspace {
     pub(super) file_filter: Entity<InputState>,
     pub(super) review: review::Review,
     pub(super) terminal: terminal::Terminal,
-    pub(super) browser_view: browser::BrowserView,
-    pub(super) models_view: models::ModelsView,
     pub(super) settings_view: settings_view::SettingsView,
     /// The window's own preferences.
     pub(super) prefs: Prefs,
@@ -216,14 +181,8 @@ pub struct Workspace {
     open_select: Option<settings_modal::Select>,
     api_key_input: Entity<InputState>,
     api_key_masked: Option<String>,
-    allow_input: Entity<InputState>,
     /// Settings' “Search settings…” box: narrows the section list.
     pub(super) settings_search: Entity<InputState>,
-    adding_allow: bool,
-    /// The MCP servers (`_cordata/plugins/list`).
-    plugins: Vec<Value>,
-    /// Every trusted folder (`_cordata/trust/list`).
-    trusted_projects: Vec<String>,
     /// Focus for the settings modal and the confirm dialog (their keys).
     settings_focus: gpui::FocusHandle,
     /// The first esc of a possible double press.
@@ -240,19 +199,10 @@ pub struct Workspace {
     staged: Vec<attachments::Staged>,
     /// Why the last attachment or send was refused, shown above the composer.
     attach_note: Option<String>,
-    /// The side panel's History (checkpoints, file turns).
-    history: history::History,
     /// What the naming dialog is for: renaming a conversation (its hub handle), or a new worktree.
     renaming: Option<Naming>,
     /// Git and GitHub state for the Review tab and the header.
     git: git_ops::Git,
-    /// An ⌘I edit open in the editor, and its instruction box.
-    inline_pending: Option<inline_ai::Pending>,
-    inline_input: Entity<InputState>,
-    /// The installed Ollama models (Settings → Models → Inline completions).
-    ollama_models: Vec<String>,
-    /// Settings → Customize and Automations.
-    customize: customize::Customize,
     rename_input: Entity<InputState>,
     /// The sidebar row whose ⋯ menu is open (a hub handle).
     row_menu: Option<String>,
@@ -268,8 +218,6 @@ pub struct Workspace {
 pub struct Launch {
     /// `--prompt`: sent once connected.
     pub prompt: Option<String>,
-    /// `--run`: an orchestrator run started once connected.
-    pub run: Option<String>,
     /// `--selftest` with a prompt or a run: drive it to its end and quit with a summary.
     pub selftest: bool,
     /// Open the project picker first (Settings → Open on launch).
@@ -305,28 +253,22 @@ pub fn cordata_home() -> PathBuf {
 
 impl Workspace {
     pub fn new(connection: Connection, cwd: PathBuf, launch: Launch, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let Launch { prompt: initial_prompt, run: start_run, selftest, picker, show } = launch;
+        let Launch { prompt: initial_prompt, selftest, picker, show } = launch;
         let prefs = cx.try_global::<Prefs>().cloned().unwrap_or_default();
         let composer = cx.new(|cx| TextareaState::new(window, cx).auto_grow(2, 10).submit_on_enter(prefs.send_with != "cmd-enter").placeholder("Ask anything, @mention files, or type / for commands…"));
         let display = cx.try_global::<Display>().copied().unwrap_or_default();
         let first = cx.new(|cx| Session::start(&connection, Target::Default, cwd.clone(), initial_prompt, cx));
-        let goal_input = cx.new(|cx| TextareaState::new(window, cx).rows(3).placeholder("A multi-step goal for the orchestrator…"));
         let file_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter files…"));
         let palette_input = cx.new(|cx| InputState::new(window, cx).placeholder("Type a command or search conversations…"));
         let picker_input = cx.new(|cx| InputState::new(window, cx).placeholder("Search projects or paste a path…"));
         let clone_url = cx.new(|cx| InputState::new(window, cx).placeholder("https://github.com/owner/repo.git"));
         let clone_dest = cx.new(|cx| InputState::new(window, cx).placeholder("~/Development"));
         let api_key_input = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("sk-ant-…"));
-        let allow_input = cx.new(|cx| InputState::new(window, cx).placeholder("pnpm test"));
         let settings_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search settings…"));
         let rename_input = cx.new(|cx| InputState::new(window, cx).placeholder("Conversation title"));
         let git = git_ops::Git::new(window, cx);
-        let customize = customize::Customize::new(window, cx);
-        let inline_input = cx.new(|cx| InputState::new(window, cx).placeholder("Change the selection… (e.g. add error handling)"));
         let terminal = terminal::Terminal::new(window, cx);
-        let browser_view = browser::BrowserView::new(window, cx);
-        let models_view = models::ModelsView::new(window, cx);
-        let settings_view = settings_view::SettingsView::new(window, cx);
+        let settings_view = settings_view::SettingsView::default();
         let subscriptions = vec![
             cx.subscribe_in(&composer, window, Self::on_composer),
             cx.subscribe_in(&file_filter, window, Self::on_file_filter),
@@ -354,17 +296,6 @@ impl Workspace {
                     this.on_settings_search(&query, cx);
                 }
             }),
-            cx.subscribe_in(&allow_input, window, |this: &mut Self, _, event: &InputEvent, window, cx| {
-                if matches!(event, InputEvent::PressEnter { .. }) {
-                    this.add_allowed_command(window, cx);
-                }
-            }),
-            // ⌘↵ in the goal box starts the run.
-            cx.subscribe_in(&goal_input, window, |this: &mut Self, _, event: &InputEvent, window, cx| {
-                if matches!(event, InputEvent::PressEnter { secondary: true, .. }) {
-                    this.start_mission(&StartMission, window, cx);
-                }
-            }),
             cx.subscribe_in(&api_key_input, window, |this: &mut Self, _, event: &InputEvent, window, cx| {
                 if matches!(event, InputEvent::PressEnter { .. }) {
                     this.save_api_key(window, cx);
@@ -388,14 +319,7 @@ impl Workspace {
             expanded: HashSet::new(),
             listing: Vec::new(),
             listing_error: None,
-            model_menu: false,
-            model_menu_bottom: false,
-            mode_menu: false,
             saying: false,
-            mission: Mission::default(),
-            goal_input,
-            mission_tick: 0,
-            start_run,
             display,
             dock_tab: DockTab::default(),
             sidebar_open,
@@ -405,8 +329,6 @@ impl Workspace {
             file_filter,
             review: review::Review::default(),
             terminal,
-            browser_view,
-            models_view,
             settings_view,
             prefs,
             overlays: Vec::new(),
@@ -423,11 +345,7 @@ impl Workspace {
             open_select: None,
             api_key_input,
             api_key_masked: None,
-            allow_input,
             settings_search,
-            adding_allow: false,
-            plugins: Vec::new(),
-            trusted_projects: Vec::new(),
             settings_focus: cx.focus_handle(),
             esc_at: None,
             turn_seen: HashMap::new(),
@@ -436,13 +354,8 @@ impl Workspace {
             reconnects: 0,
             staged: Vec::new(),
             attach_note: None,
-            history: history::History::default(),
             renaming: None,
             git,
-            inline_pending: None,
-            inline_input,
-            ollama_models: Vec::new(),
-            customize,
             rename_input,
             row_menu: None,
             search_for: String::new(),
@@ -454,12 +367,10 @@ impl Workspace {
         this.prefs.save();
         this.adopt(first, window, cx);
         this.schedule_listing(cx);
-        this.schedule_mission(cx);
         this.schedule_git(cx);
         this.watch_hotkey(window, cx);
         this.load_tree(cx);
         this.load_review(cx);
-        this.load_settings_data(cx);
         if picker {
             this.open_overlay(Overlay::Picker, window, cx);
         }
@@ -554,31 +465,6 @@ impl Workspace {
                     this.refresh_listing(cx);
                 }
                 SessionEvent::Listed => this.take_stdio_listing(cx),
-                SessionEvent::Data(tag) if tag == inline_ai::EDIT_TAG => {
-                    let value = match this.session.read(cx).data.get(tag.as_str()).cloned() {
-                        Some(Ok(value)) => value,
-                        Some(Err(error)) => serde_json::json!({"ok": false, "reason": error}),
-                        None => return,
-                    };
-                    this.on_inline_edit(value, window, cx);
-                }
-                SessionEvent::Data(tag) if tag == git_ops::MESSAGE_TAG => {
-                    let value = match this.session.read(cx).data.get(tag.as_str()).cloned() {
-                        Some(Ok(value)) => value,
-                        Some(Err(error)) => serde_json::json!({"ok": false, "reason": error}),
-                        None => return,
-                    };
-                    this.on_git_message(value, window, cx);
-                }
-                SessionEvent::Data(tag) if tag.starts_with("gui-history") => {
-                    if let Some(Ok(value)) = this.session.read(cx).data.get(tag.as_str()).cloned() {
-                        this.on_history_data(tag, value, window, cx);
-                    } else if let Some(Err(error)) = this.session.read(cx).data.get(tag.as_str()).cloned() {
-                        this.history.note = Some((error, true));
-                        cx.notify();
-                    }
-                }
-                SessionEvent::Data(tag) => this.on_data(tag, cx),
                 SessionEvent::Window(request) => this.on_window_request(request.clone(), window, cx),
             }),
         ];
@@ -592,8 +478,6 @@ impl Workspace {
             self.reconnects = 0;
         }
         self.session = session;
-        self.model_menu = false;
-        self.mode_menu = false;
         let len = self.session.read(cx).view.messages.len();
         self.transcript.reset(len);
         self.seen = (self.session.entity_id(), len, self.session.read(cx).version);
@@ -674,230 +558,6 @@ impl Workspace {
         self.adopt(fresh, window, cx);
     }
 
-    // -------------------------------------------------------------------------------------------- Mission Control
-
-    fn schedule_mission(&mut self, cx: &mut Context<Self>) {
-        cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(Duration::from_millis(1200)).await;
-                if this.update(cx, |this, cx| this.poll_mission(cx)).is_err() {
-                    break;
-                }
-            }
-        })
-        .detach();
-    }
-
-    fn poll_mission(&mut self, cx: &mut Context<Self>) {
-        let session = self.session.read(cx);
-        if !session.connected() {
-            return;
-        }
-        if let Some(goal) = self.start_run.take() {
-            session.request("_cordata/orchestrator/start", serde_json::json!({ "goal": goal }), mission::START_TAG);
-        }
-        self.mission_tick += 1;
-        if self.mission_tick % 8 == 1 {
-            session.request("_cordata/orchestrator/runs", serde_json::json!({ "limit": 20 }), mission::RUNS_TAG);
-        }
-        if let Some(run_id) = self.mission.selected.clone() {
-            // A live run is followed closely; a finished one only rarely (its last events, a late resume).
-            if !self.mission.polling && (self.mission.live() || self.mission.detail.is_none() || self.mission_tick.is_multiple_of(5)) {
-                self.mission.polling = session.request("_cordata/orchestrator/events", serde_json::json!({ "runId": run_id, "offset": self.mission.offset }), mission::EVENTS_TAG);
-            }
-            if self.mission_tick.is_multiple_of(3) || self.mission.detail.is_none() {
-                session.request("_cordata/orchestrator/show", serde_json::json!({ "runId": run_id }), mission::SHOW_TAG);
-            }
-        }
-    }
-
-    fn on_data(&mut self, tag: &str, cx: &mut Context<Self>) {
-        if tag.starts_with(editor::LSP_TAG) {
-            self.on_lsp(tag, cx);
-            return;
-        }
-        let Some(result) = self.session.read(cx).data.get(tag).cloned() else { return };
-        let value = match result {
-            Ok(value) => value,
-            Err(error) => {
-                if tag != mission::EVENTS_TAG {
-                    self.mission.notice = Some(error);
-                }
-                self.mission.polling = false;
-                cx.notify();
-                return;
-            }
-        };
-        match tag {
-            mission::RUNS_TAG => self.mission.runs = value.get("runs").and_then(|r| r.as_array()).cloned().unwrap_or_default(),
-            mission::SHOW_TAG if value.get("runId").and_then(|r| r.as_str()) == self.mission.selected.as_deref() => self.mission.detail = Some(value),
-            mission::EVENTS_TAG => {
-                if self.mission.take_events(&value) {
-                    self.poll_mission(cx);
-                }
-            }
-            mission::CONTROL_TAG | mission::START_TAG => {
-                let ok = value.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
-                self.mission.notice = Some(if ok {
-                    value.get("state").and_then(|v| v.as_str()).unwrap_or("done").to_owned()
-                } else {
-                    value.get("reason").and_then(|v| v.as_str()).unwrap_or("refused").to_owned()
-                });
-                if tag == mission::START_TAG
-                    && let Some(run_id) = value.get("runId").and_then(|v| v.as_str())
-                {
-                    self.mission.select(Some(run_id.to_owned()));
-                    self.mission.notice = Some("started".into());
-                }
-                self.mission_tick = 0;
-                self.poll_mission(cx);
-            }
-            mission::ARTIFACT_TAG => {
-                if let (Some(name), Some(text)) = (value.get("name").and_then(|v| v.as_str()), value.get("text").and_then(|v| v.as_str())) {
-                    self.mission.artifact = Some((name.to_owned(), text.to_owned()));
-                }
-            }
-            settings_view::TRUST_STATUS_TAG => {
-                self.settings_view.take_trust_status(&value);
-                let (cwd, trusted) = (self.cwd.clone(), self.settings_view.trusted);
-                if self.prefs.set_trusted(&cwd, trusted) {
-                    self.prefs.save();
-                }
-            }
-            PLUGINS_TAG => self.plugins = value.get("plugins").and_then(|p| p.as_array()).cloned().unwrap_or_default(),
-            PLUGIN_TOGGLE_TAG => self.load_plugins(cx),
-            TRUST_LIST_TAG => self.trusted_projects = value.get("projects").and_then(|p| p.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default(),
-            TRUST_REVOKE_TAG => {
-                let ok = value.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false);
-                if ok {
-                    self.settings_view.set_notice("Trust revoked.".into(), false);
-                    self.load_settings_data(cx);
-                    self.load_trusted_projects(cx);
-                } else {
-                    let reason = value.get("reason").and_then(serde_json::Value::as_str).unwrap_or("Revoking trust failed");
-                    self.settings_view.set_notice(reason.to_owned(), true);
-                    self.load_settings_data(cx);
-                }
-            }
-            settings_view::SETTINGS_GET_TAG => {
-                self.settings_view.take_settings_get(&value);
-            }
-            settings_view::SETTINGS_SCHEMA_TAG => {
-                self.settings_view.take_schema(&value);
-            }
-            settings_view::READINESS_TAG => {
-                self.settings_view.take_readiness(&value);
-            }
-            settings_view::DOCTOR_TAG => {
-                self.settings_view.take_doctor(&value);
-            }
-            settings_view::TRUST_GRANT_TAG => {
-                let ok = value.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false);
-                if ok {
-                    self.settings_view.set_notice("Folder trust granted successfully.".into(), false);
-                    self.settings_view.trusted = true;
-                    let cwd = self.cwd.clone();
-                    if self.prefs.set_trusted(&cwd, true) {
-                        self.prefs.save();
-                    }
-                    self.session.update(cx, |s, _| s.view.settings.trusted = true);
-                    self.load_settings_data(cx);
-                } else {
-                    let reason = value.get("reason").and_then(serde_json::Value::as_str).unwrap_or("Grant trust failed");
-                    self.settings_view.set_notice(reason.to_owned(), true);
-                }
-            }
-            settings_view::SETTINGS_RULE_ADD_TAG => {
-                let ok = value.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false);
-                if ok {
-                    self.settings_view.set_notice("Rule added successfully.".into(), false);
-                    self.session.read(cx).request("_cordata/settings/get", serde_json::json!({}), settings_view::SETTINGS_GET_TAG);
-                } else {
-                    let reason = value.get("reason").and_then(serde_json::Value::as_str).unwrap_or("Failed to add rule");
-                    self.settings_view.set_notice(reason.to_owned(), true);
-                }
-            }
-            settings_view::SETTINGS_RULE_REMOVE_TAG => {
-                let ok = value.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false);
-                if ok {
-                    self.settings_view.set_notice("Rule removed.".into(), false);
-                    self.session.read(cx).request("_cordata/settings/get", serde_json::json!({}), settings_view::SETTINGS_GET_TAG);
-                } else {
-                    self.settings_view.set_notice("Failed to remove rule".into(), true);
-                }
-            }
-            settings_view::SETTINGS_SET_TAG => {
-                let ok = value.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false);
-                if ok {
-                    self.settings_view.set_notice("Setting updated.".into(), false);
-                    self.session.read(cx).request("_cordata/settings/get", serde_json::json!({}), settings_view::SETTINGS_GET_TAG);
-                } else {
-                    let reason = value.get("reason").and_then(serde_json::Value::as_str).unwrap_or("Setting update failed");
-                    self.settings_view.set_notice(reason.to_owned(), true);
-                }
-            }
-            tag if customize::TAGS.contains(&tag) => self.on_customize_data(tag, &value, cx),
-            crate::session::STEER_TAG => {
-                if !value.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false) {
-                    self.attach_note = Some(value.get("reason").and_then(|v| v.as_str()).unwrap_or("the note was not taken").to_owned());
-                }
-            }
-            crate::session::STEER_DRAIN_TAG => {
-                // Notes the turn ended before reading: they become the next prompt, as the person meant them to.
-                let notes: Vec<String> = value.get("notes").and_then(|n| n.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default();
-                if !notes.is_empty() {
-                    let text = notes.join("\n");
-                    self.session.update(cx, |s, cx| s.submit(&text, cx));
-                }
-            }
-            models::OLLAMA_STATUS_TAG => {
-                self.models_view.take_status(&value);
-            }
-            models::TASKS_LIST_TAG => {
-                self.models_view.take_tasks(&value);
-            }
-            models::TASKS_KILL_TAG | models::OLLAMA_STOP_TAG => {
-                self.refresh_models_and_tasks(cx);
-            }
-            _ => {}
-        }
-        self.step_selftest(cx);
-        cx.notify();
-    }
-
-    pub(super) fn select_run(&mut self, run_id: Option<String>, cx: &mut Context<Self>) {
-        self.mission.select(run_id);
-        self.poll_mission(cx);
-        cx.notify();
-    }
-
-    pub(super) fn control_run(&mut self, cmd: &str, extra: serde_json::Value, cx: &mut Context<Self>) {
-        let Some(run_id) = self.mission.selected.clone() else { return };
-        let mut params = serde_json::json!({ "runId": run_id });
-        if let (Some(target), Some(more)) = (params.as_object_mut(), extra.as_object()) {
-            target.extend(more.clone());
-        }
-        self.session.read(cx).request(&format!("_cordata/orchestrator/{cmd}"), params, mission::CONTROL_TAG);
-        self.mission.notice = Some(format!("{cmd} requested…"));
-        cx.notify();
-    }
-
-    pub(super) fn start_run(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let goal = self.goal_input.read(cx).value().trim().to_owned();
-        if goal.is_empty() {
-            return;
-        }
-        self.goal_input.update(cx, |state, cx| state.set_value("", window, cx));
-        self.session.read(cx).request("_cordata/orchestrator/start", serde_json::json!({ "goal": goal }), mission::START_TAG);
-        self.mission.notice = Some("starting…".into());
-        cx.notify();
-    }
-
-    pub(super) fn open_artifact(&mut self, name: String, cx: &mut Context<Self>) {
-        let Some(run_id) = self.mission.selected.clone() else { return };
-        self.session.read(cx).request("_cordata/artifacts/read", serde_json::json!({ "runId": run_id, "name": name }), mission::ARTIFACT_TAG);
-    }
-
     // -------------------------------------------------------------------------------------------- the listing
 
     fn schedule_listing(&mut self, cx: &mut Context<Self>) {
@@ -943,17 +603,6 @@ impl Workspace {
             cx.defer(move |cx| session.update(cx, |session, cx| session.answer(ApprovalDecision::Allow, cx)));
             return;
         }
-        if self.mission.selected.is_some() || self.start_run.is_some() {
-            // A `--run` self-test ends with the run, not with a turn.
-            let state = self.mission.detail.as_ref().and_then(|d| d.get("live")).and_then(|v| v.as_str()).unwrap_or_default().to_owned();
-            if matches!(state.as_str(), "done" | "failed" | "cancelled" | "budget_exhausted") {
-                let board = &self.mission.board;
-                println!("SELFTEST run={} state={state} steps={} pods={} pools={} events_offset={}", self.mission.selected.clone().unwrap_or_default(), board.steps.len(), board.pods.len(), board.pools.len(), self.mission.offset);
-                self.selftest = None;
-                cx.quit();
-            }
-            return;
-        }
         if (test.started && !active) || closed {
             let view = &self.session.read(cx).view;
             let tools = view.messages.iter().filter(|m| matches!(m, cordata_view::app::Message::Tool(_))).count();
@@ -986,10 +635,8 @@ impl Workspace {
             self.close_overlay(top, window, cx);
             return;
         }
-        if self.model_menu || self.mode_menu || self.overflow_open || self.row_menu.is_some() {
-            self.model_menu = false;
-            self.mode_menu = false;
-            self.overflow_open = false;
+        if self.overflow_open || self.row_menu.is_some() {
+                    self.overflow_open = false;
             self.row_menu = None;
             cx.notify();
             return;
@@ -1026,20 +673,6 @@ impl Workspace {
         }
     }
 
-    pub(super) fn cycle_mode(&mut self, _: &CycleMode, _: &mut Window, cx: &mut Context<Self>) {
-        self.session.update(cx, |session, cx| {
-            let modes: Vec<String> = session.view.modes.iter().map(|m| m.id.clone()).collect();
-            if modes.is_empty() {
-                return;
-            }
-            let current = session.view.pending_mode.clone().unwrap_or_else(|| session.view.mode.clone());
-            let next = modes.iter().position(|m| *m == current).map_or(0, |i| (i + 1) % modes.len());
-            // `auto` is never reached by cycling: it is an answer to a plan card, or a deliberate pick (THREAT_MODEL.md).
-            let next = if modes[next] == "auto" { (next + 1) % modes.len() } else { next };
-            session.set_mode(&modes[next], cx);
-        });
-    }
-
     fn focus_composer(&mut self, _: &FocusComposer, window: &mut Window, cx: &mut Context<Self>) {
         self.composer.update(cx, |state, cx| state.focus(window, cx));
     }
@@ -1056,10 +689,6 @@ impl Workspace {
         self.close_active(cx);
     }
 
-    fn show_mission_action(&mut self, _: &ShowMission, _: &mut Window, cx: &mut Context<Self>) {
-        self.switch_dock(DockTab::Mission, cx);
-    }
-
     fn show_files_action(&mut self, _: &ShowFiles, _: &mut Window, cx: &mut Context<Self>) {
         self.switch_dock(DockTab::Files, cx);
     }
@@ -1074,14 +703,6 @@ impl Workspace {
 
     fn show_terminal_action(&mut self, _: &ShowTerminal, window: &mut Window, cx: &mut Context<Self>) {
         self.toggle_terminal(&ToggleTerminal, window, cx);
-    }
-
-    fn show_browser_action(&mut self, _: &ShowBrowser, _: &mut Window, cx: &mut Context<Self>) {
-        self.switch_dock(DockTab::Browser, cx);
-    }
-
-    fn show_models_action(&mut self, _: &ShowModels, _: &mut Window, cx: &mut Context<Self>) {
-        self.switch_dock(DockTab::Models, cx);
     }
 
     fn open_files_action(&mut self, _: &OpenFiles, window: &mut Window, cx: &mut Context<Self>) {
@@ -1102,10 +723,6 @@ impl Workspace {
         match tab {
             DockTab::Files => self.load_tree(cx),
             DockTab::Review => self.load_review(cx),
-            DockTab::History => self.load_history(cx),
-            DockTab::Models => {
-                self.refresh_models_and_tasks(cx);
-            }
             _ => {}
         }
         cx.notify();
@@ -1188,12 +805,6 @@ impl Workspace {
             cx.stop_propagation();
             return;
         }
-        // ⌥↵ steers the running turn with what is typed.
-        if event.keystroke.key == "enter" && mods.alt && !mods.platform {
-            self.steer_composer(window, cx);
-            cx.stop_propagation();
-            return;
-        }
         let (has_menu, pending, plan, empty) = {
             let view = &self.session.read(cx).view;
             let pending = view.pending.front();
@@ -1256,8 +867,6 @@ impl Workspace {
     // -------------------------------------------------------------------------------------------- overlays
 
     pub(super) fn open_overlay(&mut self, overlay: Overlay, window: &mut Window, cx: &mut Context<Self>) {
-        self.model_menu = false;
-        self.mode_menu = false;
         self.overflow_open = false;
         self.overlays.retain(|o| *o != overlay);
         self.overlays.push(overlay);
@@ -1283,7 +892,6 @@ impl Workspace {
             }
             Overlay::Settings => {
                 self.open_select = None;
-                self.load_settings_data(cx);
                 self.on_settings_section(cx);
                 window.focus(&self.settings_focus, cx);
             }
@@ -1327,7 +935,6 @@ impl Workspace {
         let Some(what) = self.confirm.take() else { return };
         self.close_overlay(Overlay::Confirm, window, cx);
         match what {
-            Confirm::Trust => self.grant_trust(cx),
             Confirm::SignOut => {
                 match crate::keychain::forget() {
                     Ok(()) => self.settings_view.set_notice("Signed out: the key is gone from the Keychain.".into(), false),
@@ -1353,23 +960,11 @@ impl Workspace {
     fn confirm_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
         let tk = tk(cx);
         let (title, body, yes): (&str, String, &str) = match self.confirm.as_ref() {
-            Some(Confirm::Trust) => {
-                let blocked = self.settings_view.blocked_plugins.len();
-                let ignored = self.settings_view.ignored_warnings.len();
-                (
-                    "Trust this project?",
-                    format!(
-                        "{} will be able to apply its own settings and allow rules ({ignored} held back now) and start its MCP servers ({blocked} held back now). Trust only folders whose contents you know.",
-                        self.project_name()
-                    ),
-                    "Trust project",
-                )
-            }
             Some(Confirm::SignOut) => ("Sign out?", "The API key is removed from the Keychain. A running backend keeps its key until it restarts.".into(), "Sign out"),
             Some(Confirm::ResetPrefs) => ("Reset all settings?", "Theme, layout, sending and notification choices go back to their defaults. Harness settings files are not touched.".into(), "Reset"),
             None => ("", String::new(), ""),
         };
-        let danger = !matches!(self.confirm, Some(Confirm::Trust));
+        let danger = true;
         div()
             .size_full()
             .flex()
@@ -1530,12 +1125,6 @@ impl Workspace {
         self.open_overlay(Overlay::Settings, window, cx);
     }
 
-    fn start_mission(&mut self, _: &StartMission, window: &mut Window, cx: &mut Context<Self>) {
-        self.set_panel(true, cx);
-        self.dock_tab = DockTab::Mission;
-        self.start_run(window, cx);
-    }
-
     /// Open a folder as the project: new conversations run there, the panes follow, it goes first in the recents.
     pub(super) fn switch_project(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let path = match path.canonicalize() {
@@ -1556,8 +1145,6 @@ impl Workspace {
         self.prefs.save();
         self.listing.clear();
         self.listing_error = None;
-        self.settings_view.trusted = false;
-        self.mission = Mission::default();
         self.files = editor::Files::default();
         self.review = review::Review::default();
         self.git.pr = None;
@@ -1572,39 +1159,6 @@ impl Workspace {
         self.refresh_git(true, cx);
         self.composer.update(cx, |s, cx| s.focus(window, cx));
         cx.notify();
-    }
-
-    /// "Trust project": the person's decision, after seeing what it turns on.
-    pub(super) fn ask_trust(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.session.read(cx).request("_cordata/trust/status", serde_json::json!({}), settings_view::TRUST_STATUS_TAG);
-        self.ask_confirm(Confirm::Trust, window, cx);
-    }
-
-    /// Revoke trust for `path` (this project when `None`).
-    pub(super) fn revoke_trust(&mut self, path: Option<String>, cx: &mut Context<Self>) {
-        let path = path.unwrap_or_else(|| self.cwd.display().to_string());
-        self.session.read(cx).request("_cordata/trust/revoke", serde_json::json!({ "path": path }), TRUST_REVOKE_TAG);
-        if Path::new(&path) == self.cwd {
-            self.settings_view.trusted = false;
-        }
-        self.trusted_projects.retain(|p| *p != path);
-        if self.prefs.set_trusted(Path::new(&path), false) {
-            self.prefs.save();
-        }
-        cx.notify();
-    }
-
-    pub(super) fn load_plugins(&mut self, cx: &mut Context<Self>) {
-        self.session.read(cx).request("_cordata/plugins/list", serde_json::json!({}), PLUGINS_TAG);
-    }
-
-    pub(super) fn load_trusted_projects(&mut self, cx: &mut Context<Self>) {
-        self.session.read(cx).request("_cordata/trust/list", serde_json::json!({}), TRUST_LIST_TAG);
-    }
-
-    /// Where the agent runs.
-    pub(super) fn endpoint(&self) -> String {
-        "in this process".into()
     }
 
     /// The sidebar footer and status bar: is the connection well?
@@ -1633,10 +1187,7 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(super) fn apply_starter(&mut self, prompt: &str, mode: Option<&str>, send_now: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(mode) = mode {
-            self.session.update(cx, |session, cx| session.set_mode(mode, cx));
-        }
+    pub(super) fn apply_starter(&mut self, prompt: &str, send_now: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.composer.update(cx, |s, cx| {
             s.set_value(prompt.to_owned(), window, cx);
             s.focus(window, cx);
@@ -1688,26 +1239,6 @@ impl Workspace {
         self.attach_note = None;
         self.composer.update(cx, |state, cx| state.set_value("", window, cx));
         self.session.update(cx, |session, cx| session.submit(&text, cx));
-    }
-
-    /// Send the composer's text to the running turn now (⌥↵ or Steer): the agent reads it at its next model call.
-    pub(super) fn steer_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let text = self.composer.read(cx).value().trim().to_string();
-        if text.is_empty() {
-            return;
-        }
-        if !self.session.read(cx).view.turn_active {
-            self.send_composer(window, cx);
-            return;
-        }
-        if self.session.read(cx).steer(&text) {
-            self.composer.update(cx, |state, cx| state.set_value("", window, cx));
-            self.session.update(cx, |s, cx| {
-                s.view.messages.push(cordata_view::app::Message::Info(format!("↳ steering: {}", cordata_view::shown(&text))));
-                s.version += 1;
-                cx.notify();
-            });
-        }
     }
 
     pub(super) fn stage(&mut self, result: Result<attachments::Staged, String>, cx: &mut Context<Self>) {
@@ -1901,20 +1432,12 @@ impl Workspace {
             (view.turn_active, !view.pending.is_empty(), matches!(view.conn, ConnState::Connected))
         };
         let was = self.turn_seen.insert(id, active).unwrap_or(false);
-        if was && !active {
-            if self.prefs.sound_on_completion {
+        if was && !active
+            && self.prefs.sound_on_completion {
                 crate::platform::play_sound("Glass");
             }
-            // Steering notes the agent never reached go out as the next prompt.
-            session.read(cx).request("_cordata/steer/drain", serde_json::json!({}), crate::session::STEER_DRAIN_TAG);
-            if id == self.session.entity_id() && self.dock_tab == DockTab::History {
-                self.load_history(cx);
-            }
-        }
         if connected && self.loaded.insert(id) && id == self.session.entity_id() {
             self.reconnects = 0;
-            self.load_settings_data(cx);
-            self.load_plugins(cx);
         }
         if pending {
             if self.pending_seen.insert(id) && self.prefs.notify_approval && !window.is_window_active() {
@@ -2038,8 +1561,6 @@ impl Render for Workspace {
         let pending = pending_info.as_ref().map(|info| self.approval_card(info, cx));
         let actions_row = self.post_reply_actions(cx);
         let menu = self.slash_menu(cx);
-        let model_menu = self.model_menu(cx);
-        let mode_menu = self.mode_menu(cx);
         let sidebar = self.sidebar_open.then(|| self.sidebar(cx));
         let header = self.header(column_w, cx);
         let composer = self.composer(cx);
@@ -2058,7 +1579,6 @@ impl Render for Workspace {
             .id("workspace")
             .key_context("Workspace")
             .on_action(cx.listener(Self::stop))
-            .on_action(cx.listener(Self::cycle_mode))
             .on_action(cx.listener(Self::focus_composer))
             .on_action(cx.listener(Self::new_session))
             .on_action(cx.listener(Self::close_session))
@@ -2071,20 +1591,15 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_panel))
             .on_action(cx.listener(Self::toggle_terminal))
             .on_action(cx.listener(Self::open_settings))
-            .on_action(cx.listener(Self::start_mission))
             .on_action(cx.listener(Self::toggle_thoughts))
             .on_action(cx.listener(Self::toggle_tools))
             .on_action(cx.listener(Self::help))
-            .on_action(cx.listener(Self::show_mission_action))
             .on_action(cx.listener(Self::show_files_action))
             .on_action(cx.listener(Self::show_editor_action))
             .on_action(cx.listener(Self::show_review_action))
             .on_action(cx.listener(Self::show_terminal_action))
-            .on_action(cx.listener(Self::show_browser_action))
-            .on_action(cx.listener(Self::show_models_action))
             .on_action(cx.listener(Self::open_files_action))
             .on_action(cx.listener(Self::save_file_action))
-            .on_action(cx.listener(|this, _: &InlineEdit, window, cx| this.begin_inline_edit(window, cx)))
             .on_action(cx.listener(|this, _: &SwitchTo1, _, cx| this.switch_slot(1, cx)))
             .on_action(cx.listener(|this, _: &SwitchTo2, _, cx| this.switch_slot(2, cx)))
             .on_action(cx.listener(|this, _: &SwitchTo3, _, cx| this.switch_slot(3, cx)))
@@ -2135,8 +1650,7 @@ impl Render for Workspace {
                                     .pb(px(16.))
                                     .child(div().w_full().max_w(px(t::CONTENT_MAX_W)).flex().flex_col().children(actions_row).children(pending).children(menu).child(composer)),
                             )
-                            .children(model_menu)
-                            .children(mode_menu),
+
                     )
                     .children(panel),
             )
@@ -2179,7 +1693,6 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         gpui::KeyBinding::new("escape", StopTurn, Some("Workspace")),
         gpui::KeyBinding::new("cmd-.", StopTurn, Some("Workspace")),
-        gpui::KeyBinding::new("shift-tab", CycleMode, Some("Workspace")),
         gpui::KeyBinding::new("cmd-l", FocusComposer, Some("Workspace")),
         gpui::KeyBinding::new("cmd-n", NewSession, Some("Workspace")),
         gpui::KeyBinding::new("cmd-w", CloseSession, Some("Workspace")),
@@ -2205,17 +1718,13 @@ pub fn bind_keys(cx: &mut App) {
         gpui::KeyBinding::new("cmd-7", SwitchTo7, Some("Workspace")),
         gpui::KeyBinding::new("cmd-8", SwitchTo8, Some("Workspace")),
         gpui::KeyBinding::new("cmd-9", SwitchTo9, Some("Workspace")),
-        gpui::KeyBinding::new("cmd-alt-1", ShowMission, Some("Workspace")),
         gpui::KeyBinding::new("cmd-alt-2", ShowFiles, Some("Workspace")),
         gpui::KeyBinding::new("cmd-alt-3", ShowEditor, Some("Workspace")),
         gpui::KeyBinding::new("cmd-alt-4", ShowReview, Some("Workspace")),
         gpui::KeyBinding::new("cmd-alt-5", ShowTerminal, Some("Workspace")),
-        gpui::KeyBinding::new("cmd-alt-6", ShowBrowser, Some("Workspace")),
-        gpui::KeyBinding::new("cmd-alt-7", ShowModels, Some("Workspace")),
         gpui::KeyBinding::new("cmd-p", OpenFiles, Some("Workspace")),
         gpui::KeyBinding::new("cmd-s", SaveFile, Some("Workspace")),
         gpui::KeyBinding::new("cmd-s", SaveFile, Some("CordataEditor")),
-        gpui::KeyBinding::new("cmd-i", InlineEdit, Some("CordataEditor")),
         gpui::KeyBinding::new("cmd-shift-a", AttachFiles, Some("Workspace")),
         gpui::KeyBinding::new("cmd-m", Minimize, Some("Workspace")),
         gpui::KeyBinding::new("cmd-h", HideApp, None),
@@ -2279,13 +1788,10 @@ pub fn install_menus(cx: &mut App) {
             MenuItem::action("Next Thread", NextSession),
             MenuItem::action("Previous Thread", PrevSession),
             MenuItem::separator(),
-            MenuItem::action("Mission Control", ShowMission),
             MenuItem::action("Files", ShowFiles),
             MenuItem::action("Editor", ShowEditor),
             MenuItem::action("Review", ShowReview),
             MenuItem::action("Terminal", ShowTerminal),
-            MenuItem::action("Browser", ShowBrowser),
-            MenuItem::action("Models", ShowModels),
             MenuItem::separator(),
             MenuItem::action("Focus Composer", FocusComposer),
         ]),
@@ -2433,14 +1939,11 @@ mod window_tests {
     #[gpui::test]
     fn side_panel_tabs_and_keys(cx: &mut TestAppContext) {
         let (view, cx) = workspace(cx);
-        assert_eq!(view.read_with(cx, |this, _| this.dock_tab), super::DockTab::Mission);
+        assert_eq!(view.read_with(cx, |this, _| this.dock_tab), super::DockTab::Files);
         for (keys, tab) in [
             ("cmd-alt-2", super::DockTab::Files),
             ("cmd-alt-3", super::DockTab::Editor),
             ("cmd-alt-4", super::DockTab::Review),
-            ("cmd-alt-6", super::DockTab::Browser),
-            ("cmd-alt-7", super::DockTab::Models),
-            ("cmd-alt-1", super::DockTab::Mission),
             ("cmd-p", super::DockTab::Files),
         ] {
             cx.simulate_keystrokes(keys);
@@ -2487,9 +1990,9 @@ mod window_tests {
         cx.simulate_keystrokes("cmd-,");
         cx.run_until_parked();
         view.update_in(cx, |this, window, cx| this.settings_search.update(cx, |s, cx| s.focus(window, cx)));
-        cx.simulate_input("vision");
+        cx.simulate_input("theme");
         cx.run_until_parked();
-        assert_eq!(view.read_with(cx, |this, _| this.settings_section), super::settings_modal::Section::Models, "“vision” finds the Models section");
+        assert_eq!(view.read_with(cx, |this, _| this.settings_section), super::settings_modal::Section::Appearance, "“theme” finds the Appearance section");
         assert!(super::settings_modal::Section::Appearance.matches("dark theme") && !super::settings_modal::Section::Account.matches("theme"));
     }
 
@@ -2543,9 +2046,9 @@ mod window_tests {
         cx.simulate_input(&dir.display().to_string());
         cx.simulate_keystrokes("enter");
         cx.run_until_parked();
-        let (cwd, recent, sessions) = view.read_with(cx, |this, _| (this.cwd.clone(), this.prefs.recents.first().map(|r| (r.path.clone(), r.trusted)), this.sessions.len()));
+        let (cwd, recent, sessions) = view.read_with(cx, |this, _| (this.cwd.clone(), this.prefs.recents.first().map(|r| r.path.clone()), this.sessions.len()));
         assert_eq!(cwd, dir.canonicalize().unwrap());
-        assert_eq!(recent, Some((cwd.clone(), false)), "first in the recents, untrusted");
+        assert_eq!(recent, Some(cwd.clone()), "first in the recents");
         assert_eq!(sessions, 2, "a conversation opens in the new project");
         assert!(view.read_with(cx, |this, _| this.overlays.is_empty()));
     }
@@ -2576,40 +2079,6 @@ mod window_tests {
     }
 
     #[gpui::test]
-    fn steering_adds_a_note_and_clears_the_box(cx: &mut TestAppContext) {
-        let (view, cx) = workspace(cx);
-        view.update_in(cx, |this, window, cx| {
-            this.session.update(cx, |s, _| {
-                s.view.conn = cordata_view::app::ConnState::Connected;
-                s.view.turn_active = true;
-            });
-            this.composer.update(cx, |c, cx| c.set_value("use the v2 API", window, cx));
-        });
-        cx.simulate_keystrokes("alt-enter");
-        cx.run_until_parked();
-        let (empty, shown) = view.read_with(cx, |this, cx| {
-            let v = &this.session.read(cx).view;
-            (this.composer.read(cx).value().is_empty(), v.messages.iter().any(|m| matches!(m, cordata_view::app::Message::Info(t) if t.contains("steering: use the v2 API"))))
-        });
-        // Offline, the request cannot go out: the box keeps the text. Connected (real handle), it clears and notes it.
-        assert!(!empty || shown, "either kept (no backend) or sent and noted");
-    }
-
-    #[gpui::test]
-    fn history_answers_route_to_the_pane(cx: &mut TestAppContext) {
-        let (view, cx) = workspace(cx);
-        view.update_in(cx, |this, window, cx| {
-            this.on_history_data(super::history::CONVERSATION_TAG, serde_json::json!({"turns": 2, "checkpoints": [{"index": 1, "id": "abc", "turn": 2, "prompt": "add tests", "at": 1.0}]}), window, cx);
-            this.on_history_data(super::history::UNDO_TAG, serde_json::json!({"ok": true, "dry_run": true, "turn": "t-1", "count": 3, "files": ["a.rs"]}), window, cx);
-            this.on_history_data(super::history::REWIND_TAG, serde_json::json!({"ok": false, "reason": "a turn is running"}), window, cx);
-        });
-        let (cps, preview, note) = view.read_with(cx, |this, _| (this.history.checkpoints.len(), this.history.preview.as_ref().map(|(t, _)| t.clone()), this.history.note.clone()));
-        assert_eq!(cps, 1);
-        assert_eq!(preview.as_deref(), Some("t-1"), "a dry run becomes a preview, not a change");
-        assert_eq!(note, Some(("a turn is running".into(), true)), "a refusal says why");
-    }
-
-    #[gpui::test]
     fn a_review_sends_the_diff_as_an_attachment(cx: &mut TestAppContext) {
         let (view, cx) = workspace(cx);
         let dir = tempfile_dir().join("repo");
@@ -2632,37 +2101,6 @@ mod window_tests {
         });
         assert!(said, "the review prompt went out, naming its attachment");
         assert_eq!(staged, 0, "the diff left with it");
-    }
-
-    #[gpui::test]
-    fn cmd_i_rewrites_the_selection_only_if_it_is_unchanged(cx: &mut TestAppContext) {
-        let (view, cx) = workspace(cx);
-        let dir = tempfile_dir();
-        let file = dir.join("m.py");
-        std::fs::write(&file, "def add(a, b):\n    return a+b\n").unwrap();
-        let state = cx.update(|window, cx| cx.new(|cx| gpui_component::input::EditorState::new(window, cx).default_value("def add(a, b):\n    return a+b\n")));
-        view.update(cx, |this, _| {
-            this.dock_tab = super::DockTab::Editor;
-            this.add_test_buffer("m.py", file.clone(), state.clone());
-        });
-        view.update_in(cx, |this, window, cx| {
-            state.update(cx, |s, cx| s.set_selected_range(0..14, cx));
-            this.begin_inline_edit(window, cx);
-            this.on_inline_edit(serde_json::json!({"ok": true, "code": "def add(a: int, b: int) -> int:"}), window, cx);
-        });
-        let text = state.read_with(cx, |s, _| s.value().to_string());
-        assert_eq!(text, "def add(a: int, b: int) -> int:\n    return a+b\n", "the selection is replaced");
-
-        view.update_in(cx, |this, window, cx| {
-            state.update(cx, |s, cx| s.set_selected_range(0..3, cx));
-            this.begin_inline_edit(window, cx);
-            state.update(cx, |s, cx| s.set_value("changed meanwhile", window, cx));
-            this.on_inline_edit(serde_json::json!({"ok": true, "code": "XXX"}), window, cx);
-        });
-        let (text, notice) = view.read_with(cx, |this, cx| (state.read(cx).value().to_string(), this.files.notice.clone()));
-        assert_eq!(text, "changed meanwhile", "a stale answer is not applied");
-        assert!(notice.unwrap_or_default().contains("selection changed"));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[gpui::test]
@@ -2695,43 +2133,6 @@ mod window_tests {
     }
 
     #[gpui::test]
-    fn settings_trust_data_routes(cx: &mut TestAppContext) {
-        let (view, cx) = workspace(cx);
-        view.update(cx, |this, cx| {
-            let tag = super::settings_view::TRUST_STATUS_TAG;
-            this.session.update(cx, |s, _| {
-                s.data.insert(tag.into(), Ok(serde_json::json!({
-                    "trusted": false,
-                    "ignored": ["permissions.defaultMode: auto ignored (folder not trusted)"],
-                    "allowRules": ["shell(make deploy)"],
-                    "blockedPlugins": [{
-                        "name": "repo-tool",
-                        "command": "python",
-                        "args": ["-c", "print(1)"],
-                        "envKeys": ["TOKEN"],
-                        "reason": "folder not trusted"
-                    }]
-                })));
-            });
-            this.on_data(tag, cx);
-            assert!(!this.settings_view.trusted);
-            assert_eq!(this.settings_view.blocked_plugins.len(), 1);
-            assert_eq!(this.settings_view.blocked_plugins[0].name, "repo-tool");
-
-            // Grant trust
-            let grant_tag = super::settings_view::TRUST_GRANT_TAG;
-            this.session.update(cx, |s, _| {
-                s.data.insert(grant_tag.into(), Ok(serde_json::json!({
-                    "ok": true,
-                    "trusted": true
-                })));
-            });
-            this.on_data(grant_tag, cx);
-            assert!(this.settings_view.trusted);
-        });
-    }
-
-    #[gpui::test]
     fn cmd_w_closes_editor_tab_first(cx: &mut TestAppContext) {
         let (view, cx) = workspace(cx);
         view.update(cx, |this, _| {
@@ -2755,21 +2156,6 @@ mod window_tests {
     }
 
     #[gpui::test]
-    fn lsp_diagnostics_reply_routes_to_editor(cx: &mut TestAppContext) {
-        let (view, cx) = workspace(cx);
-        let tag = format!("{}1", super::editor::LSP_TAG);
-        view.update(cx, |this, cx| {
-            this.session.update(cx, |s, _| {
-                s.data.insert(tag.clone(), Ok(serde_json::json!({
-                    "ok": false,
-                    "needs": "trust"
-                })));
-            });
-            this.on_data(&tag, cx);
-        });
-    }
-
-    #[gpui::test]
     fn sidebar_toggles_and_starter_cards_prepare_the_composer(cx: &mut TestAppContext) {
         let (view, cx) = workspace(cx);
         assert!(view.read_with(cx, |this, _| this.sidebar_open), "sidebar starts open");
@@ -2782,13 +2168,9 @@ mod window_tests {
         assert!(view.read_with(cx, |this, _| this.sidebar_open), "⌘B shows the sidebar again");
 
         view.update_in(cx, |this, window, cx| {
-            this.mode_menu = true;
-            this.apply_starter("Explore key modules", Some("plan"), false, window, cx);
+            this.apply_starter("Explore key modules", false, window, cx);
         });
         assert_eq!(view.read_with(cx, |this, app| this.composer.read(app).value().to_string()), "Explore key modules");
-        cx.simulate_keystrokes("escape");
-        cx.run_until_parked();
-        assert!(!view.read_with(cx, |this, _| this.mode_menu), "esc dismisses the mode popover");
     }
 
     fn tempfile_dir() -> std::path::PathBuf {

@@ -115,13 +115,19 @@ impl Settings {
         let files = [cordata_home().join("settings.json"), cwd.join(".cordata/settings.json"), cwd.join(".cordata/settings.local.json")];
         let mut merged = Value::Object(Default::default());
         let mut warnings = Vec::new();
-        for path in files {
+        for (index, path) in files.into_iter().enumerate() {
             let Ok(text) = std::fs::read_to_string(&path) else { continue };
             if text.trim().is_empty() {
                 continue;
             }
             match serde_json::from_str::<Value>(&text) {
-                Ok(value @ Value::Object(_)) => merge(&mut merged, value),
+                Ok(mut value @ Value::Object(_)) => {
+                    // A repository's own files cannot set what the person's runs spend or where their traffic goes.
+                    if index > 0 {
+                        strip_user_only(&mut value, &path, &mut warnings);
+                    }
+                    merge(&mut merged, value);
+                }
                 Ok(_) => warnings.push(format!("{}: top level must be an object, ignored", path.display())),
                 Err(e) => warnings.push(format!("{}: not valid JSON, ignored ({e})", path.display())),
             }
@@ -140,6 +146,18 @@ impl Settings {
             return Some(v);
         }
         dotted.split('.').try_fold(&self.merged, |v, part| v.get(part))
+    }
+}
+
+/// Settings only `~/.cordata/settings.json` may set: the budget, the pools, the proxy.
+const USER_ONLY: [&str; 2] = ["vault", "orchestrator"];
+
+fn strip_user_only(value: &mut Value, path: &Path, warnings: &mut Vec<String>) {
+    let Value::Object(map) = value else { return };
+    let drop: Vec<String> = map.keys().filter(|k| USER_ONLY.iter().any(|u| *k == u || k.starts_with(&format!("{u}.")))).cloned().collect();
+    for key in drop {
+        map.remove(&key);
+        warnings.push(format!("{}: '{key}' ignored, only ~/.cordata/settings.json may set it", path.display()));
     }
 }
 
@@ -367,6 +385,15 @@ mod tests {
             Settings { merged: m, warnings }
         };
         (dir, merged)
+    }
+
+    #[test]
+    fn a_repository_cannot_set_the_budget_the_pools_or_the_proxy() {
+        let mut project = serde_json::json!({"vault": {"addr": "http://evil:1"}, "orchestrator.maxUsd": 999, "orchestrator": {"pools": []}, "tui": {"thinking": "expanded"}});
+        let mut warnings = Vec::new();
+        strip_user_only(&mut project, Path::new("proj/.cordata/settings.json"), &mut warnings);
+        assert_eq!(project, serde_json::json!({"tui": {"thinking": "expanded"}}));
+        assert_eq!(warnings.len(), 3, "{warnings:?}");
     }
 
     #[test]

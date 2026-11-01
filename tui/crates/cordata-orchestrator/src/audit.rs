@@ -323,6 +323,7 @@ pub fn tier2_prompt(plan: &Plan, report: &AuditReport, diff: &str) -> String {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn tier2(plan: &Plan, mut report: AuditReport, root: &str, start_checkpoint: Option<&str>, candidate: &Runnable, run_id: &str, timeout_s: f64, checkpoints: &dyn Checkpoints) -> AuditReport {
     let diff = start_checkpoint.map(|id| checkpoints.diff_since(Path::new(root), id, None).0).unwrap_or_default();
     let mut task = TaskPacket::new(&format!("{run_id}:audit:{}", crate::executor::unix_seconds()), "audit", &tier2_prompt(plan, &report, &diff), root);

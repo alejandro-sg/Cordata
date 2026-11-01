@@ -241,10 +241,10 @@ mod tests {
         app.refresh_menu();
         let all = app.menu.as_ref().expect("menu").items.len();
         assert!(all > 10, "{all}");
-        app.input.set_text("/mo");
+        app.input.set_text("/co");
         app.refresh_menu();
         let labels: Vec<_> = app.menu.as_ref().unwrap().items.iter().map(|i| i.label.as_str()).collect();
-        assert_eq!(labels[..2], ["/mode", "/model"], "{labels:?}");
+        assert_eq!(labels[..2], ["/cost", "/copy"], "{labels:?}");
     }
 
     #[test]

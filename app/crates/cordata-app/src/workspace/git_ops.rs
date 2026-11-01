@@ -21,7 +21,6 @@ use super::Workspace;
 use crate::theme::{c, line, mono, tk};
 use crate::ui::{self, Dot, Kind};
 
-pub const MESSAGE_TAG: &str = "gui-git-message";
 const GIT_TIMEOUT: Duration = Duration::from_secs(30);
 const NET_TIMEOUT: Duration = Duration::from_secs(120);
 /// How often the open pull request's checks are read.
@@ -268,29 +267,10 @@ impl Workspace {
         .detach();
     }
 
-    fn generate_message(&mut self, cx: &mut Context<Self>) {
-        self.git.busy = Some("writing a message…");
-        self.git.note = None;
-        self.session.read(cx).request("_cordata/git/commit_message", serde_json::json!({}), MESSAGE_TAG);
-        cx.notify();
-    }
-
-    pub(super) fn on_git_message(&mut self, value: Value, window: &mut Window, cx: &mut Context<Self>) {
-        self.git.busy = None;
-        match (value.get("ok").and_then(Value::as_bool), value.get("message").and_then(Value::as_str)) {
-            (Some(true), Some(message)) => {
-                let message = shown(message);
-                self.git.message.update(cx, |s, cx| s.set_value(message, window, cx));
-            }
-            _ => self.git.note = Some((value.get("reason").and_then(Value::as_str).unwrap_or("no message").to_owned(), true)),
-        }
-        cx.notify();
-    }
-
     fn commit(&mut self, stage_all: bool, window: &mut Window, cx: &mut Context<Self>) {
         let message = self.git.message.read(cx).value().trim().to_owned();
         if message.is_empty() {
-            self.git.note = Some(("Write or generate a message first.".into(), true));
+            self.git.note = Some(("Write a message first.".into(), true));
             cx.notify();
             return;
         }
@@ -485,7 +465,6 @@ impl Workspace {
                                 .flex()
                                 .flex_wrap()
                                 .gap(px(6.))
-                                .child(ui::button("git-generate", "✦ Generate", Kind::Ghost, cx).h(px(26.)).tooltip(ui::tip("Write the message from the diff")).on_click(cx.listener(|this, _, _, cx| this.generate_message(cx))))
                                 .child(ui::button("git-commit", commit_label, Kind::Primary, cx).h(px(26.)).when(!has_message, |b| b.opacity(0.5)).on_click(cx.listener(move |this, _, window, cx| this.commit(stage_all, window, cx)))),
                         )
                 })

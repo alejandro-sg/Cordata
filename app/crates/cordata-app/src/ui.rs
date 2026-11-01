@@ -94,7 +94,6 @@ pub fn diamond(cx: &App) -> Div {
 pub enum Tone {
     Amber,
     Teal,
-    Danger,
     Neutral,
 }
 
@@ -104,7 +103,6 @@ pub fn badge(text: &str, tone: Tone, cx: &App) -> Div {
     let (ink, fill, edge) = match tone {
         Tone::Amber => (c(tk.amber), amber(cx, t::AMBER_FILL_MID), amber(cx, t::AMBER_BORDER)),
         Tone::Teal => (c(tk.teal), teal(cx, t::TEAL_FILL), teal(cx, t::TEAL_BORDER)),
-        Tone::Danger => (c(tk.danger), ca(tk.danger, t::DANGER_FILL), ca(tk.danger, t::DANGER_BORDER)),
         Tone::Neutral => (c(tk.text_secondary), line(cx, t::FILL_FAINT), line(cx, t::LINE_CONTROL)),
     };
     div()

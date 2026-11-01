@@ -1,28 +1,15 @@
 {
-  "trusted": false,
   "values": {
-    "model": "project-model",
-    "temperature": "creative",
-    "tui.thinking": "expanded",
+    "orchestrator.maxUsd": 5,
+    "tui.thinking": "collapsed",
     "tui.toolOutput": "expanded",
     "vault.enabled": true
   },
   "sources": {
-    "model": "project",
-    "temperature": "local",
-    "tui.thinking": "user",
+    "orchestrator.maxUsd": "user",
+    "tui.thinking": "local",
     "tui.toolOutput": "project",
     "vault.enabled": "user"
   },
-  "rules": [
-    ["allow", "shell(git status)", "user", true],
-    ["deny", "file_read(~/.ssh/*)", "user", true],
-    ["allow", "shell(make *)", "project", false],
-    ["deny", "shell(rm -rf *)", "project", true],
-    ["ask", "file_write(*.md)", "local", true],
-    ["deny", "shell(security *find-generic-password*)", "built-in", true],
-    ["deny", "shell(security *find-internet-password*)", "built-in", true],
-    ["deny", "shell(security *dump-keychain*)", "built-in", true]
-  ],
-  "warning_count": 8
+  "warning_count": 5
 }

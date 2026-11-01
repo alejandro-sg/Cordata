@@ -4,19 +4,10 @@
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
     Help,
-    Mode(Option<String>),
-    Model(Option<String>),
-    Temp(Option<String>),
     /// Expand / collapse the agents' reasoning.
     Thinking,
     /// Expand / collapse tool results.
     Tools,
-    /// The settings panel, or `set` / `unset` / `path` subcommands.
-    Config(Option<String>),
-    /// List, add (`allow|ask|deny <rule>`) or remove permission rules.
-    Permissions(Option<String>),
-    /// Mark this folder trusted so its project allow rules apply.
-    Trust,
     /// Show the instruction files in the system prompt.
     Memory,
     /// Ask the agent to draft CORDATA.md for this project.
@@ -40,8 +31,6 @@ pub enum Command {
     Review,
     /// Another session in this project (Ctrl+N).
     New,
-    /// The open sessions, and saved ones for this folder.
-    Sessions,
     /// Show another session: a number, or the next one.
     Switch(Option<String>),
     /// End the shown session.
@@ -54,30 +43,14 @@ pub enum Command {
 /// What the help overlay lists, so the docs and the parser can't drift apart.
 pub const HELP: &[(&str, &str)] = &[
     ("/help", "show this help (also ? or F1)"),
-    ("/mode [plan|build|auto]", "show or set the approval mode"),
-    ("/model [name]", "pick the model (no name opens the picker)"),
-    (
-        "/temp [focused|balanced|creative]",
-        "pick the temperature preset",
-    ),
     ("/thinking", "expand / collapse reasoning"),
     ("/tools", "expand / collapse tool results"),
     ("/palette", "the command deck: every mode, model, view and command, searchable (Ctrl+K)"),
     ("/hud", "session HUD: context, usage, tasks, agents, activity (F3)"),
     ("/diffview", "review the working tree's changes: files, hunks, mouse (F4)"),
     ("/new", "another session in this project (Ctrl+N) — a new shared conversation on the hub"),
-    ("/sessions", "open and saved sessions"),
     ("/switch [n]", "show session n (Ctrl+←/→, Alt+1…9)"),
     ("/close", "end the shown session"),
-    (
-        "/config [set <key> <value>|unset <key>|path]",
-        "settings panel (user / project / local files)",
-    ),
-    (
-        "/permissions [allow|ask|deny <rule>|remove <rule>]",
-        "list or edit permission rules",
-    ),
-    ("/trust", "trust this folder's project settings"),
     ("/memory", "show the instruction files the agent reads"),
     ("/init", "have the agent draft CORDATA.md"),
     ("/status", "session, mode, model, rules, quota pools"),
@@ -105,14 +78,8 @@ pub fn parse(input: &str) -> Option<Command> {
     }
     Some(match name.to_ascii_lowercase().as_str() {
         "" | "help" | "h" | "?" => Command::Help,
-        "mode" => Command::Mode(arg),
-        "model" => Command::Model(arg),
-        "temp" | "temperature" => Command::Temp(arg),
         "thinking" | "thoughts" | "reasoning" => Command::Thinking,
         "tools" => Command::Tools,
-        "config" | "settings" | "preferences" | "prefs" => Command::Config(arg),
-        "permissions" | "perms" | "allowed-tools" => Command::Permissions(arg),
-        "trust" => Command::Trust,
         "memory" => Command::Memory,
         "init" => Command::Init,
         "status" => Command::Status,
@@ -125,7 +92,6 @@ pub fn parse(input: &str) -> Option<Command> {
         "panes" | "workspace" => Command::Panes,
         "diffview" | "dv" => Command::Review,
         "new" => Command::New,
-        "sessions" => Command::Sessions,
         "switch" | "session" => Command::Switch(arg),
         "close" => Command::Close,
         "clear" | "cls" => Command::Clear,
@@ -501,15 +467,7 @@ mod tests {
     fn parses_commands_with_and_without_arguments() {
         assert_eq!(parse("/help"), Some(Command::Help));
         assert_eq!(parse("/"), Some(Command::Help));
-        assert_eq!(
-            parse("  /mode plan "),
-            Some(Command::Mode(Some("plan".into())))
-        );
-        assert_eq!(parse("/mode"), Some(Command::Mode(None)));
-        assert_eq!(
-            parse("/MODEL Gpt-OSS:20b"),
-            Some(Command::Model(Some("Gpt-OSS:20b".into())))
-        );
+        assert_eq!(parse("  /Thinking "), Some(Command::Thinking));
         assert_eq!(parse("/thoughts"), Some(Command::Thinking));
         assert_eq!(parse("/exit"), Some(Command::Quit));
         assert_eq!(

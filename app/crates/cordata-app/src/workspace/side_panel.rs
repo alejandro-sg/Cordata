@@ -2,21 +2,17 @@
 //! content. Mission Control is drawn here; the other tabs are the panes in this folder.
 
 use cordata_theme::tokens as t;
-use cordata_view::shown;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement, MouseButton, ParentElement, SharedString, StatefulInteractiveElement as _, Styled, div, px};
-use gpui_component::input::Textarea;
-use serde_json::Value;
 
 use super::{DockTab, Workspace, editor};
-use crate::mission;
 use crate::theme::{amber, c, inset_bottom, line, mono, tk};
-use crate::ui::{self, Dot, Kind};
+use crate::ui::{self};
 
 /// The tabs in the strip, given the window width; the rest are in the ⋯ menu.
 pub fn strip_tabs(window_w: f32) -> (Vec<DockTab>, Vec<DockTab>) {
-    let mut strip = vec![DockTab::Mission, DockTab::Files, DockTab::Editor, DockTab::Review];
-    let mut overflow = vec![DockTab::History, DockTab::Browser, DockTab::Models];
+    let mut strip = vec![DockTab::Files, DockTab::Editor, DockTab::Review];
+    let mut overflow = Vec::new();
     if window_w >= t::TERMINAL_OVERFLOW_W {
         strip.push(DockTab::Terminal);
     } else {
@@ -36,7 +32,6 @@ pub fn panel_width(tab: DockTab, window_w: f32) -> f32 {
 impl Workspace {
     fn tab_name(&self, tab: DockTab) -> (&'static str, &'static str, Option<String>) {
         match tab {
-            DockTab::Mission => ("Mission", "Mission Control  ⌘⌥1", Some(self.mission.runs.iter().filter(|r| r.get("live").and_then(Value::as_str) == Some("running")).count()).filter(|n| *n > 0).map(|n| n.to_string())),
             DockTab::Files => ("Files", "Project files  ⌘⌥2 · ⌘P", None),
             DockTab::Editor => ("Editor", "Code editor  ⌘⌥3", match (self.files.buffers.len(), self.files.dirty()) {
                 (0, _) => None,
@@ -45,9 +40,6 @@ impl Workspace {
             }),
             DockTab::Review => ("Changes", "Diff review & Git  ⌘⌥4", (self.review.file_count() > 0).then(|| self.review.file_count().to_string())),
             DockTab::Terminal => ("Terminal", "Project terminal  ⌘⌥5 · ⌃`", None),
-            DockTab::Browser => ("Browser", "Browser agent  ⌘⌥6", None),
-            DockTab::Models => ("Models", "Models, Cloud Fleet & Voice  ⌘⌥7", None),
-            DockTab::History => ("History", "Checkpoints & undo", None),
         }
     }
 
@@ -92,8 +84,6 @@ impl Workspace {
                     let (label, _, _) = self.tab_name(item);
                     let shortcut = match item {
                         DockTab::Terminal => "⌃`",
-                        DockTab::Browser => "⌘⌥6",
-                        DockTab::Models => "⌘⌥7",
                         _ => "",
                     };
                     ui::row(("overflow", index), self.dock_tab == item, cx)
@@ -125,7 +115,6 @@ impl Workspace {
                 .into_any_element()
         });
         let body: AnyElement = match self.dock_tab {
-            DockTab::Mission => self.mission_tab(cx),
             DockTab::Files => editor::pane("files", self.files_panel(cx), cx),
             DockTab::Editor => self.editor_panel(cx),
             DockTab::Review => {
@@ -133,9 +122,6 @@ impl Workspace {
                 div().size_full().flex().flex_col().children(git).child(div().flex_1().min_h_0().child(self.review_panel(cx))).into_any_element()
             }
             DockTab::Terminal => editor::pane("terminal", self.terminal_panel(cx), cx),
-            DockTab::Browser => editor::pane("browser agent", self.browser_panel(cx), cx),
-            DockTab::Models => editor::pane("models & voice", self.models_panel(cx), cx),
-            DockTab::History => self.history_panel(cx),
         };
         div()
             .id("side-panel")
@@ -203,235 +189,6 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn mission_tab(&self, cx: &mut Context<Self>) -> AnyElement {
-        let tk = tk(cx);
-        let view = &self.session.read(cx).view;
-        let checklist = (!view.checklist.is_empty()).then(|| {
-            div().flex().flex_col().gap(px(4.)).children(view.checklist.iter().map(|item| {
-                let (glyph, ink) = match item.status {
-                    cordata_view::extras::TodoStatus::Completed => ("✓", tk.teal),
-                    cordata_view::extras::TodoStatus::InProgress => ("◆", tk.amber),
-                    cordata_view::extras::TodoStatus::Pending => ("·", tk.text_faint),
-                };
-                div()
-                    .flex()
-                    .gap(px(8.))
-                    .text_size(px(t::TEXT_SMALL))
-                    .child(div().w(px(10.)).flex_shrink_0().text_color(c(ink)).child(glyph))
-                    .child(div().min_w_0().text_color(c(if ink == tk.amber { tk.text_primary } else { tk.text_secondary })).child(SharedString::from(shown(&item.content))))
-            }))
-        });
-        let goal = view.goal.as_ref().map(|g| shown(&g.condition));
-        div()
-            .id("mission-scroll")
-            .size_full()
-            .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .gap(px(14.))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(10.))
-                    .p(px(12.))
-                    .rounded(px(t::RADIUS_CARD))
-                    .border_1()
-                    .border_color(line(cx, t::LINE_DEFAULT))
-                    .bg(line(cx, t::FILL_FAINT))
-                    .child(div().flex().items_center().justify_between().child(ui::heading("mission control", cx)).child(ui::meta("orchestrator", cx)))
-                    .child(self.mission_body(cx)),
-            )
-            .when_some(checklist, |col, list| col.child(crate::hud::frame("tasks", list, cx)))
-            .when_some(goal, |col, goal| col.child(crate::hud::frame("goal", div().text_size(px(t::TEXT_SMALL)).text_color(c(tk.text_secondary)).child(SharedString::from(goal)), cx)))
-            .into_any_element()
-    }
-
-    fn mission_body(&self, cx: &mut Context<Self>) -> AnyElement {
-        let tk = tk(cx);
-        if let Some((name, text)) = &self.mission.artifact {
-            return div()
-                .flex()
-                .flex_col()
-                .gap(px(8.))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .child(div().flex_1().truncate().font_family(mono(cx)).text_size(px(t::TEXT_SMALL)).text_color(c(tk.amber)).child(SharedString::from(name.clone())))
-                        .child(ui::button("close-artifact", "Close", Kind::Ghost, cx).h(px(24.)).on_click(cx.listener(|this, _, _, cx| {
-                            this.mission.artifact = None;
-                            cx.notify();
-                        }))),
-                )
-                .child(div().id("artifact-text").max_h(px(560.)).overflow_y_scroll().child(ui::code_block(SharedString::from(shown(text)), cx)))
-                .into_any_element();
-        }
-        if self.mission.selected.is_some() {
-            let mut buttons: Vec<AnyElement> = vec![ui::button("runs-back", "← Runs", Kind::Ghost, cx).h(px(26.)).on_click(cx.listener(|this, _, _, cx| this.select_run(None, cx))).into_any_element()];
-            if self.mission.can_pause() {
-                buttons.push(ui::button("run-pause", "Pause", Kind::Outline, cx).h(px(26.)).on_click(cx.listener(|this, _, _, cx| this.control_run("pause", serde_json::json!({}), cx))).into_any_element());
-            }
-            if self.mission.can_resume() {
-                buttons.push(ui::button("run-resume", "Resume", Kind::Tint, cx).h(px(26.)).on_click(cx.listener(|this, _, _, cx| this.control_run("resume", serde_json::json!({}), cx))).into_any_element());
-            }
-            if self.mission.can_cancel() {
-                buttons.push(ui::button("run-cancel", "Cancel", Kind::Danger, cx).h(px(26.)).on_click(cx.listener(|this, _, _, cx| this.control_run("cancel", serde_json::json!({ "now": true }), cx))).into_any_element());
-            }
-            let artifacts: Vec<AnyElement> = self
-                .mission
-                .artifacts()
-                .into_iter()
-                .enumerate()
-                .map(|(index, name)| {
-                    let open = name.clone();
-                    let hover = c(tk.amber);
-                    div()
-                        .id(("artifact", index))
-                        .cursor_pointer()
-                        .font_family(mono(cx))
-                        .text_size(px(t::TEXT_SMALL))
-                        .text_color(c(tk.teal))
-                        .hover(move |s| s.text_color(hover))
-                        .child(SharedString::from(format!("▤ {name}")))
-                        .on_click(cx.listener(move |this, _, _, cx| this.open_artifact(open.clone(), cx)))
-                        .into_any_element()
-                })
-                .collect();
-            return div()
-                .flex()
-                .flex_col()
-                .gap(px(10.))
-                .child(div().flex().flex_wrap().gap(px(6.)).children(buttons))
-                .child(self.run_card(cx))
-                .child(mission::run_detail(&self.mission, cx))
-                .when(!artifacts.is_empty(), |col| col.child(ui::section_label("artifacts", cx)).child(div().flex().flex_col().gap(px(4.)).children(artifacts)))
-                .into_any_element();
-        }
-        let rows: Vec<AnyElement> = self
-            .mission
-            .runs
-            .iter()
-            .enumerate()
-            .map(|(index, run)| {
-                let run_id = run.get("runId").and_then(Value::as_str).unwrap_or_default().to_owned();
-                let live = run.get("live").and_then(Value::as_str).unwrap_or_default().to_owned();
-                let goal = run.get("goal").and_then(Value::as_str).unwrap_or_default().to_owned();
-                let hover = line(cx, t::HOVER);
-                div()
-                    .id(("run-row", index))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .px(px(10.))
-                    .py(px(8.))
-                    .rounded(px(t::RADIUS_CARD))
-                    .border_1()
-                    .border_color(line(cx, t::LINE_DEFAULT))
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(hover))
-                    .on_click(cx.listener(move |this, _, _, cx| this.select_run(Some(run_id.clone()), cx)))
-                    .child(ui::dot(run_dot(&live), cx))
-                    .child(div().flex_1().min_w_0().truncate().text_size(px(t::TEXT_UI)).text_color(c(tk.text_primary)).child(SharedString::from(shown(&goal))))
-                    .child(ui::meta(SharedString::from(live), cx))
-                    .into_any_element()
-            })
-            .collect();
-        let count = rows.len();
-        let live_here = self.session.read(cx).view.run.as_ref().filter(|r| r.is_live()).map(|r| r.run_id.clone());
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(10.))
-            .when_some(live_here, |col, run_id| col.child(ui::button("follow-live", SharedString::from(format!("Follow {run_id}")), Kind::Tint, cx).on_click(cx.listener(move |this, _, _, cx| this.select_run(Some(run_id.clone()), cx)))))
-            .child(
-                div()
-                    .px(px(10.))
-                    .py(px(8.))
-                    .rounded(px(t::RADIUS_CARD))
-                    .bg(c(tk.bg_input))
-                    .border_1()
-                    .border_color(line(cx, t::LINE_CONTROL_STRONG))
-                    .text_size(px(t::TEXT_UI))
-                    .child(Textarea::new(&self.goal_input).appearance(false).aria_label("Mission goal")),
-            )
-            .child(
-                ui::button("start-run", "Start run", Kind::Tint, cx)
-                    .w_full()
-                    .h(px(32.))
-                    .aria_label("Start run (⌘↵)")
-                    .child(div().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.amber_dim)).child("⌘↵"))
-                    .on_click(cx.listener(|this, _, window, cx| this.start_run(window, cx))),
-            )
-            .when_some(self.mission.notice.clone(), |col, notice| col.child(div().text_size(px(t::TEXT_SMALL)).text_color(c(tk.amber)).child(SharedString::from(shown(&notice)))))
-            .child(div().flex().items_center().justify_between().pt(px(4.)).child(ui::section_label("runs in this project", cx)).child(ui::meta(SharedString::from(count.to_string()), cx)))
-            .when(rows.is_empty(), |col| {
-                col.child(
-                    div()
-                        .p(px(14.))
-                        .rounded(px(t::RADIUS_CARD))
-                        .border_1()
-                        .border_dashed()
-                        .border_color(line(cx, t::LINE_CONTROL_STRONG))
-                        .text_size(px(t::TEXT_SMALL))
-                        .line_height(gpui::relative(1.5))
-                        .text_color(c(tk.text_muted))
-                        .child("No runs yet. Start one above, or ask for a multi-step change in the conversation."),
-                )
-            })
-            .children(rows)
-            .into_any_element()
-    }
-
-    /// The selected run as a card: glowing dot while it runs, the goal, progress, the steps.
-    fn run_card(&self, cx: &mut Context<Self>) -> AnyElement {
-        let tk = tk(cx);
-        let board = &self.mission.board;
-        let detail = self.mission.detail.as_ref();
-        let goal = detail.and_then(|d| d.get("goal")).and_then(Value::as_str).unwrap_or_default().to_owned();
-        let live = detail.and_then(|d| d.get("live")).and_then(Value::as_str).unwrap_or(board.state.as_str()).to_owned();
-        let done = board.steps.iter().filter(|s| matches!(s.status.as_str(), "done" | "completed" | "succeeded")).count();
-        let total = board.steps.len();
-        let steps = board.steps.iter().map(|step| {
-            let name = self.mission.step_name(&step.id).unwrap_or_else(|| step.id.clone());
-            let (glyph, ink, text) = match step.status.as_str() {
-                "done" | "completed" | "succeeded" => ("✓", tk.teal, tk.text_secondary),
-                "running" | "in_progress" | "active" => ("◆", tk.amber, tk.text_primary),
-                "failed" | "error" => ("✕", tk.danger, tk.text_secondary),
-                _ => ("·", tk.text_faint, tk.text_muted),
-            };
-            div().flex().gap(px(8.)).text_size(px(t::TEXT_SMALL)).child(div().w(px(10.)).flex_shrink_0().text_color(c(ink)).child(glyph)).child(div().min_w_0().truncate().text_color(c(text)).child(SharedString::from(shown(&name))))
-        });
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(8.))
-            .p(px(12.))
-            .rounded(px(t::RADIUS_CARD))
-            .border_1()
-            .border_color(if live == "running" { amber(cx, t::AMBER_BORDER) } else { line(cx, t::LINE_DEFAULT) })
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .child(ui::dot(run_dot(&live), cx))
-                    .child(div().flex_1().min_w_0().truncate().text_size(px(t::TEXT_UI)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(SharedString::from(shown(&goal))))
-                    .when(total > 0, |row| row.child(ui::meta(SharedString::from(format!("{done}/{total}")), cx))),
-            )
-            .children(steps)
-            .into_any_element()
-    }
-}
-
-fn run_dot(live: &str) -> Dot {
-    match live {
-        "running" => Dot::Live,
-        "paused" | "interrupted" => Dot::Amber,
-        "failed" | "cancelled" | "budget_exhausted" => Dot::Danger,
-        "done" => Dot::Ok,
-        _ => Dot::Muted,
-    }
 }
 
 #[cfg(test)]
@@ -447,9 +204,9 @@ mod tests {
 
     #[test]
     fn the_panel_width_is_clamped() {
-        assert_eq!(panel_width(DockTab::Mission, 900.), 300.);
-        assert_eq!(panel_width(DockTab::Mission, 1200.), 336.);
-        assert_eq!(panel_width(DockTab::Mission, 1600.), 380.);
+        assert_eq!(panel_width(DockTab::Files, 900.), 300.);
+        assert_eq!(panel_width(DockTab::Files, 1200.), 336.);
+        assert_eq!(panel_width(DockTab::Files, 1600.), 380.);
         assert_eq!(panel_width(DockTab::Editor, 1600.), 560.);
     }
 }

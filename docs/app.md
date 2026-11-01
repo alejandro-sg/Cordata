@@ -23,13 +23,11 @@ terminal client (`Settings → Account`, service `cordata-*-api-key`). Window pr
 
 ## What it has
 
-Working: conversation rail and transcript, approval cards with the exact command or diff, composer with `/` and `@`
-menus, command palette (⌘K), project picker (⌘O), and the Files, Editor, Review (per-hunk keep/revert) and Terminal
-panels. Both clients share one conversation reducer.
-
-Present but not wired to the native engine, so they show errors or stay empty: Mission Control, Models, Customize
-(MCP servers and skills), conversation history, and the settings schema and trust panels. They were built for a
-backend that no longer exists; the engine answers their `_cordata/*` requests with "not supported by native sessions".
+Conversation rail and transcript, approval cards with the exact command or diff, composer with `/` and `@` menus,
+command palette (⌘K), project picker (⌘O), settings (⌘,: launch, appearance, shortcuts, your API key), and a side panel
+with Files, Editor, Review (per-hunk keep/revert, git and pull requests) and Terminal. Both clients share one
+conversation reducer. Like the terminal client, the chat has no modes, undo, goal loops or saved sessions; every edit and
+command asks first.
 
 ## Crates (`app/crates`)
 

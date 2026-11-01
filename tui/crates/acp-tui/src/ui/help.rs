@@ -21,11 +21,6 @@ const KEYS: &[(&str, &str)] = &[
         "allow / reject / always-allow (saves a rule) in the approval box",
     ),
     (
-        "Tab / Shift+Tab",
-        "cycle mode: plan (safe) → build (asks) → auto (never asks)",
-    ),
-    ("Ctrl+O / Ctrl+T", "model / temperature picker"),
-    (
         "Ctrl+R",
         "expand or collapse reasoning (applies to new output)",
     ),

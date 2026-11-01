@@ -13,8 +13,6 @@ use ratatui::widgets::{
 use super::footer::mode_color;
 use super::text::{truncate, wrap};
 use crate::app::{App, sanitize};
-use crate::config_ui::default_value;
-use crate::settings::{Applies, SCHEMA};
 
 const MAX_INPUT_ROWS: usize = 12;
 /// Diff rows in the approval panel before `d` shows the rest.
@@ -317,123 +315,8 @@ fn permission_panel(app: &App, width: u16) -> Option<Panel> {
     })
 }
 
-fn picker_panel(app: &App) -> Option<Panel> {
-    let picker = app.picker.as_ref()?;
-    let current = app
-        .config(&picker.config_id)
-        .map(|o| o.current_value.as_str());
-    let lines = picker
-        .choices
-        .iter()
-        .map(|choice| {
-            let marker = if Some(choice.value.as_str()) == current {
-                "● "
-            } else {
-                "  "
-            };
-            Line::raw(format!("{marker}{}", choice.name))
-        })
-        .collect();
-    Some(Panel {
-        title: format!(" {} — ↑/↓ Enter · Esc ", picker.title),
-        border: Color::Cyan,
-        lines,
-        selected: Some(picker.selected),
-        pinned_from: None,
-        footer: Vec::new(),
-    })
-}
-
-/// `/config`: one row per setting — its value, the file that set it, and where
-/// the next change will be written.
-fn config_panel(app: &App, width: u16) -> Option<Panel> {
-    let panel = app.config.as_ref()?;
-    let inner = (width as usize).saturating_sub(4);
-    let dim = Style::new().fg(Color::DarkGray);
-    let lines: Vec<Line<'static>> = SCHEMA
-        .iter()
-        .map(|entry| {
-            let (value, source) = match app.settings.get(entry.key) {
-                Some(_) => (
-                    app.settings.display(entry.key),
-                    app.settings
-                        .sources
-                        .get(entry.key)
-                        .map_or("", |scope| scope.name()),
-                ),
-                None => {
-                    // Not set in any file: what is in effect anyway.
-                    let live = matches!(entry.key, "model" | "temperature")
-                        .then(|| {
-                            app.config(entry.key)
-                                .map(|option| option.current_name().to_owned())
-                        })
-                        .flatten();
-                    match (live, default_value(entry)) {
-                        (Some(name), _) => (name, "session"),
-                        (None, serde_json::Value::Null) => ("—".to_owned(), ""),
-                        (None, value) => (
-                            value
-                                .as_str()
-                                .map_or_else(|| value.to_string(), str::to_owned),
-                            "default",
-                        ),
-                    }
-                }
-            };
-            Line::from(vec![
-                Span::raw(format!(" {:<24}", entry.key)),
-                Span::styled(
-                    format!("{:<16}", truncate(&value, 15)),
-                    Style::new().add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(source.to_owned(), dim),
-            ])
-        })
-        .collect();
-    // The selected entry's help goes in the *title*, not the list: the list
-    // scrolls to follow the selection, so a help row at the end of it would be
-    // unreadable for every entry above the last screenful. The title is drawn
-    // by the block and never scrolls. "When it applies" comes before the help
-    // text so that a narrow terminal cuts the help short, never the part that
-    // says whether the change takes effect now.
-    let entry = &SCHEMA[panel.selected.min(SCHEMA.len() - 1)];
-    let when = match entry.applies {
-        Applies::Now => "applies now",
-        Applies::NextSession => "next session",
-    };
-    let status = if panel.status.is_empty() {
-        format!(
-            " ↑↓ select · Enter change · ⌫ reset · Tab file: {} · Esc close",
-            panel.scope.name()
-        )
-    } else {
-        format!(" {}", panel.status)
-    };
-    Some(Panel {
-        title: truncate(
-            &format!(
-                " Settings → {} file · {when} · {} ",
-                panel.scope.name(),
-                entry.help
-            ),
-            width as usize,
-        ),
-        border: Color::Cyan,
-        lines,
-        selected: Some(panel.selected),
-        pinned_from: None,
-        footer: vec![Line::styled(
-            truncate(&status, inner),
-            Style::new().fg(Color::Gray),
-        )],
-    })
-}
-
 pub fn current(app: &App, width: u16) -> Option<Panel> {
     permission_panel(app, width)
-        .or_else(|| picker_panel(app))
-        .or_else(|| config_panel(app, width))
 }
 
 /// Total rows a panel needs, bordered, capped at `max`.

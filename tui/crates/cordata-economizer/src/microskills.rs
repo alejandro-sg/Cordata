@@ -109,11 +109,10 @@ fn is_safe_command_to_record(cmd: &str) -> bool {
         return false;
     }
     // Remote URLs with embedded auth or tokens
-    if lower.contains("http://") || lower.contains("https://") {
-        if lower.contains('@') || lower.contains("token") || lower.contains("key") || lower.contains("secret") {
+    if (lower.contains("http://") || lower.contains("https://"))
+        && (lower.contains('@') || lower.contains("token") || lower.contains("key") || lower.contains("secret")) {
             return false;
         }
-    }
     // Command line flags often used to pass sensitive credentials
     if lower.contains("-u ") || lower.contains("--user") || lower.contains("-h ") || lower.contains("--header") {
         return false;

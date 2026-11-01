@@ -151,15 +151,14 @@ fn check_doc_ref(reference: &Value, root_real: &Path) -> Result<(), String> {
     let root = root_real.to_string_lossy();
     let mut clean = text.trim().to_owned();
     let mut target = join(&root, &clean);
-    if !target.exists() {
-        if let Some((candidate, _)) = clean.rsplit_once(':').filter(|(c, _)| !c.is_empty()) {
+    if !target.exists()
+        && let Some((candidate, _)) = clean.rsplit_once(':').filter(|(c, _)| !c.is_empty()) {
             let alt = join(&root, candidate);
             if alt.exists() {
                 target = alt;
                 clean = candidate.to_owned();
             }
         }
-    }
     let resolved = realpath(&target);
     let shown = py_repr_value(reference);
     if !inside(root_real, &resolved) {
@@ -453,7 +452,7 @@ mod tests {
         let none = finding("f5", json!([]));
         let v = verify_brief(Some(&json!({"findings": [good, doc, cmd_only, cmd_with_doc, none, 7], "approach": "a"})), &root);
         assert_eq!(v.dropped, ["f3", "f5", ""]);
-        assert!(v.refused == false, "3 of 6 survive: exactly half is enough");
+        assert!(!v.refused, "3 of 6 survive: exactly half is enough");
         let ids: Vec<&str> = v.brief["findings"].as_array().unwrap().iter().map(|f| f["id"].as_str().unwrap()).collect();
         assert_eq!(ids, ["f1", "f2", "f4"]);
         assert_eq!(v.brief["approach"], "a");

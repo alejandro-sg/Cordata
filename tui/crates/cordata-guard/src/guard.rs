@@ -20,7 +20,7 @@ pub fn check(raw: &str) -> Option<String> {
     let input = payload.get("input").cloned().unwrap_or(Value::Null);
     let text = |key: &str| input.get(key).and_then(Value::as_str).unwrap_or("").to_owned();
 
-    if matches!(tool, "editor" | "apply_patch" | "write_file" | "file_write") {
+    if matches!(tool, "edit_file" | "editor" | "apply_patch" | "write_file" | "file_write") {
         let path = Some(text("path")).filter(|p| !p.is_empty()).unwrap_or_else(|| text("file"));
         if ENV_PATH.is_match(&path) {
             return Some("GUARD REFUSAL (exit 2): Direct edits to .env files are blocked.\nSecrets must be stored in the macOS Keychain using `make key` or `scripts/store-key.sh`.\n".into());
@@ -29,8 +29,8 @@ pub fn check(raw: &str) -> Option<String> {
             return Some("GUARD REFUSAL (exit 2): Direct modifications inside .git/ are blocked.\nUse git CLI commands instead.\n".into());
         }
     }
-    if matches!(tool, "shell" | "background_shell") {
-        let command = text("command");
+    if matches!(tool, "run_command" | "shell" | "background_shell") {
+        let command = Some(text("command")).filter(|c| !c.is_empty()).unwrap_or_else(|| text("cmd"));
         if RM_RF.is_match(&command) {
             return Some("GUARD REFUSAL (exit 2): Dangerous recursive delete detected outside workspace boundaries.\n".into());
         }
@@ -55,6 +55,8 @@ mod tests {
         assert!(call("editor", r#"{"file":".git/config"}"#).is_some());
         assert!(call("shell", r#"{"command":"rm -rf /"}"#).is_some());
         assert!(call("shell", r#"{"command":"echo K=1 >> ./cfg/.env"}"#).is_some());
+        assert!(call("edit_file", r#"{"path":".git/hooks/pre-commit","target":"","replacement":"x"}"#).is_some());
+        assert!(call("run_command", r#"{"cmd":"rm -rf ~"}"#).is_some());
         assert!(call("write_file", r#"{"path":"src/main.rs"}"#).is_none());
         assert!(call("shell", r#"{"command":"rm -rf target"}"#).is_none());
         assert!(check("not json").is_none() && check("").is_none());

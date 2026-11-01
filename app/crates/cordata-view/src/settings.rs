@@ -46,53 +46,6 @@ impl Scope {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum RuleKind {
-    Allow,
-    Ask,
-    Deny,
-}
-
-impl RuleKind {
-    pub const ALL: [RuleKind; 3] = [RuleKind::Allow, RuleKind::Ask, RuleKind::Deny];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            RuleKind::Allow => "allow",
-            RuleKind::Ask => "ask",
-            RuleKind::Deny => "deny",
-        }
-    }
-
-    pub fn parse(text: &str) -> Option<RuleKind> {
-        RuleKind::ALL.into_iter().find(|kind| kind.name() == text)
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Origin {
-    Scope(Scope),
-    BuiltIn,
-}
-
-impl Origin {
-    pub fn name(self) -> &'static str {
-        match self {
-            Origin::Scope(scope) => scope.name(),
-            Origin::BuiltIn => "built-in",
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Rule {
-    pub kind: RuleKind,
-    pub text: String,
-    pub origin: Origin,
-    /// False: written down but not applied (an `allow` from an untrusted folder).
-    pub active: bool,
-}
-
 pub enum Kind {
     Enum(&'static [&'static str]),
     Bool,
@@ -121,34 +74,10 @@ pub struct Entry {
 
 pub const SCHEMA: &[Entry] = &[
     Entry {
-        key: "permissions.defaultMode",
-        kind: Kind::Enum(&["plan", "build", "edit", "auto"]),
-        applies: Applies::NextSession,
-        help: "mode new sessions start in (auto needs a trusted folder)",
-    },
-    Entry {
-        key: "model",
-        kind: Kind::Str,
-        applies: Applies::Now,
-        help: "model id on the active provider",
-    },
-    Entry {
-        key: "temperature",
-        kind: Kind::Enum(&["focused", "balanced", "creative"]),
-        applies: Applies::Now,
-        help: "sampling preset",
-    },
-    Entry {
         key: "tui.thinking",
         kind: Kind::Enum(&["collapsed", "expanded"]),
         applies: Applies::Now,
         help: "show reasoning as one line or in full",
-    },
-    Entry {
-        key: "modes.adaptive",
-        kind: Kind::Bool,
-        applies: Applies::Now,
-        help: "let the harness start plan-worthy requests in plan mode (it only tightens; a plan card hands over to build/auto)",
     },
     Entry {
         key: "tui.toolOutput",
@@ -187,195 +116,9 @@ pub const SCHEMA: &[Entry] = &[
         applies: Applies::Now,
         help: "Cordata.app shows reasoning in full",
     },
-    Entry {
-        key: "tiers.fast",
-        kind: Kind::Str,
-        applies: Applies::NextSession,
-        help: "model for cheap sub-agents",
-    },
-    Entry {
-        key: "tiers.standard",
-        kind: Kind::Str,
-        applies: Applies::NextSession,
-        help: "model for ordinary sub-agents",
-    },
-    Entry {
-        key: "tiers.strong",
-        kind: Kind::Str,
-        applies: Applies::NextSession,
-        help: "model for hard sub-agents",
-    },
-    Entry {
-        key: "selfHeal.enabled",
-        kind: Kind::Bool,
-        applies: Applies::NextSession,
-        help: "diagnose and fix failing commands autonomously",
-    },
-    Entry {
-        key: "selfHeal.maxAttempts",
-        kind: Kind::Float(1.0, 10.0),
-        applies: Applies::NextSession,
-        help: "debugger rounds per failure before escalating to you",
-    },
-    Entry {
-        key: "selfHeal.verify",
-        kind: Kind::Enum(&["sandbox", "workspace", "off"]),
-        applies: Applies::NextSession,
-        help: "verify patches in a throwaway copy first, or only in the workspace",
-    },
-    Entry {
-        key: "selfHeal.autoApply",
-        kind: Kind::Bool,
-        applies: Applies::NextSession,
-        help: "apply sandbox-verified fixes without asking (needs a trusted folder)",
-    },
-    Entry {
-        key: "selfHeal.memory",
-        kind: Kind::Bool,
-        applies: Applies::NextSession,
-        help: "remember verified fixes and try a remembered one before asking the Debugger",
-    },
-    Entry {
-        key: "selfHeal.autoResume",
-        kind: Kind::Bool,
-        applies: Applies::NextSession,
-        help: "continue a turn a crash interrupted on its own when the session reloads (twice at most)",
-    },
-    Entry {
-        key: "subagents.background",
-        kind: Kind::Bool,
-        applies: Applies::NextSession,
-        help: "let the agent run a `subagent` in the background and keep working; the turn still waits for it",
-    },
-    Entry {
-        key: "subagents.maxDepth",
-        kind: Kind::Float(1.0, 3.0),
-        applies: Applies::NextSession,
-        help: "how many levels of `subagent` delegation a turn may build (1 = children only)",
-    },
-    Entry {
-        key: "learning.reflect",
-        kind: Kind::Bool,
-        applies: Applies::NextSession,
-        help: "draft a lesson from a turn that cost something, into staging (never straight into a prompt)",
-    },
-    Entry {
-        key: "learning.promotion",
-        kind: Kind::Enum(&["off", "shadow", "live"]),
-        applies: Applies::NextSession,
-        help: "the eval gate for staged lessons: off | shadow (record verdicts) | live (promote a pass)",
-    },
-    Entry {
-        key: "learning.evalTasks",
-        kind: Kind::Float(3.0, 60.0),
-        applies: Applies::NextSession,
-        help: "how many tasks the promotion gate samples when judging a staged lesson",
-    },
-    Entry {
-        key: "learning.optimizePrompts",
-        kind: Kind::Bool,
-        applies: Applies::NextSession,
-        help: "draft a sharper variant of a live lesson or prompt overlay whose turns went badly, into staging",
-    },
-    Entry {
-        key: "learning.bandit",
-        kind: Kind::Enum(&["off", "shadow", "live"]),
-        applies: Applies::NextSession,
-        help: "learn which harness choice to make: off | shadow (record) | live — additive only, never lifts a gate",
-    },
-    Entry {
-        key: "learning.banditExplore",
-        kind: Kind::Float(0.0, 0.5),
-        applies: Applies::NextSession,
-        help: "how often the bandit tries a choice other than the best one it knows",
-    },
-    Entry {
-        key: "learning.banditMinPulls",
-        kind: Kind::Float(1.0, 100.0),
-        applies: Applies::NextSession,
-        help: "pulls an arm needs before the bandit will act on it at all",
-    },
-    Entry {
-        key: "learning.banditLambda",
-        kind: Kind::Float(0.0, 1.0),
-        applies: Applies::NextSession,
-        help: "how much a turn's cost counts against it in the bandit's reward",
-    },
-    Entry {
-        key: "learning.banditMu",
-        kind: Kind::Float(0.0, 1.0),
-        applies: Applies::NextSession,
-        help: "how much a person's correction counts against a turn in the bandit's reward",
-    },
-    Entry {
-        key: "lsp.enabled",
-        kind: Kind::Bool,
-        applies: Applies::NextSession,
-        help: "start the project's language servers for diagnostics after edits",
-    },
-    Entry {
-        key: "context.outlineLines",
-        kind: Kind::Float(100.0, 20000.0),
-        applies: Applies::NextSession,
-        help: "a whole-file read over this many lines returns an outline and how to read a range (500)",
-    },
-    Entry {
-        key: "preflight.enabled",
-        kind: Kind::Bool,
-        applies: Applies::NextSession,
-        help: "check an edit (syntax, linter, language server) before it is asked about or applied",
-    },
-    Entry {
-        key: "preflight.maxRetries",
-        kind: Kind::Float(0.0, 10.0),
-        applies: Applies::NextSession,
-        help: "failed checks sent back to the agent per file per turn before it is told to stop (3)",
-    },
-    Entry {
-        key: "preflight.tests",
-        kind: Kind::Str,
-        applies: Applies::NextSession,
-        help: "a test command run in a throwaway copy after an edit passes the static checks (runs code)",
-    },
-    Entry {
-        key: "preflight.rollback",
-        kind: Kind::Bool,
-        applies: Applies::NextSession,
-        help: "when the agent cannot make its edit pass, put the turn's files back as they were",
-    },
-    Entry {
-        key: "reasoning.adaptive",
-        kind: Kind::Bool,
-        applies: Applies::NextSession,
-        help: "Ollama Cloud reasoning effort follows workspace size and the turn's complexity",
-    },
-    Entry {
-        key: "learning.rejections",
-        kind: Kind::Bool,
-        applies: Applies::NextSession,
-        help: "learn a rule from each change you reject and hold later turns to it",
-    },
     // Mirror of backend/settings_store.py's SCHEMA. Both front doors reject an
     // unknown key with a warning, so a key added on one side and not the other
     // shows up as a spurious warning in whichever door is behind.
-    Entry {
-        key: "checkpoints.enabled",
-        kind: Kind::Bool,
-        applies: Applies::NextSession,
-        help: "snapshot the project before any call that may change files, so /undo can reverse it",
-    },
-    Entry {
-        key: "checkpoints.maxFileMb",
-        kind: Kind::Float(0.5, 512.0),
-        applies: Applies::NextSession,
-        help: "files larger than this (MB) are left out of snapshots",
-    },
-    Entry {
-        key: "memory.traces",
-        kind: Kind::Bool,
-        applies: Applies::NextSession,
-        help: "record execution traces to the local LanceDB corpus (needs lancedb)",
-    },
     Entry {
         key: "vault.enabled",
         kind: Kind::Bool,
@@ -387,102 +130,6 @@ pub const SCHEMA: &[Entry] = &[
         kind: Kind::Str,
         applies: Applies::NextSession,
         help: "Agent Vault proxy address, e.g. http://127.0.0.1:14322",
-    },
-    Entry {
-        key: "vault.vault",
-        kind: Kind::Str,
-        applies: Applies::NextSession,
-        help: "Agent Vault vault name to draw credentials from",
-    },
-    Entry {
-        key: "vault.egressPolicy",
-        kind: Kind::Enum(&["deny", "proxy"]),
-        applies: Applies::NextSession,
-        help: "refuse egress when the vault is unreachable, or fall back to a plain proxy",
-    },
-    Entry {
-        key: "capture.enabled",
-        kind: Kind::Bool,
-        applies: Applies::NextSession,
-        help: "let the menu-bar deck read the screen context of apps you allow (read from your user file only)",
-    },
-    Entry {
-        key: "capture.allowlist",
-        kind: Kind::BundleIds,
-        applies: Applies::NextSession,
-        help: "bundle ids the menu-bar deck may read, e.g. com.apple.Safari — empty reads nothing",
-    },
-    Entry {
-        key: "capture.denylist",
-        kind: Kind::BundleIds,
-        applies: Applies::NextSession,
-        help: "bundle ids the menu-bar deck must not read, on top of the built-in never-read list",
-    },
-    Entry {
-        key: "capture.screenshot",
-        kind: Kind::Bool,
-        applies: Applies::NextSession,
-        help: "let the menu-bar deck capture the frontmost window as an image (Screen Recording)",
-    },
-    Entry {
-        key: "capture.screenshotCloud",
-        kind: Kind::Bool,
-        applies: Applies::NextSession,
-        help: "allow a captured screenshot to reach a cloud model (off: local models only)",
-    },
-    Entry {
-        key: "capture.visionModel",
-        kind: Kind::Str,
-        applies: Applies::NextSession,
-        help: "the vision model a screenshot turn runs on; unset: screenshots are never sent",
-    },
-    Entry {
-        key: "observer.enabled",
-        kind: Kind::Bool,
-        applies: Applies::NextSession,
-        help: "run the read-only workspace observer while no task is active",
-    },
-    Entry {
-        key: "observer.intervalMinutes",
-        kind: Kind::Float(1.0, 1440.0),
-        applies: Applies::NextSession,
-        help: "how often the observer wakes up",
-    },
-    Entry {
-        key: "kg.enabled",
-        kind: Kind::Bool,
-        applies: Applies::NextSession,
-        help: "record graph entities and edges from each turn (needs lancedb for the queryable store)",
-    },
-    Entry {
-        key: "kg.sink",
-        kind: Kind::Enum(&["lance", "cognee"]),
-        applies: Applies::NextSession,
-        help: "which knowledge-graph backend keeps the rows",
-    },
-    Entry {
-        key: "claudeCode.enabled",
-        kind: Kind::Bool,
-        applies: Applies::NextSession,
-        help: "hand large coding tasks to the Claude Code CLI (via the vault)",
-    },
-    Entry {
-        key: "claudeCode.maxBudgetUsd",
-        kind: Kind::Float(0.1, 100.0),
-        applies: Applies::NextSession,
-        help: "spend cap per Claude Code CLI run (--max-budget-usd)",
-    },
-    Entry {
-        key: "claudeCode.model",
-        kind: Kind::Str,
-        applies: Applies::NextSession,
-        help: "model alias for Claude Code CLI runs (empty = the CLI's own; default sonnet)",
-    },
-    Entry {
-        key: "claudeCode.effort",
-        kind: Kind::Enum(&["default", "low", "medium", "high", "xhigh", "max"]),
-        applies: Applies::NextSession,
-        help: "effort level for Claude Code CLI runs (default medium)",
     },
     Entry {
         key: "orchestrator.workers",
@@ -538,188 +185,17 @@ pub const SCHEMA: &[Entry] = &[
         applies: Applies::NextSession,
         help: "dispatch quota-scarcity weight (higher avoids pools near their limit)",
     },
-    Entry {
-        key: "hooks.preToolUse",
-        kind: Kind::Str,
-        applies: Applies::Now,
-        help: "shell command run before each tool call (JSON on stdin); exit 2 blocks the call",
-    },
-    Entry {
-        key: "hooks.postToolUse",
-        kind: Kind::Str,
-        applies: Applies::Now,
-        help: "shell command run after each tool call; its output is appended to the result",
-    },
-    Entry {
-        key: "hooks.stop",
-        kind: Kind::Str,
-        applies: Applies::Now,
-        help: "shell command run when a turn ends",
-    },
-    Entry {
-        key: "hooks.matcher",
-        kind: Kind::Str,
-        applies: Applies::Now,
-        help: "regex on the tool name the pre/post hooks run for (empty: every tool)",
-    },
-    Entry {
-        key: "context.coldTools",
-        kind: Kind::Bool,
-        applies: Applies::NextSession,
-        help: "send rarely-used tools only when a turn needs them (cuts ~60% of per-call overhead)",
-    },
-    Entry {
-        key: "context.toolOutputChars",
-        kind: Kind::Float(2000.0, 200000.0),
-        applies: Applies::NextSession,
-        help: "most characters of one tool result the model reads (head and tail kept)",
-    },
-    Entry {
-        key: "context.agedOutputChars",
-        kind: Kind::Float(0.0, 20000.0),
-        applies: Applies::NextSession,
-        help: "shorten older tool output to this many characters (0 = off)",
-    },
-    Entry {
-        key: "context.offload",
-        kind: Kind::Bool,
-        applies: Applies::NextSession,
-        help: "set a big tool result aside and read it back by slice, instead of cutting it (off = cut head and tail)",
-    },
-    Entry {
-        key: "context.summaryModel",
-        kind: Kind::Enum(&["fast", "main"]),
-        applies: Applies::NextSession,
-        help: "who summarises a long chat: the fast model tier when one is configured, or the session's own model",
-    },
-    Entry {
-        key: "model.thinking",
-        kind: Kind::Enum(&["off", "auto", "always"]),
-        applies: Applies::NextSession,
-        help: "Anthropic extended thinking: off, auto (adaptive), always (adaptive at high effort)",
-    },
-    Entry {
-        key: "model.maxTokens",
-        kind: Kind::Float(1024.0, 128000.0),
-        applies: Applies::NextSession,
-        help: "the longest single reply, in tokens (default 16384)",
-    },
-    Entry {
-        key: "context.autoCompact",
-        kind: Kind::Enum(&["80", "90", "off"]),
-        applies: Applies::NextSession,
-        help: "summarise older turns when the context window is this full (unset: 70%)",
-    },
-    Entry {
-        key: "context.webFetch",
-        kind: Kind::Enum(&["agentic", "markdown"]),
-        applies: Applies::NextSession,
-        help: "web_fetch returns an analyst's answer about the page (agentic) or the page as markdown",
-    },
-    Entry {
-        key: "context.maxSteps",
-        kind: Kind::Float(0.0, 500.0),
-        applies: Applies::NextSession,
-        help: "model calls one turn may make before it pauses and offers to continue (0 = no cap, default 50)",
-    },
-    Entry {
-        key: "context.maxTurnUsage",
-        kind: Kind::Float(0.0, 50000000.0),
-        applies: Applies::NextSession,
-        help: "tokens one turn may spend before it pauses and offers to continue (0 = no cap)",
-    },
-    Entry {
-        key: "context.skillSearch",
-        kind: Kind::Bool,
-        applies: Applies::NextSession,
-        help: "list only the skills that fit the request (embedding search); off lists all",
-    },
-    Entry {
-        key: "context.skillsListed",
-        kind: Kind::Float(1.0, 12.0),
-        applies: Applies::NextSession,
-        help: "how many skills are listed in the prompt per turn",
-    },
-    Entry {
-        key: "omlx.prism",
-        kind: Kind::Bool,
-        applies: Applies::NextSession,
-        help: "run architect planning and digests on local Prism models (oMLX)",
-    },
 ];
 
 pub fn entry(key: &str) -> Option<&'static Entry> {
     SCHEMA.iter().find(|entry| entry.key == key)
 }
 
-pub const BUILTIN_DENY: [&str; 3] = [
-    "shell(security *find-generic-password*)",
-    "shell(security *find-internet-password*)",
-    "shell(security *dump-keychain*)",
-];
-
 static SECRET_KEY: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)(api[_-]?key|token|secret|password|passwd|credential)").unwrap()
 });
 /// Setting groups read only from the user file — mirrors `USER_ONLY_PREFIXES` in `backend/settings_store.py`.
-pub const USER_ONLY_PREFIXES: &[&str] = &["app."];
-
-/// Keys a repository must not set for itself — see `TRUST_GATED_KEYS` in
-/// `backend/settings_store.py`, which this mirrors (the shared fixture holds
-/// both readers to it).
-const TRUST_GATED_KEYS: &[&str] = &[
-    "checkpoints.enabled",
-    "checkpoints.maxFileMb",
-    "vault.enabled",
-    "vault.addr",
-    "vault.vault",
-    "vault.egressPolicy",
-    "kg.sink",
-    "claudeCode.maxBudgetUsd",
-    "claudeCode.model",
-    "claudeCode.effort",
-    "context.coldTools",
-    "context.toolOutputChars",
-    "context.agedOutputChars",
-    "context.offload",
-    "context.summaryModel",
-    "model.thinking",
-    "model.maxTokens",
-    "context.autoCompact",
-    "context.webFetch",
-    "context.maxSteps",
-    "context.maxTurnUsage",
-    "context.skillSearch",
-    "context.skillsListed",
-    "learning.promotion",
-    "learning.optimizePrompts",
-    "learning.bandit",
-    "context.outlineLines",
-    "preflight.enabled",
-    "preflight.maxRetries",
-    "preflight.tests",
-    "preflight.rollback",
-    "orchestrator.workers",
-    "orchestrator.dispatch",
-    "orchestrator.maxUsd",
-    "orchestrator.maxTokens",
-    "orchestrator.pools",
-    "orchestrator.harden",
-    "orchestrator.tier2",
-    "orchestrator.lambda",
-    "orchestrator.mu",
-    "hooks.preToolUse",
-    "hooks.postToolUse",
-    "hooks.stop",
-    "hooks.matcher",
-    "learning.rejections",
-    "capture.enabled",
-    "capture.allowlist",
-    "capture.denylist",
-    "capture.screenshot",
-    "capture.screenshotCloud",
-    "capture.visionModel",
-];
+pub const USER_ONLY_PREFIXES: &[&str] = &["app.", "vault.", "orchestrator."];
 
 static SECRET_VALUE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -734,9 +210,7 @@ pub struct Settings {
     pub values: BTreeMap<String, Value>,
     /// Which file set each key.
     pub sources: BTreeMap<String, Scope>,
-    pub rules: Vec<Rule>,
     pub warnings: Vec<String>,
-    pub trusted: bool,
 }
 
 /// The display preferences the TUI itself acts on.
@@ -753,12 +227,6 @@ impl Settings {
 
     pub fn text(&self, key: &str) -> Option<&str> {
         self.get(key).and_then(Value::as_str)
-    }
-
-    pub fn rules_for(&self, kind: RuleKind) -> impl Iterator<Item = &Rule> {
-        self.rules
-            .iter()
-            .filter(move |rule| rule.kind == kind && rule.active)
     }
 
     pub fn prefs(&self) -> Prefs {
@@ -793,19 +261,6 @@ pub fn default_user_dir() -> PathBuf {
         Some(home) => PathBuf::from(home).join(".cordata"),
         None => PathBuf::from(".cordata"),
     }
-}
-
-fn expand_home(text: &str) -> PathBuf {
-    match text.strip_prefix("~/") {
-        Some(rest) => std::env::var_os("HOME")
-            .map(|home| PathBuf::from(home).join(rest))
-            .unwrap_or_else(|| PathBuf::from(text)),
-        None => PathBuf::from(text),
-    }
-}
-
-fn real(path: &Path) -> PathBuf {
-    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn flatten(map: &Map<String, Value>, prefix: &str, out: &mut Vec<(String, Value)>) {
@@ -948,289 +403,24 @@ impl Store {
     /// reported in `warnings`.
     pub fn load(&self) -> Settings {
         let mut result = Settings::default();
-        let raw: Vec<Map<String, Value>> = Scope::ALL
-            .iter()
-            .map(|scope| read_json(&self.path(*scope), &mut result.warnings))
-            .collect();
-
-        let here = real(&self.cwd);
-        result.trusted = raw[0]
-            .get("trustedProjects")
-            .and_then(Value::as_array)
-            .is_some_and(|items| {
-                items
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .any(|item| real(&expand_home(item)) == here)
-            });
-
-        for (index, scope) in Scope::ALL.into_iter().enumerate() {
+        for scope in Scope::ALL {
             let location = self.path(scope).display().to_string();
             let mut flat = Vec::new();
-            flatten(&raw[index], "", &mut flat);
-            // Fixed order (allow, ask, deny; each in file order) so every reader agrees.
-            let list_key = |kind: RuleKind| format!("permissions.{}", kind.name());
-            let is_list = |key: &str| RuleKind::ALL.iter().any(|kind| list_key(*kind) == key);
-            let mut ordered: Vec<(String, Value)> = flat
-                .iter()
-                .filter(|(key, _)| !is_list(key))
-                .cloned()
-                .collect();
-            for kind in RuleKind::ALL {
-                ordered.extend(
-                    flat.iter()
-                        .filter(|(key, _)| *key == list_key(kind))
-                        .cloned(),
-                );
-            }
-
-            for (key, value) in ordered {
-                let user_only = key == "trustedProjects" || USER_ONLY_PREFIXES.iter().any(|prefix| key.starts_with(prefix));
-                if user_only && scope != Scope::User {
-                    result.warnings.push(format!(
-                        "{location}: '{key}' is only read from the user file — ignored"
-                    ));
-                    continue;
-                }
-                if key == "trustedProjects" {
-                    continue;
-                }
-                if let Some(kind) = RuleKind::ALL
-                    .into_iter()
-                    .find(|kind| list_key(*kind) == key)
-                {
-                    let texts: Option<Vec<&str>> = value.as_array().and_then(|items| {
-                        items
-                            .iter()
-                            .map(|item| item.as_str().filter(|text| !text.trim().is_empty()))
-                            .collect()
-                    });
-                    let Some(texts) = texts else {
-                        result.warnings.push(format!(
-                            "{location}: '{key}' must be a list of rule strings"
-                        ));
-                        continue;
-                    };
-                    for text in texts {
-                        if SECRET_VALUE.is_match(text) {
-                            result.warnings.push(format!(
-                                "{location}: a rule in '{key}' looks like it holds a secret — refused"
-                            ));
-                            continue;
-                        }
-                        let active =
-                            kind != RuleKind::Allow || scope == Scope::User || result.trusted;
-                        result.rules.push(Rule {
-                            kind,
-                            text: text.trim().to_owned(),
-                            origin: Origin::Scope(scope),
-                            active,
-                        });
-                        if !active {
-                            result.warnings.push(format!(
-                                "{location}: allow rule '{}' ignored — folder not trusted (run /trust to enable)",
-                                text.trim()
-                            ));
-                        }
-                    }
+            flatten(&read_json(&self.path(scope), &mut result.warnings), "", &mut flat);
+            for (key, value) in flat {
+                if scope != Scope::User && USER_ONLY_PREFIXES.iter().any(|prefix| key.starts_with(prefix)) {
+                    result.warnings.push(format!("{location}: '{key}' is only read from the user file, ignored"));
                     continue;
                 }
                 if let Err(warning) = check(&key, &value, &location) {
                     result.warnings.push(warning);
                     continue;
                 }
-                if key == "permissions.defaultMode"
-                    && (value == "auto" || value == "edit")
-                    && scope != Scope::User
-                    && !result.trusted
-                {
-                    result.warnings.push(format!(
-                        "{location}: defaultMode '{}' ignored — folder not trusted (run /trust to enable)",
-                        value.as_str().unwrap_or("auto")
-                    ));
-                    continue;
-                }
-                if key == "selfHeal.autoApply"
-                    && value == Value::Bool(true)
-                    && scope != Scope::User
-                    && !result.trusted
-                {
-                    result.warnings.push(format!(
-                        "{location}: selfHeal.autoApply ignored — folder not trusted (run /trust to enable)"
-                    ));
-                    continue;
-                }
-                if TRUST_GATED_KEYS.contains(&key.as_str())
-                    && scope != Scope::User
-                    && !result.trusted
-                {
-                    result.warnings.push(format!(
-                        "{location}: '{key}' ignored — folder not trusted (run /trust to enable)"
-                    ));
-                    continue;
-                }
                 result.sources.insert(key.clone(), scope);
                 result.values.insert(key, value);
             }
         }
-        for text in BUILTIN_DENY {
-            result.rules.push(Rule {
-                kind: RuleKind::Deny,
-                text: text.to_owned(),
-                origin: Origin::BuiltIn,
-                active: true,
-            });
-        }
         result
-    }
-
-    // ----------------------------------------------------------------- writing
-
-    fn editable(&self, scope: Scope) -> Result<(PathBuf, Map<String, Value>), String> {
-        let path = self.path(scope);
-        let mut warnings = Vec::new();
-        let data = read_json(&path, &mut warnings);
-        let has_content = fs::metadata(&path).is_ok_and(|meta| meta.len() > 0);
-        if let Some(warning) = warnings.into_iter().next()
-            && has_content
-        {
-            // Never overwrite a file we could not understand.
-            return Err(warning);
-        }
-        Ok((path, data))
-    }
-
-    fn write(&self, scope: Scope, path: &Path, data: &Map<String, Value>) -> Result<(), String> {
-        let dir = path.parent().ok_or("no parent directory")?;
-        fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
-        let mut text = serde_json::to_string_pretty(data).map_err(|error| error.to_string())?;
-        text.push('\n');
-        let temp = dir.join(format!(".settings-{}.tmp", std::process::id()));
-        fs::write(&temp, text).map_err(|error| format!("{}: {error}", temp.display()))?;
-        #[cfg(unix)]
-        if scope == Scope::User {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&temp, fs::Permissions::from_mode(0o600));
-        }
-        fs::rename(&temp, path).map_err(|error| {
-            let _ = fs::remove_file(&temp);
-            format!("{}: {error}", path.display())
-        })?;
-        if scope == Scope::Local {
-            let ignore = dir.join(".gitignore");
-            if !ignore.exists() {
-                let _ = fs::write(ignore, "settings.local.json\nCORDATA.local.md\n");
-            }
-        }
-        Ok(())
-    }
-
-    /// Set one scalar setting in one file (`None` clears it).
-    pub fn set_value(
-        &self,
-        scope: Scope,
-        key: &str,
-        value: Option<Value>,
-    ) -> Result<PathBuf, String> {
-        if entry(key).is_none() {
-            return Err(format!("unknown setting '{key}'"));
-        }
-        if scope != Scope::User && USER_ONLY_PREFIXES.iter().any(|prefix| key.starts_with(prefix)) {
-            return Err(format!("'{key}' is only read from the user file"));
-        }
-        if let Some(value) = &value {
-            check(key, value, scope.name())?;
-        }
-        let (path, mut data) = self.editable(scope)?;
-        let parts: Vec<&str> = key.split('.').collect();
-        let (leaf, parents) = parts.split_last().ok_or("empty key")?;
-        let mut node = &mut data;
-        for part in parents {
-            let child = node
-                .entry((*part).to_owned())
-                .or_insert_with(|| Value::Object(Map::new()));
-            node = child
-                .as_object_mut()
-                .ok_or_else(|| format!("{}: '{part}' is not an object", path.display()))?;
-        }
-        match value {
-            Some(value) => {
-                node.insert((*leaf).to_owned(), value);
-            }
-            None => {
-                node.shift_remove(*leaf);
-            }
-        }
-        self.write(scope, &path, &data)?;
-        Ok(path)
-    }
-
-    pub fn add_rule(&self, kind: RuleKind, rule: &str, scope: Scope) -> Result<PathBuf, String> {
-        let rule = rule.trim();
-        if rule.is_empty() || SECRET_VALUE.is_match(rule) {
-            return Err("empty rule, or it looks like it holds a secret".into());
-        }
-        let (path, mut data) = self.editable(scope)?;
-        let permissions = data
-            .entry("permissions")
-            .or_insert_with(|| Value::Object(Map::new()))
-            .as_object_mut()
-            .ok_or("'permissions' is not an object")?;
-        let list = permissions
-            .entry(kind.name())
-            .or_insert_with(|| Value::Array(Vec::new()))
-            .as_array_mut()
-            .ok_or_else(|| format!("'permissions.{}' is not a list", kind.name()))?;
-        if !list.iter().any(|item| item.as_str() == Some(rule)) {
-            list.push(Value::String(rule.to_owned()));
-        }
-        self.write(scope, &path, &data)?;
-        Ok(path)
-    }
-
-    /// Remove `rule` (any kind) from every file that holds it.
-    pub fn remove_rule(&self, rule: &str) -> Result<Vec<PathBuf>, String> {
-        let mut changed = Vec::new();
-        for scope in Scope::ALL {
-            let (path, mut data) = self.editable(scope)?;
-            let Some(permissions) = data.get_mut("permissions").and_then(Value::as_object_mut)
-            else {
-                continue;
-            };
-            let mut touched = false;
-            for kind in RuleKind::ALL {
-                if let Some(list) = permissions
-                    .get_mut(kind.name())
-                    .and_then(Value::as_array_mut)
-                {
-                    let before = list.len();
-                    list.retain(|item| item.as_str() != Some(rule));
-                    touched |= list.len() != before;
-                }
-            }
-            if touched {
-                self.write(scope, &path, &data)?;
-                changed.push(path);
-            }
-        }
-        Ok(changed)
-    }
-
-    /// Mark this folder trusted (user file): project and local `allow` rules and
-    /// an `auto` default mode then apply.
-    pub fn trust(&self) -> Result<PathBuf, String> {
-        let (path, mut data) = self.editable(Scope::User)?;
-        let here = real(&self.cwd).display().to_string();
-        let list = data
-            .entry("trustedProjects")
-            .or_insert_with(|| Value::Array(Vec::new()))
-            .as_array_mut()
-            .ok_or("'trustedProjects' is not a list")?;
-        if !list.iter().any(|item| item.as_str() == Some(&here)) {
-            list.push(Value::String(here));
-        }
-        self.write(Scope::User, &path, &data)?;
-        Ok(path)
     }
 }
 
@@ -1273,10 +463,8 @@ mod tests {
 
     fn summary(settings: &Settings) -> Value {
         serde_json::json!({
-            "trusted": settings.trusted,
             "values": settings.values,
             "sources": settings.sources.iter().map(|(k, v)| (k.clone(), Value::from(v.name()))).collect::<Map<_, _>>(),
-            "rules": settings.rules.iter().map(|r| serde_json::json!([r.kind.name(), r.text, r.origin.name(), r.active])).collect::<Vec<_>>(),
             "warning_count": settings.warnings.len(),
         })
     }
@@ -1318,33 +506,15 @@ mod tests {
     }
 
     #[test]
-    fn scopes_override_and_permission_lists_accumulate() {
+    fn a_project_file_cannot_set_the_budget_or_the_proxy() {
         let sb = sandbox();
-        put(
-            &sb.store,
-            Scope::User,
-            r#"{"model":"u","temperature":"focused","permissions":{"deny":["shell(a)"]}}"#,
-        );
-        put(
-            &sb.store,
-            Scope::Project,
-            r#"{"model":"p","permissions":{"deny":["shell(b)"]}}"#,
-        );
-        put(
-            &sb.store,
-            Scope::Local,
-            r#"{"model":"l","permissions":{"deny":["shell(c)"]}}"#,
-        );
+        put(&sb.store, Scope::User, r#"{"orchestrator":{"maxUsd":5}}"#);
+        put(&sb.store, Scope::Project, r#"{"orchestrator":{"maxUsd":999},"vault":{"addr":"http://evil:1"},"tui":{"thinking":"expanded"}}"#);
         let loaded = sb.store.load();
-        assert_eq!(loaded.text("model"), Some("l"));
-        assert_eq!(loaded.sources["model"], Scope::Local);
-        assert_eq!(loaded.sources["temperature"], Scope::User);
-        let denies: Vec<&str> = loaded
-            .rules_for(RuleKind::Deny)
-            .filter(|rule| rule.origin != Origin::BuiltIn)
-            .map(|rule| rule.text.as_str())
-            .collect();
-        assert_eq!(denies, ["shell(a)", "shell(b)", "shell(c)"]);
+        assert_eq!(loaded.get("orchestrator.maxUsd"), Some(&Value::from(5)));
+        assert!(loaded.get("vault.addr").is_none());
+        assert_eq!(loaded.text("tui.thinking"), Some("expanded"));
+        assert_eq!(loaded.warnings.iter().filter(|w| w.contains("only read from the user file")).count(), 2);
     }
 
     #[test]
@@ -1353,20 +523,19 @@ mod tests {
         put(
             &sb.store,
             Scope::User,
-            r#"{"temperature":"lava","tui":{"thinking":"loud"},"mystery":1,"api_key":"x","model":"ok"}"#,
+            r#"{"tui":{"thinking":"loud","toolOutput":"expanded"},"mystery":1,"api_key":"x"}"#,
         );
         put(&sb.store, Scope::Project, "{not json");
         put(
             &sb.store,
             Scope::Local,
-            r#"{"model":"sk-abcdefghijklmnopqrstuvwxyz0123456789"}"#,
+            r#"{"tui":{"thinking":"sk-abcdefghijklmnopqrstuvwxyz0123456789"}}"#,
         );
         let loaded = sb.store.load();
-        assert_eq!(loaded.text("model"), Some("ok"));
-        assert!(loaded.get("temperature").is_none() && loaded.get("tui.thinking").is_none());
+        assert_eq!(loaded.text("tui.toolOutput"), Some("expanded"));
+        assert!(loaded.get("tui.thinking").is_none());
         let text = loaded.warnings.join("\n");
         for needle in [
-            "lava",
             "loud",
             "unknown setting 'mystery'",
             "looks like a credential",
@@ -1375,121 +544,6 @@ mod tests {
         ] {
             assert!(text.contains(needle), "missing {needle:?} in\n{text}");
         }
-    }
-
-    #[test]
-    fn a_stranger_folder_cannot_switch_off_the_prompts_until_trusted() {
-        let sb = sandbox();
-        put(
-            &sb.store,
-            Scope::User,
-            r#"{"permissions":{"allow":["shell(ls)"]}}"#,
-        );
-        put(
-            &sb.store,
-            Scope::Project,
-            r#"{"permissions":{"defaultMode":"auto","allow":["shell(*)"],"deny":["shell(rm *)"]}}"#,
-        );
-        let loaded = sb.store.load();
-        let allows: Vec<&str> = loaded
-            .rules_for(RuleKind::Allow)
-            .map(|r| r.text.as_str())
-            .collect();
-        assert_eq!(allows, ["shell(ls)"]);
-        assert!(loaded.get("permissions.defaultMode").is_none());
-        assert!(
-            loaded
-                .rules_for(RuleKind::Deny)
-                .any(|r| r.text == "shell(rm *)")
-        );
-
-        sb.store.trust().unwrap();
-        let trusted = sb.store.load();
-        assert!(trusted.trusted);
-        assert!(
-            trusted
-                .rules_for(RuleKind::Allow)
-                .any(|r| r.text == "shell(*)")
-        );
-        assert_eq!(trusted.text("permissions.defaultMode"), Some("auto"));
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = fs::metadata(sb.store.path(Scope::User))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777;
-            assert_eq!(mode, 0o600, "the user file is private");
-        }
-    }
-
-    #[test]
-    fn writes_are_validated_idempotent_and_never_clobber_a_broken_file() {
-        let sb = sandbox();
-        sb.store
-            .add_rule(RuleKind::Allow, "shell(git status)", Scope::Local)
-            .unwrap();
-        sb.store
-            .add_rule(RuleKind::Allow, "shell(git status)", Scope::Local)
-            .unwrap();
-        let local: Value =
-            serde_json::from_str(&fs::read_to_string(sb.store.path(Scope::Local)).unwrap())
-                .unwrap();
-        assert_eq!(
-            local,
-            serde_json::json!({"permissions": {"allow": ["shell(git status)"]}})
-        );
-        let ignore = fs::read_to_string(sb.store.cwd.join(".cordata/.gitignore")).unwrap();
-        assert!(ignore.contains("settings.local.json"));
-
-        sb.store
-            .set_value(Scope::Project, "tui.thinking", Some("expanded".into()))
-            .unwrap();
-        sb.store
-            .set_value(Scope::Project, "tui.thinking", None)
-            .unwrap();
-        let project: Value =
-            serde_json::from_str(&fs::read_to_string(sb.store.path(Scope::Project)).unwrap())
-                .unwrap();
-        assert_eq!(project, serde_json::json!({"tui": {}}));
-
-        for (key, value) in [
-            ("temperature", "lava"),
-            ("nope", "x"),
-            ("model", "sk-abcdefghijklmnopqrstuvwxyz0123456789"),
-        ] {
-            assert!(
-                sb.store
-                    .set_value(Scope::User, key, Some(value.into()))
-                    .is_err(),
-                "{key}={value}"
-            );
-        }
-
-        fs::write(sb.store.path(Scope::Project), "{broken").unwrap();
-        assert!(
-            sb.store
-                .set_value(Scope::Project, "model", Some("x".into()))
-                .is_err()
-        );
-        assert_eq!(
-            fs::read_to_string(sb.store.path(Scope::Project)).unwrap(),
-            "{broken"
-        );
-
-        fs::write(
-            sb.store.path(Scope::Project),
-            r#"{"permissions":{"deny":["shell(x)"]}}"#,
-        )
-        .unwrap();
-        assert_eq!(sb.store.remove_rule("shell(x)").unwrap().len(), 1);
-        assert!(
-            sb.store
-                .load()
-                .rules_for(RuleKind::Deny)
-                .all(|r| r.origin == Origin::BuiltIn)
-        );
     }
 
     #[test]

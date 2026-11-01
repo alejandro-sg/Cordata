@@ -88,12 +88,11 @@ impl LineParser for AgyStream {
                         Some("DONE") => out.push(ev("tool_result", json!({"tool": name, "ok": true}))),
                         _ => {}
                     }
-                } else if step_type == Some("agent_response") {
-                    if let Some(delta) = step.get("text_delta").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+                } else if step_type == Some("agent_response")
+                    && let Some(delta) = step.get("text_delta").and_then(Value::as_str).filter(|s| !s.is_empty()) {
                         out.push(ev("text", json!({"text": delta})));
                         self.st.text.push_str(delta);
                     }
-                }
                 if let (Some(usage), Some("DONE")) = (step.get("usage").filter(|u| u.is_object()), state) {
                     let index = step.get("step_index").map_or(self.step_usage.len() as i64, |v| int(Some(v)));
                     if !self.step_usage.iter().any(|(i, _)| *i == index) {

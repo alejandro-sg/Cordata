@@ -7,7 +7,6 @@
 
 mod hud;
 mod keychain;
-mod mission;
 mod platform;
 mod prefs;
 mod pricing;
@@ -33,14 +32,13 @@ struct Args {
     /// `--prompt TEXT`: sent once the session connects (scripted runs, `cordata ask`).
     prompt: Option<String>,
     /// `--run GOAL`: start an orchestrator run once connected, and follow it in Mission Control.
-    run: Option<String>,
     selftest: bool,
     /// A folder was named (`--cwd`, a path argument, `open -a Cordata dir`).
     cwd_given: bool,
 }
 
 fn parse_args() -> Args {
-    let mut args = Args { cwd: default_cwd(), conversation: "latest".into(), prompt: None, run: None, selftest: false, cwd_given: false };
+    let mut args = Args { cwd: default_cwd(), conversation: "latest".into(), prompt: None, selftest: false, cwd_given: false };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -52,7 +50,6 @@ fn parse_args() -> Args {
             }
             "--conversation" => args.conversation = it.next().unwrap_or_else(|| "latest".into()),
             "--prompt" => args.prompt = it.next(),
-            "--run" => args.run = it.next(),
             "--selftest" => args.selftest = true,
             other if other.starts_with("cordata://") => parse_cordata_url(other, &mut args),
             // A bundle opened by `open -a Cordata dir` (or `cordata .`) gets the folder as its one argument.
@@ -80,11 +77,6 @@ fn parse_cordata_url(url: &str, args: &mut Args) {
         let id = rest.split(['?', '&', '/']).next().unwrap_or(rest);
         if !id.is_empty() {
             args.conversation = id.to_owned();
-        }
-    } else if let Some(rest) = stripped.strip_prefix("run/") {
-        let run_id = rest.split(['?', '&', '/']).next().unwrap_or(rest);
-        if !run_id.is_empty() {
-            args.run = Some(run_id.to_owned());
         }
     } else if let Some(query) = stripped.strip_prefix("ask?") {
         for param in query.split('&') {
@@ -165,7 +157,7 @@ fn main() {
                 let view = cx.new(|cx| Workspace::new(
                     connection.clone(),
                     args.cwd.clone(),
-                    workspace::Launch { prompt: args.prompt.clone(), run: args.run.clone(), selftest: args.selftest && (args.prompt.is_some() || args.run.is_some()), picker: open_picker, show: std::env::var("CORDATA_APP_SHOW").ok() },
+                    workspace::Launch { prompt: args.prompt.clone(), selftest: args.selftest && args.prompt.is_some(), picker: open_picker, show: std::env::var("CORDATA_APP_SHOW").ok() },
                     window,
                     cx,
                 ));
@@ -187,7 +179,7 @@ fn main() {
             // also runs that turn to its end (approving whatever it asks) and prints what happened; this timer is the
             // watchdog for both. Used by `scripts/package-app.sh` and the CI bundle check.
             let started = std::time::Instant::now();
-            let limit = if args.run.is_some() { 180 } else if args.prompt.is_some() { 60 } else { 3 };
+            let limit = if args.prompt.is_some() { 60 } else { 3 };
             cx.spawn(async move |cx| {
                 cx.background_executor().timer(Duration::from_secs(limit)).await;
                 let _ = window.update(cx, |_, _, cx| {
@@ -211,16 +203,12 @@ mod tests {
             conversation: "latest".into(),
            
             prompt: None,
-            run: None,
             selftest: false,
             cwd_given: false,
         };
 
         parse_cordata_url("cordata://session/sess-abc-123", &mut args);
         assert_eq!(args.conversation, "sess-abc-123");
-
-        parse_cordata_url("cordata://run/run-xyz-789", &mut args);
-        assert_eq!(args.run.as_deref(), Some("run-xyz-789"));
 
         parse_cordata_url("cordata://ask?prompt=review%20this%20code", &mut args);
         assert_eq!(args.prompt.as_deref(), Some("review this code"));

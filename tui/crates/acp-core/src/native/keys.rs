@@ -26,13 +26,11 @@ pub(crate) fn env_var(provider: &str) -> Option<&'static str> {
 
 /// Environment first (an explicit export is a deliberate override), then the Keychain.
 pub(crate) fn resolve(provider: &str) -> Option<String> {
-    if let Some(name) = env_var(provider) {
-        if let Ok(value) = std::env::var(name) {
-            if !value.trim().is_empty() {
+    if let Some(name) = env_var(provider)
+        && let Ok(value) = std::env::var(name)
+            && !value.trim().is_empty() {
                 return Some(value);
             }
-        }
-    }
     keychain(keychain_service(provider)?)
 }
 

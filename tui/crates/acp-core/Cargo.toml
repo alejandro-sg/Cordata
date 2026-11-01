@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 cordata-economizer = { path = "../cordata-economizer" }
+cordata-guard = { path = "../cordata-guard" }
 agent-client-protocol.workspace = true
 futures.workspace = true
 genai.workspace = true
