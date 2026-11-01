@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/acp-core", "crates/acp-tui", "crates/acp-stress", "crates/cordata-ledger", "crates/cordata-doctor", "crates/cordata-orchestrator"]
+members = ["crates/acp-core", "crates/acp-tui", "crates/acp-stress", "crates/cordata-ledger", "crates/cordata-doctor", "crates/cordata-orchestrator", "crates/cordata-checkpoints"]
 
 [workspace.package]
 edition = "2024"
@@ -31,6 +31,8 @@ tokio-tungstenite = "0.28"
 rusqlite = { version = "0.37", features = ["bundled"] }
 # Process-group kill for the subprocess workers.
 libc = "0.2"
+# Checkpoint store keys: the shadow repository directory is the first 16 hex chars of the project path's SHA-1.
+sha1 = "0.10"
 # JSON Schema validation of a worker's structured answer (plan / audit roles).
 jsonschema = { version = "0.30", default-features = false }
 genai = "0.7"

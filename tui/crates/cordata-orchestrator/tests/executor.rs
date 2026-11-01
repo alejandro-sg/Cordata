@@ -408,3 +408,59 @@ fn waves_take_disjoint_scopes_in_plan_order_up_to_the_limit() {
     assert_eq!(form_wave(&steps, &HashSet::new(), 1).len(), 1);
     let _ = Outcome::default();
 }
+
+#[tokio::test]
+async fn the_fault_injection_scenario_also_holds_on_the_real_shadow_git_store() {
+    use cordata_orchestrator::checkpoints::GitCheckpoints;
+    let e = env(two_pools(100_000.0));
+    let project = e.project.clone();
+    let a = ScriptedWorker::new("a", move |task, _| {
+        let step = step_of(task);
+        if step == "s2" {
+            std::fs::write(project.join("calc/s2.txt"), "half").unwrap();
+            std::fs::write(project.join("calc/stray.txt"), "debris").unwrap();
+            let mut r = limited("a", true);
+            r.files_changed = vec!["calc/s2.txt".into()];
+            return r;
+        }
+        write(task, &step, &format!("ok {step}"));
+        let mut r = WorkerResult::new("a", "completed");
+        (r.tokens_in, r.files_changed) = (10, vec![format!("calc/{step}.txt")]);
+        r
+    });
+    let b = worker("b", 10, 0.0, |_, _| None);
+    let git = GitCheckpoints::new(cordata_checkpoints::Store::new(e.store.parent().unwrap().join("shadow-home")));
+    let cands = vec![runnable(&a, "sonnet", "claude_code", "anthropic"), runnable(&b, "gemini", "antigravity", "google")];
+    let events = e.events.clone();
+    let cfg = Config { on_event: Some(Box::new(move |ev| events.lock().unwrap().push(ev))), ..Default::default() };
+    let ex = StepExecutor::new("run-git", &e.project, plan_of(3, "rollback_checkpoint", 2.0), cands, &e.ledger, &git, cfg);
+    let out = ex.run().await;
+    assert_eq!(out.status, "completed", "{}", out.reason);
+    assert!(kinds(&e, "rollback").iter().all(|r| r["ok"] == true) && kinds(&e, "rollback").len() == 1);
+    assert_eq!(read(&e, "calc/stray.txt"), None, "the debris the failed step left was removed by the real restore");
+    for i in 1..=3 {
+        assert_eq!(read(&e, &format!("calc/s{i}.txt")).unwrap(), format!("ok s{i}"));
+    }
+    assert_eq!(read(&e, "calc/base.txt").unwrap(), "base\n");
+    // The same history the Python `checkpoints.turns` would show: one turn per step.
+    let turns = cordata_checkpoints::Store::new(e.store.parent().unwrap().join("shadow-home")).turns(&e.project, 10);
+    assert_eq!(turns.iter().filter(|t| t.tools == ["orchestrator"]).count(), 3);
+
+    // keep_partial carries the real diff of the half-written file.
+    let e2 = env(two_pools(100_000.0));
+    let project2 = e2.project.clone();
+    let a2 = ScriptedWorker::new("a", move |task, _| {
+        std::fs::write(project2.join(format!("calc/{}.txt", step_of(task))), "half done\n").unwrap();
+        limited("a", true)
+    });
+    let b2 = worker("b", 10, 0.0, |_, _| None);
+    let git2 = GitCheckpoints::new(cordata_checkpoints::Store::new(e2.store.parent().unwrap().join("shadow-home")));
+    let cands = vec![runnable(&a2, "sonnet", "claude_code", "anthropic"), runnable(&b2, "gemini", "antigravity", "google")];
+    let ex = StepExecutor::new("run-git2", &e2.project, plan_of(1, "keep_partial", 2.0), cands, &e2.ledger, &git2, Config::default());
+    let out = ex.run().await;
+    assert_eq!(out.status, "completed", "{}", out.reason);
+    let packet = &out.handoffs[0];
+    assert_eq!(packet.step_status, "partial");
+    assert!(packet.diff_patch.contains("+++ b/calc/s1.txt") && packet.diff_patch.contains("+half done"), "{}", packet.diff_patch);
+    assert!(packet.diff_stat.contains("1 file changed"), "{}", packet.diff_stat);
+}

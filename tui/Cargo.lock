@@ -659,6 +659,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cordata-checkpoints"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha1",
+ "tempfile",
+]
+
+[[package]]
 name = "cordata-doctor"
 version = "0.1.0"
 dependencies = [
@@ -684,6 +694,7 @@ dependencies = [
 name = "cordata-orchestrator"
 version = "0.1.0"
 dependencies = [
+ "cordata-checkpoints",
  "cordata-ledger",
  "futures",
  "jsonschema",

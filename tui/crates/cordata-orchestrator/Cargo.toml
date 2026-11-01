@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+cordata-checkpoints = { path = "../cordata-checkpoints" }
 cordata-ledger = { path = "../cordata-ledger" }
 regex.workspace = true
 serde.workspace = true
