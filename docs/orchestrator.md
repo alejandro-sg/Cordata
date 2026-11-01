@@ -38,6 +38,24 @@ To run without the Agent Vault proxy in development/testing, pass `--allow-direc
 cordata run "Add retries to the HTTP client" --allow-direct
 ```
 
+### The native binary
+
+`tui/target/{release,debug}/cordata-run` (built by `make tui-build`) is the Rust orchestrator behind the same commands.
+`cordata status` and `cordata show` use it whenever it is built: they only read `state.db` and print what the Python
+commands print (checked against them in `tui/crates/cordata-run/tests/e2e.rs`). `cordata run` and `cordata resume` stay on
+Python unless you ask for the native one:
+
+```bash
+CORDATA_RUN_NATIVE=1 cordata run "Add retries to the HTTP client" --allow-direct
+```
+
+A native run uses the same ledger, checkpoints, run records and artifacts, so a run started by one can be shown, resumed
+or paused (`control.ndjson`) by the other. It does **not** have yet: the research phase (`--research` is ignored), the
+synthesis check after parallel steps, per-step reward attribution, the Auto Mode router (`auto` falls back to `shadow`),
+Laya Guard (a conservative pattern guard scores the audit's commands instead) and the Ollama workers (a family that has
+no native worker is left out of the run, with a warning). Waves share the working tree. Ctrl+C stops the run where it is
+and records it `cancelled`.
+
 `run` has three knobs for the research loop, as flags only (a setting would need a Rust-side schema entry):
 
 * `--max-rounds N` — conformance fix rounds before the run replans or fails (default 3).

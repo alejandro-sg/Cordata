@@ -1,0 +1,29 @@
+[package]
+name = "cordata-run"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "cordata_run"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cordata-run"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+cordata-checkpoints = { path = "../cordata-checkpoints" }
+cordata-doctor = { path = "../cordata-doctor" }
+cordata-ledger = { path = "../cordata-ledger" }
+cordata-orchestrator = { path = "../cordata-orchestrator" }
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha1.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

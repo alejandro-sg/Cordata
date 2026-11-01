@@ -708,6 +708,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "cordata-run"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "cordata-checkpoints",
+ "cordata-doctor",
+ "cordata-ledger",
+ "cordata-orchestrator",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha1",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "cordata-theme"
 version = "0.1.0"
 

@@ -574,7 +574,7 @@ impl<'a> Machine<'a> {
     fn emit_usage(&self) {
         let rows = self.ledger.run_usage(&self.record.run_id);
         let sum_i = |k: &str| rows.iter().map(|r| r.get(k).and_then(Value::as_i64).unwrap_or(0)).sum::<i64>();
-        let cost: f64 = rows.iter().map(|r| r.get("cost_usd").and_then(Value::as_f64).unwrap_or(0.0)).sum();
+        let cost: f64 = rows.iter().map(|r| r.get("cost_usd").and_then(Value::as_f64).unwrap_or(0.0)).sum::<f64>() + 0.0;
         let envelope = self.ledger.envelope(&self.record.run_id, Some(self.config.max_usd), self.config.max_tokens);
         self.emit(
             "usage",
@@ -1170,6 +1170,19 @@ impl<'a> Machine<'a> {
         self.transition("cancelled", json!({"reason": reason, "restored": restored, "by": (!req.by.is_empty()).then(|| req.by.clone())}));
         if let Some(c) = &self.controls {
             c.clear();
+        }
+    }
+
+    /// The process was interrupted (Ctrl+C) mid-run: the record said "execute" forever, which nothing could tell from a run
+    /// still working. The work stays where it is (nothing is restored — a cancel is not a verdict on it) and the state says
+    /// so.
+    pub fn interrupted(&mut self) {
+        if !TERMINAL.contains(&self.record.state.as_str()) {
+            if self.record.reason.is_empty() {
+                self.record.reason = "cancelled — the run stopped where it was (its work is kept)".into();
+            }
+            let reason = self.record.reason.clone();
+            self.transition("cancelled", json!({"reason": reason}));
         }
     }
 

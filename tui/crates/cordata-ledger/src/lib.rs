@@ -534,8 +534,9 @@ impl Ledger {
             Unit::Tokens => (r.tokens_in + r.tokens_out) as f64,
             Unit::Requests => r.requests as f64,
         };
-        let used: f64 = rows.iter().filter(|r| r.ts > window_start).map(&amount).sum();
-        let weekly: f64 = if pool.weekly_limit.is_some() { rows.iter().map(&amount).sum() } else { 0.0 };
+        // `+ 0.0`: an empty f64 sum is -0.0, which would print as "-0%".
+        let used: f64 = rows.iter().filter(|r| r.ts > window_start).map(&amount).sum::<f64>() + 0.0;
+        let weekly: f64 = if pool.weekly_limit.is_some() { rows.iter().map(&amount).sum::<f64>() + 0.0 } else { 0.0 };
         let mut limited_until: Option<f64> = None;
         for r in rows.iter().filter(|r| r.is_error_limit) {
             let until = r.reset_ts.filter(|t| *t != 0.0).unwrap_or(r.ts + pool.window_seconds as f64);
@@ -695,6 +696,13 @@ impl Ledger {
     pub fn load_handoff(&self, handoff_id: &str) -> Option<Value> {
         let text: String = self.conn.query_row("SELECT packet_json FROM handoff_packets WHERE handoff_id = ?", params![handoff_id], |r| r.get(0)).ok()?;
         serde_json::from_str(&text).ok()
+    }
+
+    /// Handoff packets, newest first.
+    pub fn recent_handoffs(&self, limit: usize) -> Vec<Value> {
+        let Ok(mut stmt) = self.conn.prepare("SELECT packet_json FROM handoff_packets ORDER BY ts DESC LIMIT ?") else { return Vec::new() };
+        let Ok(rows) = stmt.query_map(params![limit as i64], |r| r.get::<_, String>(0)) else { return Vec::new() };
+        rows.flatten().filter_map(|t| serde_json::from_str(&t).ok()).collect()
     }
 
     pub fn handoffs_for_session(&self, session_id: &str) -> Vec<Value> {

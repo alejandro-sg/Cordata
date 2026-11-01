@@ -129,6 +129,11 @@ impl Settings {
         Self { merged, warnings }
     }
 
+    /// The merged settings document.
+    pub fn merged(&self) -> &Value {
+        &self.merged
+    }
+
     /// `a.b` looks up `{"a": {"b": …}}`, and also a literal `"a.b"` key.
     pub fn get(&self, dotted: &str) -> Option<&Value> {
         if let Some(v) = self.merged.get(dotted) {

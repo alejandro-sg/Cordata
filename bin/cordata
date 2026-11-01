@@ -107,6 +107,21 @@ if [[ "$1" == "doctor" ]]; then
   done
 fi
 
+# `status` and `show` only read state.db and print the same text as the Python commands, so they are native whenever the
+# binary is built. `run` and `resume` stay on Python (research, synthesis, Laya Guard, Ollama workers) unless asked:
+#   CORDATA_RUN_NATIVE=1 cordata run "..."
+native_run_bin() {
+  for kind in release debug; do
+    local bin="$REPO_ROOT/tui/target/$kind/cordata-run"
+    [[ -x "$bin" ]] && { echo "$bin"; return 0; }
+  done
+  return 1
+}
+case "$1" in
+  status|show) if NATIVE_RUN="$(native_run_bin)"; then exec "$NATIVE_RUN" "$@"; fi ;;
+  run|resume) if [[ "${CORDATA_RUN_NATIVE:-}" == "1" ]] && NATIVE_RUN="$(native_run_bin)"; then exec "$NATIVE_RUN" "$@"; fi ;;
+esac
+
 if is_batch_cmd "$1"; then
   # Explicit batch command: run python orchestrator
   exec "$PYTHON" -m orchestrator "$@"
