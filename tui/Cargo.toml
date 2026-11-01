@@ -27,6 +27,8 @@ textwrap = "0.16"
 tokio-tungstenite = "0.28"
 # Native in-process provider adapter (Anthropic, Gemini, OpenAI, Ollama) for acp-core's `native` module.
 genai = "0.7"
+# Gitignore-aware directory walk for the native `code_search` tool.
+ignore = "0.4"
 tempfile = "3"
 thiserror = "2"
 unicode-width = "0.2"
@@ -34,7 +36,7 @@ vt100 = "0.16"
 # "net" is for the WebSocket client transport (crates/acp-core/src/transport.rs);
 # stdio-only builds do not need it, but feature-gating one dependency to save a
 # compile is not worth two build configurations to keep correct.
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "io-std", "signal", "net"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "io-std", "signal", "net", "process"] }
 acp-core = { path = "crates/acp-core" }
 # The front-end state shared with the native app (app/crates/cordata-view); `crossterm` adds the event conversions.
 cordata-view = { path = "../app/crates/cordata-view", features = ["crossterm"] }

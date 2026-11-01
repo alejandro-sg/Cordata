@@ -6,8 +6,11 @@
 //! Tools, the permission gate and sandboxed commands are the next step (migration plan, Phase 2);
 //! until then a native session answers but does not act.
 
+mod approval;
 mod engine;
 mod keys;
 mod provider;
+mod sandbox;
+mod tools;
 
 pub(crate) use engine::run;

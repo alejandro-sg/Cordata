@@ -57,6 +57,8 @@ dependencies = [
  "agent-client-protocol",
  "futures",
  "genai",
+ "ignore",
+ "regex",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

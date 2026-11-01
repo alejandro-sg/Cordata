@@ -2,43 +2,50 @@
 //! drive it with a scripted fake and never touch the network.
 
 use futures::future::BoxFuture;
-use futures::stream::BoxStream;
+use futures::stream::{self, BoxStream};
 use futures::StreamExt;
-use genai::chat::{ChatMessage, ChatRequest, ChatStreamEvent};
+use genai::chat::{ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, ContentPart, MessageContent, Tool, ToolCall, ToolResponse};
 use genai::resolver::{AuthData, AuthResolver};
 use genai::{Client, ModelIden};
+use serde_json::Value;
 
 use super::keys;
+use super::tools::ToolSpec;
+
+/// A tool call the model asked for.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Call {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) args: Value,
+}
 
 /// One streamed piece of a reply.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Delta {
     Text(String),
     Thought(String),
+    Call(Call),
 }
 
-/// A conversation turn handed to the provider.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Turn {
-    pub(crate) role: Role,
-    pub(crate) text: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Role {
-    User,
-    Assistant,
+/// One entry of the conversation handed to the provider.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Msg {
+    User(String),
+    Assistant { text: String, calls: Vec<Call> },
+    ToolResult { id: String, output: String },
 }
 
 pub(crate) trait Provider: Send + Sync {
     /// The model name shown in the banner.
     fn model(&self) -> &str;
 
-    /// Start a streamed reply to `history` (ending in the user's latest message).
+    /// Start a streamed reply to `history`.
     fn stream<'a>(
         &'a self,
         system: &'a str,
-        history: &'a [Turn],
+        history: Vec<Msg>,
+        tools: &'a [ToolSpec],
     ) -> BoxFuture<'a, Result<BoxStream<'a, Result<Delta, String>>, String>>;
 }
 
@@ -59,6 +66,24 @@ impl GenaiProvider {
     }
 }
 
+fn to_message(msg: &Msg) -> ChatMessage {
+    match msg {
+        Msg::User(text) => ChatMessage::user(text.as_str()),
+        Msg::Assistant { text, calls } if calls.is_empty() => ChatMessage::assistant(text.as_str()),
+        Msg::Assistant { text, calls } => {
+            let mut parts = Vec::new();
+            if !text.is_empty() {
+                parts.push(ContentPart::Text(text.clone()));
+            }
+            parts.extend(calls.iter().map(|c| {
+                ContentPart::ToolCall(ToolCall { call_id: c.id.clone(), fn_name: c.name.clone(), fn_arguments: c.args.clone(), thought_signatures: None })
+            }));
+            ChatMessage::assistant(MessageContent::from_parts(parts))
+        }
+        Msg::ToolResult { id, output } => ChatMessage::from(ToolResponse::new(id.as_str(), output.as_str())),
+    }
+}
+
 impl Provider for GenaiProvider {
     fn model(&self) -> &str {
         &self.model
@@ -67,29 +92,31 @@ impl Provider for GenaiProvider {
     fn stream<'a>(
         &'a self,
         system: &'a str,
-        history: &'a [Turn],
+        history: Vec<Msg>,
+        tools: &'a [ToolSpec],
     ) -> BoxFuture<'a, Result<BoxStream<'a, Result<Delta, String>>, String>> {
         Box::pin(async move {
-            let messages = history
-                .iter()
-                .map(|turn| match turn.role {
-                    Role::User => ChatMessage::user(turn.text.as_str()),
-                    Role::Assistant => ChatMessage::assistant(turn.text.as_str()),
-                })
-                .collect();
-            let request = ChatRequest::new(messages).with_system(system);
-            let response = self
-                .client
-                .exec_chat_stream(&self.model, request, None)
-                .await
-                .map_err(|e| e.to_string())?;
-            let stream = response.stream.filter_map(|event| async move {
-                match event {
-                    Ok(ChatStreamEvent::Chunk(chunk)) => Some(Ok(Delta::Text(chunk.content))),
-                    Ok(ChatStreamEvent::ReasoningChunk(chunk)) => Some(Ok(Delta::Thought(chunk.content))),
-                    Ok(_) => None,
-                    Err(e) => Some(Err(e.to_string())),
-                }
+            let genai_tools: Vec<Tool> =
+                tools.iter().map(|t| Tool::new(t.name).with_description(t.description).with_schema(t.schema.clone())).collect();
+            let request = ChatRequest::new(history.iter().map(to_message).collect()).with_system(system).with_tools(genai_tools);
+            let options = ChatOptions::default().with_capture_tool_calls(true);
+            let response = self.client.exec_chat_stream(&self.model, request, Some(&options)).await.map_err(|e| e.to_string())?;
+            let stream = response.stream.flat_map(|event| {
+                let items: Vec<Result<Delta, String>> = match event {
+                    Ok(ChatStreamEvent::Chunk(c)) => vec![Ok(Delta::Text(c.content))],
+                    Ok(ChatStreamEvent::ReasoningChunk(c)) => vec![Ok(Delta::Thought(c.content))],
+                    // Tool calls arrive whole at the end, never as partial argument fragments.
+                    Ok(ChatStreamEvent::End(end)) => end
+                        .captured_content
+                        .map(|content| content.into_tool_calls())
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|c| Ok(Delta::Call(Call { id: c.call_id, name: c.fn_name, args: c.fn_arguments })))
+                        .collect(),
+                    Ok(_) => Vec::new(),
+                    Err(e) => vec![Err(e.to_string())],
+                };
+                stream::iter(items)
             });
             Ok(stream.boxed())
         })
