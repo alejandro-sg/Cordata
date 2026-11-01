@@ -63,11 +63,14 @@ pub struct CommandOutcome {
 
 static SECRET: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
-        r"(?i)(?:api[_-]?key|token|secret|passw(?:or)?d|authorization|bearer|credential)s?\b",
+        r"(?i)(?:api[_-]?key|token|secret|passw(?:or)?d|authorization|bearer|credential|private[_-]?key)s?\b",
         r"|\bsk-[A-Za-z0-9_-]{12,}",
         r"|\b(?:ghp|gho|ghs|github_pat|xox[bpas]|AKIA|AIza)[A-Za-z0-9_-]{8,}",
         r"|\b[A-Fa-f0-9]{32,}\b",
         r"|\b[A-Za-z0-9+/_-]{40,}={0,2}",
+        r"|https?://[^:\s]+:[^@\s]+@",
+        r#"|(?i)(?:-H|--header)\s*['"]?[^'"]*(?:auth|bearer|token|key|secret)"#,
+        r#"|(?i)(?:-u|--user)\s*['"]?[^'"]*"#,
     ))
     .expect("static regex")
 });
@@ -89,6 +92,33 @@ pub struct MicroSkills {
 
 fn words(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_alphanumeric()).filter(|w| w.len() >= 3).map(str::to_ascii_lowercase).collect()
+}
+
+fn is_safe_command_to_record(cmd: &str) -> bool {
+    let trimmed = cmd.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    let first = lower.split_whitespace().next().unwrap_or("");
+    // Network transfer tools, remote shells, and credential-bearing utilities must never become micro-skills
+    const FORBIDDEN_PROGRAMS: &[&str] = &[
+        "curl", "wget", "http", "https", "ssh", "scp", "sftp", "rsync", "nc", "netcat", "telnet", "ftp",
+    ];
+    if FORBIDDEN_PROGRAMS.contains(&first) {
+        return false;
+    }
+    // Remote URLs with embedded auth or tokens
+    if lower.contains("http://") || lower.contains("https://") {
+        if lower.contains('@') || lower.contains("token") || lower.contains("key") || lower.contains("secret") {
+            return false;
+        }
+    }
+    // Command line flags often used to pass sensitive credentials
+    if lower.contains("-u ") || lower.contains("--user") || lower.contains("-h ") || lower.contains("--header") {
+        return false;
+    }
+    true
 }
 
 impl MicroSkills {
@@ -212,9 +242,15 @@ impl MicroSkills {
     pub fn fold(&mut self, repo_path: &Path, outcomes: &[CommandOutcome], now: u64) -> usize {
         let mut stored = 0;
         for (i, failed) in outcomes.iter().enumerate().filter(|(_, o)| !o.ok) {
+            if !is_safe_command_to_record(&failed.cmd) {
+                continue;
+            }
             let program = failed.cmd.split_whitespace().take(2).collect::<Vec<_>>().join(" ");
             let fix = outcomes[i + 1..].iter().find(|o| o.ok && o.cmd != failed.cmd && o.cmd.starts_with(&program));
             let Some(fix) = fix else { continue };
+            if !is_safe_command_to_record(&fix.cmd) {
+                continue;
+            }
             let advice = format!("`{}` fails here; use `{}`", failed.cmd.trim(), fix.cmd.trim());
             if self.record(repo_path, SkillCategory::of_command(&failed.cmd), &program, &advice, now) {
                 stored += 1;
@@ -243,6 +279,9 @@ mod tests {
             "Authorization: Bearer xyz",
             "key sk-ant-api03-abcdefghijklmnop",
             "hash 0123456789abcdef0123456789abcdef",
+            "curl -H 'X-Custom-Auth: 123456' http://api",
+            "curl -u admin:secret http://localhost",
+            "https://user:pass@example.com",
             "two\nlines",
             "",
         ] {
@@ -315,6 +354,13 @@ mod tests {
         let skill = skills.for_repo(repo())[0];
         assert_eq!(skill.category, SkillCategory::Test);
         assert!(skill.advice.contains("cargo test -- --nocapture"));
+
+        // Sensitive network transfer commands with auth headers are refused
+        let network_outcomes = [
+            CommandOutcome { cmd: "curl http://internal".into(), ok: false },
+            CommandOutcome { cmd: "curl -H 'X-Custom-Auth: token123' http://internal".into(), ok: true },
+        ];
+        assert_eq!(skills.fold(repo(), &network_outcomes, 10), 0);
     }
 
     #[test]

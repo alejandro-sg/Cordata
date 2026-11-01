@@ -216,7 +216,22 @@ pub fn seatbelt_rules<S: AsRef<str>>(root: &str, scope: &[S]) -> Vec<String> {
     lines
 }
 
-const DENY_HOME: [&str; 6] = [".cordata/daemon.json", ".aws", ".netrc", ".config/gh", ".docker/config.json", ".kube/config"];
+const DENY_HOME: &[&str] = &[
+    ".cordata",
+    ".ssh",
+    ".gnupg",
+    ".git-credentials",
+    ".npmrc",
+    ".pypirc",
+    ".gemini",
+    ".anthropic",
+    ".config/op",
+    ".aws",
+    ".netrc",
+    ".config/gh",
+    ".docker/config.json",
+    ".kube/config",
+];
 
 /// `scrubbed_sandbox.seatbelt_profile`: `(allow default)` and then deny — the denials are the secrets.
 pub fn base_profile(home: &str) -> Vec<String> {

@@ -16,7 +16,22 @@ const ENV_ALLOW: &[&str] =
     &["PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TERM", "LANG", "TZ", "LC_ALL", "LC_CTYPE", "COLORTERM", "NO_COLOR"];
 
 /// Home-relative paths the child never needs and must not read.
-const DENY_HOME: &[&str] = &[".cordata/daemon.json", ".aws", ".netrc", ".config/gh", ".docker/config.json", ".kube/config"];
+const DENY_HOME: &[&str] = &[
+    ".cordata",
+    ".ssh",
+    ".gnupg",
+    ".git-credentials",
+    ".npmrc",
+    ".pypirc",
+    ".gemini",
+    ".anthropic",
+    ".config/op",
+    ".aws",
+    ".netrc",
+    ".config/gh",
+    ".docker/config.json",
+    ".kube/config",
+];
 
 const TEMPLATES: &[&str] = &["example", "sample", "template", "dist"];
 
@@ -46,6 +61,8 @@ pub(crate) fn profile(home: &str) -> String {
     for relative in DENY_HOME {
         lines.push(format!("(deny file-read* file-write* (subpath {}))", quote(&format!("{home}/{relative}"))));
     }
+    // Permit reading offloaded tool outputs under ~/.cordata/offloaded even while ~/.cordata is denied.
+    lines.push(format!("(allow file-read* (subpath {}))", quote(&format!("{home}/.cordata/offloaded"))));
     lines.join("\n") + "\n"
 }
 
@@ -114,6 +131,9 @@ mod tests {
         let p = profile("/Users/x");
         assert!(p.starts_with("(version 1)\n(allow default)\n"));
         assert!(p.contains(r#"(deny file-read* file-write* (subpath "/Users/x/.aws"))"#));
+        assert!(p.contains(r#"(deny file-read* file-write* (subpath "/Users/x/.ssh"))"#));
+        assert!(p.contains(r#"(deny file-read* file-write* (subpath "/Users/x/.cordata"))"#));
+        assert!(p.contains(r#"(allow file-read* (subpath "/Users/x/.cordata/offloaded"))"#));
         assert!(p.contains("example|sample|template|dist"));
     }
 

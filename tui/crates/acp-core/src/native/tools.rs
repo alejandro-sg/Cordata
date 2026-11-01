@@ -91,28 +91,71 @@ fn arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
     args.get(key).and_then(Value::as_str).ok_or_else(|| format!("missing string argument `{key}`"))
 }
 
-/// A path the tools may touch: relative to `cwd`, never a secret file. Edits must also stay inside `cwd`.
+fn normalize_lexical(path: &Path) -> PathBuf {
+    let mut clean = PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::ParentDir => {
+                clean.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => clean.push(other),
+        }
+    }
+    clean
+}
+
+/// A path the tools may touch: relative to `cwd` (or within `offload_dir()`), never a secret file.
+/// All tools enforce directory containment and verify that in-tree symlinks do not escape `cwd`.
 fn resolve(cwd: &Path, raw: &str, must_be_inside: bool) -> Result<PathBuf, String> {
     let joined = if Path::new(raw).is_absolute() { PathBuf::from(raw) } else { cwd.join(raw) };
     if sandbox::is_secret_path(&joined) {
         return Err(format!("{raw} is a secret file; the sandbox keeps it from tools"));
     }
     if must_be_inside {
-        // Resolve `..` lexically: the file may not exist yet, so canonicalize cannot be used.
-        let mut clean = PathBuf::new();
-        for part in joined.components() {
-            match part {
-                std::path::Component::ParentDir => {
-                    clean.pop();
-                }
-                other => clean.push(other),
-            }
-        }
+        let clean = normalize_lexical(&joined);
         let root = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
-        let inside = clean.starts_with(cwd) || clean.starts_with(&root);
-        if !inside {
+        let offload = offload_dir();
+        let offload_root = offload.canonicalize().unwrap_or_else(|_| offload.clone());
+
+        let inside_cwd = clean.starts_with(cwd) || clean.starts_with(&root);
+        let inside_offload = clean.starts_with(&offload) || clean.starts_with(&offload_root);
+
+        if !inside_cwd && !inside_offload {
             return Err(format!("{raw} is outside the project directory"));
         }
+
+        if inside_cwd {
+            // Verify components within cwd do not traverse symlinks pointing outside
+            if let Ok(rel) = clean.strip_prefix(cwd).or_else(|_| clean.strip_prefix(&root)) {
+                let mut current = PathBuf::from(cwd);
+                for comp in rel.components() {
+                    current.push(comp);
+                    if let Ok(meta) = std::fs::symlink_metadata(&current) {
+                        if meta.file_type().is_symlink() {
+                            let target = std::fs::read_link(&current).map_err(|e| e.to_string())?;
+                            let resolved = if target.is_absolute() {
+                                target
+                            } else {
+                                current.parent().map_or_else(|| target.clone(), |p| p.join(&target))
+                            };
+                            let norm = normalize_lexical(&resolved);
+                            let norm_canon = norm.canonicalize().unwrap_or_else(|_| norm.clone());
+                            if !norm.starts_with(cwd) && !norm.starts_with(&root)
+                                && !norm_canon.starts_with(cwd) && !norm_canon.starts_with(&root) {
+                                return Err(format!("{raw} traverses a symlink outside the project directory"));
+                            }
+                        }
+                    }
+                }
+            }
+            if let Ok(canon) = clean.canonicalize() {
+                if !canon.starts_with(cwd) && !canon.starts_with(&root) {
+                    return Err(format!("{raw} resolves outside the project directory"));
+                }
+            }
+        }
+
         return Ok(clean);
     }
     Ok(joined)
@@ -172,7 +215,7 @@ pub(crate) async fn execute(name: &str, args: &Value, cwd: &Path) -> Result<Stri
         }
         "code_search" => code_search(args, cwd),
         "code_outline" => {
-            let path = resolve(cwd, arg(args, "path")?, false)?;
+            let path = resolve(cwd, arg(args, "path")?, true)?;
             let text = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
             Ok(outline(&text))
         }
@@ -181,7 +224,7 @@ pub(crate) async fn execute(name: &str, args: &Value, cwd: &Path) -> Result<Stri
 }
 
 fn read_file(args: &Value, cwd: &Path) -> Result<String, String> {
-    let path = resolve(cwd, arg(args, "path")?, false)?;
+    let path = resolve(cwd, arg(args, "path")?, true)?;
     let text = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let offset = args.get("offset").and_then(Value::as_u64);
     let limit = args.get("limit").and_then(Value::as_u64);
@@ -218,7 +261,7 @@ fn outline(text: &str) -> String {
 
 fn code_search(args: &Value, cwd: &Path) -> Result<String, String> {
     let re = Regex::new(arg(args, "pattern")?).map_err(|e| format!("bad pattern: {e}"))?;
-    let root = resolve(cwd, args.get("path").and_then(Value::as_str).unwrap_or("."), false)?;
+    let root = resolve(cwd, args.get("path").and_then(Value::as_str).unwrap_or("."), true)?;
     let mut out = String::new();
     let mut hits = 0;
     'files: for entry in ignore::WalkBuilder::new(&root).build().flatten() {
@@ -300,6 +343,27 @@ mod tests {
         let env = json!({"path":".env","target":"","replacement":"K=1"});
         assert!(execute("edit_file", &env, cwd).await.unwrap_err().contains("secret"));
         assert!(execute("read_file", &json!({"path":".env.local"}), cwd).await.unwrap_err().contains("secret"));
+        assert!(execute("read_file", &json!({"path":"/etc/passwd"}), cwd).await.unwrap_err().contains("outside"));
+        assert!(execute("code_outline", &json!({"path":"/etc/passwd"}), cwd).await.unwrap_err().contains("outside"));
+        assert!(execute("code_search", &json!({"path":"/etc","pattern":"x"}), cwd).await.unwrap_err().contains("outside"));
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn symlinks_outside_project_are_refused() {
+        let dir = tmp();
+        let outside = tmp();
+        let target = outside.path().join("victim.txt");
+        std::fs::write(&target, "secret data").unwrap();
+
+        let link = dir.path().join("link_to_victim");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let cwd = dir.path();
+        assert!(execute("read_file", &json!({"path":"link_to_victim"}), cwd).await.unwrap_err().contains("outside"));
+        let edit = json!({"path":"link_to_victim","target":"secret data","replacement":"compromised"});
+        assert!(execute("edit_file", &edit, cwd).await.unwrap_err().contains("outside"));
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "secret data");
     }
 
     #[tokio::test]
