@@ -41,12 +41,13 @@ cordata run "Add retries to the HTTP client" --allow-direct
 ### The native binary
 
 `tui/target/{release,debug}/cordata-run` (built by `make tui-build`) is the Rust orchestrator behind the same commands.
-`cordata status` and `cordata show` use it whenever it is built: they only read `state.db` and print what the Python
-commands print (checked against them in `tui/crates/cordata-run/tests/e2e.rs`). `cordata run` and `cordata resume` stay on
-Python unless you ask for the native one:
+All four commands (`run`, `status`, `show`, `resume`) use it whenever it is built. `status` and `show` only read
+`state.db` and print what the Python commands print (checked against them in `tui/crates/cordata-run/tests/e2e.rs`). When
+the roster has no worker the native binary can run (no `claude` or `agy` installed, or `orchestrator.workers` names only
+Ollama), it exits 78 before doing anything and `cordata` hands the same command to Python. Force Python with:
 
 ```bash
-CORDATA_RUN_NATIVE=1 cordata run "Add retries to the HTTP client" --allow-direct
+CORDATA_RUN_NATIVE=0 cordata run "Add retries to the HTTP client" --allow-direct
 ```
 
 A native run uses the same ledger, checkpoints, run records and artifacts, so a run started by one can be shown, resumed

@@ -275,3 +275,56 @@ fn the_research_loop_runs_natively_verifies_the_brief_and_grounds_the_plan() {
     let shown = text(&e.run(&["show", "run-research"]));
     assert!(shown.contains("Research: 2 verified finding(s)"), "{shown}");
 }
+
+#[test]
+fn without_a_usable_native_worker_run_and_resume_hand_back_before_doing_anything() {
+    let e = env();
+    std::fs::remove_file(&e.claude).unwrap(); // CORDATA_CLAUDE_BIN now names nothing
+    let bare = |args: &[&str]| e.command().env("PATH", "/usr/bin:/bin").args(args).output().unwrap(); // no claude / agy on PATH
+    let out = bare(&["run", "g", "--cwd", e.project.to_str().unwrap(), "--allow-direct", "--workers", "claude_code,ollama"]);
+    assert_eq!(out.status.code(), Some(78), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no native worker is available for claude_code, ollama"));
+    assert_eq!(text(&out), "", "nothing was printed or started");
+    let ledger = text(&bare(&["status", "--json"]));
+    assert!(ledger.contains("\"runs\": []"), "no run record was created: {ledger}");
+    let only_ollama = bare(&["run", "g", "--cwd", e.project.to_str().unwrap(), "--workers", "ollama"]);
+    assert_eq!(only_ollama.status.code(), Some(78));
+}
+
+#[test]
+fn bin_cordata_runs_natively_by_default_falls_back_on_78_and_can_be_forced_to_python() {
+    if !seatbelt_works() {
+        return eprintln!("skipped: sandbox-exec cannot be applied here");
+    }
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
+    let launcher = repo.join("bin/cordata");
+    // A scratch "repo" with the real launcher, the freshly built binary where it looks for it, and a stub Python.
+    let e = env();
+    let fake_repo = e.dir.path().join("repo");
+    std::fs::create_dir_all(fake_repo.join("bin")).unwrap();
+    std::fs::create_dir_all(fake_repo.join("tui/target/debug")).unwrap();
+    std::fs::create_dir_all(fake_repo.join("backend/.venv/bin")).unwrap();
+    std::fs::copy(&launcher, fake_repo.join("bin/cordata")).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_cordata-run"), fake_repo.join("tui/target/debug/cordata-run")).unwrap();
+    let py = fake_repo.join("backend/.venv/bin/python");
+    std::fs::write(&py, "#!/bin/bash\necho \"PYTHON $*\"\n").unwrap();
+    std::fs::set_permissions(&py, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let go = |envs: &[(&str, &str)], args: &[&str]| {
+        let mut cmd = Command::new(fake_repo.join("bin/cordata"));
+        cmd.env_clear().env("PATH", std::env::var("PATH").unwrap()).env("HOME", e.dir.path()).env("CORDATA_HOME", &e.home).env("CORDATA_CLAUDE_BIN", &e.claude);
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
+        cmd.args(args).output().unwrap()
+    };
+    let project = e.project.to_str().unwrap();
+    let native = go(&[], &["run", "write the files", "--cwd", project, "--allow-direct", "--workers", "claude_code", "--no-research"]);
+    assert_eq!(native.status.code(), Some(0), "{} {}", text(&native), String::from_utf8_lossy(&native.stderr));
+    assert!(text(&native).contains(": done") && !text(&native).contains("PYTHON"), "{}", text(&native));
+    let forced = go(&[("CORDATA_RUN_NATIVE", "0")], &["run", "g", "--cwd", project]);
+    assert!(text(&forced).starts_with("PYTHON -m orchestrator run g"), "{}", text(&forced));
+    let fallback = go(&[], &["run", "g", "--cwd", project, "--workers", "ollama"]);
+    assert!(text(&fallback).starts_with("PYTHON -m orchestrator run g") && String::from_utf8_lossy(&fallback.stderr).contains("falling back to the Python orchestrator"), "{} {}", text(&fallback), String::from_utf8_lossy(&fallback.stderr));
+    let failing = go(&[], &["resume", "run-nope"]);
+    assert_eq!(failing.status.code(), Some(2), "a real failure is not retried on Python: {}", String::from_utf8_lossy(&failing.stderr));
+}

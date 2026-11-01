@@ -64,7 +64,8 @@ pub fn family_available(family: &str, environ: &HashMap<String, String>) -> bool
         "antigravity" => ("CORDATA_AGY_BIN", "agy"),
         _ => return false,
     };
-    environ.get(env_var).is_some_and(|v| !v.is_empty())
+    // A `$CORDATA_*_BIN` override counts only when it names a file that exists: a stale one must not hide the fallback.
+    environ.get(env_var).is_some_and(|v| !v.is_empty() && Path::new(v).exists())
         || environ.get("PATH").is_some_and(|p| p.split(':').any(|d| Path::new(d).join(bin).is_file()))
         || environ.get("HOME").is_some_and(|h| Path::new(h).join(".local/bin").join(bin).exists())
 }

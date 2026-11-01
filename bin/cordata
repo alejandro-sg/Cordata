@@ -107,9 +107,12 @@ if [[ "$1" == "doctor" ]]; then
   done
 fi
 
-# `status` and `show` only read state.db and print the same text as the Python commands, so they are native whenever the
-# binary is built. `run` and `resume` stay on Python (research, synthesis, Laya Guard, Ollama workers) unless asked:
-#   CORDATA_RUN_NATIVE=1 cordata run "..."
+# The orchestrator commands run natively whenever tui/target/{release,debug}/cordata-run is built (`make tui-build`).
+# `status` and `show` only read state.db and print what the Python commands print. `run` and `resume` use the Rust
+# orchestrator; the Python one remains for what the native one lacks (Ollama workers, Laya Guard, the Auto router,
+# per-step rewards): the native binary hands back (exit 78, before doing anything) when it has no worker it can run, and
+#   CORDATA_RUN_NATIVE=0 cordata run "..."
+# forces Python.
 native_run_bin() {
   for kind in release debug; do
     local bin="$REPO_ROOT/tui/target/$kind/cordata-run"
@@ -119,7 +122,13 @@ native_run_bin() {
 }
 case "$1" in
   status|show) if NATIVE_RUN="$(native_run_bin)"; then exec "$NATIVE_RUN" "$@"; fi ;;
-  run|resume) if [[ "${CORDATA_RUN_NATIVE:-}" == "1" ]] && NATIVE_RUN="$(native_run_bin)"; then exec "$NATIVE_RUN" "$@"; fi ;;
+  run|resume)
+    if [[ "${CORDATA_RUN_NATIVE:-1}" != "0" ]] && NATIVE_RUN="$(native_run_bin)"; then
+      "$NATIVE_RUN" "$@" && exit 0
+      code=$?
+      [[ $code -eq 78 ]] || exit $code
+      echo "falling back to the Python orchestrator" >&2
+    fi ;;
 esac
 
 if is_batch_cmd "$1"; then
