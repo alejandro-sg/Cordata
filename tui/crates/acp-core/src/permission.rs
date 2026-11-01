@@ -117,10 +117,6 @@ impl PermissionInfo {
     }
 }
 
-pub(crate) fn tool_name_from_title(title: &str) -> &str {
-    title.strip_prefix("Run ").unwrap_or(title)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,7 +159,5 @@ mod tests {
     fn tool_name_hint() {
         assert!(tool_may_return_untrusted("http_request"));
         assert!(!tool_may_return_untrusted("shell"));
-        assert_eq!(tool_name_from_title("Run shell"), "shell");
-        assert_eq!(tool_name_from_title("shell"), "shell");
     }
 }

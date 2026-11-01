@@ -1,41 +1,29 @@
 //! `SessionHandle`: the one-process, one-session unit both binaries drive.
 //!
-//! One handle == one spawned `acp_server.py` == one session. That is a hard
-//! requirement, not a convenience: the backend's `_build_session` does a
-//! process-wide `os.chdir(cwd)`, so two sessions sharing one server process
-//! could have their working directory changed under each other.
+//! One handle == one native session (`crate::native`).
 
 use std::path::PathBuf;
 
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::config::BackendConfig;
-use crate::connection;
 use crate::error::{Error, Result};
 use crate::events::AppEvent;
 use crate::transport::BackendTransport;
 
 #[derive(Debug, Clone)]
 pub struct SessionOptions {
-    pub backend: BackendConfig,
     /// Project directory the agent works in (sent as the session's `cwd`).
     pub cwd: PathBuf,
-    /// How to reach the agent. `Stdio` spawns `backend/acp_server.py` here;
-    /// `Ws` attaches to the always-on daemon instead, which is what lets a
-    /// session outlive the terminal that started it.
+    /// How to reach the agent.
     pub transport: BackendTransport,
     /// Resume an existing session id via `session/load` instead of creating one.
     pub resume: Option<String>,
-    /// Append raw JSON-RPC lines + server stderr here. Never stdout/stdin —
-    /// the TUI owns those. With `--transport ws` this records only what the
-    /// client sent and received; the child's stderr stays on the daemon's.
+    /// Append diagnostics here. Never stdout/stdin — the TUI owns those.
     pub debug_log: Option<PathBuf>,
     /// With no `resume`, ask the backend (`session/list`) for the newest session
     /// in `cwd` and load that one; a fresh session when there is none.
     pub continue_latest: bool,
-    /// The hub conversation this session joined, once resolved (set by the connection, not callers).
-    pub hub_handle: Option<String>,
 }
 
 /// Something sent with a prompt: an image (a pasted screenshot, a dropped picture) or a file's text.
@@ -47,6 +35,9 @@ pub enum Attachment {
     Text { uri: String, text: String },
 }
 
+/// What the front end asks of a session. The native engine answers mode, config and extension requests with a notice;
+/// their payloads are kept so a front end can still send them.
+#[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) enum Command {
     Prompt(String, Vec<Attachment>),
@@ -72,17 +63,13 @@ pub struct SessionHandle {
 }
 
 impl SessionHandle {
-    /// Spawns the backend and starts the session task. Setup progress and
+    /// Starts the session task. Setup progress and
     /// failures arrive on the returned receiver (`Connected`, or
     /// `ConnectionError` + `Closed`).
     pub fn spawn(options: SessionOptions) -> (Self, mpsc::UnboundedReceiver<AppEvent>) {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-        let task = if matches!(options.transport, crate::transport::BackendTransport::Native) {
-            tokio::spawn(crate::native::run(options, cmd_rx, event_tx))
-        } else {
-            tokio::spawn(connection::run(options, cmd_rx, event_tx))
-        };
+        let task = tokio::spawn(crate::native::run(options, cmd_rx, event_tx));
         (
             Self {
                 commands: cmd_tx,
@@ -140,7 +127,7 @@ impl SessionHandle {
         })
     }
 
-    /// Stops the session and waits until the backend process is gone.
+    /// Stops the session and waits until its task has ended.
     pub async fn shutdown(mut self) {
         let _ = self.commands.send(Command::Shutdown);
         if let Some(task) = self.task.take() {
@@ -151,8 +138,7 @@ impl SessionHandle {
 
 impl Drop for SessionHandle {
     fn drop(&mut self) {
-        // Best effort when the owner didn't call shutdown(): the task exits,
-        // dropping the connection, whose guard kills the backend's process group.
+        // Best effort when the owner didn't call shutdown(): the task exits.
         let _ = self.commands.send(Command::Shutdown);
     }
 }

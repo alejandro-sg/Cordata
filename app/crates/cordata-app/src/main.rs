@@ -1,10 +1,9 @@
 //! Cordata.app — the native macOS workspace for the Cordata harness (docs/app.md).
 //!
-//!     cordata-app [--cwd DIR] [--conversation latest|new|HANDLE] [--transport hub|stdio] [--selftest]
+//!     cordata-app [--cwd DIR] [--prompt TEXT] [--selftest]
 //!
-//! The window is a front door like the terminal: it speaks ACP to the daemon's hub (the default — a conversation
-//! shared with the terminal, Discord and the menu bar), or to a private `acp_server.py` child when run from a
-//! checkout with `--transport stdio`. The UI thread only draws; I/O runs on a tokio runtime (`session.rs`).
+//! The window runs the agent in this process (acp-core's native engine). The UI thread only draws; I/O runs on a
+//! tokio runtime (`session.rs`).
 
 mod hud;
 mod keychain;
@@ -25,13 +24,12 @@ use gpui::{App, AppContext as _, Bounds, SharedString, TitlebarOptions, WindowBa
 use gpui_component::Root;
 
 use crate::platform::Display;
-use crate::session::{Connection, Prefer, Runtime};
+use crate::session::{Connection, Runtime};
 use crate::workspace::Workspace;
 
 struct Args {
     cwd: PathBuf,
     conversation: String,
-    prefer: Prefer,
     /// `--prompt TEXT`: sent once the session connects (scripted runs, `cordata ask`).
     prompt: Option<String>,
     /// `--run GOAL`: start an orchestrator run once connected, and follow it in Mission Control.
@@ -42,7 +40,7 @@ struct Args {
 }
 
 fn parse_args() -> Args {
-    let mut args = Args { cwd: default_cwd(), conversation: "latest".into(), prefer: Prefer::Hub, prompt: None, run: None, selftest: false, cwd_given: false };
+    let mut args = Args { cwd: default_cwd(), conversation: "latest".into(), prompt: None, run: None, selftest: false, cwd_given: false };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -53,7 +51,6 @@ fn parse_args() -> Args {
                 }
             }
             "--conversation" => args.conversation = it.next().unwrap_or_else(|| "latest".into()),
-            "--transport" => args.prefer = if it.next().as_deref() == Some("stdio") { Prefer::Stdio } else { Prefer::Hub },
             "--prompt" => args.prompt = it.next(),
             "--run" => args.run = it.next(),
             "--selftest" => args.selftest = true,
@@ -132,7 +129,7 @@ fn main() {
             _ => {}
         }
     }
-    let connection = Connection::discover(args.prefer, &args.conversation);
+    let connection = Connection::discover();
 
     gpui_platform::application().run(move |cx: &mut App| {
         cx.set_global(runtime);
@@ -212,7 +209,7 @@ mod tests {
         let mut args = Args {
             cwd: PathBuf::from("/"),
             conversation: "latest".into(),
-            prefer: Prefer::Hub,
+           
             prompt: None,
             run: None,
             selftest: false,

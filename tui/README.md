@@ -1,11 +1,11 @@
 # Cordata terminal clients (Rust, ACP)
 
-Two binaries over one protocol library, all talking to `backend/acp_server.py`
-(the same Agent Client Protocol server Zed uses):
+Terminal clients and tools over one session library. The agent runs inside the client's own process (`acp-core`'s
+native engine); there is no backend process.
 
 | crate | what |
 |---|---|
-| `acp-core` | all protocol logic, no UI: spawn backend → `SessionHandle` → `AppEvent` stream; permission round-trip; untrusted-output detection |
+| `acp-core` | all session logic, no UI: the native engine → `SessionHandle` → `AppEvent` stream; permission round-trip; untrusted-output detection |
 | `acp-tui` | interactive client (Claude-Code-style): inline in your terminal's own scrollback, streaming chat, tool cards, approval box with "always allow", layered settings (`/config`, `/permissions`), mode/model/temperature, `--resume` |
 | `acp-stress` | scriptable concurrent runner: scenarios in, one JSONL line per prompt-turn + a summary out |
 
@@ -37,39 +37,12 @@ cargo run -p acp-stress -- scenarios/smoke.json -c 4 -o results.jsonl
 
 `make tui`, `make tui-test`, `make stress SCENARIOS=tui/scenarios/stress.json` from the repo root do the same.
 
-The backend is found automatically (`backend/.venv/bin/python` +
-`backend/acp_server.py`, walking up from the binary, then the cwd); override
-with `--backend-root` or `ACP_TUI_BACKEND_ROOT`.
+### Keeping a model key from the agent
 
-Startup is near-instant (<1.5s cold start): heavy dependencies (`SentenceTransformer`, Qdrant)
-are lazily initialized on first use, and MCP client initialization connects asynchronously in the background
-without blocking the ACP handshake.
-
-### Using a cloud model (and keeping its key from the agent)
-
-The backend is wired to Ollama Cloud (`gpt-oss:20b`, the cheapest model verified to call tools
-reliably) in `backend/.env` — plain `cargo run -p acp-tui` uses it, nothing to export. The only
-thing that can't live in a project file is the key (the agent's file tools can read `.env`), so
-store it **once** in the macOS Keychain. `make key` prompts for it (hidden — never echoed, never
-on a command line, never in a file), stores it, and then *verifies* Ollama accepts it, so a bad
-paste is caught immediately:
-
-```sh
-make key
-```
-
-`make check-key` re-checks later: it shows where the backend finds the key (an exported variable
-beats the Keychain), its length and a short fingerprint — never the key — and whether Ollama
-accepts it. At startup the backend does the same check itself and reports a rejected key with the
-cause, instead of a bare `401` mid-conversation.
-
-The backend reads it from there at startup (or from `OLLAMA_API_KEY` / `CLOUD_OPENAI_API_KEY` if
-you export one, which wins), removes it from its own environment, and masks it in every tool
-result — see `THREAT_MODEL.md`, "Provider API keys", including what that does *not* cover
-(`python_repl` in `auto` mode). With no key you get the fix on screen instead of a mystery error.
-Back to local oMLX: set `MODEL_PROVIDER=local` in `backend/.env`. Neither client ever reads the
-key itself, and `--debug-log` records ACP traffic and the server's stderr, neither of which
-carries it.
+The key never lives in a project file (the agent's file tools can read those). `make key` prompts for it (hidden),
+stores it in the macOS Keychain and verifies Ollama accepts it; `make check-key` shows where the key is found (an
+exported variable beats the Keychain), its length and a short fingerprint — never the key. The engine reads it at
+startup from `OLLAMA_API_KEY` / `ANTHROPIC_API_KEY` or the Keychain and masks it in every tool result.
 
 ## acp-tui
 

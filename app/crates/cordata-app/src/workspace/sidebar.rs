@@ -15,10 +15,10 @@ use crate::ui::{self, Dot, Kind, Tone};
 impl Workspace {
     /// The ⋯ on a sidebar row (hub conversations only): Rename, Archive. Shown on hover, or while its menu is open.
     fn row_actions(&self, group: SharedString, handle: Option<String>, title: String, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let _ = (&group, &handle, &title, &cx);
+        return None;
+        #[allow(unreachable_code)]
         let handle = handle?;
-        if !matches!(self.connection.transport, acp_core::BackendTransport::Hub { .. }) {
-            return None;
-        }
         let open = self.row_menu.as_deref() == Some(handle.as_str());
         let toggle = handle.clone();
         let button = ui::icon_button(SharedString::from(format!("row-more-{handle}")), "⋯", cx)

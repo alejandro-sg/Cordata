@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stores your Ollama API key in the macOS Keychain (where the backend reads it) and
+# Stores your Ollama API key in the macOS Keychain (where Cordata reads it) and
 # then VERIFIES it, so a mistyped or truncated paste is caught now rather than as a
 # 401 mid-conversation.
 #
@@ -20,7 +20,7 @@ security add-generic-password -U -a "$USER" -s cordata-ollama-api-key -w || { er
 
 echo
 # A stale exported variable would still win over what was just stored, so the check
-# must run the way the backend resolves the key; show it if one is set.
+# must run the way Cordata resolves the key; show it if one is set.
 if [[ -n "${OLLAMA_API_KEY:-}${CLOUD_OPENAI_API_KEY:-}" ]]; then
   warn "OLLAMA_API_KEY / CLOUD_OPENAI_API_KEY is exported in this shell and OVERRIDES the Keychain — unset it (fish: set -e OLLAMA_API_KEY) or it will keep being used."
 fi

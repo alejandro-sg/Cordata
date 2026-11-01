@@ -5,7 +5,7 @@
 
 use agent_client_protocol::schema::v1::{
     ContentBlock, SessionConfigKind, SessionConfigOption, SessionConfigSelectOptions,
-    SessionModeState, SessionUpdate, StopReason as SchemaStopReason, ToolCallContent,
+    SessionUpdate, StopReason as SchemaStopReason, ToolCallContent,
     ToolCallStatus, ToolKind as SchemaToolKind,
 };
 use serde_json::Value;
@@ -833,24 +833,6 @@ pub enum AppEvent {
     /// The connection died; no more events follow except `Closed`.
     ConnectionError(String),
     Closed,
-}
-
-pub(crate) fn mode_infos(state: Option<&SessionModeState>) -> (String, Vec<ModeInfo>) {
-    match state {
-        Some(state) => (
-            state.current_mode_id.to_string(),
-            state
-                .available_modes
-                .iter()
-                .map(|mode| ModeInfo {
-                    id: mode.id.to_string(),
-                    name: mode.name.clone(),
-                    description: mode.description.clone(),
-                })
-                .collect(),
-        ),
-        None => (String::new(), Vec::new()),
-    }
 }
 
 pub(crate) fn config_infos(options: &[SessionConfigOption]) -> Vec<ConfigOptionInfo> {

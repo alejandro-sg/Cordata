@@ -12,9 +12,8 @@ use std::path::{Path, PathBuf};
 
 use cordata_theme::tokens as t;
 use cordata_view::shown;
-use gpui::prelude::FluentBuilder as _;
 use gpui::{AnyElement, AppContext as _, Context, Entity, IntoElement, ParentElement, SharedString, StatefulInteractiveElement as _, Styled, Window, div, px};
-use gpui_component::input::{Input, InputState, Textarea, TextareaState};
+use gpui_component::input::{Input, InputState};
 use serde_json::{Value, json};
 
 use super::{Overlay, Workspace, tilde};
@@ -36,15 +35,6 @@ pub struct Customize {
     pub skills: Vec<Value>,
     pub command_name: Entity<InputState>,
     pub note: Option<(String, bool)>,
-    // Automations
-    pub automations: Vec<Value>,
-    pub auto_name: Entity<InputState>,
-    pub auto_prompt: Entity<TextareaState>,
-    pub auto_time: Entity<InputState>,
-    pub auto_kind: &'static str,
-    pub auto_day: &'static str,
-    pub auto_minutes: u32,
-    pub auto_note: Option<(String, bool)>,
     // The registry
     pub mcp_catalog: Vec<Value>,
     pub mcp_installed: Vec<Value>,
@@ -61,14 +51,6 @@ impl Customize {
             skills: Vec::new(),
             command_name: cx.new(|cx| InputState::new(window, cx).placeholder("review-security")),
             note: None,
-            automations: Vec::new(),
-            auto_name: cx.new(|cx| InputState::new(window, cx).placeholder("Morning summary")),
-            auto_prompt: cx.new(|cx| TextareaState::new(window, cx).rows(3).placeholder("What it should do each time — e.g. summarise yesterday's commits and open issues")),
-            auto_time: cx.new(|cx| InputState::new(window, cx).placeholder("09:00")),
-            auto_kind: "daily",
-            auto_day: "mon",
-            auto_minutes: 60,
-            auto_note: None,
             mcp_catalog: Vec::new(),
             mcp_installed: Vec::new(),
             skill_catalog: Vec::new(),
@@ -327,182 +309,6 @@ impl Workspace {
         rows.push(div().py(px(10.)).text_size(px(t::TEXT_SMALL)).text_color(c(tk.text_muted)).child("Lifecycle hooks are the hooks.preToolUse / hooks.postToolUse / hooks.stop settings (Advanced → Harness; trust-gated). The specialist agents are set in code.").into_any_element());
         rows
     }
-
-    // ------------------------------------------------------------------------------------------------ automations
-
-    pub(super) fn load_automations(&mut self, cx: &mut Context<Self>) {
-        let acp_core::BackendTransport::Hub { daemon, .. } = &self.connection.transport else {
-            self.customize.auto_note = Some(("Automations run in the daemon: start Cordata with the hub (the default).".into(), true));
-            return;
-        };
-        let daemon = daemon.clone();
-        let job = cx.global::<crate::session::Runtime>().0.spawn(async move { acp_core::hub::automations(&daemon).await });
-        cx.spawn(async move |this, cx| {
-            let result = job.await;
-            let _ = this.update(cx, |this, cx| {
-                match result {
-                    Ok(Ok(rows)) => this.customize.automations = rows,
-                    Ok(Err(error)) => this.customize.auto_note = Some((error.to_string(), true)),
-                    Err(_) => {}
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    fn automation_call(&mut self, call: AutomationCall, cx: &mut Context<Self>) {
-        let acp_core::BackendTransport::Hub { daemon, .. } = &self.connection.transport else { return };
-        let daemon = daemon.clone();
-        let job = cx.global::<crate::session::Runtime>().0.spawn(async move {
-            match call {
-                AutomationCall::Save(body) => acp_core::hub::save_automation(&daemon, &body).await.map(|_| "Saved.".to_owned()),
-                AutomationCall::Delete(id) => acp_core::hub::delete_automation(&daemon, &id).await.map(|_| "Deleted.".to_owned()),
-                AutomationCall::Run(id) => acp_core::hub::run_automation(&daemon, &id).await.map(|_| "Started — it appears as a ⏱ conversation.".to_owned()),
-            }
-        });
-        cx.spawn(async move |this, cx| {
-            let result = job.await;
-            let _ = this.update(cx, |this, cx| {
-                match result {
-                    Ok(Ok(note)) => this.customize.auto_note = Some((note, false)),
-                    Ok(Err(error)) => this.customize.auto_note = Some((error.to_string(), true)),
-                    Err(_) => {}
-                }
-                this.load_automations(cx);
-                this.refresh_listing(cx);
-            });
-        })
-        .detach();
-    }
-
-    fn save_new_automation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let c = &self.customize;
-        let at = c.auto_time.read(cx).value().trim().to_owned();
-        let at = if at.is_empty() { "09:00".to_owned() } else { at };
-        let body = json!({
-            "name": c.auto_name.read(cx).value().trim(),
-            "prompt": c.auto_prompt.read(cx).value().trim(),
-            "cwd": self.cwd.display().to_string(),
-            "kind": c.auto_kind,
-            "time": at,
-            "day": c.auto_day,
-            "minutes": c.auto_minutes,
-        });
-        self.customize.auto_name.update(cx, |s, cx| s.set_value("", window, cx));
-        self.customize.auto_prompt.update(cx, |s, cx| s.set_value("", window, cx));
-        self.automation_call(AutomationCall::Save(body), cx);
-    }
-
-    pub(super) fn automation_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let tk = tk(cx);
-        let mut rows: Vec<AnyElement> = Vec::new();
-        if let Some((note, error)) = self.customize.auto_note.clone() {
-            rows.push(div().pt(px(12.)).text_size(px(t::TEXT_SMALL)).text_color(c(if error { tk.danger } else { tk.teal })).child(SharedString::from(shown(&note))).into_any_element());
-        }
-        rows.push(div().pt(px(12.)).text_size(px(t::TEXT_SMALL)).text_color(c(tk.text_muted)).child("Each run is a new conversation in its project. Steps that need approval wait for you — nothing is approved on your behalf.").into_any_element());
-        rows.push(sub(cx, "scheduled"));
-        if self.customize.automations.is_empty() {
-            rows.push(div().py(px(10.)).text_size(px(t::TEXT_SMALL)).text_color(c(tk.text_muted)).child("None yet.").into_any_element());
-        }
-        for (index, a) in self.customize.automations.iter().enumerate() {
-            let id = a.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
-            let enabled = a.get("enabled").and_then(Value::as_bool).unwrap_or(true);
-            let status = a.get("last_status").and_then(Value::as_str).unwrap_or_default();
-            let next = a.get("next").and_then(Value::as_f64);
-            let when = schedule_text(a);
-            let toggled = {
-                let mut body = a.clone();
-                if let Some(obj) = body.as_object_mut() {
-                    obj.insert("enabled".into(), json!(!enabled));
-                }
-                body
-            };
-            let (run_id, del_id) = (id.clone(), id.clone());
-            let control = div()
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .child(ui::switch(("auto-on", index), enabled, cx).aria_label("Enabled").on_click(cx.listener(move |this, _, _, cx| this.automation_call(AutomationCall::Save(toggled.clone()), cx))))
-                .child(ui::button(("auto-run", index), "Run now", Kind::Ghost, cx).h(px(24.)).on_click(cx.listener(move |this, _, _, cx| this.automation_call(AutomationCall::Run(run_id.clone()), cx))))
-                .child(ui::button(("auto-del", index), "Delete", Kind::Danger, cx).h(px(24.)).on_click(cx.listener(move |this, _, _, cx| this.automation_call(AutomationCall::Delete(del_id.clone()), cx))))
-                .into_any_element();
-            let next_text = next.map(|n| format!(" · next in {}", super::age(n - super::now_secs()))).unwrap_or_default();
-            let project = a.get("cwd").and_then(Value::as_str).map(|p| tilde(Path::new(p))).unwrap_or_default();
-            let description = format!("{when} · {project}{next_text}{}", if status.is_empty() { String::new() } else { format!(" · last: {status}") });
-            rows.push(row(SharedString::from(a.get("name").and_then(Value::as_str).unwrap_or_default().to_owned()), SharedString::from(description), control, enabled, cx));
-        }
-        rows.push(sub(cx, "new automation (in this project)"));
-        let kind = self.customize.auto_kind;
-        let kinds: Vec<AnyElement> = [("daily", "daily"), ("weekly", "weekly"), ("interval", "every…")]
-            .iter()
-            .enumerate()
-            .map(|(i, &(value, label))| ui::segment(("auto-kind", i), label, kind == value, cx).on_click(cx.listener(move |this, _, _, cx| {
-                this.customize.auto_kind = value;
-                cx.notify();
-            })).into_any_element())
-            .collect();
-        let days: Vec<AnyElement> = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-            .iter()
-            .enumerate()
-            .map(|(i, &d)| ui::segment(("auto-day", i), d, self.customize.auto_day == d, cx).on_click(cx.listener(move |this, _, _, cx| {
-                this.customize.auto_day = d;
-                cx.notify();
-            })).into_any_element())
-            .collect();
-        let minutes: Vec<AnyElement> = [15u32, 30, 60, 180, 360]
-            .iter()
-            .enumerate()
-            .map(|(i, &m)| ui::segment(("auto-min", i), &if m < 60 { format!("{m}m") } else { format!("{}h", m / 60) }, self.customize.auto_minutes == m, cx).on_click(cx.listener(move |this, _, _, cx| {
-                this.customize.auto_minutes = m;
-                cx.notify();
-            })).into_any_element())
-            .collect();
-        rows.push(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(8.))
-                .pt(px(8.))
-                .child(field(&self.customize.auto_name, 280., cx))
-                .child(div().px(px(10.)).py(px(8.)).rounded(px(t::RADIUS_CONTROL)).bg(c(tk.bg_input)).border_1().border_color(line(cx, t::LINE_CONTROL_STRONG)).text_size(px(t::TEXT_UI)).child(Textarea::new(&self.customize.auto_prompt).appearance(false)))
-                .child(div().flex().flex_wrap().items_center().gap(px(8.)).child(ui::segmented_row(cx).children(kinds)).when(kind == "weekly", |r| r.child(ui::segmented_row(cx).children(days))).when(kind == "interval", |r| r.child(ui::segmented_row(cx).children(minutes))).when(kind != "interval", |r| r.child(field(&self.customize.auto_time, 80., cx))))
-                .child(div().child(ui::button("auto-save", "Add automation", Kind::Primary, cx).on_click(cx.listener(|this, _, window, cx| this.save_new_automation(window, cx)))))
-                .into_any_element(),
-        );
-        rows
-    }
-}
-
-pub enum AutomationCall {
-    Save(Value),
-    Delete(String),
-    Run(String),
-}
-
-/// `daily at 09:00`, `Fridays at 17:30`, `every 30 minutes`.
-pub fn schedule_text(a: &Value) -> String {
-    let s = |k: &str| a.get(k).and_then(Value::as_str).unwrap_or_default().to_owned();
-    match s("kind").as_str() {
-        "interval" => {
-            let m = a.get("minutes").and_then(Value::as_u64).unwrap_or(60);
-            if m.is_multiple_of(60) { format!("every {} hour{}", m / 60, if m == 60 { "" } else { "s" }) } else { format!("every {m} minutes") }
-        }
-        "weekly" => format!("{}s at {}", day_name(&s("day")), s("time")),
-        _ => format!("daily at {}", s("time")),
-    }
-}
-
-fn day_name(day: &str) -> &'static str {
-    match day {
-        "tue" => "Tuesday",
-        "wed" => "Wednesday",
-        "thu" => "Thursday",
-        "fri" => "Friday",
-        "sat" => "Saturday",
-        "sun" => "Sunday",
-        _ => "Monday",
-    }
 }
 
 impl Workspace {
@@ -637,21 +443,4 @@ fn row(label: SharedString, description: SharedString, control: AnyElement, acti
         .child(div().flex_1().min_w_0().flex().flex_col().gap(px(2.)).child(div().truncate().font_family(mono(cx)).text_size(px(t::TEXT_SMALL)).text_color(c(tk.text_primary)).child(label)).child(div().truncate().text_size(px(t::TEXT_SMALL)).text_color(c(tk.text_muted)).child(description)))
         .child(div().flex_shrink_0().child(control))
         .into_any_element()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn command_names_and_schedules_read_well() {
-        assert!(valid_command("review-security"));
-        assert!(!valid_command("../evil"));
-        assert!(!valid_command("has space"));
-        assert!(!valid_command("-x"));
-        assert_eq!(schedule_text(&json!({"kind": "interval", "minutes": 30})), "every 30 minutes");
-        assert_eq!(schedule_text(&json!({"kind": "interval", "minutes": 180})), "every 3 hours");
-        assert_eq!(schedule_text(&json!({"kind": "weekly", "day": "fri", "time": "17:30"})), "Fridays at 17:30");
-        assert_eq!(schedule_text(&json!({"kind": "daily", "time": "09:00"})), "daily at 09:00");
-    }
 }

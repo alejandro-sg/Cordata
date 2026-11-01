@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Blocks a commit that adds a credential. Enable once per clone: `make hooks`. Bypass only knowingly: git commit --no-verify.
 root="$(git rev-parse --show-toplevel)"
-py="$root/backend/.venv/bin/python"
-[[ -x "$py" ]] || py="$(command -v python3)"
-exec "$py" "$root/scripts/check-secrets.py" --staged
+for kind in release debug; do
+  bin="$root/tui/target/$kind/cordata-secrets"
+  [[ -x "$bin" ]] && exec "$bin" --staged
+done
+cd "$root/tui" && exec cargo run -q -p cordata-guard --bin cordata-secrets -- --staged

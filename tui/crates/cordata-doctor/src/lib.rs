@@ -1,4 +1,4 @@
-//! Ported from `backend/orchestrator/doctor.py`: is everything this tool leans on actually there, and what is the
+//! Is everything this tool leans on actually there, and what is the
 //! one command that fixes each gap? Every check is local; a key is only ever asked about ("is there one?").
 
 use std::io::{Read, Write};
@@ -89,17 +89,17 @@ fn ping(url: &str) -> bool {
         .is_some_and(|status| (200..500).contains(&status))
 }
 
-/// The checkout holding `backend/orchestrator`, found from `ACP_TUI_BACKEND_ROOT`, the binary, or the cwd.
+/// The checkout holding `bin/cordata` and `tui/`, found from `CORDATA_ROOT`, the binary, or the cwd.
 pub fn repo_root(cwd: &Path) -> Option<PathBuf> {
     let mut starts: Vec<PathBuf> = Vec::new();
-    if let Some(root) = std::env::var_os("ACP_TUI_BACKEND_ROOT") {
+    if let Some(root) = std::env::var_os("CORDATA_ROOT") {
         starts.push(PathBuf::from(root));
     }
     if let Ok(exe) = std::env::current_exe() {
         starts.extend(exe.parent().map(Path::to_path_buf));
     }
     starts.push(cwd.to_path_buf());
-    starts.into_iter().find_map(|start| start.ancestors().find(|d| d.join("backend/orchestrator").is_dir()).map(Path::to_path_buf))
+    starts.into_iter().find_map(|start| start.ancestors().find(|d| d.join("bin/cordata").is_file() && d.join("tui/Cargo.toml").is_file()).map(Path::to_path_buf))
 }
 
 // ---------------------------------------------------------------- settings (the keys doctor reads)
@@ -156,19 +156,6 @@ fn merge(into: &mut Value, from: Value) {
 
 // ---------------------------------------------------------------- the checks
 
-pub fn check_python(repo: Option<&Path>) -> Check {
-    let Some(repo) = repo else {
-        return check("python backend", Level::Ok, "no checkout found; native sessions need none", "");
-    };
-    let python = repo.join("backend/.venv/bin/python");
-    if !python.exists() {
-        // The native agent runs without it; the daemon, hub and `cordata run` still use it.
-        return check("python backend", Level::Warn, format!("no virtualenv at {} — native sessions work; the daemon and `cordata run` need it", python.display()), "make setup");
-    }
-    let version = run(&[&python.to_string_lossy(), "--version"]).unwrap_or_else(|| "?".into());
-    check("python backend", Level::Ok, version, "")
-}
-
 pub fn check_tui(repo: Option<&Path>) -> Check {
     let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.join("acp-tui"))).filter(|p| p.exists());
     if let Some(p) = beside {
@@ -221,26 +208,15 @@ pub fn check_ollama() -> Check {
     check("Ollama", Level::Warn, "not installed — the Ollama workers are out of the roster", "https://ollama.com/download")
 }
 
-/// `MODEL_PROVIDER` from the environment, else from `backend/.env` (that one key only).
-fn configured_provider(repo: Option<&Path>) -> String {
-    let mut provider = std::env::var("MODEL_PROVIDER").unwrap_or_default().trim().to_owned();
-    if provider.is_empty() {
-        if let Some(text) = repo.and_then(|r| std::fs::read_to_string(r.join("backend/.env")).ok()) {
-            for line in text.lines() {
-                if let Some((name, value)) = line.split_once('=') {
-                    if name.trim() == "MODEL_PROVIDER" {
-                        provider = value.trim().trim_matches(['"', '\'']).to_owned();
-                    }
-                }
-            }
-        }
-    }
+/// `MODEL_PROVIDER` from the environment; `local` when unset.
+fn configured_provider() -> String {
+    let provider = std::env::var("MODEL_PROVIDER").unwrap_or_default().trim().to_owned();
     if provider.is_empty() { "local".into() } else { provider }
 }
 
-pub fn check_model_key(repo: Option<&Path>) -> Check {
+pub fn check_model_key() -> Check {
     const FIX: &str = "make key   (hidden prompt, stored in the Keychain, never in a file)";
-    let provider = configured_provider(repo);
+    let provider = configured_provider();
     let needs_key = matches!(provider.as_str(), "openai_compatible" | "anthropic");
     if ["OLLAMA_API_KEY", "CLOUD_OPENAI_API_KEY", "ANTHROPIC_API_KEY"].iter().any(|n| std::env::var(n).is_ok_and(|v| !v.is_empty())) {
         return check("model API key", Level::Ok, "found in the environment", "");
@@ -265,18 +241,6 @@ pub fn check_model_key(repo: Option<&Path>) -> Check {
     check("model API key", Level::Warn, format!("no key for a cloud model provider (fine: MODEL_PROVIDER={provider} does not need one)"), FIX)
 }
 
-pub fn check_daemon() -> Check {
-    let path = cordata_home().join("daemon.json");
-    if let Ok(text) = std::fs::read_to_string(&path) {
-        let port = serde_json::from_str::<Value>(&text).ok().and_then(|v| v.get("port")?.as_u64());
-        if let Some(port) = port.filter(|p| ping(&format!("http://127.0.0.1:{p}/health"))) {
-            return check("daemon", Level::Ok, format!("running on port {port} — the terminal, Discord and the menu bar share its conversations"), "");
-        }
-        return check("daemon", Level::Warn, "configured but not answering — the terminal runs standalone", "make daemon-status   (make daemon-install keeps it up)");
-    }
-    check("daemon", Level::Warn, "not set up — the terminal runs standalone (fine for one terminal)", "make daemon-install")
-}
-
 pub fn check_ripgrep() -> Check {
     match on_path("rg") {
         Some(p) => check("ripgrep", Level::Ok, p.display().to_string(), ""),
@@ -294,34 +258,6 @@ pub fn check_git(cwd: &Path) -> Check {
         return check("git", Level::Ok, format!("{dir} is a repository ({branch})"), "");
     }
     check("git", Level::Warn, format!("{dir} is not a git repository — undo and the orchestrator's rollback have nothing to lean on"), "git init")
-}
-
-pub fn check_mcp_servers(path: &Path) -> Check {
-    if !path.exists() {
-        return check("MCP servers", Level::Ok, "none configured", "");
-    }
-    let parsed = std::fs::read_to_string(path).map_err(|e| e.to_string()).and_then(|t| serde_json::from_str::<Value>(&t).map_err(|e| e.to_string()));
-    let value = match parsed {
-        Ok(v) => v,
-        Err(e) => return check("MCP servers", Level::Fail, format!("mcp_servers.json is not valid JSON ({e})"), &format!("edit {}", path.display())),
-    };
-    let servers = value.get("mcpServers").and_then(Value::as_object).cloned().unwrap_or_default();
-    let missing = |p: &str| Path::new(p).is_absolute() && !Path::new(p).exists();
-    let mut broken = Vec::new();
-    for (name, server) in &servers {
-        if let Some(cmd) = server.get("command").and_then(Value::as_str).filter(|c| missing(c)) {
-            broken.push(format!("{name} → {cmd}"));
-        }
-        for arg in server.get("args").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
-            if [".py", ".js", ".mjs", ".ts"].iter().any(|e| arg.ends_with(e)) && missing(arg) {
-                broken.push(format!("{name} → {arg}"));
-            }
-        }
-    }
-    if broken.is_empty() {
-        return check("MCP servers", Level::Ok, format!("{} configured, every path exists", servers.len()), "");
-    }
-    check("MCP servers", Level::Fail, format!("a path no longer exists (moved or renamed repo?): {}", broken.join("; ")), &format!("fix the paths in {}", path.display()))
 }
 
 pub fn check_pools(settings: &Settings) -> Check {
@@ -358,19 +294,15 @@ pub fn run_checks(cwd: &Path) -> Vec<Check> {
     let repo = repo_root(cwd);
     let repo = repo.as_deref();
     let settings = Settings::load(cwd);
-    let mcp = repo.map_or_else(|| PathBuf::from("backend/mcp_servers.json"), |r| r.join("backend/mcp_servers.json"));
     vec![
-        check_python(repo),
         check_tui(repo),
         check_cli_linked(),
         check_claude(),
         check_agy(),
         check_ollama(),
-        check_model_key(repo),
-        check_daemon(),
+        check_model_key(),
         check_ripgrep(),
         check_git(cwd),
-        check_mcp_servers(&mcp),
         check_pools(&settings),
         check_vault(&settings),
         check_settings(&settings),
@@ -443,21 +375,6 @@ mod tests {
         let c = check_settings(&s);
         assert_eq!(c.level, Level::Warn);
         assert!(c.detail.starts_with("1 problem(s)"));
-    }
-
-    #[test]
-    fn mcp_paths_that_vanished_fail() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("mcp.json");
-        assert_eq!(check_mcp_servers(&p).detail, "none configured");
-        std::fs::write(&p, r#"{"mcpServers":{"a":{"command":"/no/such/bin","args":["/no/such/x.py","--flag"]},"b":{"command":"npx"}}}"#).unwrap();
-        let c = check_mcp_servers(&p);
-        assert_eq!(c.level, Level::Fail);
-        assert!(c.detail.contains("a → /no/such/bin") && c.detail.contains("a → /no/such/x.py"));
-        std::fs::write(&p, r#"{"mcpServers":{"b":{"command":"npx"}}}"#).unwrap();
-        assert_eq!(check_mcp_servers(&p).detail, "1 configured, every path exists");
-        std::fs::write(&p, "{").unwrap();
-        assert_eq!(check_mcp_servers(&p).level, Level::Fail);
     }
 
     #[test]

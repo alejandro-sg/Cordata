@@ -1,25 +1,21 @@
 #!/usr/bin/env bash
 # Cordata CLI
-# Fast, interactive AI coding assistant (Claude Code & Antigravity style)
-# with autonomous multi-worker orchestration.
 #
 # Interactive mode (default):
 #   cordata                             # Launch interactive TUI session
 #   cordata "what is this project"      # Launch interactive TUI with initial query
-#   cordata -c                          # Continue newest session
-#   cordata --resume <id>               # Resume session by ID
 #
 # Batch autonomous commands:
 #   cordata run "<goal>"                # Autonomous multi-worker coding run
 #   cordata status                      # Worker pool headroom & recent runs
 #   cordata show <run_id>               # Inspect plan, history, and audit
 #   cordata resume <run_id>             # Continue paused batch run
-#   cordata replay                      # Replay learned dispatch policy
 #   cordata doctor                      # Is everything in place? One screen, fixes included
+#
+# Everything here is a Rust binary under tui/target/{release,debug}; build them with `make tui-build`.
 
 set -euo pipefail
 
-# Resolve the absolute path to this script, resolving symlinks
 SOURCE="${BASH_SOURCE[0]}"
 while [ -h "$SOURCE" ]; do
   DIR="$( cd -P "$( dirname "$SOURCE" )" >/dev/null 2>&1 && pwd )"
@@ -29,117 +25,38 @@ done
 BIN_DIR="$( cd -P "$( dirname "$SOURCE" )" >/dev/null 2>&1 && pwd )"
 REPO_ROOT="$( cd -P "$BIN_DIR/.." >/dev/null 2>&1 && pwd )"
 
-PYTHON="$REPO_ROOT/backend/.venv/bin/python"
-TUI_BIN="$REPO_ROOT/tui/target/release/acp-tui"
-if [[ ! -x "$TUI_BIN" ]]; then
-  TUI_BIN="$REPO_ROOT/tui/target/debug/acp-tui"
-fi
-
-if [[ ! -x "$PYTHON" ]]; then
-  echo "Error: Cordata virtualenv not found at $PYTHON" >&2
-  echo "Please run: make setup (or scripts/setup.sh) in $REPO_ROOT" >&2
-  exit 1
-fi
-
-export PYTHONPATH="$REPO_ROOT/backend:${PYTHONPATH:-}"
-export ACP_TUI_BACKEND_ROOT="$REPO_ROOT"
-
-is_batch_cmd() {
-  case "${1:-}" in
-    run|status|show|resume|replay|doctor) return 0 ;;
-    *) return 1 ;;
-  esac
+# The newest built binary of this name: release, else debug.
+built() {
+  for kind in release debug; do
+    local bin="$REPO_ROOT/tui/target/$kind/$1"
+    [[ -x "$bin" ]] && { echo "$bin"; return 0; }
+  done
+  echo "Error: $1 is not built. Run: make tui-build (in $REPO_ROOT)" >&2
+  return 1
 }
 
-# Zero-config MCP servers and skills (backend/registry.py): cordata mcp add memory · cordata skill add ./my-skill
-if [[ "${1:-}" == "mcp" || "${1:-}" == "skill" ]]; then
-  exec "$PYTHON" "$REPO_ROOT/backend/registry.py" "$@"
-fi
-
-# Explicit TUI invocation
-if [[ "${1:-}" == "tui" ]]; then
-  shift
-  exec "$TUI_BIN" "$@"
-fi
-
-# Help flag handling
 if [[ "$#" -eq 1 && ("$1" == "-h" || "$1" == "--help") ]]; then
-  cat << 'EOF'
+  cat << 'HELP'
 Cordata — AI Coding Assistant & Autonomous Orchestrator
 
-Interactive Assistant (Claude Code & Antigravity style):
   cordata [PROMPT]                 Launch interactive TUI (optionally with initial query)
-  cordata -c, --continue           Resume newest session in current directory
-  cordata --resume SESSION_ID      Resume an existing interactive session
-
-Autonomous Batch Commands:
   cordata run "<goal>" [OPTIONS]   Run an orchestrated coding task across CLI workers
   cordata status                   Inspect worker headroom, recent runs and handoffs
   cordata show RUN_ID              Show one run's plan, history, and audit
   cordata resume RUN_ID            Continue a paused batch run
-  cordata replay [OPTIONS]         Benchmark learned dispatch policy against baseline
-  cordata doctor                   Check the CLIs, services and settings Cordata leans on
-
-MCP servers and skills (no JSON to edit):
-  cordata mcp catalog | list       What can be added, what is installed
-  cordata mcp add ID|@pkg|uvx:pkg|https://…  [--env K=V] [--project]
-  cordata mcp remove NAME          (also: cordata skill catalog | list | add PATH|GIT-URL|ID | remove NAME)
+  cordata doctor                   Check the CLIs, providers and settings Cordata leans on
+  cordata tui [OPTIONS]            The terminal client with its own options
 
 Options:
   --cwd DIR                        Target project directory (default: current directory)
-  --allow-direct                   Allow direct network access without vault proxy
   -h, --help                       Show this help message
-  --version                        Show version
-EOF
+HELP
   exit 0
 fi
 
-if [[ "$#" -eq 0 ]]; then
-  # No arguments: launch interactive TUI
-  exec "$TUI_BIN"
-fi
-
-# `doctor` is native: no Python start-up, and it works before `make setup` has run.
-if [[ "$1" == "doctor" ]]; then
-  for kind in release debug; do
-    DOCTOR_BIN="$REPO_ROOT/tui/target/$kind/cordata-doctor"
-    [[ -x "$DOCTOR_BIN" ]] && exec "$DOCTOR_BIN" "${@:2}"
-  done
-fi
-
-# The orchestrator commands run natively whenever tui/target/{release,debug}/cordata-run is built (`make tui-build`).
-# `status` and `show` only read state.db and print what the Python commands print. `run` and `resume` use the Rust
-# orchestrator; the Python one remains for what the native one lacks (Ollama workers, Laya Guard, the Auto router,
-# per-step rewards): the native binary hands back (exit 78, before doing anything) when it has no worker it can run, and
-#   CORDATA_RUN_NATIVE=0 cordata run "..."
-# forces Python.
-native_run_bin() {
-  for kind in release debug; do
-    local bin="$REPO_ROOT/tui/target/$kind/cordata-run"
-    [[ -x "$bin" ]] && { echo "$bin"; return 0; }
-  done
-  return 1
-}
-case "$1" in
-  status|show) if NATIVE_RUN="$(native_run_bin)"; then exec "$NATIVE_RUN" "$@"; fi ;;
-  run|resume)
-    if [[ "${CORDATA_RUN_NATIVE:-1}" != "0" ]] && NATIVE_RUN="$(native_run_bin)"; then
-      "$NATIVE_RUN" "$@" && exit 0
-      code=$?
-      [[ $code -eq 78 ]] || exit $code
-      echo "falling back to the Python orchestrator" >&2
-    fi ;;
+case "${1:-}" in
+  doctor) bin="$(built cordata-doctor)"; shift; exec "$bin" "$@" ;;
+  run|status|show|resume) exec "$(built cordata-run)" "$@" ;;
+  tui) shift; exec "$(built acp-tui)" "$@" ;;
+  *) exec "$(built acp-tui)" "$@" ;;
 esac
-
-if is_batch_cmd "$1"; then
-  # Explicit batch command: run python orchestrator
-  exec "$PYTHON" -m orchestrator "$@"
-fi
-
-# If first arg is a known python flag (e.g. --world, --logs, etc.)
-if [[ "$1" == --* && ("$1" == "--world" || "$1" == "--logs" || "$1" == "--ledger") ]]; then
-  exec "$PYTHON" -m orchestrator "$@"
-fi
-
-# Default: route to the interactive TUI client (supports prompts and TUI options)
-exec "$TUI_BIN" "$@"

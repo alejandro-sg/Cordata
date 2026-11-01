@@ -2,17 +2,13 @@
 //! dependencies: `acp-tui` and `acp-stress` both consume `SessionHandle` +
 //! `AppEvent`, so the connection/session/permission code exists exactly once.
 
-pub mod config;
-pub mod connection;
 pub mod error;
 pub mod events;
-pub mod hub;
 pub mod native;
 pub mod permission;
 pub mod session;
 pub mod transport;
 
-pub use config::{BackendConfig, DaemonConfig};
 pub use error::{Error, Result};
 pub use events::{
     AppEvent, CONTEXT_METHOD, ConfigChoice, ConfigOptionInfo, FileDiff, GOAL_METHOD, HEAL_METHOD, HarnessEvent, HealInfo,
@@ -23,4 +19,4 @@ pub use events::{
 };
 pub use permission::{ApprovalDecision, ChoiceKind, PermissionChoice, PermissionInfo, Unwrapped, unwrap_untrusted};
 pub use session::{Attachment, SessionHandle, SessionOptions};
-pub use transport::{BackendTransport, WsTransport};
+pub use transport::BackendTransport;

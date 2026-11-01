@@ -11,8 +11,6 @@
 # "Code Signing" certificate named in SIGN_IDENTITY (Keychain Access → Certificate Assistant) keeps it. This script
 # never creates one.
 #
-# The bundle finds the harness through the daemon (~/.cordata/daemon.json), not through the checkout it was built
-# from: launched from Finder it has no repo around it and a cwd of /.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 BUNDLE_ID="dev.cordata.app"
@@ -40,13 +38,9 @@ if compgen -G "$ROOT/app/assets/fonts/*.[ot]tf" >/dev/null; then
 fi
 cp "$ROOT/app/target/release/cordata-app" "$APP/Contents/MacOS/cordata-app"
 
+# No icon is generated: the bundle gets the generic one. Drop a Cordata.icns into Contents/Resources and set
+# ICON_KEY to "<key>CFBundleIconFile</key><string>Cordata</string>" to brand it.
 ICON_KEY=""
-ICONSET="$ROOT/app/target/Cordata.iconset"
-if "$ROOT/backend/.venv/bin/python" "$ROOT/app/assets/make_icon.py" "$ICONSET" >/dev/null 2>&1 && iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/Cordata.icns"; then
-  ICON_KEY="<key>CFBundleIconFile</key><string>Cordata</string>"
-else
-  warn "no icon (needs backend/.venv with Pillow): the bundle gets the generic one"
-fi
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

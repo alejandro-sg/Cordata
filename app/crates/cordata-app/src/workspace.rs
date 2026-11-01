@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use acp_core::{ApprovalDecision, BackendTransport};
+use acp_core::ApprovalDecision;
 use cordata_theme::tokens as t;
 use cordata_view::app::{ConnState, SwitchTarget};
 use gpui::prelude::FluentBuilder as _;
@@ -26,7 +26,7 @@ use crate::hud;
 use crate::mission::{self, Mission};
 use crate::platform::Display;
 use crate::prefs::{self, Prefs};
-use crate::session::{Connection, Row, Runtime, Session, SessionEvent, Target, WindowRequest};
+use crate::session::{Connection, Row, Session, SessionEvent, Target, WindowRequest};
 use crate::theme::{c, ca, line, tk};
 use crate::transcript::{self, GroupEdge};
 use crate::ui::{self, Dot, Kind};
@@ -89,7 +89,6 @@ pub enum Confirm {
     Trust,
     SignOut,
     ResetPrefs,
-    ClearHistory,
 }
 
 actions!(
@@ -174,9 +173,6 @@ pub struct Workspace {
     /// The project's conversations (the hub's, or the saved stdio sessions).
     listing: Vec<Row>,
     listing_error: Option<String>,
-    /// The hub answered the last listing, and how fast.
-    hub_ok: Option<bool>,
-    hub_latency: Option<Duration>,
     model_menu: bool,
     model_menu_bottom: bool,
     mode_menu: bool,
@@ -261,7 +257,6 @@ pub struct Workspace {
     /// The sidebar row whose ⋯ menu is open (a hub handle).
     row_menu: Option<String>,
     /// Full-text matches for the palette's query (hub), and which query they answer.
-    search_hits: Vec<acp_core::hub::SearchHit>,
     search_for: String,
     /// `--selftest`: answer every approval with Allow and quit with a summary once the first turn ends.
     selftest: Option<SelfTest>,
@@ -304,22 +299,6 @@ pub fn now_secs() -> f64 {
 }
 
 /// The harness's state folder.
-/// What the settings say after clearing history: what went, and what was kept and why.
-fn clear_notice(cleared: &acp_core::hub::Cleared) -> String {
-    let plural = |n: u64, one: &str, many: &str| if n == 1 { format!("1 {one}") } else { format!("{n} {many}") };
-    let mut notice = if cleared.conversations == 0 && cleared.histories == 0 {
-        "There was no history to delete.".to_owned()
-    } else {
-        format!("Deleted {} and {}.", plural(cleared.conversations, "conversation", "conversations"), plural(cleared.histories, "saved history", "saved histories"))
-    };
-    if !cleared.kept.is_empty() {
-        let names: Vec<String> = cleared.kept.iter().take(3).map(|c| if c.title.trim().is_empty() { c.handle.clone() } else { format!("“{}”", c.title.trim()) }).collect();
-        let more = cleared.kept.len().saturating_sub(names.len());
-        notice.push_str(&format!(" Kept {} in use ({}{}): stop or close {} and clear again.", cleared.kept.len(), names.join(", "), if more > 0 { format!(" and {more} more") } else { String::new() }, if cleared.kept.len() == 1 { "it" } else { "them" }));
-    }
-    notice
-}
-
 pub fn cordata_home() -> PathBuf {
     std::env::var_os("CORDATA_HOME").map(PathBuf::from).unwrap_or_else(|| std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join(".cordata"))
 }
@@ -409,8 +388,6 @@ impl Workspace {
             expanded: HashSet::new(),
             listing: Vec::new(),
             listing_error: None,
-            hub_ok: None,
-            hub_latency: None,
             model_menu: false,
             model_menu_bottom: false,
             mode_menu: false,
@@ -468,7 +445,6 @@ impl Workspace {
             customize,
             rename_input,
             row_menu: None,
-            search_hits: Vec::new(),
             search_for: String::new(),
             selftest: selftest.then(SelfTest::default),
             _subscriptions: subscriptions,
@@ -637,10 +613,7 @@ impl Workspace {
     }
 
     fn new_target(&self) -> Target {
-        match self.connection.transport {
-            BackendTransport::Hub { .. } => Target::Conversation("new".into()),
-            _ => Target::Default,
-        }
+        Target::Default
     }
 
     fn close_active(&mut self, cx: &mut Context<Self>) {
@@ -689,16 +662,9 @@ impl Workspace {
     /// A dropped connection, opened again on the same conversation (by id over stdio, by handle on the hub).
     pub(super) fn reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let old = self.session.read(cx);
-        let target = match (&self.connection.transport, old.session_id(), &old.target) {
-            (BackendTransport::Hub { .. }, _, target) => match old.hub_handle() {
-                Some(handle) => Target::Conversation(handle),
-                None => match target {
-                    Target::Conversation(handle) if handle != "new" => Target::Conversation(handle.clone()),
-                    _ => Target::Default,
-                },
-            },
-            (_, Some(id), _) => Target::Resume(id),
-            (_, None, target) => target.clone(),
+        let target = match (old.session_id(), &old.target) {
+            (Some(id), _) => Target::Resume(id),
+            (None, target) => target.clone(),
         };
         let id = self.session.entity_id();
         let (connection, cwd) = (self.connection.clone(), self.cwd.clone());
@@ -947,40 +913,7 @@ impl Workspace {
     }
 
     pub(super) fn refresh_listing(&mut self, cx: &mut Context<Self>) {
-        match &self.connection.transport {
-            BackendTransport::Hub { daemon, .. } => {
-                let (daemon, cwd) = (daemon.clone(), self.cwd.clone());
-                let job = cx.global::<Runtime>().0.spawn(async move {
-                    let started = std::time::Instant::now();
-                    let result = acp_core::hub::list(&daemon, Some(&cwd)).await;
-                    (result, started.elapsed())
-                });
-                cx.spawn(async move |this, cx| {
-                    let joined = job.await;
-                    let _ = this.update(cx, |this, cx| {
-                        let result = joined.map(|(result, took)| {
-                            this.hub_latency = Some(took);
-                            this.hub_ok = Some(result.is_ok());
-                            result
-                        });
-                        match result {
-                            Ok(Ok(rows)) => {
-                                this.listing = rows
-                                    .into_iter()
-                                    .map(|c| Row { target: Target::Conversation(c.handle.clone()), title: if c.title.is_empty() { c.handle.clone() } else { c.title.clone() }, when: c.last_used, live: c.live, busy: c.busy, origin: c.origin.clone() })
-                                    .collect();
-                                this.listing_error = None;
-                            }
-                            Ok(Err(error)) => this.listing_error = Some(error.to_string()),
-                            Err(_) => {}
-                        }
-                        cx.notify();
-                    });
-                })
-                .detach();
-            }
-            _ => self.session.read(cx).request_listing(),
-        }
+        self.session.read(cx).request_listing();
     }
 
     fn take_stdio_listing(&mut self, cx: &mut Context<Self>) {
@@ -1402,7 +1335,6 @@ impl Workspace {
                 }
                 self.api_key_masked = crate::keychain::masked();
             }
-            Confirm::ClearHistory => self.clear_history(cx),
             Confirm::ResetPrefs => {
                 let recents = std::mem::take(&mut self.prefs.recents);
                 self.prefs = Prefs { recents: if self.prefs.recents.is_empty() { Vec::new() } else { recents }, ..Prefs::default() };
@@ -1434,11 +1366,6 @@ impl Workspace {
                 )
             }
             Some(Confirm::SignOut) => ("Sign out?", "The API key is removed from the Keychain. A running backend keeps its key until it restarts.".into(), "Sign out"),
-            Some(Confirm::ClearHistory) => (
-                "Delete all conversation history?",
-                "Every conversation in every project is deleted from this Mac, with its saved history and checkpoints. This cannot be undone. Conversations that are running, waiting on you, or open in a terminal are kept. The approvals ledger is kept.".into(),
-                "Delete history",
-            ),
             Some(Confirm::ResetPrefs) => ("Reset all settings?", "Theme, layout, sending and notification choices go back to their defaults. Harness settings files are not touched.".into(), "Reset"),
             None => ("", String::new(), ""),
         };
@@ -1675,33 +1602,25 @@ impl Workspace {
         self.session.read(cx).request("_cordata/trust/list", serde_json::json!({}), TRUST_LIST_TAG);
     }
 
-    /// The hub's address, as the person would recognise it.
+    /// Where the agent runs.
     pub(super) fn endpoint(&self) -> String {
-        match &self.connection.transport {
-            BackendTransport::Hub { daemon, .. } => format!("{daemon:?}").trim_matches('"').to_owned(),
-            BackendTransport::Stdio => "stdio (a private backend from this checkout)".into(),
-            #[allow(unreachable_patterns)]
-            other => format!("{other:?}"),
-        }
+        "in this process".into()
     }
 
     /// The sidebar footer and status bar: is the connection well?
     pub(super) fn connection_status(&self, cx: &App) -> (Dot, String) {
         let session = self.session.read(cx);
-        match (&session.view.conn, self.hub_ok, &self.connection.transport) {
-            (ConnState::Connecting, _, _) => (Dot::Hollow, "Connecting…".into()),
-            (ConnState::Closed { .. }, _, _) | (_, Some(false), _) => (Dot::Amber, "Reconnecting…".into()),
-            (_, _, BackendTransport::Hub { .. }) => (Dot::Ok, "Daemon ready".into()),
+        match &session.view.conn {
+            ConnState::Connecting => (Dot::Hollow, "Connecting…".into()),
+            ConnState::Closed { .. } => (Dot::Amber, "Reconnecting…".into()),
             _ => (Dot::Ok, format!("Local · {}", session.transport)),
         }
     }
 
     pub(super) fn hub_health(&self, cx: &App) -> (Dot, String) {
         let (dot, text) = self.connection_status(cx);
-        match (dot, self.hub_latency, &self.connection.transport) {
-            (Dot::Ok, Some(latency), BackendTransport::Hub { .. }) => (Dot::Ok, format!("Daemon · {}ms", latency.as_millis())),
-            (Dot::Ok, _, BackendTransport::Hub { .. }) => (Dot::Ok, "Daemon".into()),
-            (Dot::Ok, ..) => (Dot::Ok, "Local engine".into()),
+        match dot {
+            Dot::Ok => (Dot::Ok, "Local engine".into()),
             _ => (dot, text),
         }
     }
@@ -1887,96 +1806,17 @@ impl Workspace {
             }
             Naming::Conversation(handle) => handle,
         };
-        let BackendTransport::Hub { daemon, .. } = &self.connection.transport else { return };
-        if title.is_empty() {
-            return;
-        }
-        let daemon = daemon.clone();
-        let job = cx.global::<Runtime>().0.spawn(async move { acp_core::hub::rename(&daemon, &handle, &title).await });
-        cx.spawn(async move |this, cx| {
-            let result = job.await;
-            let _ = this.update(cx, |this, cx| {
-                if let Ok(Err(error)) = result {
-                    this.listing_error = Some(error.to_string());
-                }
-                this.refresh_listing(cx);
-            });
-        })
-        .detach();
+        let _ = (handle, title, cx);
     }
 
-    /// Settings → Advanced → Clear conversation history, after the confirm dialog.
-    fn clear_history(&mut self, cx: &mut Context<Self>) {
-        let BackendTransport::Hub { daemon, .. } = &self.connection.transport else {
-            self.settings_view.set_notice("History lives with the daemon; connect through it to clear it.".into(), true);
-            return;
-        };
-        let daemon = daemon.clone();
-        self.settings_view.set_notice("Deleting conversation history…".into(), false);
-        let job = cx.global::<Runtime>().0.spawn(async move { acp_core::hub::clear_history(&daemon, None).await });
-        cx.spawn(async move |this, cx| {
-            let result = job.await;
-            let _ = this.update(cx, |this, cx| {
-                let (notice, error) = match result {
-                    Ok(Ok(cleared)) => (clear_notice(&cleared), false),
-                    Ok(Err(error)) => (format!("History was not cleared: {error}"), true),
-                    Err(_) => ("History was not cleared: the request did not finish.".into(), true),
-                };
-                this.settings_view.set_notice(notice, error);
-                this.refresh_listing(cx);
-                cx.notify();
-            });
-        })
-        .detach();
-        cx.notify();
-    }
-
-    pub(super) fn archive(&mut self, handle: String, cx: &mut Context<Self>) {
+    pub(super) fn archive(&mut self, _handle: String, cx: &mut Context<Self>) {
         self.row_menu = None;
-        let BackendTransport::Hub { daemon, .. } = &self.connection.transport else { return };
-        let daemon = daemon.clone();
-        let job = cx.global::<Runtime>().0.spawn(async move { acp_core::hub::archive(&daemon, &handle, true).await });
-        cx.spawn(async move |this, cx| {
-            let result = job.await;
-            let _ = this.update(cx, |this, cx| {
-                if let Ok(Err(error)) = result {
-                    this.listing_error = Some(error.to_string());
-                }
-                this.refresh_listing(cx);
-            });
-        })
-        .detach();
         cx.notify();
     }
 
-    /// The palette's full-text search: asked of the hub once the query is two characters or more, and only the
-    /// answer for the latest query is kept.
+    /// The palette's query is remembered so a stale answer is never shown.
     fn search_conversations(&mut self, cx: &mut Context<Self>) {
-        let query = self.palette_input.read(cx).value().trim().to_owned();
-        self.search_for = query.clone();
-        let BackendTransport::Hub { daemon, .. } = &self.connection.transport else { return };
-        if query.chars().count() < 2 {
-            self.search_hits.clear();
-            return;
-        }
-        let (daemon, cwd) = (daemon.clone(), self.cwd.clone());
-        let asked = query.clone();
-        let job = cx.global::<Runtime>().0.spawn(async move {
-            tokio::time::sleep(Duration::from_millis(220)).await;
-            acp_core::hub::search(&daemon, &asked, Some(&cwd)).await
-        });
-        cx.spawn(async move |this, cx| {
-            let result = job.await;
-            let _ = this.update(cx, |this, cx| {
-                if this.search_for == query
-                    && let Ok(Ok(hits)) = result
-                {
-                    this.search_hits = hits;
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
+        self.search_for = self.palette_input.read(cx).value().trim().to_owned();
     }
 
     fn rename_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -2310,7 +2150,7 @@ impl Render for Workspace {
 pub(super) fn matches_target(session: &Session, target: &Target) -> bool {
     match target {
         Target::Default => false,
-        Target::Conversation(handle) => matches!(&session.target, Target::Conversation(h) if h == handle) || session.hub_handle().as_deref() == Some(handle.as_str()),
+        Target::Conversation(handle) => matches!(&session.target, Target::Conversation(h) if h == handle),
         Target::Resume(id) => session.session_id().as_deref() == Some(id.as_str()) || matches!(&session.target, Target::Resume(r) if r == id),
     }
 }
@@ -2461,7 +2301,7 @@ pub fn install_menus(cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use super::{age, clear_notice, door_glyph};
+    use super::{age, door_glyph};
 
     #[test]
     fn ages_read_at_a_glance() {
@@ -2470,18 +2310,6 @@ mod tests {
         assert_eq!(age(7200.0), "2h");
         assert_eq!(age(3.0 * 86_400.0), "3d");
         assert_eq!(door_glyph("discord"), "◆ ");
-    }
-
-    #[test]
-    fn clearing_history_says_what_went_and_what_stayed() {
-        let parse = |v: serde_json::Value| serde_json::from_value::<acp_core::hub::Cleared>(v).unwrap();
-        assert_eq!(clear_notice(&parse(serde_json::json!({ "conversations": 0, "histories": 0 }))), "There was no history to delete.");
-        assert_eq!(clear_notice(&parse(serde_json::json!({ "conversations": 1, "histories": 1, "kept": [] }))), "Deleted 1 conversation and 1 saved history.");
-        let kept = parse(serde_json::json!({
-            "conversations": 4, "histories": 6,
-            "kept": [{ "handle": "c1", "title": "Billing", "cwd": "/p" }, { "handle": "c2", "title": " ", "cwd": "/p" }]
-        }));
-        assert_eq!(clear_notice(&kept), "Deleted 4 conversations and 6 saved histories. Kept 2 in use (“Billing”, c2): stop or close them and clear again.");
     }
 }
 
@@ -2492,12 +2320,8 @@ mod window_tests {
     use gpui::{AppContext as _, TestAppContext, VisualTestContext};
 
     fn offline() -> Connection {
-        // No daemon, no checkout: every session says why and spawns nothing — the window's own behaviour, in isolation.
-        Connection {
-            backend: acp_core::BackendConfig { backend_dir: ".".into(), python: "python3".into(), server: "acp_server.py".into() },
-            transport: acp_core::BackendTransport::Stdio,
-            problem: Some("offline for a test".into()),
-        }
+        // No way to connect: every session says why and spawns nothing — the window's own behaviour, in isolation.
+        Connection { transport: acp_core::BackendTransport::Native, problem: Some("offline for a test".into()) }
     }
 
     fn workspace(cx: &mut TestAppContext) -> (gpui::Entity<Workspace>, &mut VisualTestContext) {

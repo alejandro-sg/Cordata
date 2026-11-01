@@ -303,13 +303,11 @@ mod tests {
 
     fn options(cwd: &std::path::Path) -> SessionOptions {
         SessionOptions {
-            backend: crate::config::BackendConfig { backend_dir: Default::default(), python: Default::default(), server: Default::default() },
             cwd: cwd.to_path_buf(),
             transport: crate::transport::BackendTransport::Native,
             resume: None,
             debug_log: None,
             continue_latest: false,
-            hub_handle: None,
         }
     }
 

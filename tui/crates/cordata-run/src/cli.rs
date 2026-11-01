@@ -44,8 +44,7 @@ pub struct RunArgs {
     pub session_id: Option<String>,
 }
 
-/// Exit status of `run`/`resume` when no native worker can run (`EX_CONFIG`). Nothing has been done at that point, so
-/// `bin/cordata` hands the same command to the Python orchestrator.
+/// Exit status of `run`/`resume` when no worker can run (`EX_CONFIG`): nothing has been done at that point.
 pub const NO_NATIVE_WORKER: i32 = 78;
 
 /// Does the roster have a native worker whose CLI is installed?
@@ -211,10 +210,10 @@ pub async fn run(args: RunArgs) -> i32 {
     let mut notes = Vec::new();
     let skipped = config::unsupported(&requested);
     if !skipped.is_empty() {
-        notes.push(format!("{} has no native worker yet and is left out of this run", skipped.join(", ")));
+        notes.push(format!("{} has no worker and is left out of this run", skipped.join(", ")));
     }
     if !has_native_worker(&requested, &environ) {
-        eprintln!("cordata-run: no native worker is available for {} (claude or agy must be installed)", if requested.is_empty() { "an empty roster".to_owned() } else { requested.join(", ") });
+        eprintln!("cordata-run: no worker is available for {} (claude or agy must be installed)", if requested.is_empty() { "an empty roster".to_owned() } else { requested.join(", ") });
         return NO_NATIVE_WORKER;
     }
     let ledger = match open_ledger(&settings) {
@@ -287,7 +286,7 @@ pub async fn resume(run_id: &str, allow_direct: bool, max_usd: Option<f64>, as_j
     let home = cordata_home(&environ);
     let families = config::enabled_families(&settings);
     if !machine::TERMINAL.contains(&record.state.as_str()) && !has_native_worker(&families, &environ) {
-        eprintln!("cordata-run: no native worker is available to resume {run_id}");
+        eprintln!("cordata-run: no worker is available to resume {run_id}");
         return NO_NATIVE_WORKER;
     }
     let env_for_avail = environ.clone();

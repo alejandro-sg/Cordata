@@ -7,7 +7,7 @@
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use acp_core::{
-    AppEvent, BackendConfig, SessionHandle, SessionInfo, SessionOptions, StopReason, ToolStatus,
+    AppEvent, SessionHandle, SessionInfo, SessionOptions, StopReason, ToolStatus,
 };
 use tokio::sync::{mpsc, watch};
 
@@ -15,7 +15,6 @@ use crate::report::{PermissionRecord, ScenarioOutcome, Sink, ToolRecord, TurnRec
 use crate::scenario::{Decision, Scenario};
 
 pub struct RunConfig {
-    pub backend: BackendConfig,
     pub startup_timeout: Duration,
     pub turn_timeout: Duration,
 }
@@ -68,13 +67,11 @@ pub async fn run_scenario(
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| ".".into());
     let (session, mut events) = SessionHandle::spawn(SessionOptions {
-        backend: config.backend.clone(),
         cwd,
-        transport: acp_core::BackendTransport::Stdio,
+        transport: acp_core::BackendTransport::Native,
         resume: None,
         debug_log: None,
         continue_latest: false,
-        hub_handle: None,
     });
 
     let mut outcome = ScenarioOutcome {

@@ -12,7 +12,7 @@ use std::panic;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use acp_core::{AppEvent, BackendConfig, BackendTransport, DaemonConfig, SessionHandle, SessionOptions, hub};
+use acp_core::{AppEvent, BackendTransport, SessionHandle, SessionOptions};
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -47,37 +47,9 @@ struct Args {
     #[arg(long)]
     cwd: Option<PathBuf>,
 
-    /// Repo root or backend/ dir [env: ACP_TUI_BACKEND_ROOT; default: auto-discover].
-    #[arg(long)]
-    backend_root: Option<PathBuf>,
-
-    /// Append raw JSON-RPC traffic and server stderr to this file.
+    /// Append diagnostics to this file.
     #[arg(long, value_name = "FILE")]
     debug_log: Option<PathBuf>,
-
-    /// Run a different ACP server script with the backend's python (testing).
-    #[arg(long, hide = true)]
-    server_script: Option<PathBuf>,
-
-    /// How to reach the agent: `hub` joins a conversation the daemon holds —
-    /// the same one Discord, the menu bar and the web app continue; `stdio`
-    /// spawns a backend process for this terminal only; `ws` attaches to the
-    /// daemon's per-folder session; `auto` (the default) is `hub` when the
-    /// daemon is running and `stdio` when it is not.
-    #[arg(long, value_enum, default_value_t = Transport::Auto)]
-    transport: Transport,
-
-    /// The hub conversation to join: a handle (`c3f9a1e`), `latest` (this
-    /// folder's newest — the default, so a terminal picks up where any door
-    /// left off) or `new`.
-    #[arg(long, value_name = "HANDLE")]
-    conversation: Option<String>,
-
-    /// Daemon URL, overriding the one built from ~/.cordata/daemon.json
-    /// (which supplies the port and the token). Only meaningful with
-    /// `--transport ws`.
-    #[arg(long, value_name = "URL")]
-    daemon_url: Option<String>,
 
     /// Initial prompt to send once connected (like Claude Code / agy "prompt").
     #[arg(value_name = "PROMPT")]
@@ -86,16 +58,6 @@ struct Args {
     /// Start in full-screen split-pane workspace mode.
     #[arg(long)]
     panes: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-enum Transport {
-    Auto,
-    Hub,
-    Stdio,
-    Ws,
-    /// The in-process Rust agent (prototype: chat only, no tools yet).
-    Native,
 }
 
 /// One session the user can switch to: its backend process and its UI state.
@@ -113,7 +75,6 @@ struct Workspace {
     slots: Vec<Slot>,
     active: usize,
     next_number: usize,
-    backend: BackendConfig,
     cwd: PathBuf,
     transport: BackendTransport,
     debug_log: Option<PathBuf>,
@@ -124,29 +85,12 @@ struct Workspace {
 
 impl Workspace {
     fn spawn(&mut self, resume: Option<String>, continue_latest: bool, initial_prompt: Option<String>) -> usize {
-        self.spawn_in(resume, continue_latest, None, initial_prompt)
-    }
-
-    /// A slot on a particular hub conversation (`new`, a handle) instead of the workspace's own.
-    fn spawn_in(
-        &mut self,
-        resume: Option<String>,
-        continue_latest: bool,
-        conversation: Option<String>,
-        initial_prompt: Option<String>,
-    ) -> usize {
-        let transport = match (&self.transport, conversation) {
-            (BackendTransport::Hub { daemon, .. }, Some(conversation)) => BackendTransport::Hub { daemon: daemon.clone(), conversation },
-            (transport, _) => transport.clone(),
-        };
         let (handle, mut rx) = SessionHandle::spawn(SessionOptions {
-            backend: self.backend.clone(),
             cwd: self.cwd.clone(),
-            transport,
+            transport: self.transport.clone(),
             resume,
             debug_log: self.debug_log.clone(),
             continue_latest,
-            hub_handle: None,
         });
         let number = self.next_number;
         self.next_number += 1;
@@ -275,24 +219,6 @@ impl Workspace {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    // The native agent has no Python backend, so a missing checkout is not an error for it.
-    let mut backend = match BackendConfig::discover(args.backend_root.as_deref()) {
-        Ok(backend) => backend,
-        Err(_) if args.transport == Transport::Native => {
-            BackendConfig { backend_dir: PathBuf::new(), python: PathBuf::new(), server: PathBuf::new() }
-        }
-        Err(error) => return Err(error.into()),
-    };
-    if let Some(script) = args.server_script {
-        backend = backend.with_server_script(script);
-    }
-    // With `--transport ws` the daemon spawns the child, not this process, so a
-    // missing local backend is the daemon's problem to report — and it does, as
-    // a `ConnectionError` naming the directory it tried.
-    if args.transport == Transport::Stdio {
-        backend.validate()?;
-    }
-
     let cwd = match args.cwd {
         Some(cwd) => cwd
             .canonicalize()
@@ -300,32 +226,7 @@ async fn main() -> Result<()> {
         None => std::env::current_dir()?,
     };
 
-    let hub_for = |conversation: Option<String>| -> Result<BackendTransport> {
-        Ok(BackendTransport::Hub { daemon: DaemonConfig::discover()?, conversation: conversation.unwrap_or_else(|| "latest".into()) })
-    };
-    let transport = match (args.transport, args.daemon_url) {
-        (Transport::Hub, _) => hub_for(args.conversation.clone())?,
-        // `--resume` / `--continue` name a terminal-only session, so they keep the stdio backend.
-        (Transport::Auto, _) if args.resume.is_some() || args.continue_latest => BackendTransport::Stdio,
-        (Transport::Auto, _) => match DaemonConfig::discover() {
-            Ok(daemon) if hub::reachable(&daemon).await => BackendTransport::Hub { daemon, conversation: args.conversation.clone().unwrap_or_else(|| "latest".into()) },
-            _ if args.conversation.is_some() => anyhow::bail!("--conversation needs the daemon — start it with `make daemon`"),
-            _ => BackendTransport::Stdio,
-        },
-        (Transport::Native, None) => BackendTransport::Native,
-        (Transport::Native, Some(_)) => anyhow::bail!("--daemon-url needs --transport ws"),
-        (Transport::Stdio, None) => BackendTransport::Stdio,
-        // A flag that is accepted and then ignored is worse than one that
-        // complains: `--daemon-url` with stdio means the user thinks they are
-        // talking to the daemon.
-        (Transport::Stdio, Some(_)) => anyhow::bail!("--daemon-url needs --transport ws"),
-        (Transport::Ws, Some(url)) => BackendTransport::Ws { url },
-        // Built here rather than in the session task: the token file is read
-        // once, and a missing daemon config should fail before the terminal is
-        // taken over, not inside the alternate screen where the message would
-        // be hard to see.
-        (Transport::Ws, None) => BackendTransport::daemon(&cwd)?,
-    };
+    let transport = BackendTransport::Native;
 
     let (tx, rx) = mpsc::unbounded_channel();
     let (local_tx, local_rx) = mpsc::unbounded_channel();
@@ -333,7 +234,6 @@ async fn main() -> Result<()> {
         slots: Vec::new(),
         active: 0,
         next_number: 1,
-        backend,
         cwd,
         transport,
         debug_log: args.debug_log,
@@ -353,11 +253,7 @@ async fn main() -> Result<()> {
     drop(guard);
     for slot in &workspace.slots {
         if let Some(info) = &slot.app.session {
-            match info.transport.strip_prefix("hub · ") {
-                // A hub conversation is continued by handle, from here or any other door.
-                Some(handle) => println!("continue this conversation anywhere:  cordata --conversation {handle}  (or /open {handle})"),
-                None => println!("resume this session:  cordata --resume {}", info.session_id),
-            }
+            println!("resume this session:  cordata --resume {}", info.session_id);
         }
     }
     for slot in &mut workspace.slots {
@@ -585,25 +481,9 @@ async fn run(
                     Ok(())
                 }
                 Effect::NewSession => {
-                    if matches!(workspace.transport, BackendTransport::Hub { .. }) {
-                        // Another conversation on the hub: visible to every door from its first turn.
-                        workspace.active = workspace.spawn_in(None, false, Some("new".into()), None);
-                        banner = Some(workspace.banner());
-                        last = None;
-                    } else if matches!(workspace.transport, BackendTransport::Ws { .. }) {
-                        // The daemon hands out one session per directory and
-                        // refuses a second client on it (4409), so a second slot
-                        // here could only fail to connect — say why instead.
-                        workspace.app().messages.push(Message::Info(
-                            "/new needs --transport stdio: the daemon keeps one session per \
-                             directory — run another terminal in a different folder"
-                                .into(),
-                        ));
-                    } else {
-                        workspace.active = workspace.spawn(None, false, None);
-                        banner = Some(workspace.banner());
-                        last = None;
-                    }
+                    workspace.active = workspace.spawn(None, false, None);
+                    banner = Some(workspace.banner());
+                    last = None;
                     Ok(())
                 }
                 Effect::SwitchSession(target) => {
@@ -638,33 +518,8 @@ async fn run(
                         None => Ok(()),
                     }
                 }
-                Effect::ListConversations => {
-                    match &workspace.transport {
-                        BackendTransport::Hub { daemon, .. } => match hub::list(daemon, None).await {
-                            Ok(rows) if rows.is_empty() => workspace.app().messages.push(Message::Info("no conversations yet".into())),
-                            Ok(rows) => {
-                                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or_default();
-                                let mut text = String::from("conversations (shared with Discord, the menu bar and the web app — /open <handle>):");
-                                for row in rows.iter().take(15) {
-                                    text.push_str("\n  ");
-                                    text.push_str(&row.summary(now));
-                                }
-                                workspace.app().messages.push(Message::Info(text));
-                            }
-                            Err(error) => workspace.app().messages.push(Message::Error(format!("could not list conversations: {error}"))),
-                        },
-                        _ => workspace.app().messages.push(Message::Info("/conversations needs the daemon's hub — start it (`make daemon`) and run acp-tui again".into())),
-                    }
-                    Ok(())
-                }
-                Effect::OpenConversation(handle) => {
-                    if matches!(workspace.transport, BackendTransport::Hub { .. }) {
-                        workspace.active = workspace.spawn_in(None, false, Some(handle), None);
-                        banner = Some(workspace.banner());
-                        last = None;
-                    } else {
-                        workspace.app().messages.push(Message::Info("/open needs the daemon's hub — start it (`make daemon`) and run acp-tui again".into()));
-                    }
+                Effect::ListConversations | Effect::OpenConversation(_) => {
+                    workspace.app().messages.push(Message::Info("conversations were shared through the daemon, which is gone".into()));
                     Ok(())
                 }
                 Effect::Shell { command, share, as_diff } => {

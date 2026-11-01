@@ -1,5 +1,8 @@
 # Settings, permissions and instructions
 
+> **Stale in parts.** This document was written for the Python backend, the daemon and the Discord front door, all of which have been removed. Everything that mentions them no longer applies; the sections on the Rust engine, Seatbelt and the approval gate still do.
+
+
 How to set up your preferences for the agent harness and `acp-tui`, in the same layered
 shape Claude Code (`settings.json`, `CLAUDE.md`) and Kilo CLI (`kilo.jsonc`) use.
 

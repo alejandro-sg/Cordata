@@ -118,28 +118,9 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Open a forked session: on the hub it becomes a conversation of its own; over stdio it is resumed by id.
+    /// Open a forked session: resumed by id.
     fn open_fork(&mut self, session_id: String, window: &mut Window, cx: &mut Context<Self>) {
-        match &self.connection.transport {
-            acp_core::BackendTransport::Hub { daemon, .. } => {
-                let (daemon, cwd) = (daemon.clone(), self.cwd.clone());
-                let title = format!("fork of {}", self.session.read(cx).view.title.clone().unwrap_or_else(|| "conversation".into()));
-                let job = cx.global::<crate::session::Runtime>().0.spawn(async move { acp_core::hub::adopt(&daemon, &session_id, &cwd, &title).await });
-                cx.spawn_in(window, async move |this, cx| {
-                    let result = job.await;
-                    let _ = this.update_in(cx, |this, window, cx| match result {
-                        Ok(Ok(conv)) => {
-                            this.open(Target::Conversation(conv.handle), window, cx);
-                            this.refresh_listing(cx);
-                        }
-                        Ok(Err(error)) => this.history.note = Some((error.to_string(), true)),
-                        Err(_) => {}
-                    });
-                })
-                .detach();
-            }
-            _ => self.open(Target::Resume(session_id), window, cx),
-        }
+        self.open(Target::Resume(session_id), window, cx);
     }
 
     pub(super) fn history_panel(&self, cx: &mut Context<Self>) -> AnyElement {

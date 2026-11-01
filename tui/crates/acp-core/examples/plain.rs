@@ -5,7 +5,7 @@
 
 use std::io::{BufRead, Write};
 
-use acp_core::{AppEvent, ApprovalDecision, BackendConfig, SessionHandle, SessionOptions};
+use acp_core::{AppEvent, ApprovalDecision, SessionHandle, SessionOptions};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -27,15 +27,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let prompt = prompt.ok_or("usage: plain [--mode M] [--yes|--no] <prompt>")?;
 
-    let backend = BackendConfig::discover(None)?;
     let (session, mut events) = SessionHandle::spawn(SessionOptions {
-        backend,
         cwd: std::env::current_dir()?,
-        transport: acp_core::BackendTransport::Stdio,
+        transport: acp_core::BackendTransport::Native,
         resume: None,
         debug_log,
         continue_latest: false,
-        hub_handle: None,
     });
 
     let mut permission_cards = 0;

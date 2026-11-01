@@ -1,0 +1,21 @@
+[package]
+name = "cordata-guard"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "cordata-secrets"
+path = "src/bin/secrets.rs"
+
+[[bin]]
+name = "cordata-guard"
+path = "src/bin/guard.rs"
+
+[dependencies]
+regex.workspace = true
+serde_json.workspace = true

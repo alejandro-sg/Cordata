@@ -1,5 +1,8 @@
 # Threat Model
 
+> **Stale in parts.** This document was written for the Python backend, the daemon and the Discord front door, all of which have been removed. Everything that mentions them no longer applies; the sections on the Rust engine, Seatbelt and the approval gate still do.
+
+
 This document states the trust boundary and the real gates behind it, so a
 contributor (or anyone deciding whether to run this) doesn't have to
 reconstruct that picture from scattered code comments first.

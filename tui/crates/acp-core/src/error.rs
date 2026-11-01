@@ -1,35 +1,16 @@
 //! One error type for everything `acp-core` can fail at, with actionable
 //! messages for the setup mistakes people actually hit.
 
-use std::path::PathBuf;
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("backend python not found at {0} — run scripts/setup.sh first")]
-    PythonNotFound(PathBuf),
-
-    #[error("backend ACP server not found at {0}")]
-    ServerNotFound(PathBuf),
-
-    #[error(
-        "could not locate backend/acp_server.py (searched from {0}); \
-         pass --backend-root or set ACP_TUI_BACKEND_ROOT"
-    )]
-    RepoRootNotFound(PathBuf),
-
     #[error("ACP error: {0}")]
     Protocol(String),
 
     #[error("session is closed")]
     SessionClosed,
-
-    #[error("no daemon config at {0} — start the daemon with `make daemon` first")]
-    DaemonConfigNotFound(PathBuf),
-
-    #[error("daemon transport: {0}")]
-    DaemonUnreachable(String),
 
     #[error(transparent)]
     Io(#[from] std::io::Error),

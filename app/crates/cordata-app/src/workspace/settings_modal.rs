@@ -20,7 +20,6 @@ pub enum Section {
     Models,
     Permissions,
     Customize,
-    Automations,
     Appearance,
     Shortcuts,
     Connections,
@@ -29,7 +28,7 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Section; 10] = [Section::General, Section::Models, Section::Permissions, Section::Customize, Section::Automations, Section::Appearance, Section::Shortcuts, Section::Connections, Section::Account, Section::Advanced];
+    pub const ALL: [Section; 9] = [Section::General, Section::Models, Section::Permissions, Section::Customize, Section::Appearance, Section::Shortcuts, Section::Connections, Section::Account, Section::Advanced];
 
     fn icon(self) -> &'static str {
         match self {
@@ -37,7 +36,6 @@ impl Section {
             Section::Models => "◇",
             Section::Permissions => "⛨",
             Section::Customize => "✎",
-            Section::Automations => "⏱",
             Section::Appearance => "◐",
             Section::Shortcuts => "⌘",
             Section::Connections => "⇄",
@@ -52,7 +50,6 @@ impl Section {
             Section::Models => "Models",
             Section::Permissions => "Permissions",
             Section::Customize => "Customize",
-            Section::Automations => "Automations",
             Section::Appearance => "Appearance",
             Section::Shortcuts => "Shortcuts",
             Section::Connections => "Connections",
@@ -68,7 +65,6 @@ impl Section {
             Section::Models => "model default fast thinking tokens compact orchestrator routing completions ollama vision image screenshot cloud subagent sub-agent delegation depth research background",
             Section::Permissions => "allow commands trust project approvals mode",
             Section::Customize => "instructions prompt commands skills mcp",
-            Section::Automations => "schedule cron daemon",
             Section::Appearance => "theme dark light haze density font size",
             Section::Shortcuts => "keys keyboard bindings hotkeys",
             Section::Connections => "hub mcp servers plugins",
@@ -89,7 +85,6 @@ impl Section {
             Section::Models => "Which models answer, and how much they think.",
             Section::Permissions => "What Cordata may do without asking.",
             Section::Customize => "Instructions, prompt commands, skills and one-click MCP servers.",
-            Section::Automations => "Prompts the daemon runs on a schedule.",
             Section::Appearance => "Theme, haze and density.",
             Section::Shortcuts => "Every key the window answers to.",
             Section::Connections => "The hub and the MCP servers this project uses.",
@@ -226,7 +221,6 @@ impl Workspace {
             Section::Models => self.model_rows(cx),
             Section::Permissions => self.permission_rows(cx),
             Section::Customize => self.customize_rows(cx),
-            Section::Automations => self.automation_rows(cx),
             Section::Appearance => self.appearance_rows(cx),
             Section::Shortcuts => {
                 let quick_ask = self.quick_ask_combo().label;
@@ -364,7 +358,6 @@ impl Workspace {
             }
             Section::Permissions => self.load_trusted_projects(cx),
             Section::Customize => self.load_skills(cx),
-            Section::Automations => self.load_automations(cx),
             Section::Account => self.api_key_masked = crate::keychain::masked(),
             Section::Models => {
                 let job = cx.background_executor().spawn(async { super::completions::installed_models() });
@@ -759,11 +752,7 @@ impl Workspace {
     }
 
     fn clear_history_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        let button = ui::button("clear-history", "Clear…", Kind::Danger, cx);
-        if !matches!(self.connection.transport, acp_core::BackendTransport::Hub { .. }) {
-            return button.opacity(0.5).cursor_default().tooltip(ui::tip("History lives with the daemon; connect through it to clear it")).into_any_element();
-        }
-        button.on_click(cx.listener(|this, _, window, cx| this.ask_confirm(Confirm::ClearHistory, window, cx))).into_any_element()
+        ui::button("clear-history", "Clear…", Kind::Danger, cx).opacity(0.5).cursor_default().tooltip(ui::tip("There is no daemon history to clear")).into_any_element()
     }
 
     fn advanced_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {

@@ -1,116 +1,64 @@
 # Architecture
 
-A map, not a manual: what runs where, how a turn flows, and which document holds the detail. Safety assumptions are in
-[`THREAT_MODEL.md`](THREAT_MODEL.md); every setting is in [`docs/settings.md`](docs/settings.md); the latest audit is
-[`system_audit_report.md`](system_audit_report.md).
+A map, not a manual. Safety assumptions are in [`THREAT_MODEL.md`](THREAT_MODEL.md); settings are in
+[`docs/settings.md`](docs/settings.md).
 
-## Processes
+Everything is Rust. There is no daemon, no Python and no chat-bot front door: a front end runs the agent in its own
+process.
 
 ```text
- acp-tui (Rust, ratatui)      Zed / any ACP client      web UI (Next.js)        Discord (operator only)
-        │ ACP over stdio or the daemon socket                │ AG-UI / HTTP              │ outbound bot
-        ▼                                                     ▼                           │
- ┌───────────────────────── orchestrator daemon (backend/daemon, `make daemon`) ─────────┴──────┐
- │  supervisor: one acp_server.py child per session · approvals fanned out to every front door  │
- │  gRPC bridge (proto/harness.proto) · observer (read-only, off by default) · telemetry hub   │
- └───────────────────────────────┬──────────────────────────────────────────────────────────────┘
-                                 ▼
- ┌──────────────────────── acp_server.py (one session's agent process) ─────────────────────────┐
- │ Laya router (route · risk · complexity, local model) ──► orchestrator Strands Agent          │
- │   tools · subagent (roles, nested, Lab pod per call) · orchestrate · MCP plugins · LSP     │
- │   _ApprovalHandler: preflight → deny rules → vault → mode → Laya Guard → ask / proceed        │
- │   checkpoints (shadow git) · self-heal · outcomes / learning · rejection memory · KG sink     │
- └──────────────────────────────────────────────────────────────────────────────────────────────┘
-        │ models                                   │ memory / stores
-        ▼                                          ▼
- Ollama Cloud (via the local daemon) · Anthropic   Qdrant (agent_memory, on mini) · LanceDB
- · OpenAI-compatible · oMLX local (Prism models,   (traces, knowledge graph; Cognee optional) ·
-   loaded/unloaded through memory_budget)          ~/.cordata (or ~/.cordata; settings, sessions, checkpoints,
-                                                   preferences, learned skills, state.db ledger)
- Cordata.app (app/, Rust GPUI) and acp-tui: the Lab overlay drives pods over _cordata/lab/* (ACP).
- Screen context (SubmitTurn over gRPC, deny-by-default; never-read list mirrored in cordata-view/src/redact.rs)
-   → os_context.py injector for one turn; a screenshot only to capture.visionModel, then forgotten.
+ acp-tui (ratatui)                     Cordata.app (GPUI)
+        │ SessionHandle / AppEvent             │
+        ▼                                      ▼
+ ┌──────────────────────────── acp-core ───────────────────────────────┐
+ │ native engine: genai streaming · tools (read_file, edit_file,        │
+ │   run_command, code_search, code_outline) · approval gate            │
+ │ Seatbelt confinement (sandbox-exec), scrubbed env, fail closed       │
+ └──────────────────────────────────────────────────────────────────────┘
+        │ providers: Anthropic · Gemini · OpenAI-compatible · Ollama
+        ▼
+ ~/.cordata  (settings, sessions, state.db ledger, checkpoints)
+
+ cordata run / status / show / resume ──► cordata-run ──► cordata-orchestrator
 ```
+
+## Crates
+
+| crate | what |
+|---|---|
+| `tui/crates/acp-core` | the session API both front ends use: `SessionHandle`, `AppEvent`, the permission round-trip, and the native engine (`native/`) |
+| `tui/crates/acp-tui` | the inline terminal client |
+| `tui/crates/acp-stress` | scriptable concurrent runner |
+| `tui/crates/cordata-ledger` | quota pools, usage, handoffs, events, run records in `~/.cordata/state.db` |
+| `tui/crates/cordata-checkpoints` | the shadow-git checkpoint store behind `/undo` and the orchestrator's rollbacks |
+| `tui/crates/cordata-orchestrator` | plan → dispatch → execute → harden → audit, workers (`claude`, `agy`), research, the synthesizer |
+| `tui/crates/cordata-run` | the `cordata run` / `status` / `show` / `resume` command |
+| `tui/crates/cordata-doctor` | `cordata doctor` |
+| `tui/crates/cordata-guard` | `cordata-secrets` (no credential in git) and `cordata-guard` (the pre-tool hook) |
+| `app/crates/cordata-view`, `cordata-theme`, `cordata-app` | state and palette shared by both front ends; the native window |
 
 ## A turn
 
-1. **Route** — Laya answers route / risk / complexity in one local pass (`laya_router.py`); a confident specialist route
-   skips the orchestrator's own model call, a team route hints at `orchestrate`. Abstention fails closed.
-2. **Context** — the system prompt (project, workspace profile, instruction files, prompt overlays) plus per-message
-   injections: the clock, the MCP servers running now, the rules this person's rejections taught. Cold tools are
-   hidden until needed; skills are found by search (`context_diet.py`, `skill_search.py`).
-3. **Find before reading** — `code_search` (ripgrep), `code_outline`, the LSP tools; a long file read whole comes back
-   as an outline (`code_search.py`, `code_nav.py`).
-4. **Act** — every tool call passes `_ApprovalHandler`. An edit is preflighted first (syntax, ruff, the language
-   server on the unsaved text, optional tests in a copy); what it newly breaks goes back to the agent, not to a person
-   (`preflight.py`). Then deny rules, the vault's egress gate, the mode, Laya Guard's per-call score — and a
-   checkpoint before anything that may change files (`checkpoints.py`).
-5. **Heal** — a failing command is diagnosed by the Debugger and its patch verified in a throwaway copy before the
-   agent is told to apply it (`self_heal.py`, `fix_memory.py`).
-6. **Learn** — the turn is scored (`outcomes.py`); a costly turn may stage a lesson (`reflect.py` → `promote.py`'s
-   eval gate); a rejected change becomes a constraint (`rejection_memory.py`); the bandit and Laya's calibrators learn
-   from outcomes, and nothing learned may lower a gate.
+1. The prompt goes to the engine with the project's instructions and any attachments.
+2. The provider streams text and tool calls. Every tool call passes the approval gate (mode, rules, trust).
+3. Commands run under a Seatbelt profile that scopes writes and drops the environment's secrets.
+4. A checkpoint is taken before anything that may change files, so a turn can be undone.
 
-## The orchestrator (coding CLIs as workers)
+## The orchestrator
 
 ```text
- orchestrate tool / cordata / orchestrator CLI
+ cordata run "goal"
         │
- OrchestratorMachine (state.db: orch_runs) ── dispatch (gates → cheapest competent tier) ◄── quota ledger
-   PLAN ─► EXECUTE (steps in checkpoints, Seatbelt write scope) ─► HARDEN (other model family) ─► AUDIT (tier 1 → tier 2)
+ Machine (state.db: orch_runs) ── dispatch (learned bandit over the roster) ◄── quota ledger
+   RESEARCH ─► PLAN ─► EXECUTE (waves, checkpoints, Seatbelt write scope) ─► HARDEN (other family) ─► AUDIT ─► SYNTHESIZE
         │                 │ quota line / provider limit → handoff packet → same step, another pool
         ▼
- ClaudeCodeWorker (claude -p) · AgyWorker (agy) · OllamaWorker (Strands, local or :cloud) — backend/workers/
+ claude -p · agy
 ```
 
-[`docs/orchestrator.md`](docs/orchestrator.md) has the detail; [`docs/orchestrator-plan.md`](docs/orchestrator-plan.md)
-the plan it was built from. `cordata doctor` (`backend/orchestrator/doctor.py`) checks that the CLIs, services and
-settings all of this leans on are in place.
-
-## The terminal client
-
-`tui/crates/acp-tui` is an inline (no alternate screen) ratatui client over `acp-core`'s ACP connection. Beyond the
-chat itself it owns: the `/` and `@` completion menus and file index (`menu.rs`, `mentions.rs`), custom commands
-(`custom.rs`), `!shell` (`shell.rs`), the type-ahead queue (`app.rs`), the context gauge, goal line, plan checklist and
-next-prompt suggestion (`extras.rs`, `ui/checklist.rs`), and the colour theme (`theme.rs`, applied where a colour
-becomes an escape sequence). The session-level features it calls are backend extension methods under `_cordata/*`:
-`context/usage`, `context/compact`, `btw`, `goal/*`, `tasks/list`; `/goal` itself is a prompt the backend interprets, so
-it works from any front door.
-
-## Status: core and frozen
-
-| Tier | What | In default CI |
-| --- | --- | --- |
-| Core | daemon, `acp_server`, the orchestrator and workers, Laya, outcomes/bandit/promote/evals, checkpoints, self-heal, preflight, vault, sandbox, `acp-tui`, the native app (`app/`: `cordata-app`, and `cordata-view` / `cordata-theme`, which the terminal shares) | yes |
-| Frozen | oMLX (`omlx_*`, local Prism models on the mini); the AG-UI REST surface in `main.py` (its Next.js client was retired) | no |
-
-Frozen means kept working and built, not developed; nothing core depends on a frozen piece. The legacy `lab/` GPUI
-window, the menu bar, `app/spike/` and the Next.js `frontend/` were deleted on 2026-10-30; what the app reused from
-`lab/` (the secret-masking table, the never-read bundle ids, the Liquid Glass call) lives in its own crates.
-
-## Where the detail is
-
-| Topic | Document |
-| --- | --- |
-| The agentic harness: routing, Guard, specialists, preflight, self-heal, learning, token economy, code navigation, plugins, MCP | [`docs/agentic-harness.md`](docs/agentic-harness.md) |
-| Self-healing internals | [`docs/self-healing-architecture.md`](docs/self-healing-architecture.md) |
-| Laya triage | [`docs/laya-triage.md`](docs/laya-triage.md) |
-| The orchestrator: workers, quota ledger, handoffs, the state machine, dispatch | [`docs/orchestrator.md`](docs/orchestrator.md) |
-| The meta-harness (Claude Code CLI, memory managers, Prism models) | [`docs/meta-harness.md`](docs/meta-harness.md) |
-| The Experimental Lab and its gRPC bridge | [`docs/experimental-lab.md`](docs/experimental-lab.md) |
-| Evals | [`docs/evals.md`](docs/evals.md) |
-| Strands SDK: what is used, what was declined, and why | [`docs/strands-sdk-audit.md`](docs/strands-sdk-audit.md) |
-| Parity with Claude Code / Kilo / DeepSeek-TUI | [`docs/harness-parity.md`](docs/harness-parity.md) |
-| Settings, permissions, trust | [`docs/settings.md`](docs/settings.md) |
-| Threat model | [`THREAT_MODEL.md`](THREAT_MODEL.md) |
-| The TUI | [`tui/README.md`](tui/README.md) |
-| Scripts and deployment | [`scripts/README.md`](scripts/README.md) |
+[`docs/orchestrator.md`](docs/orchestrator.md) has the detail.
 
 ## Tests
 
-Every mechanism has a hermetic smoke test in `backend/_*_smoke_test.py` (scripted models, the real ACP server object,
-no network). `make test` runs all of them in parallel (`backend/run_tests.py`: each in its own throwaway
-`CORDATA_HOME`, longest first — about 3 minutes against ~21 one by one); CI runs the ones that need no local service
-(`.github/workflows/ci.yml`). Rust: `make tui-test`,
-`make app-test`. Live checks (`_acp_smoke_test.py`, `_ollama_cloud_live_test.py`) need the real
-providers and are run by hand — with `CORDATA_DISCORD=off`, so a test turn does not page the operator.
+`make tui-test` and `make app-test`, offline. Anything that needs a real CLI or the sandbox skips when it is absent.
+CI runs the same, plus the secrets scan (`.github/workflows/ci.yml`).

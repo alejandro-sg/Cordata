@@ -4,7 +4,7 @@ A coding agent for your terminal, and an orchestrator that puts several coding a
 
 - **`cordata`** opens a terminal chat with an agent that reads, edits and runs things in your project. You approve what is
   risky, undo what you did not like, and see what each turn cost.
-- **`cordata run "goal"`** hands a bigger job to real coding CLIs — Claude Code, Antigravity (`agy`) and Ollama models. A
+- **`cordata run "goal"`** hands a bigger job to real coding CLIs — Claude Code and Antigravity (`agy`). A
   cheap model researches and plans, a strong one implements, another model family reviews, and the planner checks the
   result against its own plan. Every pool's quota is metered, and work moves to another pool before one runs out.
 
@@ -13,28 +13,26 @@ project: macOS is the supported platform (the workers run under the macOS Seatbe
 
 ## Install
 
-You need macOS, Python 3.12+, [Rust](https://rustup.rs), Git and [ripgrep](https://github.com/BurntSushi/ripgrep)
+You need macOS, [Rust](https://rustup.rs), Git and [ripgrep](https://github.com/BurntSushi/ripgrep)
 (`brew install ripgrep`).
 
 ```bash
 git clone <repo-url> cordata && cd cordata
-scripts/setup.sh      # Python environment, dependencies, and the terminal client
+make tui-build        # builds acp-tui, cordata-run, cordata-doctor
 make cli              # puts `cordata` on your PATH (a symlink in ~/.local/bin)
 cordata doctor        # checks what is in place and prints the fix for what is not
 ```
 
 ## Pick a model
 
-The chat agent needs one model provider. Put one of these in `backend/.env` (created by `setup.sh`):
+The chat agent runs in the terminal client's own process and needs one model provider. Keys are read from the
+environment or the macOS Keychain, never from a file:
 
-| provider | `backend/.env` | needs |
-|---|---|---|
-| Ollama Cloud through your local Ollama | `MODEL_PROVIDER=ollama_cloud` | `ollama signin` once; no API key |
-| Ollama's API directly | `MODEL_PROVIDER=openai_compatible`, `CLOUD_OPENAI_BASE_URL=https://ollama.com/v1` | `make key` |
-| Anthropic | `MODEL_PROVIDER=anthropic` | `ANTHROPIC_API_KEY` exported in your shell, or the Keychain item `cordata-anthropic-api-key` |
-| a local server (oMLX, any OpenAI-compatible) | the default; set `OMLX_BASE_URL` and `OMLX_MODEL_ID` | the server running |
-
-API keys never go in `.env` — the agent can read that file. `make key` stores an Ollama key in the macOS Keychain.
+| provider | needs |
+|---|---|
+| Anthropic | `ANTHROPIC_API_KEY` exported in your shell, or the Keychain item `cordata-anthropic-api-key` |
+| Ollama's API directly | `make key` (stores the key in the Keychain) |
+| a local Ollama | the server running |
 
 `cordata run` uses the coding CLIs you already have, each signed in once by running `claude` or `agy` yourself. A
 CLI that is not installed is left out; `cordata doctor` says which are found.
@@ -67,20 +65,19 @@ Set `orchestrator.pools` to your real plans there so handoffs happen at the righ
 |---|---|
 | `~/.cordata/` | your settings, sessions, run history, quota ledger (`state.db`), checkpoints |
 | `<project>/.cordata/` | project settings and custom commands; `CORDATA.md` in a project is read as instructions |
-| `backend/` | the agent, the orchestrator (`backend/orchestrator/`), the workers, the daemon (Python) |
-| `tui/` | the terminal client (Rust) |
+| `tui/` | the terminal client, the agent engine, the orchestrator, the ledger and checkpoints (Rust) |
 | `app/` | Cordata.app, the native macOS workspace (Rust/GPUI), sharing `cordata-view` / `cordata-theme` with the terminal |
 
 ## More
 
 - [`docs/orchestrator.md`](docs/orchestrator.md) — the orchestrator: roles, dispatch, quota ledger, handoffs
 - [`docs/settings.md`](docs/settings.md) — every setting, permission rules, trust
-- [`docs/guide.md`](docs/guide.md) — the long reference: daemon, Discord, memory, skills, editors (ACP), the web UI
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) · [`THREAT_MODEL.md`](THREAT_MODEL.md) · [`docs/competitive-gap.md`](docs/competitive-gap.md)
 
 ## Develop
 
 ```bash
-make test            # the hermetic Python suites, in parallel (~3 minutes)
-make tui-test        # the Rust tests
+make tui-test        # the terminal workspace's tests
+make app-test        # the native app's tests
+make secrets         # no credential in the tree
 ```

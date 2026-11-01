@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use acp_core::{AppEvent, BackendConfig, BackendTransport, DaemonConfig, SessionHandle, SessionOptions};
+use acp_core::{AppEvent, BackendTransport, SessionHandle, SessionOptions};
 use cordata_view::app::{App as View, Effect, LocalEvent, Message};
 use cordata_view::shell;
 use gpui::{Context, Global};
@@ -27,64 +27,21 @@ impl Runtime {
     }
 }
 
-/// How this app reaches the agent.
+/// How this app reaches the agent: in this process (`acp_core::native`).
 #[derive(Clone)]
 pub struct Connection {
-    pub backend: BackendConfig,
     pub transport: BackendTransport,
     /// What to say when there is no way to connect (shown instead of a transcript).
     pub problem: Option<String>,
 }
 
-/// `--transport`: the daemon's hub (default), or a private stdio child (needs a checkout).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Prefer {
-    Hub,
-    Stdio,
-}
-
 impl Connection {
-    /// A bundle launched from Finder has no checkout around it and a cwd of `/`: the daemon's `~/.cordata/daemon.json`
-    /// is how it finds the harness, not a walk up the filesystem (docs/app.md §3 D3b). A run from the repo can still
-    /// use a stdio child.
-    pub fn discover(prefer: Prefer, conversation: &str) -> Self {
-        let backend = BackendConfig::discover(None).ok();
-        let placeholder = || BackendConfig { backend_dir: PathBuf::from("."), python: PathBuf::from("python3"), server: PathBuf::from("acp_server.py") };
-        match prefer {
-            Prefer::Hub => match DaemonConfig::discover() {
-                Ok(daemon) => Self { backend: backend.unwrap_or_else(placeholder), transport: BackendTransport::Hub { daemon, conversation: conversation.to_owned() }, problem: None },
-                Err(error) => match backend {
-                    // No daemon, but a checkout: talk to a child of our own rather than show nothing.
-                    Some(backend) if backend.validate().is_ok() => Self { backend, transport: BackendTransport::Stdio, problem: None },
-                    _ => Self {
-                        backend: placeholder(),
-                        transport: BackendTransport::Stdio,
-                        problem: Some(format!("{error}. Start the daemon (`make daemon-install`), then reopen Cordata.")),
-                    },
-                },
-            },
-            Prefer::Stdio => match backend {
-                // `CORDATA_APP_SERVER_SCRIPT`: another ACP agent in place of acp_server.py — acp-core's scripted fake
-                // (`tui/crates/acp-core/tests/fixtures/fake_agent.py`) for driving the window without a model.
-                Some(backend) => {
-                    let backend = match std::env::var_os("CORDATA_APP_SERVER_SCRIPT") {
-                        Some(script) => backend.with_server_script(PathBuf::from(script)),
-                        None => backend,
-                    };
-                    Self { backend, transport: BackendTransport::Stdio, problem: None }
-                }
-                None => Self { backend: placeholder(), transport: BackendTransport::Stdio, problem: Some("no Cordata checkout found for a stdio session (set ACP_TUI_BACKEND_ROOT)".into()) },
-            },
-        }
+    pub fn discover() -> Self {
+        Self { transport: BackendTransport::Native, problem: None }
     }
 
     pub fn describe(&self) -> &'static str {
-        match self.transport {
-            BackendTransport::Hub { .. } => "hub",
-            BackendTransport::Ws { .. } => "daemon",
-            BackendTransport::Stdio => "stdio",
-            BackendTransport::Native => "native",
-        }
+        "native"
     }
 }
 
@@ -193,19 +150,16 @@ impl Session {
         let (handle, mut events) = {
             // acp-core spawns its connection task with a bare `tokio::spawn`: it needs this runtime entered.
             let _guard = runtime.enter();
-            let (transport, resume) = match (&connection.transport, &target) {
-                (BackendTransport::Hub { daemon, .. }, Target::Conversation(handle)) => (BackendTransport::Hub { daemon: daemon.clone(), conversation: handle.clone() }, None),
-                (transport, Target::Resume(id)) => (transport.clone(), Some(id.clone())),
-                (transport, _) => (transport.clone(), None),
+            let resume = match &target {
+                Target::Resume(id) => Some(id.clone()),
+                _ => None,
             };
             SessionHandle::spawn(SessionOptions {
-                backend: connection.backend.clone(),
                 cwd,
-                transport,
+                transport: connection.transport.clone(),
                 resume,
                 debug_log: std::env::var_os("CORDATA_APP_DEBUG_LOG").map(PathBuf::from),
                 continue_latest: false,
-                hub_handle: None,
             })
         };
         session.handle = Some(handle);

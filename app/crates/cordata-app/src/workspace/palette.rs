@@ -97,7 +97,6 @@ impl Workspace {
             Item { group: "proj", label: "Switch project…".into(), shortcut: "⌘O", action: Action::SwitchProject },
             Item { group: "proj", label: "Open folder…".into(), shortcut: "", action: Action::OpenFolder },
             Item { group: "app", label: "Settings".into(), shortcut: "⌘,", action: Action::Settings },
-            Item { group: "app", label: "Automations…".into(), shortcut: "", action: Action::SettingsAt(super::settings_modal::Section::Automations) },
             Item { group: "app", label: "Customize: instructions, commands, skills…".into(), shortcut: "", action: Action::SettingsAt(super::settings_modal::Section::Customize) },
         ];
         items.extend(
@@ -117,19 +116,7 @@ impl Workspace {
         if !query.trim().is_empty() {
             scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
         }
-        let mut items: Vec<Item> = scored.into_iter().map(|(_, _, item)| item).collect();
-        // Full-text matches from the hub (what was said, not only titles), after the commands.
-        if self.search_for == query.trim() {
-            for hit in &self.search_hits {
-                let target = Target::Conversation(hit.conversation.handle.clone());
-                if items.iter().any(|i| i.action == Action::Open(target.clone())) {
-                    continue;
-                }
-                let title = if hit.conversation.title.is_empty() { hit.conversation.handle.clone() } else { hit.conversation.title.clone() };
-                items.push(Item { group: "found", label: shown(&format!("{title} — {}", hit.snippet)), shortcut: "", action: Action::Open(target) });
-            }
-        }
-        items
+        scored.into_iter().map(|(_, _, item)| item).collect()
     }
 
     pub(super) fn run_palette(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {

@@ -38,21 +38,16 @@ To run without the Agent Vault proxy in development/testing, pass `--allow-direc
 cordata run "Add retries to the HTTP client" --allow-direct
 ```
 
-### The native binary
+### The binary
 
-`tui/target/{release,debug}/cordata-run` (built by `make tui-build`) is the Rust orchestrator behind the same commands.
-All four commands (`run`, `status`, `show`, `resume`) use it whenever it is built. `status` and `show` only read
-`state.db` and print what the Python commands print (checked against them in `tui/crates/cordata-run/tests/e2e.rs`). When
-the roster has no worker the native binary can run (no `claude` or `agy` installed, or `orchestrator.workers` names only
-Ollama), it exits 78 before doing anything and `cordata` hands the same command to Python. Force Python with:
+`tui/target/{release,debug}/cordata-run` (built by `make tui-build`) is the orchestrator behind `cordata run`, `status`,
+`show` and `resume`. When the roster has no worker it can run (no `claude` or `agy` installed), `run` and `resume` exit
+78 before doing anything and say so.
 
-```bash
-CORDATA_RUN_NATIVE=0 cordata run "Add retries to the HTTP client" --allow-direct
-```
-
-A native run uses the same ledger, checkpoints, run records and artifacts, so a run started by one can be shown, resumed
-or paused (`control.ndjson`) by the other. The research phase and its evidence check are native (`--no-research` skips
-it, as in Python). Waves run in copy-on-write sandboxes and are synthesized (syntax of every changed Python, JSON, TOML and YAML file, plus imports between project modules; Python is parsed with tree-sitter, so semantic errors `compile()` would raise are not seen). It does **not** have yet: per-step reward attribution, the Auto Mode router, Laya Guard (a conservative pattern guard scores the audit's commands instead) and the Ollama workers (a family that has no native worker is left out of the run, with a warning). Ctrl+C stops the run where it is
+Waves run in copy-on-write sandboxes and are synthesized (syntax of every changed Python, JSON, TOML and YAML file in the
+project, plus imports between project modules; Python is parsed with tree-sitter, so semantic errors `compile()` would
+raise are not seen). `--no-research` skips the research phase. A conservative pattern guard scores the audit's commands.
+There are no Ollama workers, no per-step reward attribution and no Auto Mode router. Ctrl+C stops the run where it is
 and records it `cancelled`.
 
 `run` has three knobs for the research loop, as flags only (a setting would need a Rust-side schema entry):

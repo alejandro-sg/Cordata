@@ -10,7 +10,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use acp_core::BackendConfig;
 use anyhow::Result;
 use clap::Parser;
 use futures::StreamExt;
@@ -41,14 +40,6 @@ struct Args {
     /// Seconds a single turn may take before it is cancelled and reported.
     #[arg(long, default_value_t = 300)]
     turn_timeout: u64,
-
-    /// Repo root or backend/ dir [env: ACP_TUI_BACKEND_ROOT; default: auto-discover].
-    #[arg(long)]
-    backend_root: Option<PathBuf>,
-
-    /// Run a different ACP server script with the backend's python (testing).
-    #[arg(long, hide = true)]
-    server_script: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -56,14 +47,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let scenarios = scenario::load(&args.scenarios)?;
 
-    let mut backend = BackendConfig::discover(args.backend_root.as_deref())?;
-    if let Some(script) = args.server_script {
-        backend = backend.with_server_script(script);
-    }
-    backend.validate()?;
-
     let config = Arc::new(RunConfig {
-        backend,
         startup_timeout: Duration::from_secs(args.startup_timeout),
         turn_timeout: Duration::from_secs(args.turn_timeout),
     });

@@ -8,12 +8,12 @@
 # Provider, endpoint and model are not secrets and are set here (override any
 # of them in your shell: CLOUD_OPENAI_MODEL_ID=gemma4:31b make tui-cloud).
 # The API key is the one thing that must NOT live in a project file — the
-# agent's own file tools can read backend/.env — so it comes from, in order:
+# agent's own file tools can read project files — so it comes from, in order:
 #   1. OLLAMA_API_KEY / CLOUD_OPENAI_API_KEY already exported in your shell
 #   2. the macOS Keychain item "cordata-ollama-api-key" (one-time setup below)
-# and is exported only into the child process this script execs. The backend
+# and is exported only into the child process this script execs. Cordata
 # then removes it from its own environment and masks it in tool output
-# (backend/secret_guard.py; THREAT_MODEL.md, "Provider API keys").
+# (THREAT_MODEL.md, "Provider API keys").
 #
 # One-time Keychain setup (prompts for the key; nothing is echoed or stored in a file):
 #     security add-generic-password -a "$USER" -s cordata-ollama-api-key -w
