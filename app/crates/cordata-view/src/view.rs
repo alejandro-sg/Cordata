@@ -13,8 +13,6 @@ use crate::app::Message;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
     User,
-    Laya,
-    LayaOutcome,
     Agent,
     Thought,
     Tool,
@@ -31,8 +29,6 @@ impl Message {
     pub fn kind(&self) -> Kind {
         match self {
             Message::User(_) => Kind::User,
-            Message::Laya(_) => Kind::Laya,
-            Message::LayaOutcome(_) => Kind::LayaOutcome,
             Message::Agent(_) => Kind::Agent,
             Message::Thought(_) => Kind::Thought,
             Message::Tool(_) => Kind::Tool,

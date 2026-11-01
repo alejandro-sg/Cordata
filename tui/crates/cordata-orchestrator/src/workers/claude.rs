@@ -1,4 +1,4 @@
-//! `ClaudeCodeWorker` (`backend/workers/claude_worker.py`): the Claude Code CLI (`claude -p`) as an orchestrator worker.
+//! `ClaudeCodeWorker`: the Claude Code CLI (`claude -p`) as an orchestrator worker.
 //!
 //! plan / audit run with `--permission-mode plan` and read-only tools, and `--json-schema` makes the CLI return the
 //! answer as `structured_output`. execute / harden run with `acceptEdits` and the engineer's allowlist; Seatbelt

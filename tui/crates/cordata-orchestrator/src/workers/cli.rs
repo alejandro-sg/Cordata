@@ -1,4 +1,4 @@
-//! What the two subprocess workers share (`backend/workers/cli_worker.py`): spawn, confine, stream, meter, stop.
+//! What the two subprocess workers share: spawn, confine, stream, meter, stop.
 //!
 //! The flow for one task, the same for both CLIs — only the argv and the event dialect differ ([`Dialect`]):
 //!

@@ -672,8 +672,8 @@ impl Workspace {
         let tk = tk(cx);
         let (kind, health) = self.hub_health(cx);
         let mut rows = vec![
-            setting_row("Hub endpoint", "Where this window's conversations run. Set by the daemon (CORDATA_HOME); --transport stdio runs a private backend.", mono_value(&self.endpoint(), cx), cx),
-            setting_row("Hub status", "", status_control(kind, &health, cx), cx),
+            setting_row("Engine", "Where this window's conversations run.", mono_value(&self.endpoint(), cx), cx),
+            setting_row("Status", "", status_control(kind, &health, cx), cx),
             sub_heading("mcp servers", cx),
         ];
         if let Some((note, error)) = self.customize.registry_note.clone() {

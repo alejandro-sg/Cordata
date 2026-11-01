@@ -361,7 +361,6 @@ fn entries(app: &App) -> Vec<Entry> {
     add("VIEW", "panes", "Blade Runner 2049 workspace — conversation, agents, handoffs, telemetry (F3)", false, Action::Open(Kind::Panes));
     add("VIEW", "hud", "session dashboard — context, usage, tasks, agents, activity", false, Action::Open(Kind::Hud));
     add("VIEW", "diffview", "the working tree's changes: files, hunks, mouse (F4)", false, Action::Open(Kind::Review));
-    add("VIEW", "lab", "the Experimental Lab: pods, A2A links, threat gauge (F2)", false, Action::Run("/lab".into()));
     if app.tabs.len() > 1 {
         for tab in &app.tabs {
             add("SESSION", &format!("session {}", tab.number), if tab.active { "shown now" } else { "switch to it" }, tab.active, Action::Switch(tab.number));
@@ -447,14 +446,6 @@ mod tests {
         }
         let outcome = palette.on_key(&mut app, key(KeyCode::Enter));
         assert!(outcome.close && outcome.open == Some(Kind::Hud), "a view");
-
-        let mut palette = open(&app);
-        for k in typed("/open") {
-            palette.on_key(&mut app, k);
-        }
-        let outcome = palette.on_key(&mut app, key(KeyCode::Enter));
-        assert!(outcome.close && outcome.effect.is_none());
-        assert!(app.input.text().starts_with("/open"), "a command that needs an argument is left in the prompt to finish: {:?}", app.input.text());
     }
 
     #[test]

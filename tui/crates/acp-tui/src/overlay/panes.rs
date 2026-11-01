@@ -6,7 +6,7 @@
 //! Fully interactive: type prompts, hit Enter, navigate history, approve permissions,
 //! cycle modes (Tab), scroll history (PgUp/PgDn/Wheel), or toggle back to inline (F3).
 
-use acp_core::{PodStatus, ToolStatus};
+use acp_core::ToolStatus;
 use cordata_view::key::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -65,11 +65,6 @@ impl PanesView {
         // F4 opens Diff Review.
         if key.code == KeyCode::F(4) {
             return Outcome::switch(Kind::Review);
-        }
-
-        // F2 toggles the Lab.
-        if key.code == KeyCode::F(2) {
-            return Outcome::stay_with(app.lab.toggle());
         }
 
         // PageUp / PageDown scrolls conversation history.
@@ -262,60 +257,23 @@ impl PanesView {
 fn agent_handoff_lines(app: &App, width: usize) -> Vec<Vec<Span<'static>>> {
     let mut rows = Vec::new();
 
-    // 1. Pods & Agents
-    let pods = app.lab.pods();
-    if !pods.is_empty() {
-        for pod in pods {
-            let (glyph, glyph_color) = match pod.status {
-                PodStatus::Idle => ("○", Color::DarkGray),
-                PodStatus::Synthesizing => ("◉", Color::Magenta),
-                PodStatus::Executing => ("◉", Color::Cyan),
-                PodStatus::Contained => ("◈", Color::Yellow),
-                PodStatus::Isolated => ("⊘", Color::Red),
-            };
-            let (badge_text, badge_color) = match pod.status {
-                PodStatus::Idle => ("[IDLE 💤]", Color::DarkGray),
-                PodStatus::Synthesizing => ("[SYNTHESIZING 🧪]", Color::Magenta),
-                PodStatus::Executing => ("[EXECUTING ⚡]", Color::Green),
-                PodStatus::Contained => ("[CONTAINED ⚠️]", Color::Yellow),
-                PodStatus::Isolated => ("[ISOLATED 🛑]", Color::Red),
-            };
-            let model = match (&pod.model, &pod.effort) {
-                (Some(m), Some(e)) => format!("{m} · {e}"),
-                (Some(m), None) => m.clone(),
-                _ => String::new(),
-            };
-            let name_str = format!("{:<13} ", truncate(&pod.name, 13));
-            let mut spans = vec![
-                Span::styled(format!("{glyph} "), Style::new().fg(glyph_color)),
-                Span::styled(name_str, Style::new().fg(Color::White).add_modifier(Modifier::BOLD)),
-                Span::styled(format!("{badge_text} "), Style::new().fg(badge_color).add_modifier(Modifier::BOLD)),
-            ];
-            if !model.is_empty() {
-                let room = width.saturating_sub(2 + 12 + badge_text.len() + 1);
-                spans.push(Span::styled(truncate(&model, room), dim()));
-            }
-            rows.push(spans);
-        }
+    // 1. The model, and whether it is working
+    let model_name = app
+        .config("model")
+        .map(|o| o.current_name().to_owned())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "model".into());
+    let (glyph, status_badge, status_color) = if app.turn_active {
+        ("◉", "[EXECUTING ⚡]", Color::Green)
     } else {
-        // Fallback to active model / orchestrator
-        let model_name = app
-            .config("model")
-            .map(|o| o.current_name().to_owned())
-            .filter(|n| !n.is_empty())
-            .unwrap_or_else(|| "kimi-k2.7-code".into());
-        let (glyph, status_badge, status_color) = if app.turn_active {
-            ("◉", "[EXECUTING ⚡]", Color::Green)
-        } else {
-            ("○", "[IDLE 💤]", Color::DarkGray)
-        };
-        rows.push(vec![
-            Span::styled(format!("{glyph} "), Style::new().fg(if app.turn_active { Color::Cyan } else { Color::DarkGray })),
-            Span::styled(format!("{:<14}", truncate(&model_name, 14)), Style::new().fg(Color::White).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("{status_badge} "), Style::new().fg(status_color).add_modifier(Modifier::BOLD)),
-            Span::styled(if app.turn_active { "orchestrating turn" } else { "standby" }, dim()),
-        ]);
-    }
+        ("○", "[IDLE 💤]", Color::DarkGray)
+    };
+    rows.push(vec![
+        Span::styled(format!("{glyph} "), Style::new().fg(if app.turn_active { Color::Cyan } else { Color::DarkGray })),
+        Span::styled(format!("{:<14}", truncate(&model_name, 14)), Style::new().fg(Color::White).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("{status_badge} "), Style::new().fg(status_color).add_modifier(Modifier::BOLD)),
+        Span::styled(if app.turn_active { "working" } else { "standby" }, dim()),
+    ]);
 
     // 2. Active Thinking / Reasoning stream
     if app.turn_active
@@ -337,21 +295,6 @@ fn agent_handoff_lines(app: &App, width: usize) -> Vec<Vec<Span<'static>>> {
         rows.push(vec![
             Span::styled("⇄ ", Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
             Span::styled(truncate(handoff, width.saturating_sub(3)), Style::new().fg(Color::Yellow)),
-        ]);
-        has_handoff = true;
-    }
-    for link in app.lab.state.links.iter().take(2) {
-        let (arrow, color) = if link.active {
-            ("━━━▶", Color::Green)
-        } else {
-            ("───▶", Color::DarkGray)
-        };
-        let label = if link.label.is_empty() { String::new() } else { format!(" “{}”", truncate(&link.label, 14)) };
-        rows.push(vec![
-            Span::styled(format!("{} ", link.from), Style::new().fg(Color::Cyan)),
-            Span::styled(format!("{arrow} "), Style::new().fg(color)),
-            Span::styled(format!("{} ", link.to), Style::new().fg(Color::Magenta)),
-            Span::styled(format!("(×{}{})", link.count, label), dim()),
         ]);
         has_handoff = true;
     }
@@ -667,31 +610,8 @@ mod tests {
     }
 
     #[test]
-    fn panes_displays_live_agent_handoffs_and_pods() {
-        use acp_core::{LabPod, PodStatus};
+    fn panes_displays_the_run_handoff_and_checklist() {
         let mut app = test_app();
-        app.lab.state.pods = vec![
-            LabPod {
-                name: "orchestrator".into(),
-                status: PodStatus::Synthesizing,
-                model: Some("kimi-k2.7-code".into()),
-                effort: Some("high".into()),
-                dial: 0.8,
-                dial_default: 0.8,
-                calls: 5,
-                ..Default::default()
-            },
-            LabPod {
-                name: "debugger".into(),
-                status: PodStatus::Executing,
-                model: Some("kimi-k2.7-code".into()),
-                effort: Some("medium".into()),
-                dial: 0.5,
-                dial_default: 0.5,
-                calls: 12,
-                ..Default::default()
-            },
-        ];
         app.run = Some(cordata_view::run_board::RunBoard {
             run_id: "run-42".into(),
             state: "executing".into(),
@@ -719,8 +639,7 @@ mod tests {
         panes.render(&app, &mut buffer, area);
 
         let text = super::super::testing::text(&buffer);
-        assert!(text.contains("SYNTHESIZING"), "missing synthesizing badge in:\n{text}");
-        assert!(text.contains("EXECUTING"), "missing executing badge in:\n{text}");
+        assert!(text.contains("IDLE"), "missing the model row in:\n{text}");
         assert!(text.contains("orchestrator → debugger"), "missing handoff in:\n{text}");
         assert!(text.contains("$0.0150"), "missing cost metric in:\n{text}");
         assert!(text.contains("inspect failing unit test"), "missing checklist item in:\n{text}");

@@ -69,7 +69,7 @@ run. Read the diff.
 
 ## Checkpoints are recovery, not a boundary
 
-Shadow-git snapshots (`~/.cordata/checkpoints/<hash>/git`) let `/undo` and the orchestrator roll files back. They protect
+Shadow-git snapshots (`~/.cordata/checkpoints/<hash>/git`) let the orchestrator roll files back. They protect
 against a bad edit, not against a hostile command: a command can also touch things a snapshot does not hold.
 
 ## Prompt injection
@@ -87,5 +87,5 @@ holds the one you set (`Settings → Account`, service `cordata-*-api-key`). Scr
 - Chat commands have no network or write restriction beyond the secret paths above.
 - Permission rules and modes are not enforced by the native engine (see Boundary 1).
 - Sessions are not persisted, so there is no session history to protect, or to clear.
-- Laya Guard is gone; the orchestrator audit uses a conservative pattern guard.
+- The orchestrator audit uses a conservative pattern guard, not a model.
 - Seatbelt is macOS-only and `sandbox-exec` is deprecated by Apple; if it disappears, commands stop running (fail closed).

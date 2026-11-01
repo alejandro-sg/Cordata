@@ -11,8 +11,6 @@ pub enum Command {
     Thinking,
     /// Expand / collapse tool results.
     Tools,
-    /// Show / hide the live Laya triage line (`on` / `off`, no argument toggles).
-    Laya(Option<String>),
     /// The settings panel, or `set` / `unset` / `path` subcommands.
     Config(Option<String>),
     /// List, add (`allow|ask|deny <rule>`) or remove permission rules.
@@ -24,14 +22,6 @@ pub enum Command {
     /// Ask the agent to draft CORDATA.md for this project.
     Init,
     Status,
-    /// Keep working until a condition holds (`clear` stops; no argument shows it).
-    Goal(Option<String>),
-    /// A side question, answered without touching the conversation.
-    Btw(Option<String>),
-    /// Summarise the older turns to free context.
-    Compact(Option<String>),
-    /// How full the context window is.
-    Context,
     /// Tokens this session, and the quota pools.
     Cost,
     /// The working tree's changes.
@@ -40,22 +30,6 @@ pub enum Command {
     Copy,
     /// The conversation, to a markdown file.
     Export(Option<String>),
-    /// List / enable / disable / reload plugins (MCP servers, memory, LSP tools).
-    Plugins(Option<String>),
-    /// The project's language servers.
-    Lsp,
-    /// The self-healing loop's episodes and settings.
-    Heal,
-    /// The turns the harness can undo, newest first.
-    Checkpoints,
-    /// Undo a turn's file changes (preview, or `apply`).
-    Undo(Option<String>),
-    /// Take the *conversation* back: the agent forgets the last turn(s). Files are untouched.
-    Back(Option<String>),
-    /// The specialist sub-agents.
-    Agents,
-    /// The Experimental Lab: live pods, A2A links, threat gauge, controls (F2).
-    Lab,
     /// The command deck: every mode, model, view and command, searchable (Ctrl+K).
     Palette,
     /// The session HUD: context, usage, tasks, agents and activity on one screen (F3).
@@ -68,16 +42,10 @@ pub enum Command {
     New,
     /// The open sessions, and saved ones for this folder.
     Sessions,
-    /// The daemon hub's conversations, every door's.
-    Conversations,
-    /// Continue a hub conversation in a new slot, by handle.
-    Open(Option<String>),
     /// Show another session: a number, or the next one.
     Switch(Option<String>),
     /// End the shown session.
     Close,
-    /// Continue a turn a crash interrupted (from its last checkpoint).
-    ResumeTurn,
     Clear,
     Quit,
     Unknown(String),
@@ -94,40 +62,13 @@ pub const HELP: &[(&str, &str)] = &[
     ),
     ("/thinking", "expand / collapse reasoning"),
     ("/tools", "expand / collapse tool results"),
-    (
-        "/laya [on|off|stats]",
-        "Laya's routing line, or its calibration stats",
-    ),
-    (
-        "/plugins [enable|disable <name>|reload]",
-        "hot-swap MCP / memory / LSP plugins",
-    ),
-    ("/lsp", "language servers for this project"),
-    ("/heal", "self-healing episodes and settings"),
-    (
-        "/undo [turn] [apply]",
-        "preview, or with 'apply' undo, a turn's file changes",
-    ),
-    ("/checkpoints", "the turns that can be undone"),
-    (
-        "/back [n | list | to <number>]",
-        "take the conversation back n turns — the agent forgets them (files are untouched: /undo)",
-    ),
-    ("/agents", "the architect and debugger specialists"),
-    (
-        "/lab",
-        "Experimental Lab: live pods, E-Stop, Laya dial, guidance (F2)",
-    ),
     ("/palette", "the command deck: every mode, model, view and command, searchable (Ctrl+K)"),
     ("/hud", "session HUD: context, usage, tasks, agents, activity (F3)"),
     ("/diffview", "review the working tree's changes: files, hunks, mouse (F4)"),
     ("/new", "another session in this project (Ctrl+N) — a new shared conversation on the hub"),
     ("/sessions", "open and saved sessions"),
-    ("/conversations", "the hub's conversations — shared with Discord, the menu bar and the web app"),
-    ("/open <handle>", "continue a hub conversation here (from /conversations, Discord or the menu bar)"),
     ("/switch [n]", "show session n (Ctrl+←/→, Alt+1…9)"),
     ("/close", "end the shown session"),
-    ("/resume-turn", "continue a turn interrupted by a crash"),
     (
         "/config [set <key> <value>|unset <key>|path]",
         "settings panel (user / project / local files)",
@@ -140,10 +81,6 @@ pub const HELP: &[(&str, &str)] = &[
     ("/memory", "show the instruction files the agent reads"),
     ("/init", "have the agent draft CORDATA.md"),
     ("/status", "session, mode, model, rules, quota pools"),
-    ("/goal [<condition> [--check <command>] [--turns N] | clear]", "keep working until it holds — a command decides it, or a judge reads the turns"),
-    ("/btw <question>", "a side question, answered without touching the conversation (even mid-turn)"),
-    ("/compact [focus]", "summarise the older turns to free context"),
-    ("/context", "how full the model's context window is"),
     ("/cost", "tokens this session, and the quota pools"),
     ("/diff", "what is changed in the working tree"),
     ("/copy", "copy the last reply to the clipboard"),
@@ -173,48 +110,31 @@ pub fn parse(input: &str) -> Option<Command> {
         "temp" | "temperature" => Command::Temp(arg),
         "thinking" | "thoughts" | "reasoning" => Command::Thinking,
         "tools" => Command::Tools,
-        "laya" => Command::Laya(arg),
         "config" | "settings" | "preferences" | "prefs" => Command::Config(arg),
         "permissions" | "perms" | "allowed-tools" => Command::Permissions(arg),
         "trust" => Command::Trust,
         "memory" => Command::Memory,
         "init" => Command::Init,
         "status" => Command::Status,
-        "goal" => Command::Goal(arg),
-        "btw" => Command::Btw(arg),
-        "compact" => Command::Compact(arg),
-        "context" | "ctx" => Command::Context,
         "cost" | "usage" | "tokens" => Command::Cost,
         "diff" | "changes" => Command::Diff,
         "copy" => Command::Copy,
         "export" => Command::Export(arg),
-        "plugins" | "plugin" | "mcp" => Command::Plugins(arg),
-        "lsp" => Command::Lsp,
-        "heal" | "self-heal" => Command::Heal,
-        "undo" | "rewind" => Command::Undo(arg),
-        "back" | "forget" => Command::Back(arg),
-        "checkpoints" | "checkpoint" | "history" => Command::Checkpoints,
-        "agents" | "specialists" => Command::Agents,
-        "lab" | "pods" => Command::Lab,
         "palette" | "deck" => Command::Palette,
         "hud" | "dashboard" => Command::Hud,
         "panes" | "workspace" => Command::Panes,
         "diffview" | "dv" => Command::Review,
         "new" => Command::New,
         "sessions" => Command::Sessions,
-        "conversations" | "convs" | "chats" => Command::Conversations,
-        "open" | "join" => Command::Open(arg),
         "switch" | "session" => Command::Switch(arg),
         "close" => Command::Close,
-        "resume-turn" | "resume" => Command::ResumeTurn,
         "clear" | "cls" => Command::Clear,
         "quit" | "exit" | "q" => Command::Quit,
         other => Command::Unknown(other.to_owned()),
     })
 }
 
-/// An extension reply as the info text `/plugins`, `/lsp`, `/heal` and
-/// `/laya stats` print. Tolerant: unknown shapes fall back to JSON.
+/// An extension reply as the info text `/plugins`, `/lsp` and `/heal` print. Tolerant: unknown shapes fall back to JSON.
 /// A text gauge: `pct` of `width` cells filled. `None` (an uncapped pool) is all dots.
 pub fn gauge(pct: Option<f64>, width: usize) -> String {
     match pct {
@@ -322,245 +242,6 @@ pub fn format_ext(tag: &str, value: &serde_json::Value) -> String {
     }
     match tag {
         "orchestrator" => format_orchestrator_status(value),
-        "plugins" => {
-            let rows = value
-                .get("plugins")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            if rows.is_empty() {
-                return "no plugins (add MCP servers to .mcp.json or ~/.cordata/mcp.json)".into();
-            }
-            let mut out = vec!["plugins:".to_owned()];
-            for row in rows {
-                let tools = row
-                    .get("tools")
-                    .and_then(Value::as_array)
-                    .map_or(0, Vec::len);
-                let mut line = format!(
-                    "  {:<12} {:<8} {:<9} {:<8} {} tools · approval {}",
-                    text(&row, "name"),
-                    text(&row, "kind"),
-                    text(&row, "status"),
-                    text(&row, "source"),
-                    tools,
-                    text(&row, "approval")
-                );
-                let error = text(&row, "error");
-                if !error.is_empty() {
-                    line.push_str(&format!(" — {error}"));
-                }
-                out.push(line);
-            }
-            for warning in value
-                .get("warnings")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                out.push(format!("  ⚠ {}", warning.as_str().unwrap_or_default()));
-            }
-            out.push(
-                "  /plugins enable|disable <name> swaps one in or out of the live session".into(),
-            );
-            out.join("\n")
-        }
-        "plugins enable" | "plugins disable" => {
-            let ok = value.get("ok").and_then(Value::as_bool).unwrap_or(false);
-            let tools = value
-                .get("tools")
-                .and_then(Value::as_array)
-                .map_or(0, Vec::len);
-            if ok {
-                format!(
-                    "plugin {}: {} ({} tools in the live session)",
-                    text(value, "name"),
-                    text(value, "status"),
-                    tools
-                )
-            } else {
-                format!("plugin {}: {}", text(value, "name"), text(value, "error"))
-            }
-        }
-        "lsp" => {
-            let rows = value
-                .get("servers")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            if rows.is_empty() {
-                return "no language detected that a known language server handles".into();
-            }
-            let mut out = vec![format!(
-                "language servers ({}):",
-                if value.get("enabled").and_then(Value::as_bool) == Some(false) {
-                    "disabled by lsp.enabled"
-                } else {
-                    "enabled"
-                }
-            )];
-            for row in rows {
-                let command = text(&row, "command");
-                let name = command.rsplit('/').next().unwrap_or(&command).to_owned();
-                let mut line = format!(
-                    "  {:<11} {:<14} {}",
-                    text(&row, "server"),
-                    text(&row, "state"),
-                    name
-                );
-                let error = text(&row, "error");
-                if !error.is_empty() {
-                    line.push_str(&format!(" — {error}"));
-                }
-                out.push(line);
-            }
-            out.join("\n")
-        }
-        "heal" => {
-            let config = value.get("config").cloned().unwrap_or(Value::Null);
-            let mut out = vec![format!(
-                "self-heal: {} · max {} attempts · verify in {} · autoApply {}",
-                if config.get("enabled").and_then(Value::as_bool) == Some(false) {
-                    "off"
-                } else {
-                    "on"
-                },
-                config
-                    .get("max_attempts")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(3),
-                text(&config, "verify"),
-                config
-                    .get("auto_apply")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false)
-            )];
-            let episodes = value
-                .get("episodes")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            if let Some(memory) = value.get("memory").filter(|m| m.is_object()) {
-                let n = |key: &str| memory.get(key).and_then(Value::as_u64).unwrap_or(0);
-                out.push(format!(
-                    "  memory: {} remembered fix(es) in this project ({} with a patch) · worked {} · failed {} · retired {}",
-                    n("fixes"),
-                    n("with_patch"),
-                    n("uses_ok"),
-                    n("uses_failed"),
-                    n("retired")
-                ));
-            }
-            if episodes.is_empty() {
-                out.push("  no failures handled this session".into());
-            }
-            for ep in episodes {
-                out.push(format!(
-                    "  {:<10} `{}` · {} attempt(s){} — {}",
-                    text(&ep, "status"),
-                    text(&ep, "command"),
-                    ep.get("attempts").and_then(Value::as_u64).unwrap_or(0),
-                    if ep.get("verified").and_then(Value::as_bool) == Some(true) {
-                        " · verified"
-                    } else {
-                        ""
-                    },
-                    text(&ep, "root_cause")
-                ));
-            }
-            out.join("\n")
-        }
-        "checkpoints" => {
-            let turns = value
-                .get("turns")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            if value.get("enabled").and_then(Value::as_bool) == Some(false) {
-                return "checkpoints are off (checkpoints.enabled) — nothing is being snapshotted".into();
-            }
-            if turns.is_empty() {
-                return "no turns with checkpoints yet — a snapshot is taken before any call that may change files".into();
-            }
-            let mut out = vec!["turns that can be undone (newest first):".to_owned()];
-            for turn in turns {
-                let files = turn.get("file_count").and_then(Value::as_u64);
-                out.push(format!(
-                    "  {}  {:>2} call(s){}{}  {}",
-                    text(&turn, "turn").chars().take(8).collect::<String>(),
-                    turn.get("calls").and_then(Value::as_u64).unwrap_or(0),
-                    files.map_or(String::new(), |n| format!(" · {n} file(s)")),
-                    if turn.get("undone").and_then(Value::as_bool) == Some(true) {
-                        " · undone"
-                    } else {
-                        ""
-                    },
-                    text(&turn, "last_call")
-                ));
-            }
-            out.push("  /undo shows what undoing the latest would do; /undo apply does it".into());
-            out.join("\n")
-        }
-        "back list" => {
-            let rows = value
-                .get("checkpoints")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            if value.get("enabled").and_then(Value::as_bool) == Some(false) {
-                return "this session has no conversation checkpoints (it is not on snapshot storage)".into();
-            }
-            if rows.is_empty() {
-                return "no checkpoints yet — one is taken as each turn starts".into();
-            }
-            let turns = value.get("turns").and_then(Value::as_u64).unwrap_or(0);
-            let mut out = vec![format!(
-                "conversation checkpoints (newest first) — {turns} turn(s) so far; /back goes back one, /back to <number> restores one:"
-            )];
-            for row in rows {
-                let kind = text(&row, "kind");
-                let label = if kind == "turn" {
-                    format!("before turn {}: {}", row.get("turn").and_then(Value::as_u64).unwrap_or(0), text(&row, "prompt"))
-                } else {
-                    format!("↺ {}", text(&row, "prompt"))
-                };
-                out.push(format!(
-                    "  {:>2}  {:>3} msg  {}",
-                    row.get("index").and_then(Value::as_u64).unwrap_or(0),
-                    row.get("messages").and_then(Value::as_u64).unwrap_or(0),
-                    label
-                ));
-            }
-            out.join("\n")
-        }
-        "back" => {
-            if value.get("ok").and_then(Value::as_bool) == Some(false) {
-                return format!("back: {}", text(value, "reason"));
-            }
-            let forgot: Vec<String> = value
-                .get("forgot")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .map(str::to_owned)
-                .collect();
-            let now = value.get("now").and_then(Value::as_u64).unwrap_or(0);
-            let mut out = Vec::new();
-            if forgot.is_empty() {
-                out.push(format!("↶ restored an earlier checkpoint — {now} turn(s) in the conversation"));
-            } else {
-                out.push(format!(
-                    "↶ went back {} turn(s) — the agent no longer remembers:",
-                    forgot.len()
-                ));
-                for prompt in &forgot {
-                    out.push(format!("    · {prompt}"));
-                }
-            }
-            out.push("  files are untouched (/undo for those); /back list shows the state you left, to restore it".into());
-            out.join("\n")
-        }
         "undo" | "undo applied" => {
             if value.get("ok").and_then(Value::as_bool) == Some(false) {
                 return format!("undo: {}", text(value, "reason"));
@@ -606,28 +287,6 @@ pub fn format_ext(tag: &str, value: &serde_json::Value) -> String {
                 out.push(format!(
                     "  to put it back: restore checkpoint {} (the ledger has it)",
                     id.chars().take(12).collect::<String>()
-                ));
-            }
-            out.join("\n")
-        }
-        "laya stats" => {
-            let mut out =
-                vec!["laya calibration (prequential proper scores — lower is better):".to_owned()];
-            out.extend(text(value, "summary").lines().map(|l| format!("  {l}")));
-            if let Some(policy) = value.get("policy") {
-                out.push(format!(
-                    "  policy: gate {} · min_confidence {} · dispatch {} · on abstain {} → {}",
-                    policy.get("gate").and_then(Value::as_f64).unwrap_or(0.0),
-                    policy
-                        .get("min_confidence")
-                        .and_then(Value::as_f64)
-                        .unwrap_or(0.0),
-                    text(policy, "dispatch"),
-                    text(policy, "on_abstain"),
-                    policy
-                        .get("frontier_model")
-                        .and_then(Value::as_str)
-                        .unwrap_or("(no tiers.strong)")
                 ));
             }
             out.join("\n")
@@ -872,83 +531,7 @@ mod tests {
 
     #[test]
     fn harness_commands_parse() {
-        assert_eq!(
-            parse("/plugins disable echo"),
-            Some(Command::Plugins(Some("disable echo".into())))
-        );
-        assert_eq!(parse("/mcp"), Some(Command::Plugins(None)));
         assert_eq!(parse("/switch 2"), Some(Command::Switch(Some("2".into()))));
-        assert_eq!(parse("/resume-turn"), Some(Command::ResumeTurn));
-        assert_eq!(parse("/conversations"), Some(Command::Conversations));
-        assert_eq!(parse("/open c3f9a1e"), Some(Command::Open(Some("c3f9a1e".into()))));
-        assert_eq!(
-            parse("/laya stats"),
-            Some(Command::Laya(Some("stats".into())))
-        );
-    }
-
-    #[test]
-    fn heal_status_reports_what_is_remembered() {
-        let text = format_ext(
-            "heal",
-            &serde_json::json!({"config": {"enabled": true, "max_attempts": 3, "verify": "sandbox", "auto_apply": false},
-                "episodes": [], "memory": {"fixes": 4, "with_patch": 3, "uses_ok": 5, "uses_failed": 1, "retired": 1}}),
-        );
-        assert!(text.contains("memory: 4 remembered fix(es) in this project (3 with a patch) · worked 5 · failed 1 · retired 1"), "{text}");
-        let none = format_ext("heal", &serde_json::json!({"config": {}, "episodes": [], "memory": null}));
-        assert!(!none.contains("memory:"), "{none}");
-    }
-
-    #[test]
-    fn back_parses_and_formats_the_checkpoints_and_the_result() {
-        assert_eq!(parse("/back"), Some(Command::Back(None)));
-        assert_eq!(parse("/back 2"), Some(Command::Back(Some("2".into()))));
-        assert_eq!(parse("/forget"), Some(Command::Back(None)));
-        let listing = format_ext(
-            "back list",
-            &serde_json::json!({"enabled": true, "turns": 3, "checkpoints": [
-                {"index": 1, "id": "a", "turn": 3, "prompt": "explain the biggest one", "kind": "turn", "messages": 4},
-                {"index": 2, "id": "b", "turn": 2, "prompt": "as it was before going back to turn 2", "kind": "before-back", "messages": 6}
-            ]}),
-        );
-        assert!(listing.contains("3 turn(s) so far") && listing.contains("before turn 3: explain the biggest one"), "{listing}");
-        assert!(listing.contains("↺ as it was before going back"), "{listing}");
-        let off = format_ext("back list", &serde_json::json!({"enabled": false, "turns": 0, "checkpoints": []}));
-        assert!(off.contains("not on snapshot storage"), "{off}");
-        let done = format_ext("back", &serde_json::json!({"ok": true, "now": 1, "forgot": ["now list the files"]}));
-        assert!(done.contains("went back 1 turn(s)") && done.contains("· now list the files") && done.contains("/undo"), "{done}");
-        let restored = format_ext("back", &serde_json::json!({"ok": true, "now": 3, "forgot": []}));
-        assert!(restored.contains("restored an earlier checkpoint — 3 turn(s)"), "{restored}");
-    }
-
-    #[test]
-    fn undo_and_checkpoint_commands_parse_and_format() {
-        assert_eq!(parse("/undo"), Some(Command::Undo(None)));
-        assert_eq!(
-            parse("/undo apply"),
-            Some(Command::Undo(Some("apply".into())))
-        );
-        assert_eq!(parse("/checkpoints"), Some(Command::Checkpoints));
-        let preview = serde_json::json!({
-            "ok": true, "dry_run": true, "turn": "34e119c76abc4050", "count": 2,
-            "files": [{"path": "a.txt", "action": "revert"}, {"path": "b.txt", "action": "delete"}],
-            "edited_since": ["a.txt"]
-        });
-        let text = format_ext("undo", &preview);
-        assert!(text.contains("undoing would change turn 34e119c7: 2 file(s)"), "{text}");
-        assert!(text.contains("revert    a.txt") && text.contains("delete    b.txt"), "{text}");
-        assert!(text.contains("edited since the turn ended") && text.contains("/undo apply"), "{text}");
-        let refused = format_ext("undo applied", &serde_json::json!({"ok": false, "reason": "a turn is running"}));
-        assert_eq!(refused, "undo: a turn is running");
-        let listing = format_ext(
-            "checkpoints",
-            &serde_json::json!({"enabled": true, "turns": [
-                {"turn": "34e119c76abc4050", "calls": 3, "file_count": 3, "undone": false, "last_call": "rm old.txt"}
-            ]}),
-        );
-        assert!(listing.contains("34e119c7") && listing.contains("3 call(s) · 3 file(s)"), "{listing}");
-        let off = format_ext("checkpoints", &serde_json::json!({"enabled": false, "turns": []}));
-        assert!(off.contains("checkpoints are off"), "{off}");
     }
 
     #[test]
@@ -965,25 +548,6 @@ mod tests {
 
     #[test]
     fn extension_replies_format_as_tables() {
-        let plugins = serde_json::json!({"plugins": [
-            {"name": "echo", "kind": "tools", "status": "running", "source": "project", "tools": ["a", "b"], "approval": "ask"},
-            {"name": "mem", "kind": "memory", "status": "blocked", "source": "project", "tools": [], "approval": "ask", "error": "folder not trusted"}
-        ], "warnings": []});
-        let text = format_ext("plugins", &plugins);
-        assert!(
-            text.contains("echo")
-                && text.contains("2 tools")
-                && text.contains("folder not trusted"),
-            "{text}"
-        );
-        let lsp = serde_json::json!({"enabled": true, "servers": [{"server": "rust", "state": "running", "command": "/x/rust-analyzer-2026"}]});
-        assert!(format_ext("lsp", &lsp).contains("rust-analyzer-2026"));
-        let stats = serde_json::json!({"summary": "route: n=4", "policy": {"gate": 0.85, "min_confidence": 0.5, "dispatch": "direct", "on_abstain": "escalate", "frontier_model": null}});
-        let stats = format_ext("laya stats", &stats);
-        assert!(
-            stats.contains("route: n=4") && stats.contains("(no tiers.strong)"),
-            "{stats}"
-        );
         assert!(format_ext("whatever", &serde_json::json!({"a": 1})).contains("\"a\":1"));
     }
 

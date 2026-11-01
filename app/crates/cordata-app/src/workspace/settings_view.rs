@@ -646,11 +646,9 @@ impl Workspace {
             ("temperature", "Model Temperature (Precise / Balanced / Creative)"),
             ("tui.thinking", "Thought Bubbles"),
             ("tui.toolOutput", "Tool Outputs"),
-            ("tui.showLaya", "Show Laya Classifier"),
             ("vault.enabled", "Credentials Vault (Fail-Closed)"),
             ("vault.addr", "Vault Server Address"),
             ("memory.traces", "Episodic Trace Storage"),
-            ("laya.threshold", "Laya Routing Threshold"),
         ];
 
         let rows = target_keys.into_iter().enumerate().map(|(ix, (key, label))| {

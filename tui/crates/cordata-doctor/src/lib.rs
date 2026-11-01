@@ -208,37 +208,41 @@ pub fn check_ollama() -> Check {
     check("Ollama", Level::Warn, "not installed — the Ollama workers are out of the roster", "https://ollama.com/download")
 }
 
-/// `MODEL_PROVIDER` from the environment; `local` when unset.
-fn configured_provider() -> String {
-    let provider = std::env::var("MODEL_PROVIDER").unwrap_or_default().trim().to_owned();
-    if provider.is_empty() { "local".into() } else { provider }
+/// The chat model: `CORDATA_NATIVE_MODEL`, else the engine's default.
+const DEFAULT_MODEL: &str = "claude-sonnet-5-5";
+
+/// Which key the chat model needs: (provider, environment variable, Keychain service). `None` for a local Ollama tag.
+fn key_for(model: &str) -> Option<(&'static str, &'static str, Option<&'static str>)> {
+    match model {
+        m if m.starts_with("claude") => Some(("Anthropic", "ANTHROPIC_API_KEY", Some("cordata-anthropic-api-key"))),
+        m if m.starts_with("gpt") || m.starts_with("o1") || m.starts_with("o3") => Some(("OpenAI", "OPENAI_API_KEY", None)),
+        m if m.starts_with("gemini") => Some(("Gemini", "GEMINI_API_KEY", None)),
+        _ => None,
+    }
 }
 
 pub fn check_model_key() -> Check {
-    const FIX: &str = "make key   (hidden prompt, stored in the Keychain, never in a file)";
-    let provider = configured_provider();
-    let needs_key = matches!(provider.as_str(), "openai_compatible" | "anthropic");
-    if ["OLLAMA_API_KEY", "CLOUD_OPENAI_API_KEY", "ANTHROPIC_API_KEY"].iter().any(|n| std::env::var(n).is_ok_and(|v| !v.is_empty())) {
-        return check("model API key", Level::Ok, "found in the environment", "");
+    let model = std::env::var("CORDATA_NATIVE_MODEL").ok().filter(|m| !m.trim().is_empty()).unwrap_or_else(|| DEFAULT_MODEL.into());
+    let Some((provider, var, service)) = key_for(&model) else {
+        return check("model API key", Level::Ok, format!("{model} is an Ollama model: no key needed (a cloud tag needs OLLAMA_API_KEY)"), "");
+    };
+    if std::env::var(var).is_ok_and(|v| !v.is_empty()) {
+        return check("model API key", Level::Ok, format!("{provider} key found in the environment ({var})"), "");
     }
-    if on_path("security").is_some() || Path::new("/usr/bin/security").exists() {
-        for service in ["cordata-ollama-api-key", "cordata-anthropic-api-key", "sierralab-ollama-api-key", "sierralab-anthropic-api-key"] {
-            // Only whether an entry exists: no -w / -g, so the secret itself is never read.
-            let found = Command::new("/usr/bin/security")
-                .args(["find-generic-password", "-s", service])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .is_ok_and(|s| s.success());
-            if found {
-                return check("model API key", Level::Ok, format!("in the macOS Keychain ({service})"), "");
-            }
+    if let Some(service) = service {
+        // Only whether an entry exists: no -w / -g, so the secret itself is never read.
+        let found = Command::new("/usr/bin/security")
+            .args(["find-generic-password", "-s", service])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        if found {
+            return check("model API key", Level::Ok, format!("{provider} key in the macOS Keychain ({service})"), "");
         }
     }
-    if needs_key {
-        return check("model API key", Level::Fail, format!("MODEL_PROVIDER={provider} needs a key and none was found — `cordata` cannot open a conversation"), FIX);
-    }
-    check("model API key", Level::Warn, format!("no key for a cloud model provider (fine: MODEL_PROVIDER={provider} does not need one)"), FIX)
+    let fix = if service.is_some() { format!("make key   (hidden prompt, stored in the Keychain), or export {var}") } else { format!("export {var} in your shell") };
+    check("model API key", Level::Fail, format!("{model} needs a key from {provider} and none was found: `cordata` cannot answer"), &fix)
 }
 
 pub fn check_ripgrep() -> Check {
@@ -333,6 +337,14 @@ pub fn render(checks: &[Check], color: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_chat_model_decides_which_key_is_needed() {
+        assert_eq!(key_for("claude-sonnet-5-5").map(|k| k.1), Some("ANTHROPIC_API_KEY"));
+        assert_eq!(key_for("gpt-5").map(|k| k.1), Some("OPENAI_API_KEY"));
+        assert_eq!(key_for("gemini-3-pro").map(|k| k.1), Some("GEMINI_API_KEY"));
+        assert!(key_for("qwen3-coder:30b").is_none(), "an Ollama tag needs no key");
+    }
 
     fn settings_with(user: &str, project: &str) -> (tempfile::TempDir, Settings) {
         let dir = tempfile::tempdir().unwrap();

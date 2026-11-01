@@ -6,7 +6,7 @@
 //!   project  `<cwd>/.cordata/settings.json`        (committed; shared with the team)
 //!   local    `<cwd>/.cordata/settings.local.json`  (this machine only; gitignored)
 //!
-//! The backend enforces permissions and applies model / mode / Laya / tier
+//! The backend enforces permissions and applies model / mode / tier
 //! preferences; this module reads the same files so the TUI can show what is in
 //! effect and where it came from, apply its own display preferences, and write
 //! changes (`/config`, `/permissions`, `/trust`). `docs/settings.md` is the
@@ -156,12 +156,6 @@ pub const SCHEMA: &[Entry] = &[
         applies: Applies::Now,
         help: "show tool results trimmed or in full",
     },
-    Entry {
-        key: "tui.showLaya",
-        kind: Kind::Bool,
-        applies: Applies::Now,
-        help: "show Laya's triage lines",
-    },
     // The native app's own preferences (user file only, `USER_ONLY_PREFIXES`).
     Entry {
         key: "app.theme",
@@ -194,18 +188,6 @@ pub const SCHEMA: &[Entry] = &[
         help: "Cordata.app shows reasoning in full",
     },
     Entry {
-        key: "laya.mode",
-        kind: Kind::Enum(&["off", "shadow", "route"]),
-        applies: Applies::NextSession,
-        help: "off | log only | log + routing hint",
-    },
-    Entry {
-        key: "laya.threshold",
-        kind: Kind::Float(0.0, 1.0),
-        applies: Applies::NextSession,
-        help: "confidence needed before Laya sends a hint",
-    },
-    Entry {
         key: "tiers.fast",
         kind: Kind::Str,
         applies: Applies::NextSession,
@@ -221,31 +203,7 @@ pub const SCHEMA: &[Entry] = &[
         key: "tiers.strong",
         kind: Kind::Str,
         applies: Applies::NextSession,
-        help: "model for hard sub-agents (also the frontier model Laya escalates to)",
-    },
-    Entry {
-        key: "laya.dispatch",
-        kind: Kind::Enum(&["direct", "hint"]),
-        applies: Applies::NextSession,
-        help: "confident specialist routes run the specialist directly, or only hint",
-    },
-    Entry {
-        key: "laya.teamDispatch",
-        kind: Kind::Enum(&["direct", "hint"]),
-        applies: Applies::NextSession,
-        help: "confident team routes run the decompose+graph pipeline directly, or only hint",
-    },
-    Entry {
-        key: "laya.minConfidence",
-        kind: Kind::Float(0.0, 1.0),
-        applies: Applies::NextSession,
-        help: "below this answer_confidence Laya abstains (fail closed)",
-    },
-    Entry {
-        key: "laya.onAbstain",
-        kind: Kind::Enum(&["escalate", "llm"]),
-        applies: Applies::NextSession,
-        help: "when Laya abstains: escalate to tiers.strong, or let the LLM decide",
+        help: "model for hard sub-agents",
     },
     Entry {
         key: "selfHeal.enabled",
@@ -401,24 +359,6 @@ pub const SCHEMA: &[Entry] = &[
     // unknown key with a warning, so a key added on one side and not the other
     // shows up as a spurious warning in whichever door is behind.
     Entry {
-        key: "laya.riskSafe",
-        kind: Kind::Float(0.0, 1.0),
-        applies: Applies::NextSession,
-        help: "destructiveness score below which a turn counts as safe (0.2)",
-    },
-    Entry {
-        key: "laya.riskDestroy",
-        kind: Kind::Float(0.0, 1.0),
-        applies: Applies::NextSession,
-        help: "destructiveness score above which a turn counts as destructive (0.8)",
-    },
-    Entry {
-        key: "laya.callGuard",
-        kind: Kind::Enum(&["off", "rules", "full"]),
-        applies: Applies::NextSession,
-        help: "score every tool call by every agent: off | rules | rules + Laya",
-    },
-    Entry {
         key: "checkpoints.enabled",
         kind: Kind::Bool,
         applies: Applies::NextSession,
@@ -429,12 +369,6 @@ pub const SCHEMA: &[Entry] = &[
         kind: Kind::Float(0.5, 512.0),
         applies: Applies::NextSession,
         help: "files larger than this (MB) are left out of snapshots",
-    },
-    Entry {
-        key: "laya.riskAutoApprove",
-        kind: Kind::Bool,
-        applies: Applies::NextSession,
-        help: "reserved — has no effect yet: the approval gate does not consult it (see laya_risk.py)",
     },
     Entry {
         key: "memory.traces",
@@ -698,7 +632,7 @@ pub const SCHEMA: &[Entry] = &[
         key: "context.skillSearch",
         kind: Kind::Bool,
         applies: Applies::NextSession,
-        help: "list only the skills that fit the request (embedding search, Laya deciding); off lists all",
+        help: "list only the skills that fit the request (embedding search); off lists all",
     },
     Entry {
         key: "context.skillsListed",
@@ -760,10 +694,6 @@ const TRUST_GATED_KEYS: &[&str] = &[
     "learning.promotion",
     "learning.optimizePrompts",
     "learning.bandit",
-    "laya.mode",
-    "laya.callGuard",
-    "laya.riskSafe",
-    "laya.riskDestroy",
     "context.outlineLines",
     "preflight.enabled",
     "preflight.maxRetries",
@@ -814,7 +744,6 @@ pub struct Settings {
 pub struct Prefs {
     pub thinking_expanded: bool,
     pub tools_expanded: bool,
-    pub show_laya: bool,
 }
 
 impl Settings {
@@ -836,7 +765,6 @@ impl Settings {
         Prefs {
             thinking_expanded: self.text("tui.thinking") == Some("expanded"),
             tools_expanded: self.text("tui.toolOutput") == Some("expanded"),
-            show_laya: self.get("tui.showLaya").and_then(Value::as_bool) != Some(false),
         }
     }
 
@@ -1425,7 +1353,7 @@ mod tests {
         put(
             &sb.store,
             Scope::User,
-            r#"{"temperature":"lava","tui":{"showLaya":"yes"},"mystery":1,"api_key":"x","model":"ok"}"#,
+            r#"{"temperature":"lava","tui":{"thinking":"loud"},"mystery":1,"api_key":"x","model":"ok"}"#,
         );
         put(&sb.store, Scope::Project, "{not json");
         put(
@@ -1435,11 +1363,11 @@ mod tests {
         );
         let loaded = sb.store.load();
         assert_eq!(loaded.text("model"), Some("ok"));
-        assert!(loaded.get("temperature").is_none() && loaded.get("tui.showLaya").is_none());
+        assert!(loaded.get("temperature").is_none() && loaded.get("tui.thinking").is_none());
         let text = loaded.warnings.join("\n");
         for needle in [
             "lava",
-            "showLaya",
+            "loud",
             "unknown setting 'mystery'",
             "looks like a credential",
             "not valid JSON",
@@ -1571,21 +1499,19 @@ mod tests {
             sb.store.load().prefs(),
             Prefs {
                 thinking_expanded: false,
-                tools_expanded: false,
-                show_laya: true
+                tools_expanded: false
             }
         );
         put(
             &sb.store,
             Scope::User,
-            r#"{"tui":{"thinking":"expanded","toolOutput":"expanded","showLaya":false}}"#,
+            r#"{"tui":{"thinking":"expanded","toolOutput":"expanded"}}"#,
         );
         assert_eq!(
             sb.store.load().prefs(),
             Prefs {
                 thinking_expanded: true,
-                tools_expanded: true,
-                show_laya: false
+                tools_expanded: true
             }
         );
     }

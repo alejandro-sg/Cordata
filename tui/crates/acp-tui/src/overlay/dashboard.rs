@@ -4,7 +4,7 @@
 //! is narrow). Tab or a click focuses a panel; the wheel or ↑/↓ scrolls the focused list. Everything shown is already
 //! in `App` — the HUD adds no requests and no state of its own beyond focus and scroll.
 
-use acp_core::{PodStatus, ToolStatus};
+use acp_core::ToolStatus;
 use cordata_view::key::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -253,31 +253,13 @@ fn task_lines(app: &App, width: usize) -> Vec<Row> {
 }
 
 fn agent_lines(app: &App, width: usize) -> Vec<Row> {
-    let pods = &app.lab.state.pods;
-    if pods.is_empty() {
-        return vec![vec![Span::styled("no agents reported yet — F2 opens the Lab", dim())]];
-    }
-    pods.iter()
-        .map(|pod| {
-            let (glyph, color) = match pod.status {
-                PodStatus::Idle => ("○", Color::DarkGray),
-                PodStatus::Synthesizing => ("◉", Color::Magenta),
-                PodStatus::Executing => ("◉", Color::Cyan),
-                PodStatus::Contained => ("◈", Color::Yellow),
-                PodStatus::Isolated => ("⊘", Color::Red),
-            };
-            let model = match (&pod.model, &pod.effort) {
-                (Some(m), Some(e)) => format!("{m} · {e}"),
-                (Some(m), None) => m.clone(),
-                _ => String::new(),
-            };
-            vec![
-                Span::styled(format!("{glyph} "), Style::new().fg(color)),
-                Span::styled(format!("{:<14}", truncate(&pod.name, 14)), Style::new().fg(Color::White)),
-                Span::styled(truncate(&model, width.saturating_sub(18)), dim()),
-            ]
-        })
-        .collect()
+    let model = app.config("model").map(|o| o.current_name().to_owned()).filter(|n| !n.is_empty()).unwrap_or_else(|| "model".into());
+    let (glyph, color, state) = if app.turn_active { ("◉", Color::Cyan, "working") } else { ("○", Color::DarkGray, "standby") };
+    vec![vec![
+        Span::styled(format!("{glyph} "), Style::new().fg(color)),
+        Span::styled(format!("{:<14}", truncate(&model, 14)), Style::new().fg(Color::White)),
+        Span::styled(truncate(state, width.saturating_sub(18)), dim()),
+    ]]
 }
 
 fn run_lines(app: &App, width: usize) -> Vec<Row> {

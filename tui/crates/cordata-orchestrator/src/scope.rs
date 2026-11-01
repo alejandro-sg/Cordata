@@ -1,4 +1,4 @@
-//! A step's file scope, ported from `backend/workers/scope.py`: which paths it may change, checked after the fact by
+//! A step's file scope: which paths it may change, checked after the fact by
 //! [`out_of_scope`] and before by the Seatbelt rules from [`seatbelt_rules`].
 //!
 //! Scope entries, relative to the project: `src/app.py` (that file and same-name siblings `src/app.py.*`),

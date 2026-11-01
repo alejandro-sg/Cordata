@@ -5,7 +5,6 @@
     "allow": ["shell(git status)"],
     "deny": ["file_read(~/.ssh/*)"]
   },
-  "tui": { "thinking": "expanded", "showLaya": true },
-  "laya": { "mode": "shadow" },
+  "tui": { "thinking": "expanded" },
   "vault": { "enabled": true }
 }

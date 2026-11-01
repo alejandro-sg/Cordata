@@ -1,4 +1,4 @@
-//! A run's control file (`backend/orchestrator/control.py`): how a front door that did not start this process pauses or
+//! A run's control file: how a front door that did not start this process pauses or
 //! cancels it. One JSON line per request appended to `<run>/control.ndjson`; the machine polls it at every safe point.
 //!
 //! A request with `"now": true` also asks to stop the worker call in flight; this binary treats it as an ordinary

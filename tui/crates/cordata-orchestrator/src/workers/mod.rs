@@ -1,4 +1,4 @@
-//! The subprocess workers, ported from `backend/workers/`: Claude Code (`claude -p`) and Antigravity (`agy`) behind
+//! The subprocess workers: Claude Code (`claude -p`) and Antigravity (`agy`) behind
 //! one engine ([`cli::CliWorker`]) that spawns, confines, streams, meters and stops the CLI.
 //!
 //! Not ported: the Ollama worker. It is not a subprocess — it is an in-process model loop with its own tool set — and

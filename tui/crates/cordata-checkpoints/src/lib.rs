@@ -1,4 +1,4 @@
-//! Checkpoints, ported from `backend/checkpoints.py`: what makes `auto` mode and the orchestrator's rollbacks
+//! Checkpoints: what makes `auto` mode and the orchestrator's rollbacks
 //! reversible.
 //!
 //! Before any step that may change files, the project is snapshotted into a **shadow git repository** under

@@ -29,18 +29,6 @@ fn boxed(spans: Vec<Span<'static>>, inner: usize, border: Style, v: char) -> Lin
     Line::from(all)
 }
 
-/// "laya p(ok) 82%", and whether the outcome surprised it.
-fn laya_badge(card: &ToolCard) -> Option<(String, Color)> {
-    let p = card.p_ok?;
-    let pct = (p * 100.0).round() as i64;
-    Some(match card.outcome {
-        Some((ok, _)) if ok != (p >= 0.5) => {
-            (format!(" laya p(ok) {pct}% ✗ surprised "), Color::Yellow)
-        }
-        Some(_) => (format!(" laya p(ok) {pct}% ✓ "), Color::DarkGray),
-        None => (format!(" laya p(ok) {pct}% "), Color::DarkGray),
-    })
-}
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 pub fn status_glyph(status: ToolStatus, spinner: usize) -> (&'static str, Color) {
@@ -269,7 +257,6 @@ pub fn render_in(
             card.kind.label()
         )
     };
-    let badge = laya_badge(card);
     let (flag, flag_color) = if card.untrusted {
         (" ⚠ UNTRUSTED CONTENT ".to_owned(), Color::Magenta)
     } else if card.untrusted_source {
@@ -277,8 +264,6 @@ pub fn render_in(
             " ⚠ may return untrusted content ".to_owned(),
             Color::Magenta,
         )
-    } else if let Some((text, color)) = badge {
-        (text, color)
     } else {
         (String::new(), Color::Magenta)
     };
@@ -452,8 +437,6 @@ mod tests {
             untrusted,
             untrusted_source: false,
             diffs: vec![],
-            p_ok: None,
-            outcome: None,
         }
     }
 
@@ -554,15 +537,6 @@ mod tests {
             Some(serde_json::json!({"patch": "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n"}));
         let lines = render(&patch, 40, false, false, 0);
         assert!(plain(&lines).iter().any(|l| l.contains("+b")));
-    }
-
-    #[test]
-    fn laya_command_predictions_badge_the_card() {
-        let mut shell = card("", false);
-        shell.p_ok = Some(0.9);
-        shell.outcome = Some((false, Some(2.3)));
-        let lines = plain(&render(&shell, 70, false, false, 0));
-        assert!(lines[0].contains("laya p(ok) 90% ✗ surprised"), "{lines:?}");
     }
 
     #[test]

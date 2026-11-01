@@ -1,4 +1,4 @@
-//! The Python smoke test's ledger scenario (`backend/_quota_ledger_smoke_test.py::test_ledger`), step for step.
+//! The Python smoke test's ledger scenario, step for step.
 
 use std::sync::{Arc, Mutex};
 

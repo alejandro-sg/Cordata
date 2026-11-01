@@ -1,6 +1,6 @@
 //! Background tasks as progress bars in the live region, just above the prompt:
 //! plugin start-up, language servers indexing, MCP tools reporting progress, the
-//! self-heal loop diagnosing and verifying, Laya loading its weights.
+//! self-heal loop diagnosing and verifying.
 //!
 //! ```text
 //! ⠹ lsp · rust: indexing  ██████████▍          52%  crates/acp-core

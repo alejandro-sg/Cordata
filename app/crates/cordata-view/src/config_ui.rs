@@ -52,14 +52,8 @@ pub fn default_value(entry: &Entry) -> Value {
         "permissions.defaultMode" => "build".into(),
         "temperature" => "balanced".into(),
         "tui.thinking" | "tui.toolOutput" => "collapsed".into(),
-        "tui.showLaya" => true.into(),
-        "laya.mode" => "route".into(),
-        "laya.threshold" => 0.85.into(),
         // Destructiveness scoring: the 0.2 / 0.8 the directive names. Shown
         // here so `/config` reads as "what is in effect", not as blank rows.
-        "laya.riskSafe" => 0.2.into(),
-        "laya.riskDestroy" => 0.8.into(),
-        "laya.riskAutoApprove" => false.into(),
         // Off by default: the trace store needs lancedb, and the proxy and the
         // observer are the two settings that change what runs unattended.
         "memory.traces" => false.into(),
@@ -147,7 +141,6 @@ impl App {
     fn apply_prefs(&mut self, prefs: Prefs) {
         self.thoughts_expanded = prefs.thinking_expanded;
         self.expand_tools = prefs.tools_expanded;
-        self.show_laya = prefs.show_laya;
     }
 
     /// The settings problems worth telling the user about once, at connect.
@@ -637,11 +630,6 @@ impl App {
             name("model"),
             name("temperature")
         ));
-        let laya = settings.text("laya.mode").unwrap_or("route (default)");
-        lines.push(format!(
-            "laya     {laya}   shown: {}",
-            if self.show_laya { "yes" } else { "no" }
-        ));
         let allow = settings.rules_for(RuleKind::Allow).count();
         let ask = settings.rules_for(RuleKind::Ask).count();
         let deny = settings.rules_for(RuleKind::Deny).count();
@@ -753,11 +741,11 @@ mod tests {
         let mut rig = rig();
         std::fs::write(
             rig.store.path(Scope::User),
-            r#"{"tui":{"thinking":"expanded","toolOutput":"expanded","showLaya":false}}"#,
+            r#"{"tui":{"thinking":"expanded","toolOutput":"expanded"}}"#,
         )
         .unwrap();
         rig.app.attach_store(rig.store.clone());
-        assert!(rig.app.thoughts_expanded && rig.app.expand_tools && !rig.app.show_laya);
+        assert!(rig.app.thoughts_expanded && rig.app.expand_tools);
     }
 
     #[test]
@@ -774,19 +762,19 @@ mod tests {
                 .contains("expanded")
         );
 
-        run(&mut rig.app, "/config set laya.dispatch hint project");
+        run(&mut rig.app, "/config set tiers.fast small project");
         assert!(
             last_info(&rig.app).contains("next session"),
             "{}",
             last_info(&rig.app)
         );
-        assert_eq!(rig.store.load().text("laya.dispatch"), Some("hint"));
-        // Laya's own lines are trust-gated: an untrusted project file cannot switch Laya off.
-        run(&mut rig.app, "/config set laya.mode off project");
+        assert_eq!(rig.store.load().text("tiers.fast"), Some("small"));
+        // Some keys are trust-gated: an untrusted project file cannot switch the vault off.
+        run(&mut rig.app, "/config set vault.enabled true project");
         assert_eq!(
-            rig.store.load().text("laya.mode"),
+            rig.store.load().get("vault.enabled"),
             None,
-            "laya.mode from an untrusted project file is ignored"
+            "vault.enabled from an untrusted project file is ignored"
         );
 
         let effect = run(&mut rig.app, "/config set temperature creative local");

@@ -1,4 +1,4 @@
-//! Isolated parallel waves and the SYNTHESIZE pass that folds them back together (`backend/orchestrator/synthesizer.py`).
+//! Isolated parallel waves and the SYNTHESIZE pass that folds them back together.
 //!
 //! **Why isolate.** Steps of one wave have pairwise-disjoint scopes, but they still share one working tree: a worker's
 //! changed-files list sees its siblings' writes, a rollback has to be narrowed to the step's scope, and a build a worker

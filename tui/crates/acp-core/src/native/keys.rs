@@ -4,7 +4,7 @@
 
 use std::process::Command;
 
-/// Keychain service for a provider's key, matching `backend/settings.py`.
+/// Keychain service for a provider's key.
 pub(crate) fn keychain_service(provider: &str) -> Option<&'static str> {
     match provider {
         "anthropic" => Some("cordata-anthropic-api-key"),

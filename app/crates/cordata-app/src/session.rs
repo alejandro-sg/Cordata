@@ -14,7 +14,7 @@ use cordata_view::shell;
 use gpui::{Context, Global};
 use tokio::sync::mpsc;
 
-/// The process's tokio runtime: acp-core's connections, the daemon client, background shell jobs. Two workers are
+/// The process's tokio runtime: acp-core's agent loop, background shell jobs. Two workers are
 /// plenty — everything on it is I/O.
 pub struct Runtime(pub Arc<tokio::runtime::Runtime>);
 
@@ -48,7 +48,7 @@ impl Connection {
 /// Which conversation a session window shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Target {
-    /// What `--conversation` named (the hub's `latest`/`new`/a handle) or a fresh stdio session.
+    /// A fresh session.
     Default,
     /// A hub conversation by handle (`new` makes one).
     Conversation(String),
@@ -323,7 +323,7 @@ impl Session {
         self.outgoing.clear();
     }
 
-    /// A note for the running turn: the agent reads it at its next model call (`backend/steering.py`).
+    /// A note for the running turn: the agent reads it at its next model call.
     pub fn steer(&self, text: &str) -> bool {
         self.request("_cordata/steer", serde_json::json!({ "text": text }), STEER_TAG)
     }

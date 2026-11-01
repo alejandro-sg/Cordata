@@ -1,4 +1,4 @@
-//! The EXECUTE phase, ported from `backend/orchestrator/executor.py`: run a plan's steps in order, each inside a
+//! The EXECUTE phase: run a plan's steps in order, each inside a
 //! checkpoint, handing off at safe points.
 //!
 //! For each pending step: **checkpoint** (a failed snapshot degrades the rollback policy to `keep_partial` — never

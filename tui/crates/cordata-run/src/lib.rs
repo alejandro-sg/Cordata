@@ -1,10 +1,5 @@
-//! `cordata-run`: the native `cordata run | status | show | resume`, the first thing that drives the Rust orchestrator
-//! (`cordata-orchestrator`) from a terminal. Ported from `backend/orchestrator/{__main__,config,status,control}.py`.
-//!
-//! What a native run does not have yet (so `bin/cordata` keeps `run` and `resume` on Python unless asked): the research
-//! phase and its evidence check, the synthesis check after parallel steps, per-step reward attribution, the Auto Mode
-//! router, Laya Guard (a conservative pattern guard stands in), and the Ollama workers. `status` and `show` only read
-//! `state.db` and are identical to Python's.
+//! `cordata-run`: `cordata run | status | show | resume`, which drives the orchestrator (`cordata-orchestrator`) from a
+//! terminal. `status` and `show` only read `state.db`.
 
 pub mod cli;
 pub mod config;

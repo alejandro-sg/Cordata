@@ -1,4 +1,4 @@
-//! The quota ledger, ported from `backend/orchestrator/quota_ledger.py`: how much of each provider pool is left,
+//! The quota ledger: how much of each provider pool is left,
 //! metered locally and corrected by the provider's own readings. Same `~/.cordata/state.db`, same tables, same
 //! arithmetic — the Python backend and this crate read and write one ledger, which `tests/python_parity.rs` checks.
 //!

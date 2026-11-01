@@ -3,7 +3,7 @@
 //!
 //! Customize: the instruction files the agent reads (open, create, or generate with /init), the prompt commands
 //! (`.cordata/commands/*.md`, run as `/name`), the skills the harness has learned (retire one), and the registry
-//! (`backend/registry.py`): MCP servers and skills installed with one click from a catalog, or from one token typed in
+//!: MCP servers and skills installed with one click from a catalog, or from one token typed in
 //! (`@scope/pkg`, `uvx:pkg`, `https://…`, a skill folder or git URL). Installs go through the backend, which writes the
 //! user's own files, never trusts or pre-approves anything, and hot-registers into the running session.
 //! Everything is a file the person owns or a backend method; nothing here runs code.

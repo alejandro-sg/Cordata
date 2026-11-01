@@ -5,7 +5,7 @@ mod ui;
 
 // The state half moved to cordata-view (shared with the native app); kept at its old paths so `crate::app::App` and
 // friends still name it everywhere here.
-use cordata_view::{app, commands, config_ui, extras, input, menu, settings, shell};
+use cordata_view::{app, commands, config_ui, extras, menu, settings, shell};
 
 use std::io;
 use std::panic;
@@ -251,11 +251,6 @@ async fn main() -> Result<()> {
     let result = run(&mut workspace, &mut screen, rx, local_rx).await;
     let _ = screen.clear_live();
     drop(guard);
-    for slot in &workspace.slots {
-        if let Some(info) = &slot.app.session {
-            println!("resume this session:  cordata --resume {}", info.session_id);
-        }
-    }
     for slot in &mut workspace.slots {
         if let Some(handle) = slot.handle.take() {
             handle.shutdown().await;

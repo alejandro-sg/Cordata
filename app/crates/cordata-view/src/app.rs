@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use acp_core::{
     AppEvent, ApprovalDecision, ConfigChoice, ConfigOptionInfo, FileDiff, HarnessEvent, HealInfo,
-    LayaDecision, LayaEvent, LayaOutcome, ModeInfo, PermissionInfo, SessionInfo, StopReason,
+    ModeInfo, PermissionInfo, SessionInfo, StopReason,
     TaskState, ToolCallInfo, ToolKind, ToolStatus,
 };
 use crate::key::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -16,7 +16,6 @@ use tokio::sync::oneshot;
 use crate::commands::{self, Command};
 use crate::config_ui::ConfigPanel;
 use crate::input::Input;
-use crate::lab::LabView;
 use crate::settings::{Settings, Store};
 
 #[derive(Debug)]
@@ -37,18 +36,10 @@ pub struct ToolCard {
     pub untrusted_source: bool,
     /// What an edit changes (old text read before it ran), for the diff viewer.
     pub diffs: Vec<FileDiff>,
-    /// Laya's P(this command succeeds), predicted before it ran.
-    pub p_ok: Option<f64>,
-    /// …and how it actually went: (succeeded, log loss of the prediction).
-    pub outcome: Option<(bool, Option<f64>)>,
 }
 
 #[derive(Debug)]
 pub enum Message {
-    /// Laya's decision for a prompt, shown as soon as it arrives.
-    Laya(LayaDecision),
-    /// What the LLM then actually did, appended when the turn ends.
-    LayaOutcome(LayaOutcome),
     /// The key/command reference, printed on demand (`?`, `/help`).
     Help,
     /// A phase of the self-healing loop worth a block in the transcript.
@@ -205,8 +196,6 @@ pub struct App {
     pub expand_tools: bool,
     /// Reasoning shows as a one-line preview unless expanded (Ctrl+R, /thinking).
     pub thoughts_expanded: bool,
-    /// Show the live "◆ laya" lines (`/laya off` hides them; they are kept).
-    pub show_laya: bool,
     /// Messages already written to the terminal's scrollback. Everything
     /// before this index is final and never redrawn.
     pub committed: usize,
@@ -229,8 +218,6 @@ pub struct App {
     pub diff_expanded: bool,
     /// Every open session, for the footer (empty / one entry: no tab strip).
     pub tabs: Vec<TabBadge>,
-    /// The Experimental Lab view (F2 / `/lab`).
-    pub lab: LabView,
     /// An initial prompt provided from CLI invocation (e.g. `cordata "prompt"`).
     pub initial_prompt: Option<String>,
     /// The completion menu above the prompt box (`/` commands, `@` files), derived from the text.
@@ -305,7 +292,6 @@ impl App {
             hint: None,
             expand_tools: false,
             thoughts_expanded: false,
-            show_laya: true,
             committed: 0,
             committed_rows: 0,
             last_committed: None,
@@ -318,7 +304,6 @@ impl App {
             tasks: Vec::new(),
             diff_expanded: false,
             tabs: Vec::new(),
-            lab: LabView::default(),
             menu: None,
             menu_dismissed: None,
             files: None,
@@ -368,7 +353,6 @@ impl App {
             && self.pending.is_empty()
             && self.picker.is_none()
             && self.config.is_none()
-            && !self.lab.open
             && self.overlay.is_none()
     }
 
@@ -478,26 +462,6 @@ impl App {
             AppEvent::ReplayComplete => {
                 self.messages.push(Message::Divider("resumed session".into()));
             }
-            AppEvent::Laya(LayaEvent::Decision(decision)) => self.on_laya_decision(decision),
-            AppEvent::Laya(LayaEvent::Outcome(outcome)) => {
-                self.messages.push(Message::LayaOutcome(outcome));
-            }
-            AppEvent::Laya(LayaEvent::Command { tool_use_id, p_ok }) => {
-                if let Some(card) = self.card_mut(&tool_use_id) {
-                    card.p_ok = Some(p_ok);
-                }
-            }
-            AppEvent::Laya(LayaEvent::CommandOutcome {
-                tool_use_id,
-                ok,
-                p_ok,
-                log_loss,
-            }) => {
-                if let Some(card) = self.card_mut(&tool_use_id) {
-                    card.p_ok = card.p_ok.or(p_ok);
-                    card.outcome = Some((ok, log_loss));
-                }
-            }
             AppEvent::Harness(event) => self.on_harness(event),
             AppEvent::ExtResult { tag, result } => self.on_ext_result(&tag, result),
             AppEvent::ToolCallStarted(info) => {
@@ -602,10 +566,6 @@ impl App {
         }
     }
 
-    fn on_laya_decision(&mut self, decision: LayaDecision) {
-        self.messages.push(Message::Laya(decision));
-    }
-
     fn on_harness(&mut self, event: HarnessEvent) {
         match event {
             HarnessEvent::Task(info) => {
@@ -626,7 +586,6 @@ impl App {
                 self.messages.push(Message::Heal(info));
             }
             HarnessEvent::Heal(_) => {}
-            HarnessEvent::Lab(state) => self.lab.on_state(*state),
             HarnessEvent::Resume(event) => {
                 self.auto_resume = event
                     .get("auto")
@@ -697,12 +656,6 @@ impl App {
     }
 
     fn on_ext_result(&mut self, tag: &str, result: Result<Value, String>) {
-        // The Lab reports its own controls (a dial turned five times is not five
-        // lines of scrollback).
-        if tag.starts_with("lab/") {
-            self.lab.on_ext_result(tag, result);
-            return;
-        }
         let value = match result {
             Ok(value) => value,
             Err(error) => {
@@ -839,7 +792,7 @@ impl App {
         if self.overlay.is_some() && !(ctrl && matches!(key.code, KeyCode::Char('n' | 'N'))) && !(alt || ctrl && matches!(key.code, KeyCode::Right | KeyCode::Left)) {
             return self.on_key_overlay(key);
         }
-        if self.pending.is_empty() && self.picker.is_none() && self.config.is_none() && !self.lab.open {
+        if self.pending.is_empty() && self.picker.is_none() && self.config.is_none() {
             if ctrl && key.code == KeyCode::Char('k') {
                 return self.open_overlay(crate::overlay::Kind::Palette);
             }
@@ -867,17 +820,8 @@ impl App {
             )));
         }
 
-        // F2 opens the Lab from anywhere — with an approval open too, so the
-        // station can be looked at in context.
-        if key.code == KeyCode::F(2) {
-            return self.lab.toggle();
-        }
-
         if !self.pending.is_empty() {
             return self.on_key_permission(key);
-        }
-        if self.lab.open {
-            return self.on_key_lab(key);
         }
         if self.picker.is_some() {
             return self.on_key_picker(key);
@@ -1074,7 +1018,7 @@ impl App {
         let starts_a_turn = custom.is_some()
             || match &command {
                 None => true,
-                Some(c) => matches!(c, Command::Init | Command::ResumeTurn),
+                Some(c) => matches!(c, Command::Init),
             };
         if starts_a_turn && self.turn_active {
             self.queue.push_back(text);
@@ -1235,25 +1179,6 @@ impl App {
                     "reasoning collapsed"
                 });
             }
-            Command::Laya(Some(arg)) if arg == "stats" => {
-                return Some(ext("_cordata/laya/stats", Value::Null, "laya stats"));
-            }
-            Command::Laya(arg) => {
-                self.show_laya = match arg.as_deref() {
-                    Some("on") => true,
-                    Some("off") => false,
-                    None => !self.show_laya,
-                    Some(other) => {
-                        self.info(format!("/laya takes 'on' or 'off', not '{other}'"));
-                        return None;
-                    }
-                };
-                self.info(if self.show_laya {
-                    "laya line shown"
-                } else {
-                    "laya line hidden (still logged by the backend)"
-                });
-            }
             Command::Tools => {
                 self.expand_tools = !self.expand_tools;
                 self.info(if self.expand_tools {
@@ -1289,40 +1214,17 @@ impl App {
             Command::Init => return self.run_init(),
             Command::Status => {
                 self.run_status();
-                // The orchestrator's pools and handoffs, read from the ledger by the backend — no model call.
-                return Some(ext("_cordata/orchestrator/status", Value::Null, "orchestrator"));
             }
-            Command::Goal(arg) => return self.run_goal(arg),
-            Command::Btw(arg) => return self.run_btw(arg),
-            Command::Compact(arg) => return self.run_compact(arg),
-            Command::Context => return Some(crate::extras::ext_effect("_cordata/context/usage", "context")),
             Command::Cost => return self.run_cost(),
             Command::Diff => return self.run_diff(),
             Command::Copy => return self.run_copy(),
             Command::Export(arg) => self.run_export(arg),
-            Command::Plugins(arg) => return self.run_plugins(arg),
-            Command::Lsp => return Some(ext("_cordata/lsp/status", Value::Null, "lsp")),
-            Command::Heal => return Some(ext("_cordata/heal/status", Value::Null, "heal")),
-            Command::Checkpoints => {
-                return Some(ext("_cordata/checkpoints/list", Value::Null, "checkpoints"));
-            }
-            Command::Undo(arg) => return self.run_undo(arg),
-            Command::Back(arg) => return self.run_back(arg),
-            Command::Agents => self.info(
-                "specialists: architect (plans changes, read-only) · debugger (diagnoses, patches, verifies) — \
-                 Laya dispatches confident routes to them directly; otherwise the agent calls them as tools. \
-                 /lab (F2) shows them live",
-            ),
-            Command::Lab => return self.lab.toggle(),
             Command::Palette => return self.open_overlay(crate::overlay::Kind::Palette),
             Command::Hud => return self.toggle_panes(),
             Command::Panes => return self.toggle_panes(),
             Command::Review => return self.open_overlay(crate::overlay::Kind::Review),
             Command::New => return Some(Effect::NewSession),
             Command::Sessions => return Some(Effect::ListSessions),
-            Command::Conversations => return Some(Effect::ListConversations),
-            Command::Open(Some(handle)) if !handle.trim().is_empty() => return Some(Effect::OpenConversation(handle.trim().to_owned())),
-            Command::Open(_) => self.info("/open <handle> — the handle is in /conversations, in Discord, and in the menu bar"),
             Command::Switch(arg) => {
                 return match arg.as_deref().map(str::parse::<usize>) {
                     Some(Ok(n)) if n > 0 => Some(Effect::SwitchSession(SwitchTarget::Slot(n))),
@@ -1334,84 +1236,9 @@ impl App {
                 };
             }
             Command::Close => return Some(Effect::CloseSession),
-            Command::ResumeTurn => {
-                if !self.input_enabled_for_prompt() {
-                    return None;
-                }
-                self.messages.push(Message::User("↻ resume the interrupted turn".into()));
-                return Some(self.begin_turn(RESUME_TURN_MARKER.into()));
-            }
             Command::Unknown(name) => self.info(format!("unknown command /{name} — try /help")),
         }
         None
-    }
-
-    /// `/back` takes the *conversation* back one turn (the agent forgets it); `/back <n>` n turns; `/back list` shows the
-    /// checkpoints; `/back to <number>` restores one (including the state a previous `/back` left).
-    fn run_back(&mut self, arg: Option<String>) -> Option<Effect> {
-        let words: Vec<&str> = arg.as_deref().unwrap_or("").split_whitespace().collect();
-        let params = match words.as_slice() {
-            ["list" | "ls"] => return Some(ext("_cordata/conversation/list", Value::Null, "back list")),
-            [] => serde_json::json!({ "turns": 1 }),
-            [n] if n.parse::<u32>().is_ok() => serde_json::json!({ "turns": n.parse::<u32>().unwrap_or(1) }),
-            ["to", n] if n.parse::<u32>().is_ok() => serde_json::json!({ "index": n.parse::<u32>().unwrap_or(1) }),
-            _ => {
-                self.info("usage: /back [n | list | to <number>] — takes the conversation back; /back list shows the checkpoints");
-                return None;
-            }
-        };
-        if self.turn_active {
-            self.info("a turn is running — stop it (Esc) first, then /back");
-            return None;
-        }
-        Some(ext("_cordata/conversation/rewind", params, "back"))
-    }
-
-    /// `/undo` previews undoing the latest turn's changes; `/undo apply` does it. `/undo <turn>` and
-    /// `/undo <turn> apply` name an earlier turn (ids are in `/checkpoints`).
-    fn run_undo(&mut self, arg: Option<String>) -> Option<Effect> {
-        let words: Vec<&str> = arg.as_deref().unwrap_or("").split_whitespace().collect();
-        let (turn, apply) = match words.as_slice() {
-            [] => (None, false),
-            ["apply" | "yes" | "now"] => (None, true),
-            [turn] => (Some(*turn), false),
-            [turn, "apply" | "yes" | "now"] => (Some(*turn), true),
-            _ => {
-                self.info("usage: /undo [turn] [apply] — without 'apply' it only shows what would change");
-                return None;
-            }
-        };
-        if apply && self.turn_active {
-            self.info("a turn is running — stop it (Esc) first, then /undo apply");
-            return None;
-        }
-        let mut params = serde_json::json!({ "apply": apply });
-        if let Some(turn) = turn {
-            params["turn"] = Value::String(turn.to_owned());
-        }
-        Some(ext(
-            "_cordata/checkpoints/undo",
-            params,
-            if apply { "undo applied" } else { "undo" },
-        ))
-    }
-
-    /// `/plugins`, `/plugins enable|disable <name>`, `/plugins reload`.
-    fn run_plugins(&mut self, arg: Option<String>) -> Option<Effect> {
-        let words: Vec<&str> = arg.as_deref().unwrap_or("").split_whitespace().collect();
-        match words.as_slice() {
-            [] | ["list"] => Some(ext("_cordata/plugins/list", Value::Null, "plugins")),
-            ["reload"] => Some(ext("_cordata/plugins/reload", Value::Null, "plugins")),
-            [verb @ ("enable" | "disable"), name] => Some(ext(
-                &format!("_cordata/plugins/{verb}"),
-                serde_json::json!({ "name": name }),
-                &format!("plugins {verb}"),
-            )),
-            _ => {
-                self.info("usage: /plugins [list | reload | enable <name> | disable <name>]");
-                None
-            }
-        }
     }
 
     /// Set a select option by the value or display name the user typed
@@ -1501,17 +1328,6 @@ impl App {
             KeyCode::Char('a' | 'A' | 'y' | 'Y') => ApprovalDecision::Allow,
             KeyCode::Char('s' | 'S') if offers_always => ApprovalDecision::AllowAlways,
             KeyCode::Char('r' | 'R' | 'n' | 'N') | KeyCode::Esc => ApprovalDecision::Reject,
-            // The Lab's E-Stop, from the station: reject this call *and* isolate
-            // the pod that asked for it.
-            KeyCode::Char('k' | 'K') if self.lab.open => {
-                let effect = self.lab.estop_for_pending();
-                self.diff_expanded = false;
-                if let Some(mut pending) = self.pending.pop_front() {
-                    pending.answer(ApprovalDecision::Reject);
-                }
-                self.hint = None;
-                return effect;
-            }
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 // Documented, not a bug: session/cancel is only checked
                 // between streamed events and the server is parked on this
@@ -1582,14 +1398,6 @@ impl App {
             _ => {}
         }
         None
-    }
-
-    fn on_key_lab(&mut self, key: KeyEvent) -> Option<Effect> {
-        // Ctrl+C still cancels a running turn from inside the Lab.
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-            return self.on_ctrl_c();
-        }
-        self.lab.on_key(key)
     }
 
     pub fn on_key_picker(&mut self, key: KeyEvent) -> Option<Effect> {
@@ -1673,18 +1481,6 @@ pub const RESUME_TURN_MARKER: &str = "[resume interrupted turn]";
 /// stops after two from the same checkpoint.
 pub const AUTO_RESUME_MARKER: &str = "[auto-resume interrupted turn]";
 
-fn ext(method: &str, params: Value, tag: &str) -> Effect {
-    Effect::Ext {
-        method: method.to_owned(),
-        params: if params.is_null() {
-            serde_json::json!({})
-        } else {
-            params
-        },
-        tag: tag.to_owned(),
-    }
-}
-
 fn card_from(info: ToolCallInfo) -> ToolCard {
     ToolCard {
         id: info.id,
@@ -1697,8 +1493,6 @@ fn card_from(info: ToolCallInfo) -> ToolCard {
         untrusted: info.untrusted,
         untrusted_source: info.untrusted_source,
         diffs: info.diffs,
-        p_ok: None,
-        outcome: None,
     }
 }
 
@@ -2088,99 +1882,6 @@ mod tests {
         assert_eq!(app.pending_mode, None);
     }
 
-    fn laya_decision(route: &str, late: bool, error: Option<&str>) -> AppEvent {
-        AppEvent::Laya(LayaEvent::Decision(LayaDecision {
-            mode: "route".into(),
-            route: error.is_none().then(|| route.to_owned()),
-            route_confidence: 0.9,
-            gate: 0.85,
-            needs_team: 0.1,
-            complexity: 1.0,
-            complexity_confidence: 0.7,
-            latency_ms: Some(60.0),
-            waited_ms: Some(60.0),
-            hint: None,
-            tier: None,
-            late,
-            error: error.map(Into::into),
-            ..Default::default()
-        }))
-    }
-
-    fn laya_outcome(actual: &str) -> AppEvent {
-        AppEvent::Laya(LayaEvent::Outcome(LayaOutcome {
-            actual_route: actual.into(),
-            agreed: Some(true),
-            tools: vec![],
-            tiers: vec![],
-            stop_reason: Some("end_turn".into()),
-            turn_ms: Some(1.0),
-            ..Default::default()
-        }))
-    }
-
-    fn laya_decisions(app: &App) -> Vec<&LayaDecision> {
-        app.messages
-            .iter()
-            .filter_map(|m| match m {
-                Message::Laya(decision) => Some(decision),
-                _ => None,
-            })
-            .collect()
-    }
-
-    fn laya_outcomes(app: &App) -> usize {
-        app.messages
-            .iter()
-            .filter(|m| matches!(m, Message::LayaOutcome(_)))
-            .count()
-    }
-
-    #[test]
-    fn each_turn_gets_its_decision_line_and_its_outcome_line() {
-        let mut app = connected();
-        submit(&mut app, "first");
-        app.on_event(laya_decision("chat", false, None));
-        app.on_event(laya_outcome("chat"));
-        app.on_event(AppEvent::TurnComplete(StopReason::EndTurn));
-        submit(&mut app, "second");
-        app.on_event(laya_decision("memory", false, None));
-        app.on_event(laya_outcome("memory"));
-        let decisions = laya_decisions(&app);
-        assert_eq!(decisions.len(), 2);
-        assert_eq!(laya_outcomes(&app), 2);
-        assert_eq!(decisions[1].route.as_deref(), Some("memory"));
-    }
-
-    #[test]
-    fn a_late_decision_follows_the_timeout_notice_because_scrollback_cannot_be_edited() {
-        let mut app = connected();
-        submit(&mut app, "slow");
-        app.on_event(laya_decision(
-            "",
-            false,
-            Some("timed out after 2s — the LLM decides alone"),
-        ));
-        app.on_event(laya_decision("web_research", true, None));
-        let decisions = laya_decisions(&app);
-        assert_eq!(decisions.len(), 2, "the notice stays; the answer is added");
-        assert!(decisions[0].error.is_some());
-        assert!(decisions[1].late && decisions[1].error.is_none());
-    }
-
-    #[test]
-    fn slash_laya_toggles_and_validates() {
-        let mut app = connected();
-        assert!(app.show_laya);
-        submit(&mut app, "/laya off");
-        assert!(!app.show_laya);
-        submit(&mut app, "/laya");
-        assert!(app.show_laya, "no argument toggles");
-        submit(&mut app, "/laya maybe");
-        assert_info(&app, "takes 'on' or 'off'");
-        assert!(app.show_laya);
-    }
-
     #[test]
     fn entering_auto_mode_warns_once_and_other_modes_do_not() {
         let mut app = connected();
@@ -2294,59 +1995,6 @@ mod tests {
             "no info containing {needle:?}: {:?}",
             app.messages
         );
-    }
-
-    #[test]
-    fn back_takes_the_conversation_back_and_the_screen_forgets_what_the_agent_forgot() {
-        let mut app = connected();
-        // /back → one turn; /back 2 → two; /back list → the checkpoints; /back to 3 → that checkpoint.
-        let Some(Effect::Ext { method, params, tag }) = submit(&mut app, "/back") else {
-            panic!("/back asks the backend");
-        };
-        assert_eq!((method.as_str(), tag.as_str()), ("_cordata/conversation/rewind", "back"));
-        assert_eq!(params["turns"], 1);
-        let Some(Effect::Ext { params, .. }) = submit(&mut app, "/back 2") else { panic!() };
-        assert_eq!(params["turns"], 2);
-        let Some(Effect::Ext { method, tag, .. }) = submit(&mut app, "/back list") else { panic!() };
-        assert_eq!((method.as_str(), tag.as_str()), ("_cordata/conversation/list", "back list"));
-        let Some(Effect::Ext { params, .. }) = submit(&mut app, "/back to 3") else { panic!() };
-        assert_eq!(params["index"], 3);
-        assert!(submit(&mut app, "/back sideways").is_none());
-        assert_info(&app, "usage: /back");
-
-        // never under a running turn
-        app.turn_active = true;
-        assert!(app.run_back(None).is_none());
-        assert_info(&app, "a turn is running");
-        app.turn_active = false;
-
-        // the reply drops the forgotten turns from the transcript — and only those
-        app.messages.clear();
-        for n in 1..=3 {
-            app.messages.push(Message::User(format!("question {n}")));
-            app.messages.push(Message::Agent(format!("answer {n}")));
-        }
-        app.on_ext_result(
-            "back",
-            Ok(serde_json::json!({"ok": true, "now": 1, "forgot": ["question 2", "question 3"]})),
-        );
-        let users: Vec<&str> = app
-            .messages
-            .iter()
-            .filter_map(|m| if let Message::User(t) = m { Some(t.as_str()) } else { None })
-            .collect();
-        assert_eq!(users, vec!["question 1"], "the screen is back to what the agent remembers");
-        assert!(
-            app.messages.iter().any(|m| matches!(m, Message::Agent(t) if t == "answer 1")),
-            "the kept turn keeps its answer"
-        );
-        assert_info(&app, "went back 2 turn(s)");
-
-        // a refusal drops nothing
-        let before = app.messages.len();
-        app.on_ext_result("back", Ok(serde_json::json!({"ok": false, "reason": "nothing to go back to"})));
-        assert_eq!(app.messages.len(), before + 1);
-        assert_info(&app, "back: nothing to go back to");
     }
 
     #[test]
@@ -2567,238 +2215,6 @@ mod tests {
         assert_eq!(sanitize("x\u{1b}]0;evil\u{7}y"), "x0;evily");
     }
 
-    // ------------------------------------------------------------------- Lab
-
-    fn lab_state(pods: &[(&str, acp_core::PodStatus)]) -> AppEvent {
-        AppEvent::Harness(HarnessEvent::Lab(Box::new(acp_core::LabState {
-            seq: 1,
-            pods: pods
-                .iter()
-                .map(|(name, status)| acp_core::LabPod {
-                    id: (*name).into(),
-                    name: (*name).into(),
-                    role: (*name).into(),
-                    status: *status,
-                    dial: 0.8,
-                    dial_default: 0.8,
-                    ..acp_core::LabPod::default()
-                })
-                .collect(),
-            ..acp_core::LabState::default()
-        })))
-    }
-
-    fn permission(app: &mut App, id: &str) -> oneshot::Receiver<ApprovalDecision> {
-        let (tx, rx) = oneshot::channel();
-        app.on_event(AppEvent::PermissionRequested {
-            info: PermissionInfo {
-                tool_call_id: id.into(),
-                tool_name: "shell".into(),
-                title: "Run shell".into(),
-                kind: ToolKind::Execute,
-                raw_input: None,
-                untrusted_source: false,
-                always_label: None,
-                options: vec![],
-            },
-            decision: tx,
-        });
-        rx
-    }
-
-    fn ext_of(effect: Option<Effect>) -> (String, Value) {
-        match effect.expect("an effect") {
-            Effect::Ext { method, params, .. } => (method, params),
-            other => panic!("expected Ext, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn f2_opens_the_lab_and_it_takes_the_keyboard() {
-        let mut app = connected();
-        let (method, _) = ext_of(app.on_key(key(KeyCode::F(2))));
-        assert_eq!(
-            method, "_cordata/lab/state",
-            "no snapshot yet: it asks for one"
-        );
-        assert!(app.lab.open && !app.input_enabled());
-        type_text(&mut app, "zzz");
-        assert!(
-            app.input.is_empty(),
-            "keys go to the Lab, not the prompt box"
-        );
-        app.on_event(lab_state(&[("orchestrator", acp_core::PodStatus::Idle)]));
-        assert!(
-            app.on_key(key(KeyCode::F(2))).is_none(),
-            "F2 again closes it"
-        );
-        assert!(!app.lab.open && app.input_enabled());
-    }
-
-    #[test]
-    fn slash_lab_toggles_the_view() {
-        let mut app = connected();
-        app.lab.seen = true;
-        assert!(submit(&mut app, "/lab").is_none());
-        assert!(app.lab.open);
-        assert!(app.on_key(key(KeyCode::Esc)).is_none());
-        assert!(!app.lab.open, "Esc closes it");
-    }
-
-    #[test]
-    fn k_in_the_lab_isolates_the_selected_pod_through_the_backend() {
-        let mut app = connected();
-        app.on_event(lab_state(&[
-            ("orchestrator", acp_core::PodStatus::Executing),
-            ("debugger", acp_core::PodStatus::Synthesizing),
-        ]));
-        app.on_key(key(KeyCode::F(2)));
-        app.on_key(key(KeyCode::Right));
-        let (method, params) = ext_of(app.on_key(key(KeyCode::Char('K'))));
-        assert_eq!(method, "_cordata/lab/isolate");
-        assert_eq!(params, serde_json::json!({"pod": "debugger"}));
-        assert_eq!(
-            app.lab.pods()[1].status,
-            acp_core::PodStatus::Synthesizing,
-            "the pod keeps its status until the backend reports otherwise"
-        );
-        app.on_event(AppEvent::ExtResult {
-            tag: "lab/isolate".into(),
-            result: Ok(serde_json::json!({"pod": "debugger", "isolated": true, "also": []})),
-        });
-        assert!(
-            !app.messages
-                .iter()
-                .any(|m| matches!(m, Message::Info(_) | Message::Error(_))),
-            "a Lab control reports in the Lab, not the transcript"
-        );
-        assert!(app.lab.notice.as_ref().unwrap().0.contains("ISOLATED"));
-    }
-
-    #[test]
-    fn lab_snapshots_replace_each_other_and_keep_the_selection() {
-        let mut app = connected();
-        app.on_event(lab_state(&[
-            ("orchestrator", acp_core::PodStatus::Idle),
-            ("debugger", acp_core::PodStatus::Idle),
-        ]));
-        app.on_key(key(KeyCode::F(2)));
-        app.on_key(key(KeyCode::Right));
-        app.on_event(lab_state(&[
-            ("orchestrator", acp_core::PodStatus::Idle),
-            ("architect", acp_core::PodStatus::Idle),
-            ("debugger", acp_core::PodStatus::Executing),
-        ]));
-        assert_eq!(
-            app.lab.selected_pod().unwrap().name,
-            "debugger",
-            "selected by name, not position"
-        );
-        assert_eq!(app.lab.busy(), 1);
-    }
-
-    #[test]
-    fn y_and_n_answer_the_hitl_station_like_a_and_r() {
-        let mut app = connected();
-        let mut rx = permission(&mut app, "t1");
-        app.on_key(key(KeyCode::F(2)));
-        assert!(
-            app.lab.open && !app.pending.is_empty(),
-            "the station is open on a pending request"
-        );
-        app.on_key(key(KeyCode::Char('Y')));
-        assert_eq!(
-            rx.try_recv().unwrap(),
-            ApprovalDecision::Allow,
-            "Y = Approve & Execute"
-        );
-        assert!(app.pending.is_empty());
-
-        let mut rx = permission(&mut app, "t2");
-        app.on_key(key(KeyCode::Char('n')));
-        assert_eq!(
-            rx.try_recv().unwrap(),
-            ApprovalDecision::Reject,
-            "N = Reject & Discard"
-        );
-
-        let mut rx = permission(&mut app, "t3");
-        app.on_key(key(KeyCode::Char('a')));
-        assert_eq!(
-            rx.try_recv().unwrap(),
-            ApprovalDecision::Allow,
-            "the prompt's own keys still work"
-        );
-    }
-
-    #[test]
-    fn lab_keys_other_than_the_stations_cannot_answer_or_dodge_a_pending_approval() {
-        let mut app = connected();
-        let mut rx = permission(&mut app, "t1");
-        app.on_key(key(KeyCode::F(2)));
-        for c in ['i', ']', '[', 'l', 'h'] {
-            assert!(
-                app.on_key(key(KeyCode::Char(c))).is_none(),
-                "{c} produced an effect"
-            );
-            assert!(
-                !app.pending.is_empty() && rx.try_recv().is_err(),
-                "{c} slipped past the approval"
-            );
-        }
-        assert!(
-            app.on_key(key(KeyCode::Char('r'))).is_none(),
-            "r is Reject here, not release"
-        );
-        assert_eq!(rx.try_recv().unwrap(), ApprovalDecision::Reject);
-    }
-
-    #[test]
-    fn k_at_the_station_rejects_the_call_and_isolates_the_pod_that_asked() {
-        let mut app = connected();
-        app.on_event(AppEvent::Harness(HarnessEvent::Lab(Box::new(
-            acp_core::LabState {
-                pods: vec![acp_core::LabPod {
-                    name: "debugger".into(),
-                    ..acp_core::LabPod::default()
-                }],
-                hitl: vec![acp_core::LabHitl {
-                    id: "i1".into(),
-                    pod: "debugger".into(),
-                    status: "pending".into(),
-                    ..acp_core::LabHitl::default()
-                }],
-                ..acp_core::LabState::default()
-            },
-        ))));
-        let mut rx = permission(&mut app, "t1");
-        app.on_key(key(KeyCode::F(2)));
-        let (method, params) = ext_of(app.on_key(key(KeyCode::Char('K'))));
-        assert_eq!(method, "_cordata/lab/isolate");
-        assert_eq!(params, serde_json::json!({"pod": "debugger"}));
-        assert_eq!(
-            rx.try_recv().unwrap(),
-            ApprovalDecision::Reject,
-            "the parked call is rejected too"
-        );
-        assert!(app.pending.is_empty());
-
-        // outside the Lab, k is just a key the modal ignores
-        let mut app = connected();
-        let _rx = permission(&mut app, "t2");
-        assert!(app.on_key(key(KeyCode::Char('K'))).is_none() && !app.pending.is_empty());
-    }
-
-    #[test]
-    fn ctrl_c_still_cancels_a_turn_from_inside_the_lab() {
-        let mut app = connected();
-        type_text(&mut app, "go");
-        app.on_key(key(KeyCode::Enter));
-        app.lab.seen = true;
-        app.on_key(key(KeyCode::F(2)));
-        assert_eq!(app.on_key(ctrl('c')), Some(Effect::Cancel));
-    }
-
     #[test]
     fn initial_prompt_is_dispatched_once_connected() {
         let mut app = App::new();
@@ -2822,16 +2238,16 @@ mod tests {
         assert!(app.messages.iter().all(|m| !matches!(m, Message::Help)), "Tab never runs it");
 
         app.input.clear();
-        type_text(&mut app, "/he");
+        type_text(&mut app, "/c");
         let labels: Vec<_> = app.menu.as_ref().unwrap().items.iter().map(|i| i.label.clone()).collect();
-        assert!(labels.contains(&"/help".to_owned()) && labels.contains(&"/heal".to_owned()), "{labels:?}");
+        assert!(labels.contains(&"/config".to_owned()) && labels.contains(&"/copy".to_owned()), "{labels:?}");
         // Down moves the highlight instead of walking prompt history.
         app.on_key(key(KeyCode::Down));
         assert_eq!(app.menu.as_ref().unwrap().selected, 1);
         // Esc closes the menu and keeps the text; the mode does not change under a half-typed command.
         let mode = app.mode.clone();
         app.on_key(key(KeyCode::Esc));
-        assert!(app.menu.is_none() && app.input.text() == "/he");
+        assert!(app.menu.is_none() && app.input.text() == "/c");
         app.on_key(key(KeyCode::Tab));
         assert_eq!(app.mode, mode);
         assert_eq!(app.pending_mode, None);

@@ -19,7 +19,7 @@ Index and operational invariants for coding agents working on Cordata. Keep this
 
 ## 2. Invariants & Persistent Gotchas
 
-1. **Rust only**: the agent, orchestrator, ledger and checkpoints are Rust (`tui/`, `app/`). No Python, no daemon, no Discord. `proto/` holds only shared test fixtures.
+1. **Rust only**: the agent, orchestrator, ledger and checkpoints are Rust (`tui/`, `app/`). No Python, no daemon, no Discord. `proto/` holds only a shared test fixture.
 2. **Zero Plaintext Secrets**: Never write API keys or tokens into `.env`, code, or tests. Keys reside exclusively in macOS Keychain via `make key` or `scripts/store-key.sh`.
 3. **No Unfenced File Reads**: Large files over 500 lines trigger outline-only views (`context.outlineLines = 500`). Over-limit tool outputs (>6,000 chars) are offloaded to `~/.cordata/offloaded/`.
 4. **Hermetic Testing**: `cargo test` must pass offline with no model and no provider key. Tests that need a real CLI or sandbox skip when it is absent.
@@ -71,5 +71,4 @@ Only read these documents when their specific domain is relevant:
 | Configuration & Settings | [docs/settings.md](file:///Users/asierra-llm-mbp/Development/Cordata/docs/settings.md) |
 | Multi-Agent Orchestrator | [docs/orchestrator.md](file:///Users/asierra-llm-mbp/Development/Cordata/docs/orchestrator.md) |
 | TUI & Command Deck | [tui/README.md](file:///Users/asierra-llm-mbp/Development/Cordata/tui/README.md) |
-| Native App Architecture | [app/README.md](file:///Users/asierra-llm-mbp/Development/Cordata/app/README.md) |
-| Competitive & REA Intel | [docs/rea_competitive_intelligence.md](file:///Users/asierra-llm-mbp/Development/Cordata/docs/rea_competitive_intelligence.md) |
+| Native App Architecture | [docs/app.md](file:///Users/asierra-llm-mbp/Development/Cordata/docs/app.md) |

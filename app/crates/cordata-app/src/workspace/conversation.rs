@@ -807,12 +807,6 @@ impl Workspace {
                     )
                 })
                 .child(ui::button("copy-reply", "Copy reply", Kind::Outline, cx).h(px(26.)).on_click(cx.listener(|this, _, _, cx| this.copy_last_reply(cx))))
-                .child(
-                    ui::button("undo-turn", "Undo turn", Kind::Ghost, cx)
-                        .h(px(26.))
-                        .tooltip(ui::tip("Preview undoing this turn's file changes (/undo)"))
-                        .on_click(cx.listener(|this, _, _, cx| this.session.update(cx, |s, cx| s.submit("/undo", cx)))),
-                )
                 .into_any_element(),
         )
     }

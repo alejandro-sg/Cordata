@@ -1,4 +1,4 @@
-//! `AgyWorker` (`backend/workers/agy_worker.py`): Google Antigravity's CLI (`agy`) as an orchestrator worker — a second
+//! `AgyWorker`: Google Antigravity's CLI (`agy`) as an orchestrator worker — a second
 //! quota pool, including Claude models served by Antigravity (`claude-sonnet-5-5-high`).
 //!
 //! The headless surface, as observed (print mode, `stream-json`): input is `-p=` plus `--input-format stream-json`

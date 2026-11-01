@@ -29,9 +29,8 @@ process.
 | `tui/crates/acp-core` | the session API both front ends use: `SessionHandle`, `AppEvent`, the permission round-trip, and the native engine (`native/`) |
 | `tui/crates/cordata-economizer` | token economizer: dynamic tool pruning, micro-skills, loopguard failure interception, prefix cache alignment, head/tail output compactor |
 | `tui/crates/acp-tui` | the inline terminal client |
-| `tui/crates/acp-stress` | scriptable concurrent runner |
 | `tui/crates/cordata-ledger` | quota pools, usage, handoffs, events, run records in `~/.cordata/state.db` |
-| `tui/crates/cordata-checkpoints` | the shadow-git checkpoint store behind `/undo` and the orchestrator's rollbacks |
+| `tui/crates/cordata-checkpoints` | the shadow-git checkpoint store behind the orchestrator's rollbacks |
 | `tui/crates/cordata-orchestrator` | plan → dispatch → execute → harden → audit, workers (`claude`, `agy`), research, the synthesizer |
 | `tui/crates/cordata-run` | the `cordata run` / `status` / `show` / `resume` command |
 | `tui/crates/cordata-doctor` | `cordata doctor` |

@@ -5,8 +5,6 @@ pub mod heal;
 mod help;
 pub mod hud;
 pub(crate) mod input;
-mod lab;
-mod laya;
 mod markdown;
 pub(crate) mod menu;
 pub(crate) mod panels;
@@ -79,9 +77,6 @@ pub fn welcome_lines(info: &SessionInfo, width: u16) -> Vec<Line<'static>> {
 /// an approval / picker panel in its place), then the footer. It is only as tall
 /// as it needs to be, up to `max_rows`.
 pub fn render_live(app: &App, width: u16, max_rows: u16) -> LiveFrame {
-    if app.lab.open {
-        return lab::render_live(app, width, max_rows);
-    }
     let width = width.max(20);
     let footer_height = 1u16;
     let panel = panels::current(app, width);
@@ -684,7 +679,7 @@ mod tests {
         let mut hot = connected();
         hot.on_context(&serde_json::json!({"used": 120_000, "window": 128_000, "pct": 0.94}));
         let shown = screen(&mut hot, 100, 24);
-        assert!(shown.contains("94%") && shown.contains("/compact"), "{shown}");
+        assert!(shown.contains("94%") && shown.contains("new session"), "{shown}");
     }
 
     #[test]
@@ -745,7 +740,7 @@ mod tests {
     }
 
     #[test]
-    fn a_diff_is_coloured_by_line_kind_and_btw_compact_goal_go_where_they_should() {
+    fn a_diff_is_coloured_by_line_kind() {
         let mut app = connected();
         app.on_local(crate::app::LocalEvent::ShellDone {
             command: "git diff".into(),
@@ -757,136 +752,6 @@ mod tests {
         assert!(shown.contains("-old") && shown.contains("+new") && !shown.contains("$ git diff"), "{shown}");
         assert!(app.shell_context.is_empty(), "/diff is for the person, not sent to the agent");
 
-        let mut app = connected();
-        let type_line = |app: &mut App, line: &str| {
-            app.input.set_text(line);
-            app.on_key(cordata_view::key::KeyEvent::from(cordata_view::key::KeyCode::Enter))
-        };
-        let Some(crate::app::Effect::Ext { method, params, .. }) = type_line(&mut app, "/btw what did we decide?") else { panic!("btw is an extension request") };
-        assert_eq!((method.as_str(), params["question"].as_str()), ("_cordata/btw", Some("what did we decide?")));
-        let Some(crate::app::Effect::Ext { method, .. }) = type_line(&mut app, "/goal clear") else { panic!() };
-        assert_eq!(method, "_cordata/goal/clear");
-        let Some(crate::app::Effect::Ext { method, .. }) = type_line(&mut app, "/context") else { panic!() };
-        assert_eq!(method, "_cordata/context/usage");
-        let Some(crate::app::Effect::Ext { method, params, .. }) = type_line(&mut app, "/compact keep the plan") else { panic!() };
-        assert_eq!((method.as_str(), params["focus"].as_str()), ("_cordata/context/compact", Some("keep the plan")));
-        // A goal is a prompt, so it works in every front door; the backend turns it into the loop.
-        app.on_event(AppEvent::TurnComplete(acp_core::StopReason::EndTurn));
-        let sent = type_line(&mut app, "/goal tests pass --check make test");
-        assert_eq!(sent, Some(crate::app::Effect::SendPrompt("/goal tests pass --check make test".into())));
-        // /compact refuses mid-turn, saying why, instead of failing in the backend.
-        let busy = type_line(&mut app, "/compact");
-        assert!(busy.is_none());
-        assert!(app.messages.iter().any(|m| matches!(m, Message::Info(t) if t.contains("the agent is working"))));
-    }
-
-    fn laya_events(app: &mut App) {
-        app.on_event(AppEvent::Laya(acp_core::LayaEvent::Decision(
-            acp_core::LayaDecision {
-                mode: "route".into(),
-                route: Some("files_and_code".into()),
-                route_confidence: 0.98,
-                gate: 0.85,
-                needs_team: 0.1,
-                complexity: 1.3,
-                complexity_confidence: 0.7,
-                latency_ms: Some(64.0),
-                waited_ms: Some(64.0),
-                hint: Some("use the file tools".into()),
-                tier: None,
-                late: false,
-                error: None,
-                ..Default::default()
-            },
-        )));
-    }
-
-    fn laya_outcome() -> AppEvent {
-        AppEvent::Laya(acp_core::LayaEvent::Outcome(acp_core::LayaOutcome {
-            actual_route: "files_and_code".into(),
-            agreed: Some(true),
-            tools: vec!["file_read".into()],
-            tiers: vec![],
-            stop_reason: Some("end_turn".into()),
-            turn_ms: Some(900.0),
-            ..Default::default()
-        }))
-    }
-
-    #[test]
-    fn the_laya_line_sits_directly_under_the_prompt_and_the_outcome_follows_the_reply() {
-        let mut app = connected();
-        app.on_event(AppEvent::UserText("read settings.py".into()));
-        laya_events(&mut app);
-        app.on_event(AppEvent::AgentText("done".into()));
-        app.on_event(AppEvent::TurnComplete(acp_core::StopReason::EndTurn));
-        app.on_event(laya_outcome());
-        let screen = screen(&mut app, 100, 30);
-        let rows: Vec<&str> = screen.lines().collect();
-        let prompt = rows
-            .iter()
-            .position(|r| r.contains("❯ read settings.py"))
-            .expect("prompt");
-        assert!(
-            rows[prompt + 1].contains("◆ laya  files_and_code 98% ▸ hint sent"),
-            "no blank line between prompt and laya line:\n{screen}"
-        );
-        let outcome = rows
-            .iter()
-            .position(|r| r.contains("↳ LLM used files_and_code (file_read) ✓ agreed"))
-            .unwrap_or_else(|| panic!("outcome line missing:\n{screen}"));
-        let reply = rows.iter().position(|r| r.contains("done")).unwrap();
-        assert!(outcome > reply, "the outcome closes the turn:\n{screen}");
-    }
-
-    #[test]
-    fn a_late_laya_decision_is_added_not_swapped_into_scrollback() {
-        let mut app = connected();
-        app.on_event(AppEvent::UserText("hello".into()));
-        app.on_event(AppEvent::Laya(acp_core::LayaEvent::Decision(
-            acp_core::LayaDecision {
-                mode: "route".into(),
-                route: None,
-                route_confidence: 0.0,
-                gate: 0.85,
-                needs_team: 0.0,
-                complexity: 0.0,
-                complexity_confidence: 0.0,
-                latency_ms: None,
-                waited_ms: Some(250.0),
-                hint: None,
-                tier: None,
-                late: false,
-                error: Some("timed out".into()),
-                ..Default::default()
-            },
-        )));
-        let mut term = Screen::new(100, 30);
-        let first = term.show(&mut app);
-        assert!(first.contains("timed out"), "{first}");
-        laya_events(&mut app);
-        let second = term.show(&mut app);
-        assert!(
-            second.contains("timed out") && second.contains("files_and_code 98%"),
-            "the earlier line stays; the late decision follows it:\n{second}"
-        );
-    }
-
-    #[test]
-    fn slash_laya_off_hides_the_line_without_leaving_a_gap() {
-        let mut app = connected();
-        app.on_event(AppEvent::UserText("hello".into()));
-        laya_events(&mut app);
-        app.on_event(AppEvent::AgentText("hi".into()));
-        app.show_laya = false;
-        let screen = screen(&mut app, 100, 20);
-        assert!(!screen.contains("◆ laya"), "{screen}");
-        let rows: Vec<&str> = screen.lines().collect();
-        let prompt = rows.iter().position(|r| r.contains("❯ hello")).unwrap();
-        assert!(
-            rows[prompt + 1].trim().is_empty() && rows[prompt + 2].contains("hi"),
-            "one blank line, as without laya:\n{screen}"
-        );
     }
 
     #[test]
@@ -900,7 +765,6 @@ mod tests {
             "Tab / Shift+Tab",
             "/mode [plan|build|auto]",
             "/thinking",
-            "/laya [on|off|stats]",
             "Scroll with your terminal",
         ] {
             assert!(screen.contains(needle), "missing {needle:?} in\n{screen}");
@@ -992,7 +856,7 @@ mod tests {
         std::fs::create_dir_all(store.cwd.join(".cordata")).unwrap();
         std::fs::write(
             store.path(crate::settings::Scope::Project),
-            r#"{"laya":{"dispatch":"hint"}}"#,
+            r#"{"tiers":{"fast":"small"}}"#,
         )
         .unwrap();
         let mut app = connected();
@@ -1007,8 +871,8 @@ mod tests {
             "permissions.defaultMode",
             "tui.thinking",
             "expanded",
-            "laya.dispatch",
-            "hint",
+            "tiers.fast",
+            "small",
             "project",
             "m1",
             "session",
@@ -1364,110 +1228,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn laya_v2_decisions_and_command_predictions_render() {
-        let mut app = connected();
-        app.on_event(AppEvent::UserText("fix the test".into()));
-        app.on_event(AppEvent::Laya(acp_core::LayaEvent::Decision(
-            acp_core::LayaDecision {
-                mode: "route".into(),
-                route: Some("debugger".into()),
-                route_confidence: 0.97,
-                calibrated: Some(0.97),
-                action: Some("dispatch".into()),
-                latency_ms: Some(29.0),
-                ..Default::default()
-            },
-        )));
-        app.on_event(AppEvent::ToolCallStarted(ToolCallInfo {
-            id: "s1".into(),
-            name: "shell".into(),
-            kind: ToolKind::Execute,
-            status: ToolStatus::Failed,
-            raw_input: Some(serde_json::json!({"command": "cargo test"})),
-            content: "Exit Code: 101".into(),
-            untrusted_source: false,
-            untrusted: false,
-            diffs: vec![],
-        }));
-        app.on_event(AppEvent::Laya(acp_core::LayaEvent::Command {
-            tool_use_id: "s1".into(),
-            p_ok: 0.88,
-        }));
-        app.on_event(AppEvent::Laya(acp_core::LayaEvent::CommandOutcome {
-            tool_use_id: "s1".into(),
-            ok: false,
-            p_ok: Some(0.88),
-            log_loss: Some(2.1),
-        }));
-        let shown = screen(&mut app, 100, 24);
-        assert!(
-            shown.contains("◆ laya  debugger 97% ▸ dispatched to the debugger specialist · 29 ms"),
-            "{shown}"
-        );
-        assert!(shown.contains("laya p(ok) 88% ✗ surprised"), "{shown}");
-    }
-
-    #[test]
-    fn the_lab_view_survives_the_real_terminal_pipeline() {
-        use acp_core::{HarnessEvent, LabHitl, LabLink, LabPod, LabState, LabThreat, PodStatus};
-
-        let mut app = connected();
-        let pod = |name: &str, status, model: &str, effort: &str| LabPod {
-            id: name.into(),
-            name: name.into(),
-            role: name.into(),
-            status,
-            model: Some(model.into()),
-            effort: Some(effort.into()),
-            dial: 0.8,
-            dial_default: 0.8,
-            calls: 2,
-            ..LabPod::default()
-        };
-        app.on_event(AppEvent::Harness(HarnessEvent::Lab(Box::new(LabState {
-            seq: 4,
-            session_id: Some("abcdef12-3456".into()),
-            pods: vec![
-                pod("orchestrator", PodStatus::Executing, "glm-5.3-flash", "low"),
-                pod("architect", PodStatus::Idle, "glm-5.3-flash", "high"),
-                pod("debugger", PodStatus::Isolated, "kimi-k2.7-code", "max"),
-            ],
-            links: vec![LabLink {
-                from: "orchestrator".into(),
-                to: "debugger".into(),
-                kind: "delegation".into(),
-                active: false,
-                count: 1,
-                label: String::new(),
-            }],
-            threat: Some(LabThreat {
-                pod: "orchestrator".into(),
-                tool: "shell".into(),
-                score: Some(0.5),
-                confidence: Some(0.4),
-                band: Some("elevated".into()),
-                pending: false,
-            }),
-            hitl: vec![LabHitl::default()],
-            ..LabState::default()
-        }))));
-        app.lab.open = true;
-        let shown = screen(&mut app, 100, 40);
-        println!("{shown}");
-        for needle in [
-            "EXPERIMENTAL LAB",
-            "[EXECUTING ⚡]",
-            "[IDLE 💤]",
-            "[ISOLATED 🛑]",
-            "THREAT",
-            "0.50 ELEVATED",
-            "E-stop",
-        ] {
-            assert!(
-                shown.contains(needle),
-                "missing {needle:?} on the emulated screen:\n{shown}"
-            );
-        }
-    }
 }

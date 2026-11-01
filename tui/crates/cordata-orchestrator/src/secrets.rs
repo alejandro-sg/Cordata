@@ -1,4 +1,4 @@
-//! Pattern-based secret masking, ported from `backend/secret_patterns.py`: what a credential *looks like*, with no
+//! Pattern-based secret masking: what a credential *looks like*, with no
 //! registry of known secrets (the registry half, `secret_guard.redact`, lives in the agent process and has no
 //! counterpart here). Conservative about false positives on code, complete on the formats that actually leak.
 //!

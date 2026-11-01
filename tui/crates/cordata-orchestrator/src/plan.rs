@@ -1,4 +1,4 @@
-//! The plan artifact, ported from `backend/orchestrator/plan_artifact.py`: the contract the state machine checks the
+//! The plan artifact: the contract the state machine checks the
 //! work against. [`from_draft`] turns a planner's draft into a [`Plan`], refusing (never repairing) a draft that
 //! fails the checks a schema cannot express. The draft schema itself is checked by hand rather than with a JSON
 //! Schema engine: it is small and fixed, and the messages only feed the replan prompt.

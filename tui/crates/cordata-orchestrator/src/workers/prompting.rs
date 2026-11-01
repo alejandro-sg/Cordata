@@ -1,4 +1,4 @@
-//! The words around a task (`backend/workers/prompting.py`): the role brief every worker gets, and the fenced handoff
+//! The words around a task: the role brief every worker gets, and the fenced handoff
 //! it may carry. A handoff packet is *data written by another model*; it reaches the next worker secret-scrubbed and
 //! fenced as untrusted, so a worker that wrote "ignore your instructions" into its notes has written a string.
 

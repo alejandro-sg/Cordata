@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/acp-core", "crates/acp-tui", "crates/acp-stress", "crates/cordata-ledger", "crates/cordata-doctor", "crates/cordata-orchestrator", "crates/cordata-checkpoints", "crates/cordata-run", "crates/cordata-guard", "crates/cordata-economizer"]
+members = ["crates/acp-core", "crates/acp-tui", "crates/cordata-ledger", "crates/cordata-doctor", "crates/cordata-orchestrator", "crates/cordata-checkpoints", "crates/cordata-run", "crates/cordata-guard", "crates/cordata-economizer"]
 
 [workspace.package]
 edition = "2024"
@@ -24,12 +24,9 @@ regex = "1"
 # Fast in-memory digests for the economizer loop guard (fixed seeds; never persisted).
 ahash = "0.8"
 textwrap = "0.16"
-# The daemon's transport. Default features only (connect + handshake): wss
-# would pull a TLS stack this never uses, since daemon/server.py binds loopback.
-tokio-tungstenite = "0.28"
 # Native in-process provider adapter (Anthropic, Gemini, OpenAI, Ollama) for acp-core's `native` module.
-# SQLite for the quota ledger (~/.cordata/state.db). Bundled: the file is shared with the Python backend, and a
-# system libsqlite of unknown version must not decide whether WAL and the schema behave the same on both sides.
+# SQLite for the quota ledger (~/.cordata/state.db). Bundled, so the system libsqlite's version cannot change how WAL
+# and the schema behave.
 rusqlite = { version = "0.37", features = ["bundled"] }
 # Process-group kill for the subprocess workers.
 libc = "0.2"

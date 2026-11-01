@@ -49,11 +49,6 @@ pub fn block(message: &Message, ix: usize, edge: GroupEdge, expanded: bool, show
         Message::Diff(text) => div().py(px(6.)).child(unified_diff_block(text, cx)).into_any_element(),
         Message::Welcome(_) => div().into_any_element(),
         Message::Help => notice("⌘K palette · ⌘B sidebar · ⌘\\ inspector · / commands · @ files · ! shell · ⇧Tab mode · Esc stops", tk(cx).text_muted, cx),
-        Message::Laya(decision) => {
-            let route = decision.route.as_deref().unwrap_or("direct");
-            pill_notice("⚡", &format!("Auto-routed → {route} ({:.0}% confidence)", decision.route_confidence * 100.0), tk(cx).info, cx)
-        }
-        Message::LayaOutcome(_) => div().into_any_element(),
         Message::Heal(info) => {
             let detail = info.root_cause.as_deref().map(|cause| format!(" — {cause}")).unwrap_or_default();
             pill_notice("🛡", &format!("Self-heal · {}{detail}", info.phase), tk(cx).amber, cx)

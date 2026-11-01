@@ -1,4 +1,4 @@
-//! Research brief and deterministic grounding (`backend/orchestrator/research.py`).
+//! Research brief and deterministic grounding.
 //!
 //! The research role investigates the codebase before planning, producing a structured brief (findings, constraints,
 //! risks, approach, open questions). Findings must be grounded in verifiable evidence: `kind="file"` is `path:line` with

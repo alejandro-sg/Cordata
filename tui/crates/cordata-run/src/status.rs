@@ -1,4 +1,4 @@
-//! Where the orchestrator stands (`backend/orchestrator/status.py`): read from `state.db`, no model call, no tokens. Each
+//! Where the orchestrator stands: read from `state.db`, no model call, no tokens. Each
 //! pool's headroom, the recent runs and the recent handoffs.
 
 use cordata_ledger::Ledger;

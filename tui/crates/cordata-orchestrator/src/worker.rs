@@ -1,4 +1,4 @@
-//! The one contract every coding worker meets, ported from `backend/workers/base.py`: the orchestrator hands a worker
+//! The one contract every coding worker meets: the orchestrator hands a worker
 //! one bounded piece of work and reads back a typed result. A worker never raises for an operational failure — a
 //! missing CLI, a timeout, a rate limit and a crash are all results, so the state machine can decide what next.
 //!

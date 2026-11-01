@@ -181,32 +181,7 @@ fn permission_panel(app: &App, width: u16) -> Option<Panel> {
     let inner_width = (width as usize).saturating_sub(4);
     let label = Style::new().fg(Color::Gray);
 
-    // With the Lab open this prompt is the HITL Intervention Station: same
-    // request, same diff, the station's own wording and keys.
-    let station = app.lab.open;
     let mut lines: Vec<Line<'static>> = Vec::new();
-    if station
-        && let Some(staged) = app
-            .lab
-            .state
-            .hitl
-            .iter()
-            .rev()
-            .find(|row| row.status == "pending")
-    {
-        let risk = staged
-            .risk_score
-            .map(|score| format!(" · Laya destructiveness {score:.2}"))
-            .unwrap_or_default();
-        lines.push(Line::from(vec![
-            Span::styled("pod   ", label),
-            Span::styled(
-                sanitize(&staged.pod),
-                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(risk, Style::new().fg(Color::Red)),
-        ]));
-    }
     lines.push(Line::from(vec![
         Span::styled("tool  ", label),
         Span::styled(
@@ -287,25 +262,14 @@ fn permission_panel(app: &App, width: u16) -> Option<Panel> {
                 .add_modifier(Modifier::BOLD),
         )
     };
-    let mut keys = if station {
-        vec![
-            key(" Y ", Color::Green),
-            Span::raw(" Approve & Execute     "),
-            key(" N ", Color::Red),
-            Span::raw(" Reject & Discard (Esc)     "),
-            key(" K ", Color::Magenta),
-            Span::raw(" E-Stop: reject + isolate"),
-        ]
-    } else {
-        vec![
-            key(" a ", Color::Green),
-            Span::raw(" Allow     "),
-            key(" r ", Color::Red),
-            Span::raw(" Reject (Esc)     "),
-            key(" w ", Color::Gray),
-            Span::raw(" Reject, saying why"),
-        ]
-    };
+    let mut keys = vec![
+        key(" a ", Color::Green),
+        Span::raw(" Allow     "),
+        key(" r ", Color::Red),
+        Span::raw(" Reject (Esc)     "),
+        key(" w ", Color::Gray),
+        Span::raw(" Reject, saying why"),
+    ];
     if shows_diff {
         keys.push(Span::raw("     "));
         keys.push(key(" d ", Color::Blue));
@@ -344,12 +308,8 @@ fn permission_panel(app: &App, width: u16) -> Option<Panel> {
         label,
     ));
     Some(Panel {
-        title: if station {
-            " ⚠ HITL INTERVENTION STATION ".into()
-        } else {
-            " Permission required ".into()
-        },
-        border: if station { Color::Red } else { Color::Yellow },
+        title: " Permission required ".into(),
+        border: Color::Yellow,
         lines,
         selected: None,
         pinned_from: Some(pinned_from),

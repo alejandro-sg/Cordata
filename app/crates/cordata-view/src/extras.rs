@@ -1,8 +1,4 @@
-//! The session conveniences that arrive with this client: the context gauge, the agent's checklist, `/goal`, `/btw`,
-//! `/compact`, `/context`, `/cost`, `/copy`, `/export` and `/diff`.
-//!
-//! Most of them are thin: the backend does the work (`session_extras.py`, `goal.py`, `task_tool.py`) and this file
-//! turns its answers into a line, a gauge or a panel. Nothing here sends anything to a model on its own.
+//! Session conveniences: the context gauge, the agent's checklist, `/cost`, `/copy`, `/export` and `/diff`.
 
 use std::time::{Duration, Instant};
 
@@ -96,7 +92,7 @@ impl App {
         let high = self.context.as_ref().and_then(|g| g.pct).is_some_and(|p| p >= 0.8);
         if high && !self.warned_context {
             self.warned_context = true;
-            self.info("context is over 80% full — /compact summarises the older turns (the agent also does it automatically near 70%)");
+            self.info("context is over 80% full — start a new session soon");
         } else if !high {
             self.warned_context = false;
         }
@@ -172,34 +168,6 @@ impl App {
     }
 
     // ---------------------------------------------------------- commands
-
-    /// `/goal`: with text, a prompt the backend turns into a goal (so it works the same in every front door);
-    /// `clear` and no argument ask the backend directly, because they must work while a turn is running.
-    pub fn run_goal(&mut self, arg: Option<String>) -> Option<Effect> {
-        match arg.as_deref().map(str::trim) {
-            None | Some("") => Some(ext_effect("_cordata/goal/status", "goal")),
-            Some("clear" | "stop" | "off" | "cancel") => Some(ext_effect("_cordata/goal/clear", "goal clear")),
-            Some(text) => self.run_line_as_prompt(&format!("/goal {text}")),
-        }
-    }
-
-    pub fn run_btw(&mut self, arg: Option<String>) -> Option<Effect> {
-        let Some(question) = arg.filter(|q| !q.trim().is_empty()) else {
-            self.info("/btw <question> — a side question, answered from the conversation without touching it (works while the agent is busy)");
-            return None;
-        };
-        self.info(format!("btw ▸ {}", sanitize(&question)));
-        Some(Effect::Ext { method: "_cordata/btw".into(), params: serde_json::json!({ "question": question }), tag: "btw".into() })
-    }
-
-    pub fn run_compact(&mut self, arg: Option<String>) -> Option<Effect> {
-        if self.turn_active {
-            self.info("the agent is working — /compact once it has finished (or Esc to stop it)");
-            return None;
-        }
-        self.info("compacting…");
-        Some(Effect::Ext { method: "_cordata/context/compact".into(), params: serde_json::json!({ "focus": arg.unwrap_or_default() }), tag: "compact".into() })
-    }
 
     pub fn run_cost(&mut self) -> Option<Effect> {
         let (tin, tout) = self.session_tokens;
@@ -393,8 +361,6 @@ mod tests {
             untrusted: false,
             untrusted_source: false,
             diffs: vec![],
-            p_ok: None,
-            outcome: None,
         })
     }
 

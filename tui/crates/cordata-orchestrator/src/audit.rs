@@ -1,4 +1,4 @@
-//! The AUDIT phase, cheapest check first (`backend/orchestrator/audit.py`).
+//! The AUDIT phase, cheapest check first.
 //!
 //! **Tier 1 — deterministic, no model.** Everything a plan promised that can be checked by running something: the scope
 //! (every file changed since the plan-start checkpoint must be inside the union of the steps' scopes), the acceptance
@@ -53,9 +53,8 @@ pub fn conformance_schema() -> Value {
             "plan_adherence": {"type": "number", "minimum": 0, "maximum": 1}}}}}})
 }
 
-/// Scores a model-written shell command before it runs: at [`GUARD_REFUSE`] and above it is refused. The Python backend
-/// uses Laya Guard (a learned risk model); [`PatternGuard`] is a conservative stand-in so the audit never runs
-/// "unscored".
+/// Scores a model-written shell command before it runs: at [`GUARD_REFUSE`] and above it is refused. [`PatternGuard`] is a conservative
+/// pattern-based guard, so the audit never runs "unscored".
 pub trait CommandGuard: Send + Sync {
     fn score(&self, command: &str, root: &str) -> (f64, String);
 }
@@ -162,7 +161,7 @@ fn py_g(x: f64) -> String {
 pub async fn run_command(root: &str, command: &str, guard: &dyn CommandGuard, timeout_s: f64, expected: i64, environ: &std::collections::HashMap<String, String>) -> (bool, String) {
     let (score, why) = guard.score(command, root);
     if score >= GUARD_REFUSE {
-        return (false, format!("refused to run (Laya Guard {score:.2}: {why})"));
+        return (false, format!("refused to run (pattern guard {score:.2}: {why})"));
     }
     if !crate::workers::cli::seatbelt_works() {
         return (false, "cannot run confined: the Seatbelt sandbox (sandbox-exec) cannot be applied here, so a child process could read .env files; refusing to run it unconfined.".into());

@@ -1,4 +1,4 @@
-//! The default worker roster and the settings that shape a run (`backend/orchestrator/config.py`).
+//! The default worker roster and the settings that shape a run.
 //!
 //! The roster is every (worker, model) pair the dispatcher may choose from, each with its tier and a relative price
 //! (strong = 1). A family is in the roster when `orchestrator.workers` names it and it is usable here (its CLI is

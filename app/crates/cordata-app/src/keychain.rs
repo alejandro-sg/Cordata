@@ -1,5 +1,5 @@
 //! The API key, in the login Keychain and nowhere else (Settings → Account). The item is the one the backend already
-//! reads at start (`backend/settings.py`: service `cordata-anthropic-api-key`, account `$USER`), so a key saved here
+//! reads at start, so a key saved here
 //! is used by the next backend that starts — no file, no environment variable, no argv.
 //!
 //! The window never shows the key: only whether one is stored and its last four characters.

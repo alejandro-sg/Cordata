@@ -1,4 +1,4 @@
-//! The handoff packet, ported from `backend/orchestrator/handoff.py`: what one worker leaves for the next, in a form
+//! The handoff packet: what one worker leaves for the next, in a form
 //! any worker can resume from. Provider sessions cannot continue each other, so a handoff carries *state* — the step,
 //! how far it got, the checkpoint, the diff so far, what failed — typed, bounded and secret-scrubbed when built,
 //! fenced as untrusted data when rendered into the next worker's prompt. Persisted in `state.db` (`handoff_packets`).

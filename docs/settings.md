@@ -24,7 +24,7 @@ keys come from the environment.
 |---|---|
 | `CORDATA_NATIVE_MODEL` | model name, any `genai` name (`claude-…`, `gemini-…`, `gpt-…`, or an Ollama tag). Default `claude-sonnet-5-5` |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OLLAMA_API_KEY` | provider key; wins over the Keychain |
-| Keychain `cordata-anthropic-api-key`, `cordata-ollama-api-key` | provider key (`make key` stores the Ollama one) |
+| Keychain `cordata-anthropic-api-key`, `cordata-ollama-api-key` | provider key (`make key` stores one: `PROVIDER=anthropic` by default, or `ollama`) |
 
 Every tool that changes files or runs a command asks first; "Always allow" lasts for the session. Reads and searches do
 not ask. Sessions are not saved yet, so `--resume` and `-c` start a fresh one.
