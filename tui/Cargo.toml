@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/acp-core", "crates/acp-tui", "crates/acp-stress"]
+members = ["crates/acp-core", "crates/acp-tui", "crates/acp-stress", "crates/cordata-ledger"]
 
 [workspace.package]
 edition = "2024"
@@ -26,6 +26,9 @@ textwrap = "0.16"
 # would pull a TLS stack this never uses, since daemon/server.py binds loopback.
 tokio-tungstenite = "0.28"
 # Native in-process provider adapter (Anthropic, Gemini, OpenAI, Ollama) for acp-core's `native` module.
+# SQLite for the quota ledger (~/.cordata/state.db). Bundled: the file is shared with the Python backend, and a
+# system libsqlite of unknown version must not decide whether WAL and the schema behave the same on both sides.
+rusqlite = { version = "0.37", features = ["bundled"] }
 genai = "0.7"
 # Gitignore-aware directory walk for the native `code_search` tool.
 ignore = "0.4"
