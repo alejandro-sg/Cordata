@@ -140,7 +140,7 @@ pub fn out_of_scope<P: AsRef<str>, S: AsRef<str>>(changed: &[P], scope: &[S], ro
     out
 }
 
-fn literal_prefix(entry: &str) -> String {
+pub fn literal_prefix(entry: &str) -> String {
     entry.split('/').take_while(|part| !has_glob(part)).collect::<Vec<_>>().join("/")
 }
 

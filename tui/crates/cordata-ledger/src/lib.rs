@@ -307,6 +307,31 @@ CREATE TABLE IF NOT EXISTS quota_signals (
     status      TEXT
 );
 CREATE INDEX IF NOT EXISTS quota_signals_pool_ts ON quota_signals(pool_id, ts);
+CREATE TABLE IF NOT EXISTS handoff_packets (
+    handoff_id  TEXT PRIMARY KEY,
+    session_id  TEXT NOT NULL,
+    ts          REAL NOT NULL,
+    step_id     TEXT NOT NULL,
+    from_worker TEXT NOT NULL,
+    to_worker   TEXT,
+    reason      TEXT NOT NULL,
+    packet_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS handoff_packets_session ON handoff_packets(session_id, ts);
+CREATE TABLE IF NOT EXISTS events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts         REAL NOT NULL,
+    session_id TEXT,
+    kind       TEXT NOT NULL,
+    payload    TEXT NOT NULL,
+    source     TEXT
+);
+CREATE INDEX IF NOT EXISTS events_session_ts ON events(session_id, ts);
+CREATE INDEX IF NOT EXISTS events_kind_ts    ON events(kind, ts);
+CREATE TRIGGER IF NOT EXISTS events_no_update
+BEFORE UPDATE ON events BEGIN
+    SELECT RAISE(ABORT, 'events is append-only');
+END;
 ";
 
 /// `$CORDATA_STATE_DB`, else `$CORDATA_HOME/state.db`, else `~/.cordata/state.db` — the Python rule.
@@ -606,6 +631,44 @@ impl Ledger {
             remaining_usd: max_usd.map(|m| round((m - usd).max(0.0), 6)),
             remaining_tokens: max_tokens.map(|m| (m - tok).max(0)),
         }
+    }
+
+    /// One row of the `events` table (append-only). Like the Python writer it never fails a run: errors are returned
+    /// for the caller to ignore.
+    pub fn append_event(&self, kind: &str, payload: &Value, session_id: Option<&str>, source: Option<&str>) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO events (ts, session_id, kind, payload, source) VALUES (?,?,?,?,?)",
+            params![(self.clock)(), session_id, kind, payload.to_string(), source],
+        )?;
+        Ok(())
+    }
+
+    /// Events of one kind, newest first (`recent_events` in Python).
+    pub fn recent_events(&self, kind: &str, limit: usize) -> Vec<Value> {
+        let Ok(mut stmt) = self.conn.prepare("SELECT payload FROM events WHERE kind = ? ORDER BY ts DESC, id DESC LIMIT ?") else { return Vec::new() };
+        let Ok(rows) = stmt.query_map(params![kind, limit as i64], |r| r.get::<_, String>(0)) else { return Vec::new() };
+        rows.flatten().filter_map(|text| serde_json::from_str(&text).ok()).collect()
+    }
+
+    /// Persists a handoff packet (`packet` is the packet's JSON; the indexed columns are read from it).
+    pub fn save_handoff(&self, packet: &Value) -> Result<()> {
+        let field = |k: &str| packet.get(k).and_then(Value::as_str).map(str::to_owned);
+        self.conn.execute(
+            "INSERT OR REPLACE INTO handoff_packets (handoff_id, session_id, ts, step_id, from_worker, to_worker, reason, packet_json) VALUES (?,?,?,?,?,?,?,?)",
+            params![field("handoff_id"), field("session_id"), packet.get("timestamp").and_then(Value::as_f64), field("step_id"), field("from_worker"), field("to_worker"), field("reason"), packet.to_string()],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_handoff(&self, handoff_id: &str) -> Option<Value> {
+        let text: String = self.conn.query_row("SELECT packet_json FROM handoff_packets WHERE handoff_id = ?", params![handoff_id], |r| r.get(0)).ok()?;
+        serde_json::from_str(&text).ok()
+    }
+
+    pub fn handoffs_for_session(&self, session_id: &str) -> Vec<Value> {
+        let Ok(mut stmt) = self.conn.prepare("SELECT packet_json FROM handoff_packets WHERE session_id = ? ORDER BY ts") else { return Vec::new() };
+        let Ok(rows) = stmt.query_map(params![session_id], |r| r.get::<_, String>(0)) else { return Vec::new() };
+        rows.flatten().filter_map(|text| serde_json::from_str(&text).ok()).collect()
     }
 
     /// One run's spend grouped by (role, worker), sorted by that key.

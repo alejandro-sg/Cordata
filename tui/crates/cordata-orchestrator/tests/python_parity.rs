@@ -195,3 +195,35 @@ fn dispatch_agrees() {
         }
     }
 }
+
+#[test]
+fn secret_scrubbing_agrees() {
+    if backend().is_none() {
+        return eprintln!("skipped: backend/.venv not found");
+    }
+    let key = format!("sk-ant-api03-{}", "Z".repeat(40));
+    let cases: Vec<String> = vec![
+        format!("key {key} ok"),
+        "Authorization: Bearer abcdefgh12345678".into(),
+        "authorization = basic QWxhZGRpbjpvcGVu".into(),
+        "curl -H 'Bearer abcdefgh1234567890xyz'".into(),
+        "bearer lowercaseonlytokenvalue".into(),
+        "API_KEY=\"abcd1234efgh5678ijkl\"".into(),
+        "password: 'abcd1234efgh5678'".into(),
+        "token = abcd1234efgh5678".into(),
+        "db_secret=onlyletterslongvalueabcdef".into(),
+        "max_tokens = 4096".into(),
+        "token_count = compute_budget".into(),
+        "-----BEGIN RSA PRIVATE KEY-----\nMIIB\n-----END RSA PRIVATE KEY-----\nafter".into(),
+        "-----BEGIN PRIVATE KEY-----\ncut off".into(),
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U".into(),
+        "ghp_abcdefghijklmnopqrstuvwxyz0123456789 and AKIAABCDEFGHIJKLMNOP and hf_abcdefghijklmnopqrstuvwxyz".into(),
+        "nothing to see here".into(),
+        String::new(),
+    ];
+    let want = python(&json!(cases), "import json,sys\nimport secret_patterns as sp\nprint(json.dumps([list(sp.scrub(t)) for t in json.load(sys.stdin)]))");
+    for (i, case) in cases.iter().enumerate() {
+        let (out, n) = cordata_orchestrator::secrets::scrub(case);
+        assert_eq!(json!([out, n]), want[i], "case {i}: {case:?}");
+    }
+}
