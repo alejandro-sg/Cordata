@@ -15,11 +15,13 @@
 //! Each module has a parity test against the Python implementation, which stays the source of truth until the
 //! state machine itself moves.
 
+pub mod audit;
 pub mod bandit;
 pub mod checkpoints;
 pub mod dispatch;
 pub mod executor;
 pub mod handoff;
+pub mod machine;
 pub mod plan;
 pub mod scope;
 pub mod secrets;

@@ -123,6 +123,12 @@ impl Checkpoints for CopyCheckpoints {
         RestoreReport { ok: true, reason: String::new(), files }
     }
 
+    fn changes_since(&self, project: &Path, id: &str) -> Option<Vec<String>> {
+        let saved = read_tree(&self.store.join(id));
+        let now = read_tree(project);
+        Some(saved.keys().chain(now.keys()).collect::<std::collections::BTreeSet<_>>().into_iter().filter(|p| saved.get(*p) != now.get(*p)).cloned().collect())
+    }
+
     fn diff_since(&self, project: &Path, id: &str, paths: Option<&[String]>) -> (String, String) {
         let saved = read_tree(&self.store.join(id));
         let now = read_tree(project);

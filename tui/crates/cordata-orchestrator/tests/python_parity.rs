@@ -411,3 +411,150 @@ fn scoped_profiles_answers_and_wire_helpers_agree() {
         assert_eq!(prompting::parse_json_answer(a).unwrap_or(Value::Null), want["answers"][i], "answer {i}: {a:?}");
     }
 }
+
+// ---------------------------------------------------------------------------------------------- machine & audit
+
+use cordata_orchestrator::audit::{self, AuditEnv, PatternGuard};
+use cordata_orchestrator::checkpoints::{Checkpoints, GitCheckpoints};
+use cordata_orchestrator::machine::{self, RunRecord};
+
+fn python_home(home: &std::path::Path, input: &Value, code: &str) -> Value {
+    let backend = backend().unwrap();
+    let mut child = Command::new(backend.join(".venv/bin/python"))
+        .current_dir(&backend)
+        .env("PYTHONPATH", &backend)
+        .env("CORDATA_HOME", home)
+        .env("CORDATA_STATE_DB", home.join("state.db"))
+        .args(["-c", code])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::io::Write::write_all(&mut child.stdin.take().unwrap(), input.to_string().as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "python failed: {}", String::from_utf8_lossy(&out.stderr));
+    serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("bad json ({e}): {}", String::from_utf8_lossy(&out.stdout)))
+}
+
+fn sample_record() -> RunRecord {
+    let mut r = RunRecord::new("run-x", "make \"it\" work é", "/tmp/p", "bugfix", Some("sess"));
+    r.state = "done".into();
+    r.reason = "all good".into();
+    let plan = plan::from_draft(&good_draft(), "/nonexistent", Options { plan_id: Some("plan-1".into()), ..Default::default() }, Some(&["f1".to_string()].into_iter().collect())).unwrap();
+    let mut plan_json = plan.to_json();
+    plan_json["steps"][0]["status"] = json!("completed");
+    plan_json["steps"][0]["worker"] = json!("claude_code:sonnet");
+    plan_json["steps"][0]["attempts"] = json!(2);
+    r.plan = Some(plan_json);
+    r.research = Some(json!({"findings": []}));
+    r.planner = Some("claude_code:sonnet".into());
+    r.workers.insert("plan".into(), vec!["claude_code:sonnet".into()]);
+    r.workers.insert("harden".into(), vec!["agy:gemini".into()]);
+    r.audit = Some(json!({"tier1_ok": true, "verdict": "accept", "checks": [{"id": "scope", "kind": "scope", "ok": true, "detail": "2 file(s) changed\nmore"}, {"id": "c1", "kind": "test", "ok": false, "detail": ""}], "changed": ["a.py", "b.py"]}));
+    r.handoffs = vec!["h1".into(), "h2".into()];
+    r.drift_retries = 1;
+    r.replans = 1;
+    r.usage = vec![json!({"role": "execute", "worker": "claude_code:sonnet", "calls": 3, "tokens_in": 100, "tokens_out": 20, "cost_usd": 0.123456})];
+    r.warnings = vec!["careful".into(), "very".into()];
+    r
+}
+
+#[test]
+fn records_and_walkthroughs_agree_both_ways() {
+    if backend().is_none() {
+        return eprintln!("skipped: backend/.venv not found");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    let rust = sample_record();
+    let ledger = cordata_ledger::Ledger::open(&home.join("state.db"), vec![]).unwrap();
+    ledger.save_run(&rust.to_json()).unwrap();
+
+    // Python loads what Rust saved and renders the same walkthrough; it also re-serialises every field Rust wrote.
+    let py = python_home(
+        home,
+        &json!({}),
+        "import json\nfrom orchestrator import machine\nr=machine.load('run-x')\nprint(json.dumps({'walk':machine.walkthrough(r),'state':r.state,'keys':sorted(r.to_json().keys()),'plan_md':machine.Plan.from_json(r.plan).render()}))",
+    );
+    assert_eq!(py["walk"].as_str().unwrap(), machine::walkthrough(&rust));
+    assert_eq!(py["plan_md"].as_str().unwrap(), plan::Plan::from_json(rust.plan.as_ref().unwrap()).unwrap().render());
+    let mut rust_keys: Vec<String> = rust.to_json().as_object().unwrap().keys().cloned().collect();
+    rust_keys.sort();
+    assert_eq!(py["keys"], json!(rust_keys), "the same record fields on both sides");
+
+    // And the other way: a Python-written record loads in Rust and renders identically.
+    let written = python_home(
+        home,
+        &json!({"record": rust.to_json()}),
+        "import json,sys\nfrom orchestrator import machine\nd=json.load(sys.stdin)['record']\nd['run_id']='run-py'\nr=machine.RunRecord.from_json(d)\nmachine.save(r)\nprint(json.dumps(machine.walkthrough(r)))",
+    );
+    let loaded = machine::load(&ledger, "run-py").expect("Rust reads the Python-saved run");
+    assert_eq!(Value::from(machine::walkthrough(&loaded)), written);
+    assert_eq!((loaded.history.len(), loaded.drift_retries, loaded.workers["harden"].clone()), (0, 1, vec!["agy:gemini".to_string()]));
+    assert_eq!(machine::recent(&ledger, 10).len(), 2);
+}
+
+#[tokio::test]
+async fn tier1_and_the_review_prompts_agree() {
+    if backend().is_none() {
+        return eprintln!("skipped: backend/.venv not found");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let project = dir.path().join("proj");
+    std::fs::create_dir_all(project.join("calc")).unwrap();
+    std::fs::write(project.join("calc/keep.txt"), "keep\n").unwrap();
+    std::fs::write(project.join("calc/a.txt"), "old\n").unwrap();
+    let root = std::fs::canonicalize(&project).unwrap().to_string_lossy().into_owned();
+    // The shared store: Rust takes the plan-start checkpoint; both implementations read changes and diffs from it.
+    let store = GitCheckpoints::new(cordata_checkpoints::Store::new(&home));
+    let start = store.take(&project, "run", "plan-start", "g").id.unwrap();
+    std::fs::write(project.join("calc/a.txt"), "ok a\n").unwrap();
+    std::fs::write(project.join("calc/stray.txt"), "oops\n").unwrap();
+
+    let mut d = good_draft();
+    d["acceptance_criteria"] = json!([
+        {"id": "exists", "type": "file_exists", "description": "a exists", "target": "calc/a.txt"},
+        {"id": "dir", "type": "file_exists", "description": "dir exists", "target": "calc"},
+        {"id": "missing", "type": "file_exists", "description": "n/a", "target": "calc/none.txt"},
+        {"id": "keep", "type": "file_not_changed", "description": "keep unchanged", "target": "calc/keep.txt"},
+        {"id": "moved", "type": "file_not_changed", "description": "a unchanged?", "target": "./calc/stray.txt"},
+        {"id": "rx", "type": "regex_match", "description": "a has ok", "target": "calc/a.txt::^ok a$"},
+        {"id": "rx-no", "type": "regex_match", "description": "n", "target": "calc/a.txt::nope"},
+        {"id": "rx-gone", "type": "regex_match", "description": "n", "target": "calc/gone.txt::x"}
+    ]);
+    d["steps"] = json!([{"step_id": "s1", "name": "n", "description": "d", "file_scope": ["calc/a.txt"]}, {"step_id": "s2", "name": "n2", "description": "d2", "file_scope": ["calc/keep2.txt"], "grounded_in": ["f1"]}]);
+    d["verifier_commands"] = json!([]);
+    let mut plan = plan::from_draft(&d, "/nonexistent", Options { plan_id: Some("plan-t".into()), ..Default::default() }, None).unwrap();
+    plan.steps[0].status = "completed".into();
+    plan.steps[1].status = "completed".into();
+
+    let want = python_home(
+        &home,
+        &json!({"plan": plan.to_json(), "root": root, "start": start}),
+        "import json,sys,asyncio\nfrom orchestrator import audit\nfrom orchestrator.plan_artifact import Plan\nd=json.load(sys.stdin)\nplan=Plan.from_json(d['plan'])\n\
+         rep=asyncio.run(audit.tier1(plan,d['root'],d['start']))\n\
+         diff='+line\\n'*3\n\
+         print(json.dumps({'report':rep.to_json(),'t2':audit.tier2_prompt(plan,rep,diff),'conf':audit.conformance_prompt(plan,{'findings':[]},rep,diff),'conf_nobrief':audit.conformance_prompt(plan,None,rep,diff)}))",
+    );
+    let env = AuditEnv { checkpoints: &store, guard: &PatternGuard, environ: std::env::vars().collect() };
+    let report = audit::tier1(&plan, &root, Some(&start), &env).await;
+    let mut got = report.to_json();
+    let mut expected = want["report"].clone();
+    for r in [&mut got, &mut expected] {
+        for c in r["checks"].as_array_mut().unwrap() {
+            c["seconds"] = json!(0); // timing differs
+        }
+        r["changed"].as_array_mut().unwrap().sort_by_key(|v| v.as_str().map(str::to_owned));
+    }
+    assert_eq!(got, expected);
+    let diff = "+line\n".repeat(3);
+    assert_eq!(Value::from(audit::tier2_prompt(&plan, &report, &diff)), want["t2"]);
+    // With a brief the text embeds `research.render(brief)` (Python's); without one the prompts are identical.
+    assert_eq!(Value::from(audit::conformance_prompt(&plan, None, &report, &diff)), want["conf_nobrief"]);
+    let with = audit::conformance_prompt(&plan, Some("BRIEF-TEXT"), &report, &diff);
+    assert!(with.contains("The verified research brief the plan was grounded in:\nBRIEF-TEXT\n"));
+    assert_eq!(with.replace("The verified research brief the plan was grounded in:\nBRIEF-TEXT\n", ""), want["conf_nobrief"].as_str().unwrap());
+    assert!(want["conf"].as_str().unwrap().contains("The verified research brief the plan was grounded in:"));
+}

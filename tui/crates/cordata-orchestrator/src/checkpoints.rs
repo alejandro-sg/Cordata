@@ -29,6 +29,12 @@ pub trait Checkpoints: Send + Sync {
 
     /// `(patch, stat)` of what changed since `id`, limited to `paths` when given.
     fn diff_since(&self, project: &Path, id: &str, paths: Option<&[String]>) -> (String, String);
+
+    /// The project-relative paths that differ now from checkpoint `id`; `None` when it cannot tell (never an empty
+    /// list in that case). Stores that cannot answer keep the default.
+    fn changes_since(&self, _project: &Path, _id: &str) -> Option<Vec<String>> {
+        None
+    }
 }
 
 /// The shadow-git store behind the executor's [`Checkpoints`] contract.
@@ -71,5 +77,9 @@ impl Checkpoints for GitCheckpoints {
 
     fn diff_since(&self, project: &Path, id: &str, paths: Option<&[String]>) -> (String, String) {
         self.store.diff_since(project, id, paths)
+    }
+
+    fn changes_since(&self, project: &Path, id: &str) -> Option<Vec<String>> {
+        Some(self.store.changes_since(project, id, None)?.into_iter().map(|c| c.path).collect())
     }
 }

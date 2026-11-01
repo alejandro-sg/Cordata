@@ -318,6 +318,16 @@ CREATE TABLE IF NOT EXISTS handoff_packets (
     packet_json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS handoff_packets_session ON handoff_packets(session_id, ts);
+CREATE TABLE IF NOT EXISTS orch_runs (
+    run_id      TEXT PRIMARY KEY,
+    created_ts  REAL NOT NULL,
+    updated_ts  REAL NOT NULL,
+    cwd         TEXT NOT NULL,
+    goal        TEXT NOT NULL,
+    state       TEXT NOT NULL,
+    record_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS orch_runs_updated ON orch_runs(updated_ts);
 CREATE TABLE IF NOT EXISTS events (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     ts         REAL NOT NULL,
@@ -648,6 +658,28 @@ impl Ledger {
         let Ok(mut stmt) = self.conn.prepare("SELECT payload FROM events WHERE kind = ? ORDER BY ts DESC, id DESC LIMIT ?") else { return Vec::new() };
         let Ok(rows) = stmt.query_map(params![kind, limit as i64], |r| r.get::<_, String>(0)) else { return Vec::new() };
         rows.flatten().filter_map(|text| serde_json::from_str(&text).ok()).collect()
+    }
+
+    /// Persists a run record (`record` is its JSON; the indexed columns are read from it).
+    pub fn save_run(&self, record: &Value) -> Result<()> {
+        let text = |k: &str| record.get(k).and_then(Value::as_str).map(str::to_owned);
+        self.conn.execute(
+            "INSERT OR REPLACE INTO orch_runs (run_id, created_ts, updated_ts, cwd, goal, state, record_json) VALUES (?,?,?,?,?,?,?)",
+            params![text("run_id"), record.get("created").and_then(Value::as_f64), record.get("updated").and_then(Value::as_f64), text("cwd"), text("goal"), text("state"), record.to_string()],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_run(&self, run_id: &str) -> Option<Value> {
+        let text: String = self.conn.query_row("SELECT record_json FROM orch_runs WHERE run_id = ?", params![run_id], |r| r.get(0)).ok()?;
+        serde_json::from_str(&text).ok()
+    }
+
+    /// Run records, most recently updated first.
+    pub fn recent_runs(&self, limit: usize) -> Vec<Value> {
+        let Ok(mut stmt) = self.conn.prepare("SELECT record_json FROM orch_runs ORDER BY updated_ts DESC LIMIT ?") else { return Vec::new() };
+        let Ok(rows) = stmt.query_map(params![limit as i64], |r| r.get::<_, String>(0)) else { return Vec::new() };
+        rows.flatten().filter_map(|t| serde_json::from_str(&t).ok()).collect()
     }
 
     /// Persists a handoff packet (`packet` is the packet's JSON; the indexed columns are read from it).

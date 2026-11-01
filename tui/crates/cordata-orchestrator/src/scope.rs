@@ -144,11 +144,11 @@ pub fn literal_prefix(entry: &str) -> String {
     entry.split('/').take_while(|part| !has_glob(part)).collect::<Vec<_>>().join("/")
 }
 
-fn ere(text: &str) -> String {
+pub(crate) fn ere(text: &str) -> String {
     text.chars().map(|c| if ERE_SPECIAL.contains(c) { format!("\\{c}") } else { c.to_string() }).collect()
 }
 
-fn sb_string(value: &str) -> String {
+pub(crate) fn sb_string(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 

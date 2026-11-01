@@ -768,3 +768,8 @@ pub fn form_wave(pending: &[Step], done: &HashSet<String>, max_parallel: usize) 
     }
     wave
 }
+
+/// Whole seconds since the epoch, for task ids.
+pub fn unix_seconds() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
