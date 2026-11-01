@@ -2,10 +2,15 @@
 //! permission gate, repeat until the model answers without a tool. Commands are multiplexed
 //! against every await so `Cancel` lands mid-token and mid-command.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use cordata_economizer::cache_align::{self, PrefixTracker};
+use cordata_economizer::loopguard::{GuardDecision, LoopGuard, ToolCall};
+use cordata_economizer::microskills::{CommandOutcome, MicroSkills};
+use cordata_economizer::toolprune::ToolPruner;
+use cordata_economizer::Profile;
 use futures::StreamExt;
 use tokio::sync::{mpsc, oneshot};
 
@@ -30,7 +35,11 @@ type Commands = mpsc::UnboundedReceiver<Command>;
 pub(crate) async fn run(options: SessionOptions, commands: Commands, events: Events) {
     let model = std::env::var("CORDATA_NATIVE_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.into());
     match GenaiProvider::new(model) {
-        Ok(provider) => drive(&provider, options, commands, events, tools::offload_dir()).await,
+        Ok(provider) => {
+            let off = std::env::var_os("CORDATA_ECONOMIZER").is_some_and(|v| v == "off");
+            let state = if off { None } else { cordata_economizer::default_state_dir() };
+            drive(&provider, options, commands, events, tools::offload_dir(), state).await
+        }
         Err(error) => {
             let _ = events.send(AppEvent::ConnectionError(format!("could not start the native agent: {error}")));
             let _ = events.send(AppEvent::Closed);
@@ -68,9 +77,61 @@ struct Agent<'a> {
     offload: PathBuf,
     /// Tools the user chose "always allow" for, this session.
     always: HashSet<String>,
+    economizer: Economizer,
 }
 
-pub(crate) async fn drive(provider: &dyn Provider, options: SessionOptions, mut commands: Commands, events: Events, offload: PathBuf) {
+/// Token-saving state for one session. With no `state_dir` nothing is read from or written to disk.
+struct Economizer {
+    profile: Profile,
+    state_dir: Option<PathBuf>,
+    pruner: ToolPruner,
+    skills: MicroSkills,
+    guard: LoopGuard,
+    prefix: PrefixTracker,
+    /// Tools sent so far this session. It only grows, so the tool list (part of the cached prefix) changes rarely.
+    active: BTreeSet<String>,
+    /// The system prompt, fixed at the first prompt of the session.
+    system: Option<String>,
+    commands: Vec<CommandOutcome>,
+}
+
+impl Economizer {
+    fn new(model: &str, state_dir: Option<PathBuf>) -> Self {
+        let (pruner, skills) = match &state_dir {
+            Some(dir) => (ToolPruner::load(&dir.join("tools.json")), MicroSkills::load(&dir.join("skills.json"))),
+            None => (ToolPruner::default(), MicroSkills::default()),
+        };
+        Self {
+            profile: Profile::for_model(model),
+            state_dir,
+            pruner,
+            skills,
+            guard: LoopGuard::default(),
+            prefix: PrefixTracker::default(),
+            active: BTreeSet::new(),
+            system: None,
+            commands: Vec::new(),
+        }
+    }
+
+    /// Learned facts and tool usage go to disk when the session ends. Failures are ignored: this is an optimisation.
+    fn persist(&mut self, cwd: &Path) {
+        let Some(dir) = &self.state_dir else { return };
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        self.skills.fold(cwd, &self.commands, now);
+        let _ = self.pruner.save(&dir.join("tools.json"));
+        let _ = self.skills.save(&dir.join("skills.json"));
+    }
+}
+
+pub(crate) async fn drive(
+    provider: &dyn Provider,
+    options: SessionOptions,
+    mut commands: Commands,
+    events: Events,
+    offload: PathBuf,
+    state_dir: Option<PathBuf>,
+) {
     if options.resume.is_some() || options.continue_latest {
         let _ = events.send(AppEvent::Notice("native sessions are not persisted yet; starting fresh".into()));
     }
@@ -84,7 +145,8 @@ pub(crate) async fn drive(provider: &dyn Provider, options: SessionOptions, mut 
         config_options: Vec::new(),
     }));
 
-    let mut agent = Agent { provider, cwd: options.cwd.clone(), offload, always: HashSet::new() };
+    let economizer = Economizer::new(provider.model(), state_dir);
+    let mut agent = Agent { provider, cwd: options.cwd.clone(), offload, always: HashSet::new(), economizer };
     let mut history: Vec<Msg> = Vec::new();
     while let Some(command) = commands.recv().await {
         match command {
@@ -104,6 +166,7 @@ pub(crate) async fn drive(provider: &dyn Provider, options: SessionOptions, mut 
             Command::Shutdown => break,
         }
     }
+    agent.economizer.persist(&options.cwd);
     let _ = events.send(AppEvent::Closed);
 }
 
@@ -111,9 +174,14 @@ impl Agent<'_> {
     /// One prompt: model round-trips until an answer with no tool calls. `Err(Shutdown)` ends the session;
     /// a cancel is reported to the UI and returns `Ok`.
     async fn turn(&mut self, history: &mut Vec<Msg>, commands: &mut Commands, events: &Events) -> Result<(), Interrupt> {
-        let specs = tools::specs();
+        self.economizer.guard.reset_turn();
+        let prompt = history.iter().rev().find_map(|m| if let Msg::User(t) = m { Some(t.clone()) } else { None }).unwrap_or_default();
+        let specs = self.choose_tools(&prompt);
+        let system = self.system_prompt(&prompt).to_owned();
+        let tools_json = specs.iter().map(|s| format!("{}{}", s.name, s.schema)).collect::<String>();
+        self.economizer.prefix.observe(&system, &tools_json);
         for _ in 0..MAX_ROUNDS {
-            let stream = match interruptible(self.provider.stream(SYSTEM_PROMPT, history.clone(), &specs), commands, events).await {
+            let stream = match interruptible(self.provider.stream(&system, history.clone(), &specs), commands, events).await {
                 Ok(Ok(stream)) => stream,
                 Ok(Err(error)) => return Ok(self.fail(history, events, error)),
                 Err(interrupt) => return self.interrupted(interrupt, history, String::new(), events),
@@ -166,6 +234,26 @@ impl Agent<'_> {
         }
         let _ = events.send(AppEvent::TurnComplete(StopReason::MaxTurnRequests));
         Ok(())
+    }
+
+    /// The tools for this prompt: core tools plus whatever the prompt or the repository history asks for,
+    /// added to those already sent this session.
+    fn choose_tools(&mut self, prompt: &str) -> Vec<tools::ToolSpec> {
+        let all = tools::specs();
+        let eco = &mut self.economizer;
+        let picked: Vec<String> =
+            eco.pruner.select_tools(&self.cwd, prompt, &all, &eco.profile).into_iter().map(|t| t.name.to_owned()).collect();
+        eco.active.extend(picked);
+        all.into_iter().filter(|s| eco.active.contains(s.name)).collect()
+    }
+
+    /// Static prefix plus the micro-skills chosen at the first prompt. Fixed for the session, so it caches.
+    fn system_prompt(&mut self, prompt: &str) -> &str {
+        let eco = &mut self.economizer;
+        eco.system.get_or_insert_with(|| {
+            let facts = eco.skills.render(&self.cwd, prompt, 6);
+            cache_align::layout(SYSTEM_PROMPT, &facts, &[]).system
+        })
     }
 
     /// A failed round-trip: the prompt that had no answer is dropped so the next one doesn't follow it.
@@ -226,6 +314,13 @@ impl Agent<'_> {
             }
         }
 
+        let tool_call = ToolCall { name: &call.name, args: &call.args };
+        if let GuardDecision::Refuse(reason) = self.economizer.guard.precheck(&tool_call) {
+            let _ = events.send(patch(ToolStatus::Failed, Some(reason.clone())));
+            return Ok(reason);
+        }
+        self.economizer.pruner.record_tool_invoked(&self.cwd, &call.name);
+
         let _ = events.send(patch(ToolStatus::InProgress, None));
         let result = interruptible(tools::execute(&call.name, &call.args, &self.cwd), commands, events).await;
         let (status, output) = match result {
@@ -236,7 +331,18 @@ impl Agent<'_> {
             Ok(Ok(out)) => (ToolStatus::Completed, out),
             Ok(Err(error)) => (ToolStatus::Failed, format!("error: {error}")),
         };
-        let output = tools::limit_output(output, &self.offload);
+        if call.name == "run_command" {
+            let cmd = call.args.get("cmd").and_then(|v| v.as_str()).unwrap_or_default().to_owned();
+            self.economizer.commands.push(CommandOutcome { cmd, ok: status == ToolStatus::Completed });
+        }
+        let mut output = tools::limit_output(output, &self.offload);
+        match self.economizer.guard.inspect(&tool_call, &output) {
+            GuardDecision::Allow => {}
+            GuardDecision::Nudge(note) | GuardDecision::Refuse(note) => {
+                output.push_str("\n\n");
+                output.push_str(&note);
+            }
+        }
         let _ = events.send(patch(status, Some(output.clone())));
         Ok(output)
     }
@@ -321,7 +427,7 @@ mod tests {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (ev_tx, mut ev_rx) = mpsc::unbounded_channel();
         let offload = cwd.join(".offload");
-        let driver = drive(provider, options(cwd), cmd_rx, ev_tx, offload);
+        let driver = drive(provider, options(cwd), cmd_rx, ev_tx, offload, None);
         let script = async {
             let mut out = Vec::new();
             for prompt in prompts {
@@ -433,6 +539,92 @@ mod tests {
         let events = session(&fake, dir.path(), &["loop"], |_| ApprovalDecision::Reject).await;
         assert!(events.iter().any(|e| matches!(e, AppEvent::TurnComplete(StopReason::MaxTurnRequests))));
         assert_eq!(fake.seen.lock().unwrap().len(), MAX_ROUNDS);
+    }
+
+    #[tokio::test]
+    async fn identical_calls_get_a_nudge_then_a_refusal_without_running() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+        let mut rounds: Vec<_> = (0..6).map(|i| vec![call(&format!("c{i}"), "read_file", json!({"path":"a.txt"}))]).collect();
+        rounds.push(vec![text("done")]);
+        let fake = Fake::new(rounds);
+        session(&fake, dir.path(), &["loop"], |_| ApprovalDecision::Reject).await;
+        let seen = fake.seen.lock().unwrap();
+        let result = |round: usize| match seen[round].last() {
+            Some(Msg::ToolResult { output, .. }) => output.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert!(!result(1).contains("Notice") && !result(2).contains("Notice"));
+        assert!(result(3).contains("3 times consecutively"));
+        assert!(result(5).starts_with("Refused"), "{}", result(5));
+    }
+
+    #[tokio::test]
+    async fn only_the_core_tools_go_out_on_a_small_model_and_the_system_prompt_is_stable() {
+        use std::sync::Mutex;
+        struct Spy(Mutex<Vec<(String, Vec<String>)>>);
+        impl Provider for Spy {
+            fn model(&self) -> &str {
+                "llama3"
+            }
+            fn stream<'a>(
+                &'a self,
+                system: &'a str,
+                _history: Vec<Msg>,
+                tools: &'a [ToolSpec],
+            ) -> BoxFuture<'a, Result<BoxStream<'a, Result<Delta, String>>, String>> {
+                self.0.lock().unwrap().push((system.to_owned(), tools.iter().map(|t| t.name.to_owned()).collect()));
+                Box::pin(async { Ok(stream::iter(vec![Ok(Delta::Text("ok".into()))]).boxed()) })
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let spy = Spy(Mutex::new(Vec::new()));
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let (ev_tx, mut ev_rx) = mpsc::unbounded_channel();
+        let driver = drive(&spy, options(dir.path()), cmd_rx, ev_tx, dir.path().join(".o"), None);
+        let script = async {
+            for prompt in ["hello", "again"] {
+                cmd_tx.send(Command::Prompt(prompt.into(), Vec::new())).unwrap();
+                while !matches!(ev_rx.recv().await, Some(AppEvent::TurnComplete(_))) {}
+            }
+            cmd_tx.send(Command::Shutdown).unwrap();
+        };
+        tokio::join!(driver, script);
+        let seen = spy.0.lock().unwrap();
+        assert_eq!(seen[0].1, ["read_file", "edit_file", "run_command", "code_search"]);
+        assert_eq!(seen[0], seen[1]);
+    }
+
+    #[tokio::test]
+    async fn a_fixed_command_becomes_a_fact_for_the_next_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let fake = Fake::new(vec![
+            vec![call("c1", "run_command", json!({"cmd":"false"}))],
+            vec![call("c2", "run_command", json!({"cmd":"false || true"}))],
+            vec![text("done")],
+        ]);
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let (ev_tx, mut ev_rx) = mpsc::unbounded_channel();
+        let driver = drive(&fake, options(dir.path()), cmd_rx, ev_tx, dir.path().join(".o"), Some(state.clone()));
+        let script = async {
+            cmd_tx.send(Command::Prompt("go".into(), Vec::new())).unwrap();
+            loop {
+                match ev_rx.recv().await {
+                    Some(AppEvent::PermissionRequested { decision, .. }) => {
+                        let _ = decision.send(ApprovalDecision::AllowAlways);
+                    }
+                    Some(AppEvent::TurnComplete(_)) => break,
+                    _ => {}
+                }
+            }
+            cmd_tx.send(Command::Shutdown).unwrap();
+        };
+        tokio::join!(driver, script);
+        // Commands only run under Seatbelt; where the sandbox is unavailable both fail and no fact is learned.
+        let tools = cordata_economizer::toolprune::ToolPruner::load(&state.join("tools.json"));
+        assert_eq!(tools.usage(dir.path(), "run_command"), 2);
+        assert!(state.join("skills.json").exists());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/acp-core", "crates/acp-tui", "crates/acp-stress", "crates/cordata-ledger", "crates/cordata-doctor", "crates/cordata-orchestrator", "crates/cordata-checkpoints", "crates/cordata-run", "crates/cordata-guard"]
+members = ["crates/acp-core", "crates/acp-tui", "crates/acp-stress", "crates/cordata-ledger", "crates/cordata-doctor", "crates/cordata-orchestrator", "crates/cordata-checkpoints", "crates/cordata-run", "crates/cordata-guard", "crates/cordata-economizer"]
 
 [workspace.package]
 edition = "2024"
@@ -21,6 +21,8 @@ ratatui = "0.30"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 regex = "1"
+# Fast in-memory digests for the economizer loop guard (fixed seeds; never persisted).
+ahash = "0.8"
 textwrap = "0.16"
 # The daemon's transport. Default features only (connect + handshake): wss
 # would pull a TLS stack this never uses, since daemon/server.py binds loopback.

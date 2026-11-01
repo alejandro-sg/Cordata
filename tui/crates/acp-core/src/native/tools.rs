@@ -25,6 +25,12 @@ pub(crate) struct ToolSpec {
     pub(crate) schema: Value,
 }
 
+impl cordata_economizer::toolprune::Named for ToolSpec {
+    fn tool_name(&self) -> &str {
+        self.name
+    }
+}
+
 pub(crate) fn specs() -> Vec<ToolSpec> {
     vec![
         ToolSpec {
