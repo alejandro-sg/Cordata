@@ -45,12 +45,15 @@ pub enum BackendTransport {
     /// `conversation` is a handle, `latest` (this folder's newest) or `new`; it is resolved when the
     /// session starts ([`crate::hub::open`]), then attached by handle over the same socket.
     Hub { daemon: DaemonConfig, conversation: String },
+    /// Run the agent inside this process (`crate::native`): no Python, no child, no socket.
+    Native,
 }
 
 impl fmt::Debug for BackendTransport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Stdio => f.write_str("Stdio"),
+            Self::Native => f.write_str("Native"),
             Self::Ws { url } => f
                 .debug_struct("Ws")
                 .field("url", &redact_token(url))
@@ -76,6 +79,7 @@ impl BackendTransport {
             Self::Stdio => "stdio",
             Self::Ws { .. } => "ws",
             Self::Hub { .. } => "hub",
+            Self::Native => "native",
         }
     }
 }

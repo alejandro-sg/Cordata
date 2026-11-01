@@ -109,6 +109,8 @@ pub(crate) async fn run(
         }
         BackendTransport::Ws { url } => DynConnectTo::new(WsTransport::new(url.clone())),
         BackendTransport::Hub { .. } => DynConnectTo::new(WsTransport::new(hub_url.clone().unwrap_or_default())),
+        // `SessionHandle::spawn` routes Native to `crate::native` before this function runs.
+        BackendTransport::Native => unreachable!("native sessions do not use the ACP connection"),
     };
 
     let session_events = events.clone();

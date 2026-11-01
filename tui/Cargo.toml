@@ -25,6 +25,8 @@ textwrap = "0.16"
 # The daemon's transport. Default features only (connect + handshake): wss
 # would pull a TLS stack this never uses, since daemon/server.py binds loopback.
 tokio-tungstenite = "0.28"
+# Native in-process provider adapter (Anthropic, Gemini, OpenAI, Ollama) for acp-core's `native` module.
+genai = "0.7"
 tempfile = "3"
 thiserror = "2"
 unicode-width = "0.2"

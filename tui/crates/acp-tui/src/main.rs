@@ -94,6 +94,8 @@ enum Transport {
     Hub,
     Stdio,
     Ws,
+    /// The in-process Rust agent (prototype: chat only, no tools yet).
+    Native,
 }
 
 /// One session the user can switch to: its backend process and its UI state.
@@ -273,7 +275,14 @@ impl Workspace {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    let mut backend = BackendConfig::discover(args.backend_root.as_deref())?;
+    // The native agent has no Python backend, so a missing checkout is not an error for it.
+    let mut backend = match BackendConfig::discover(args.backend_root.as_deref()) {
+        Ok(backend) => backend,
+        Err(_) if args.transport == Transport::Native => {
+            BackendConfig { backend_dir: PathBuf::new(), python: PathBuf::new(), server: PathBuf::new() }
+        }
+        Err(error) => return Err(error.into()),
+    };
     if let Some(script) = args.server_script {
         backend = backend.with_server_script(script);
     }
@@ -303,6 +312,8 @@ async fn main() -> Result<()> {
             _ if args.conversation.is_some() => anyhow::bail!("--conversation needs the daemon — start it with `make daemon`"),
             _ => BackendTransport::Stdio,
         },
+        (Transport::Native, None) => BackendTransport::Native,
+        (Transport::Native, Some(_)) => anyhow::bail!("--daemon-url needs --transport ws"),
         (Transport::Stdio, None) => BackendTransport::Stdio,
         // A flag that is accepted and then ignored is worse than one that
         // complains: `--daemon-url` with stdio means the user thinks they are

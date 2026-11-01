@@ -78,7 +78,11 @@ impl SessionHandle {
     pub fn spawn(options: SessionOptions) -> (Self, mpsc::UnboundedReceiver<AppEvent>) {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-        let task = tokio::spawn(connection::run(options, cmd_rx, event_tx));
+        let task = if matches!(options.transport, crate::transport::BackendTransport::Native) {
+            tokio::spawn(crate::native::run(options, cmd_rx, event_tx))
+        } else {
+            tokio::spawn(connection::run(options, cmd_rx, event_tx))
+        };
         (
             Self {
                 commands: cmd_tx,

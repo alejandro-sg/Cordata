@@ -290,6 +290,12 @@ pub const SCHEMA: &[Entry] = &[
         help: "let the agent run a `subagent` in the background and keep working; the turn still waits for it",
     },
     Entry {
+        key: "subagents.maxDepth",
+        kind: Kind::Float(1.0, 3.0),
+        applies: Applies::NextSession,
+        help: "how many levels of `subagent` delegation a turn may build (1 = children only)",
+    },
+    Entry {
         key: "learning.reflect",
         kind: Kind::Bool,
         applies: Applies::NextSession,

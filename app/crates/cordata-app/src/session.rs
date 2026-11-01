@@ -83,6 +83,7 @@ impl Connection {
             BackendTransport::Hub { .. } => "hub",
             BackendTransport::Ws { .. } => "daemon",
             BackendTransport::Stdio => "stdio",
+            BackendTransport::Native => "native",
         }
     }
 }
