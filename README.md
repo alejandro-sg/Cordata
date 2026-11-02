@@ -1,4 +1,11 @@
-# Cordata
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="app/assets/brand/cordata-mark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="app/assets/brand/cordata-mark-light.svg">
+    <img alt="Cordata" src="app/assets/brand/cordata-mark-light.svg" height="96">
+  </picture>
+  <h1>Cordata</h1>
+</div>
 
 ## What is Cordata?
 
