@@ -175,10 +175,10 @@ mod tests {
         app.messages.push(Message::User("hi there".into()));
         app.on_event(AppEvent::ToolCallStarted(ToolCallInfo {
             id: "t".into(),
-            name: "shell".into(),
+            name: "run_command".into(),
             kind: ToolKind::Execute,
             status: ToolStatus::Completed,
-            raw_input: Some(serde_json::json!({"command": "echo hi"})),
+            raw_input: Some(serde_json::json!({"cmd": "echo hi"})),
             content: "hi".into(),
             diffs: vec![],
         }));
@@ -187,7 +187,7 @@ mod tests {
         for needle in [
             "❯ hi there",
             "╭",
-            "shell · execute",
+            "run_command · execute",
             "$ echo hi",
             "all done",
         ] {
@@ -362,10 +362,10 @@ mod tests {
         app.on_event(AppEvent::PermissionRequested {
             info: PermissionInfo {
                 tool_call_id: "t".into(),
-                tool_name: "shell".into(),
-                title: "Run shell".into(),
+                tool_name: "run_command".into(),
+                title: "Run run_command".into(),
                 kind: ToolKind::Execute,
-                raw_input: Some(serde_json::json!({"command": "rm -rf /tmp/x"})),
+                raw_input: Some(serde_json::json!({"cmd": "rm -rf /tmp/x"})),
                 always_label: None,
             },
             decision: tx,
@@ -388,10 +388,10 @@ mod tests {
             app.on_event(AppEvent::PermissionRequested {
                 info: PermissionInfo {
                     tool_call_id: "t".into(),
-                    tool_name: "shell".into(),
-                    title: "Run shell".into(),
+                    tool_name: "run_command".into(),
+                    title: "Run run_command".into(),
                     kind: ToolKind::Execute,
-                    raw_input: Some(serde_json::json!({"command": "git status"})),
+                    raw_input: Some(serde_json::json!({"cmd": "git status"})),
                     always_label: label.map(Into::into),
                 },
                 decision: tx,
@@ -454,7 +454,7 @@ mod tests {
     fn edit_card(app: &mut App, id: &str) {
         app.on_event(AppEvent::ToolCallStarted(ToolCallInfo {
             id: id.into(),
-            name: "editor".into(),
+            name: "edit_file".into(),
             kind: ToolKind::Edit,
             status: ToolStatus::Pending,
             raw_input: None,
@@ -465,7 +465,7 @@ mod tests {
         let new = old.replace("line 20\n", "LINE TWENTY\n");
         app.on_event(AppEvent::ToolCallUpdated(acp_core::ToolCallPatch {
             id: id.into(),
-            raw_input: Some(serde_json::json!({"command": "str_replace", "path": "src/a.rs"})),
+            raw_input: Some(serde_json::json!({"cmd": "str_replace", "path": "src/a.rs"})),
             diffs: Some(vec![acp_core::FileDiff {
                 path: "/proj/src/a.rs".into(),
                 old_text: Some(old),
@@ -480,10 +480,10 @@ mod tests {
         app.on_event(AppEvent::PermissionRequested {
             info: PermissionInfo {
                 tool_call_id: id.into(),
-                tool_name: "editor".into(),
-                title: "Run editor".into(),
+                tool_name: "edit_file".into(),
+                title: "Run edit_file".into(),
                 kind: ToolKind::Edit,
-                raw_input: Some(serde_json::json!({"command": "str_replace", "path": "src/a.rs", "old_str": "line 20", "new_str": "LINE TWENTY"})),
+                raw_input: Some(serde_json::json!({"cmd": "str_replace", "path": "src/a.rs", "old_str": "line 20", "new_str": "LINE TWENTY"})),
                 always_label: None,
             },
             decision: tx,

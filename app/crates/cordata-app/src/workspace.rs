@@ -125,9 +125,6 @@ actions!(
 const REMEASURE_TAIL: usize = 8;
 /// Two presses of esc this close together stop the run.
 const DOUBLE_ESC: Duration = Duration::from_millis(700);
-/// A dropped connection is opened again on its own this many times (with growing waits) before it waits for Retry.
-const AUTO_RECONNECTS: u32 = 4;
-
 
 pub struct Workspace {
     connection: Connection,
@@ -185,10 +182,6 @@ pub struct Workspace {
     turn_seen: HashMap<EntityId, bool>,
     /// Sessions that already notified for their current pending approval (prevents notification flood).
     pending_seen: HashSet<EntityId>,
-    /// Sessions whose settings were loaded once connected.
-    loaded: HashSet<EntityId>,
-    /// Automatic reconnects tried for the shown session.
-    reconnects: u32,
     /// Images and files waiting to go with the next prompt.
     staged: Vec<attachments::Staged>,
     /// Why the last attachment or send was refused, shown above the composer.
@@ -338,8 +331,6 @@ impl Workspace {
             esc_at: None,
             turn_seen: HashMap::new(),
             pending_seen: HashSet::new(),
-            loaded: HashSet::new(),
-            reconnects: 0,
             staged: Vec::new(),
             attach_note: None,
             renaming: None,
@@ -441,7 +432,6 @@ impl Workspace {
                 this.sound_and_notify(&observed, window, cx);
                 if observed.entity_id() == this.session.entity_id() {
                     this.step_selftest(cx);
-                    this.maybe_auto_reconnect(window, cx);
                 }
                 cx.notify();
             }),
@@ -459,9 +449,6 @@ impl Workspace {
     }
 
     pub(super) fn show(&mut self, session: Entity<Session>, cx: &mut Context<Self>) {
-        if session.entity_id() != self.session.entity_id() {
-            self.reconnects = 0;
-        }
         self.session = session;
         let len = self.session.read(cx).view.messages.len();
         self.transcript.reset(len);
@@ -518,7 +505,8 @@ impl Workspace {
         }
     }
 
-    /// A dropped connection: a fresh session in its place (the conversation lived in the dead engine).
+    /// Retry, by hand: a fresh session in the stopped one's place. The error stays on screen until this is clicked, and
+    /// the conversation lived in the stopped engine.
     pub(super) fn reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let id = self.session.entity_id();
         let (connection, cwd) = (self.connection.clone(), self.cwd.clone());
@@ -903,7 +891,7 @@ impl Workspace {
     fn confirm_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
         let tk = tk(cx);
         let (title, body, yes): (&str, String, &str) = match self.confirm.as_ref() {
-            Some(Confirm::SignOut) => ("Sign out?", "The API key is removed from the Keychain. A running backend keeps its key until it restarts.".into(), "Sign out"),
+            Some(Confirm::SignOut) => ("Sign out?", "The API key is removed from the Keychain. Requests fail until you add one again (or export it in your shell).".into(), "Sign out"),
             Some(Confirm::ResetPrefs) => ("Reset all settings?", "Theme, layout, sending and notification choices go back to their defaults. Harness settings files are not touched.".into(), "Reset"),
             None => ("", String::new(), ""),
         };
@@ -1105,7 +1093,7 @@ impl Workspace {
         let session = self.session.read(cx);
         match &session.view.conn {
             ConnState::Connecting => (Dot::Hollow, "Connecting…".into()),
-            ConnState::Closed { .. } => (Dot::Amber, "Reconnecting…".into()),
+            ConnState::Closed { .. } => (Dot::Amber, "Engine stopped".into()),
             _ => (Dot::Ok, format!("Local · {}", session.transport)),
         }
     }
@@ -1349,18 +1337,15 @@ impl Workspace {
 
     fn sound_and_notify(&mut self, session: &Entity<Session>, window: &mut Window, cx: &mut Context<Self>) {
         let id = session.entity_id();
-        let (active, pending, connected) = {
+        let (active, pending) = {
             let view = &session.read(cx).view;
-            (view.turn_active, !view.pending.is_empty(), matches!(view.conn, ConnState::Connected))
+            (view.turn_active, !view.pending.is_empty())
         };
         let was = self.turn_seen.insert(id, active).unwrap_or(false);
         if was && !active
             && self.prefs.sound_on_completion {
                 crate::platform::play_sound("Glass");
             }
-        if connected && self.loaded.insert(id) && id == self.session.entity_id() {
-            self.reconnects = 0;
-        }
         if pending {
             if self.pending_seen.insert(id) && self.prefs.notify_approval && !window.is_window_active() {
                 crate::platform::notify("Cordata needs you", "A command is waiting for your approval.");
@@ -1368,28 +1353,6 @@ impl Workspace {
         } else {
             self.pending_seen.remove(&id);
         }
-    }
-
-    /// A closed session tries again on its own a few times, waiting longer each time; then Retry is the person's.
-    fn maybe_auto_reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let closed = matches!(self.session.read(cx).view.conn, ConnState::Closed { .. });
-        if !closed || self.reconnects >= AUTO_RECONNECTS || self.connection.problem.is_some() || self.selftest.is_some() {
-            return;
-        }
-        self.reconnects += 1;
-        let wait = Duration::from_secs(2u64.pow(self.reconnects));
-        let id = self.session.entity_id();
-        cx.spawn_in(window, async move |this, cx| {
-            cx.background_executor().timer(wait).await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                if this.session.entity_id() == id && matches!(this.session.read(cx).view.conn, ConnState::Closed { .. }) {
-                    let tries = this.reconnects;
-                    this.reconnect(window, cx);
-                    this.reconnects = tries;
-                }
-            });
-        })
-        .detach();
     }
 
     fn overlay_layer(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {

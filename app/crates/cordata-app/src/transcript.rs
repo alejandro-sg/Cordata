@@ -13,7 +13,7 @@ use gpui_component::text::{TextView, TextViewStyle};
 
 use crate::hud;
 use crate::theme::{amber, c, ca, line, mono, teal, tk};
-use crate::ui::{self, Tone};
+use crate::ui::{self};
 
 /// Rows of a tool's result shown when it is opened, before "… N more lines".
 const RESULT_PREVIEW_LINES: usize = 40;
@@ -279,16 +279,13 @@ fn error_banner(text: &str, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-/// The canonical verb token a tool row maps to (`read` · `edit` · `run` · …).
+/// The canonical verb token a tool row maps to, for the engine's five tools (`read` · `edit` · `run` · `search`).
 pub fn verb(name: &str) -> &'static str {
-    let name = name.rsplit("__").next().unwrap_or(name).to_ascii_lowercase();
-    match name.as_str() {
-        n if n.contains("read") || n == "view" || n == "cat" => "read",
-        n if n.contains("edit") || n.contains("write") || n.contains("patch") || n.contains("replace") => "edit",
-        n if n.contains("shell") || n.contains("bash") || n.contains("exec") || n.contains("run") || n.contains("command") => "run",
-        n if n.contains("search") || n.contains("grep") || n.contains("glob") || n.contains("find") => "search",
-        n if n.contains("fetch") || n.contains("http") || n.contains("web") || n.contains("browse") => "fetch",
-        n if n.contains("todo") || n.contains("plan") || n.contains("task") => "plan",
+    match name {
+        "read_file" | "code_outline" => "read",
+        "edit_file" => "edit",
+        "run_command" => "run",
+        "code_search" => "search",
         _ => "call",
     }
 }
@@ -300,24 +297,16 @@ pub fn verb_display(name: &str) -> &'static str {
         "edit" => "Edited",
         "run" => "Ran",
         "search" => "Searched",
-        "fetch" => "Fetched",
-        "plan" => "Planned",
         _ => "Called",
     }
 }
 
-/// The thing a tool acted on: a path, a command, a URL — from its input; else the tool's own name.
+/// The thing a tool acted on: a command, a path, a pattern — from its input; else the tool's own name.
 pub fn target(card: &ToolCard) -> String {
-    let input = card.raw_input.as_ref();
-    let field = |k: &str| input.and_then(|i| i.get(k)).and_then(|v| v.as_str()).map(str::to_owned);
-    field("path")
-        .or_else(|| field("file_path"))
-        .or_else(|| field("cmd"))
-        .or_else(|| field("url"))
-        .or_else(|| field("pattern"))
-        .or_else(|| field("query"))
-        .or_else(|| card.raw_input.as_ref().and_then(|i| cordata_view::view::summarize_input(i, false)))
-        .unwrap_or_else(|| attribution(&card.name).1.to_owned())
+    card.raw_input
+        .as_ref()
+        .and_then(cordata_view::view::summarize_input)
+        .unwrap_or_else(|| card.name.clone())
 }
 
 fn diff_counts(diffs: &[FileDiff]) -> (usize, usize) {
@@ -480,7 +469,6 @@ fn tool(card: &ToolCard, edge: GroupEdge, expanded: bool, cx: &App) -> AnyElemen
         ToolStatus::InProgress => ("◆", tk.amber),
         ToolStatus::Pending => ("◆", tk.amber_dim),
     };
-    let (server, _) = attribution(&card.name);
     let radius = px(t::RADIUS_CARD);
     let row_hover = line(cx, t::HOVER);
 
@@ -553,23 +541,12 @@ fn tool(card: &ToolCard, edge: GroupEdge, expanded: bool, cx: &App) -> AnyElemen
                 .text_size(px(t::TEXT_SMALL))
                 .child(div().w(px(12.)).flex_shrink_0().text_color(c(ink)).child(mark))
                 .child(div().w(px(62.)).flex_shrink_0().font_weight(FontWeight::MEDIUM).text_color(c(tk.text_secondary)).child(verb_display(&card.name)))
-                .when_some(server, |d, server| d.child(ui::badge(server, Tone::Teal, cx)))
                 .child(div().flex_1().min_w_0().truncate().text_color(c(tk.text_body)).child(SharedString::from(cut(&shown(&target(card))))))
                 .child(right_meta)
                 .child(div().flex_shrink_0().text_color(c(tk.text_faint)).child(if expanded { "⌃" } else { "⌄" })),
         )
         .children(body)
         .into_any_element()
-}
-
-/// `mcp__github__create_issue` → (`github`, `create_issue`): which server a tool came from. A built-in has none.
-fn attribution(name: &str) -> (Option<&str>, &str) {
-    if let Some(rest) = name.strip_prefix("mcp__")
-        && let Some((server, tool)) = rest.split_once("__")
-    {
-        return (Some(server), tool);
-    }
-    (None, name)
 }
 
 fn cut(line: &str) -> String {
@@ -591,13 +568,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mcp_tools_are_attributed_to_their_server() {
-        assert_eq!(attribution("mcp__github__create_issue"), (Some("github"), "create_issue"));
-        assert_eq!(attribution("shell"), (None, "shell"));
-        assert_eq!(attribution("mcp__odd"), (None, "mcp__odd"));
-    }
-
-    #[test]
     fn a_huge_line_is_cut_before_layout() {
         let line = "x".repeat(2_000_000);
         let out = cut(&line);
@@ -606,13 +576,14 @@ mod tests {
 
     #[test]
     fn verbs_read_at_a_glance() {
-        assert_eq!(verb("file_read"), "read");
+        assert_eq!(verb("read_file"), "read");
+        assert_eq!(verb("code_outline"), "read");
         assert_eq!(verb("edit_file"), "edit");
-        assert_eq!(verb("shell"), "run");
-        assert_eq!(verb("mcp__github__search_code"), "search");
+        assert_eq!(verb("run_command"), "run");
+        assert_eq!(verb("code_search"), "search");
         assert_eq!(verb("frobnicate"), "call");
         assert_eq!(verb_display("edit_file"), "Edited");
-        assert_eq!(verb_display("shell"), "Ran");
+        assert_eq!(verb_display("run_command"), "Ran");
     }
 
     #[test]

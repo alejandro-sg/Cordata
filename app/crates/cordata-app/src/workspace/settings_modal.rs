@@ -477,7 +477,7 @@ impl Workspace {
         let (in_t, out_t) = self.session.read(cx).view.session_tokens;
         vec![
             setting_row("Signed in", "An Anthropic API key in the Keychain is what signs Cordata in.", status_control(if signed_in { Dot::Ok } else { Dot::Muted }, if signed_in { "key stored" } else { "no key" }, cx), cx),
-            setting_row_owned("API key".into(), format!("Stored in the login Keychain only ({}). Used by the next backend that starts.{}", crate::keychain::SERVICE, self.api_key_masked.as_ref().map(|m| format!(" Current: {m}")).unwrap_or_default()), false, key, cx),
+            setting_row_owned("API key".into(), format!("Stored in the login Keychain only ({}). Read at the next request.{}", crate::keychain::SERVICE, self.api_key_masked.as_ref().map(|m| format!(" Current: {m}")).unwrap_or_default()), false, key, cx),
             setting_row("Usage this session", "Monthly usage is not tracked by the harness; these are this conversation's tokens.", mono_value(&format!("{in_t} in · {out_t} out"), cx), cx),
             setting_row("Sign out", "Removes the key from the Keychain.", ui::button("sign-out", "Sign out", Kind::Danger, cx).on_click(cx.listener(|this, _, window, cx| this.ask_confirm(Confirm::SignOut, window, cx))).into_any_element(), cx),
         ]
@@ -499,7 +499,7 @@ impl Workspace {
         match crate::keychain::store(&key) {
             Ok(()) => {
                 self.api_key_masked = crate::keychain::masked();
-                self.settings_view.set_notice("Key saved to the Keychain. Restart the backend to use it.".into(), false);
+                self.settings_view.set_notice("Key saved to the Keychain. The next message uses it.".into(), false);
             }
             Err(error) => self.settings_view.set_notice(error, true),
         }

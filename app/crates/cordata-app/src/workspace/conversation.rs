@@ -11,7 +11,7 @@ use gpui::{AnyElement, App, BoxShadow, ClickEvent, Context, FontWeight, Interact
 use gpui_component::input::Textarea;
 
 use super::{DockTab, Overlay, TogglePanel, ToggleSidebar, Workspace, tilde};
-use crate::theme::{amber, amber_glow, c, inset_ring, line, mono, soft_shadow, tk};
+use crate::theme::{amber, c, inset_ring, line, mono, soft_shadow, tk};
 use crate::transcript;
 use crate::ui::{self, Dot, Kind, Tone};
 
@@ -45,7 +45,7 @@ impl Workspace {
             Status::Idle => (Dot::Ok, "Ready", tk.teal),
             Status::Running => (Dot::Live, "Working…", tk.amber),
             Status::Waiting => (Dot::Live, "Needs approval", tk.amber),
-            Status::Closed => (Dot::Amber, "Reconnecting…", tk.amber),
+            Status::Closed => (Dot::Amber, "Engine stopped", tk.amber),
         };
         let _model_text = view.session.as_ref().map(|s| short_model(&s.model).to_string()).filter(|m| !m.is_empty());
         let branch = view.branch.clone().or_else(|| self.git.branch.clone()).filter(|_| column_w >= t::HEADER_HIDE_BRANCH_W);
@@ -341,7 +341,7 @@ impl Workspace {
         };
         let input = info.raw_input.as_ref();
         let command = input.and_then(|i| i.get("cmd")).and_then(|v| v.as_str()).map(str::to_owned);
-        let summary = input.and_then(|i| cordata_view::view::summarize_input(i, false)).unwrap_or_default();
+        let summary = input.and_then(cordata_view::view::summarize_input).unwrap_or_default();
         let place = tilde(&self.session.read(cx).cwd);
         let tool = info.tool_name.as_str();
         let (label, sentence, block, buttons): (&str, String, Option<String>, Vec<AnyElement>) = {
@@ -349,7 +349,7 @@ impl Workspace {
                 let sentence = match (&command, info.kind) {
                     (Some(_), _) => format!("Run shell command in {place}"),
                     (None, acp_core::ToolKind::Edit) => format!("Modify files in {place}"),
-                    _ => format!("Allow {}?", attribution_label(tool)),
+                    _ => format!("Allow {tool}?"),
                 };
                 let always = info.always_label.as_ref().map(|label| {
                     let short = always_prefix(label);
@@ -748,18 +748,6 @@ pub fn always_prefix(label: &str) -> String {
         Some((_, rest)) if rest.ends_with(')') => rest[..rest.len() - 1].trim().trim_end_matches(":*").trim_end_matches('*').trim().to_owned(),
         _ => label.to_owned(),
     }
-}
-
-fn attribution_label(tool: &str) -> String {
-    match tool.strip_prefix("mcp__").and_then(|rest| rest.split_once("__")) {
-        Some((server, name)) => format!("{name} from {server}"),
-        None => tool.to_owned(),
-    }
-}
-
-#[allow(dead_code)]
-fn _glow(cx: &App) -> Vec<BoxShadow> {
-    amber_glow(cx)
 }
 
 #[cfg(test)]

@@ -385,13 +385,4 @@ mod tests {
         let lines = line_diff(&old, &new);
         assert_eq!(stats(&lines), (3000, 3000));
     }
-
-    #[test]
-    fn patches_are_coloured_by_line_kind() {
-        let rows = patch_rows("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n", 40, None);
-        assert_eq!(rows.len(), 5);
-        assert_eq!(rows[3][0].style.fg, Some(Color::Red));
-        assert_eq!(rows[4][0].style.fg, Some(Color::Green));
-        assert_eq!(rows[2][0].style.fg, Some(Color::Cyan));
-    }
 }

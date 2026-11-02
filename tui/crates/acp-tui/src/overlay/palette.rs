@@ -344,7 +344,7 @@ fn entries(app: &App) -> Vec<Entry> {
             add("SESSION", &format!("session {}", tab.number), if tab.active { "shown now" } else { "switch to it" }, tab.active, Action::Switch(tab.number));
         }
     }
-    add("SESSION", "new session", "another backend in this project (Ctrl+N)", false, Action::NewSession);
+    add("SESSION", "new session", "another session in this project (Ctrl+N)", false, Action::NewSession);
 
     for (usage, detail) in commands::HELP {
         let (label, hint) = usage.split_once(' ').map_or((*usage, ""), |(l, h)| (l, h));

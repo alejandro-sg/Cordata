@@ -436,7 +436,7 @@ impl App {
             AppEvent::Closed => {
                 if !matches!(self.conn, ConnState::Closed { .. }) {
                     self.close(None);
-                    self.messages.push(Message::Info("backend closed".into()));
+                    self.messages.push(Message::Info("engine stopped".into()));
                 }
             }
         }

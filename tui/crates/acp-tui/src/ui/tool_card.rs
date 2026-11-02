@@ -39,7 +39,7 @@ pub fn status_glyph(status: ToolStatus, spinner: usize) -> (&'static str, Color)
 }
 
 fn input_summary(card: &ToolCard) -> Option<String> {
-    summarize_input(card.raw_input.as_ref()?, false)
+    summarize_input(card.raw_input.as_ref()?)
 }
 
 use cordata_view::view::summarize_input;
