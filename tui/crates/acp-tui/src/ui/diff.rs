@@ -283,6 +283,7 @@ pub fn file_rows(
 }
 
 /// A unified patch as coloured rows: headers bold, hunks cyan, removals red, additions green.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn patch_rows(patch: &str, width: usize, max_rows: Option<usize>) -> Vec<Vec<Span<'static>>> {
     let lines: Vec<&str> = patch.lines().collect();
     let limit = max_rows.unwrap_or(usize::MAX);
