@@ -53,7 +53,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("/diffview", "review the working tree's changes: files, hunks, mouse (F4)"),
     ("/floorplan [html]", "interactive architectural floorplan & active-work visualizer"),
     ("/new", "another session in this project (Ctrl+N) — a new shared conversation on the hub"),
-    ("/switch [n]", "show session n (Ctrl+←/→, Alt+1…9)"),
+    ("/switch [n]", "show session n (Ctrl+←/→, Alt+1…9; Ctrl+G: the next one that needs you)"),
     ("/close", "end the shown session"),
     ("/history", "this project's saved sessions"),
     ("/resume [id]", "continue a saved session (the last one by default)"),

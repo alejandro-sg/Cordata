@@ -3,7 +3,7 @@
 
 use cordata_theme::tokens as t;
 use gpui::prelude::FluentBuilder as _;
-use gpui::{AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement, MouseButton, ParentElement, SharedString, StatefulInteractiveElement as _, Styled, div, px};
+use gpui::{AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement, MouseButton, ParentElement, SharedString, StatefulInteractiveElement as _, Styled, Window, div, px};
 
 use super::{DockTab, Workspace, editor};
 use crate::theme::{amber, c, inset_bottom, line, mono, tk};
@@ -43,7 +43,7 @@ impl Workspace {
         }
     }
 
-    pub(super) fn side_panel(&self, window_w: f32, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn side_panel(&self, window_w: f32, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let tk = tk(cx);
         let (strip, overflow) = strip_tabs(window_w);
         let in_overflow = overflow.contains(&self.dock_tab);
@@ -122,7 +122,7 @@ impl Workspace {
                 let git = self.git_section(cx);
                 div().size_full().flex().flex_col().children(git).child(div().flex_1().min_h_0().child(self.review_panel(cx))).into_any_element()
             }
-            DockTab::Terminal => editor::pane("terminal", self.terminal_panel(cx), cx),
+            DockTab::Terminal => editor::pane("terminal", self.terminal_panel(window, cx), cx),
         };
         div()
             .id("side-panel")

@@ -117,19 +117,31 @@ pub(crate) fn profile(home: &str, confinement: &Confinement<'_>) -> String {
     // Permit reading offloaded tool outputs under ~/.cordata/offloaded even while ~/.cordata is denied.
     lines.push(format!("(allow file-read* (subpath {}))", quote(&format!("{home}/.cordata/offloaded"))));
     if !confinement.network {
-        // Loopback stays open for tests that bind a port. Names resolve through mDNSResponder's socket, so closing it
-        // keeps a command from leaking data in a DNS query; `localhost` still resolves.
-        lines.extend([
-            "(deny network-outbound)".to_owned(),
-            r#"(allow network-outbound (remote ip "localhost:*"))"#.to_owned(),
-            "(allow network-outbound (remote unix-socket))".to_owned(),
-            r#"(deny network-outbound (remote unix-socket (path-literal "/private/var/run/mDNSResponder")))"#.to_owned(),
-        ]);
-        let sockets = DENY_SOCKETS.iter().map(|s| (*s).to_owned()).chain(DENY_HOME_SOCKETS.iter().map(|s| format!("{home}/{s}")));
-        lines.extend(sockets.map(|s| format!("(deny network-outbound (remote unix-socket (path-literal {})))", quote(&s))));
+        // Loopback stays open for tests that bind a port.
+        lines.extend(["(deny network-outbound)".to_owned(), r#"(allow network-outbound (remote ip "localhost:*"))"#.to_owned()]);
+    }
+    // Unix sockets lead to local daemons that act outside this sandbox (herdr and other multiplexers start programs,
+    // Docker runs containers, ssh-agent signs): a command may reach only the sockets under the roots it may write,
+    // which is where a test's own server listens, online or not. The rules follow the network rules so they win.
+    let socket_roots = roots.iter().filter(|r| *r != "/dev").map(|r| format!("(subpath {})", quote(r))).collect::<Vec<_>>().join(" ");
+    lines.extend([
+        "(deny network-outbound (remote unix-socket))".to_owned(),
+        format!("(allow network-outbound (remote unix-socket {socket_roots}))"),
+        LAUNCHD_SOCKETS_DENY.to_owned(),
+    ]);
+    let sockets = DENY_SOCKETS.iter().map(|s| (*s).to_owned()).chain(DENY_HOME_SOCKETS.iter().map(|s| format!("{home}/{s}")));
+    lines.extend(sockets.map(|s| format!("(deny network-outbound (remote unix-socket (path-literal {})))", quote(&s))));
+    if confinement.network {
+        // Names resolve through mDNSResponder's socket. Offline it stays shut, so a DNS query cannot carry data out;
+        // `localhost` still resolves.
+        lines.push(format!("(allow network-outbound (remote unix-socket (path-literal {})))", quote(MDNS_SOCKET)));
     }
     lines.join("\n") + "\n"
 }
+
+const MDNS_SOCKET: &str = "/private/var/run/mDNSResponder";
+/// launchd's per-login sockets (ssh-agent's among them) live under `/private/tmp`, a writable root.
+const LAUNCHD_SOCKETS_DENY: &str = r#"(deny network-outbound (remote unix-socket (path-regex #"^/private/tmp/com\.apple\.launchd\.[^/]+/")))"#;
 
 pub(crate) fn scrubbed_env() -> Vec<(String, String)> {
     ENV_ALLOW.iter().filter_map(|name| std::env::var(name).ok().map(|v| ((*name).to_owned(), v))).collect()
@@ -255,7 +267,16 @@ mod tests {
         assert!(p.contains(r#"(subpath "/Users/x/.cargo/registry")"#) && !p.contains(r#""/Users/x/.cargo")"#));
         assert!(p.contains("(deny network-outbound)"));
         let online = profile("/Users/x", &Confinement { project: Path::new("/p"), network: true, writable: &[PathBuf::from("/opt/out")] });
-        assert!(!online.contains("network-outbound") && online.contains(r#"(subpath "/opt/out")"#));
+        assert!(!online.contains("(deny network-outbound)\n") && online.contains(r#"(subpath "/opt/out")"#));
+        // Unix sockets: only under the writable roots, online or not; DNS's socket only online.
+        for prof in [&p, &online] {
+            let deny = prof.find("(deny network-outbound (remote unix-socket))").expect("every unix socket is refused first");
+            let allow = prof.find("(allow network-outbound (remote unix-socket (subpath").unwrap();
+            assert!(deny < allow && prof.contains(LAUNCHD_SOCKETS_DENY));
+            assert!(!prof[allow..].lines().next().unwrap().contains("\"/dev\""));
+        }
+        assert!(online.contains(MDNS_SOCKET) && !p.contains(MDNS_SOCKET));
+        assert!(p.find("(deny network-outbound)\n").unwrap() < p.find("(deny network-outbound (remote unix-socket))").unwrap(), "the socket rules come last, so they win");
         assert!(p.contains(r#"(deny file-read* file-write* (subpath "/Users/x/.aws"))"#));
         assert!(p.contains(r#"(deny file-read* file-write* (subpath "/Users/x/.ssh"))"#));
         assert!(p.contains(r#"(deny file-read* file-write* (subpath "/Users/x/.cordata"))"#));
@@ -324,6 +345,29 @@ mod tests {
         assert!(!project.path().join(".git/hooks/pre-commit").exists());
         let commit = "echo a > a.txt && git add a.txt && git -c user.name=t -c user.email=t@t commit -qm a && git log --oneline";
         assert!(run(commit, &c, Duration::from_secs(10)).await.unwrap().contains(" a"));
+    }
+
+    #[tokio::test]
+    async fn only_sockets_under_the_writable_roots_can_be_reached() {
+        if !available() || !Path::new("/usr/bin/nc").exists() {
+            return;
+        }
+        // Socket paths are capped at 104 bytes, so both live in short folders under /private/tmp.
+        let project = tempfile::Builder::new().prefix("cdp").tempdir_in("/private/tmp").unwrap();
+        let outside = tempfile::Builder::new().prefix("cdo").tempdir_in(std::env::var("HOME").unwrap()).unwrap();
+        let listen = |path: PathBuf| std::process::Command::new("/usr/bin/nc").arg("-lU").arg(path).stdout(Stdio::null()).spawn().unwrap();
+        let (inside, away) = (project.path().join("s"), outside.path().join("s"));
+        let mut servers = [listen(inside.clone()), listen(away.clone())];
+        std::thread::sleep(Duration::from_millis(400));
+        let c = offline(project.path());
+        let reach = |path: &Path| format!("echo hi | /usr/bin/nc -U -w1 '{}'", path.display());
+        assert!(run(&reach(&inside), &c, Duration::from_secs(10)).await.is_ok(), "a test's own server in the project");
+        let online = Confinement { project: project.path(), network: true, writable: &[] };
+        assert!(run(&reach(&away), &c, Duration::from_secs(10)).await.is_err(), "a daemon's socket elsewhere, offline");
+        assert!(run(&reach(&away), &online, Duration::from_secs(10)).await.is_err(), "…and online");
+        for server in &mut servers {
+            let _ = server.kill();
+        }
     }
 
     #[tokio::test]

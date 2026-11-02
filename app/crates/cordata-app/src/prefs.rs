@@ -30,6 +30,8 @@ pub struct Prefs {
     /// `last` (the last project) · `home` · `picker` (open the project picker).
     pub open_on_launch: String,
     pub notify_approval: bool,
+    /// A notification when a thread finishes while the window is in the background.
+    pub notify_done: bool,
     pub sound_on_completion: bool,
     /// The global quick-ask hotkey brings the window forward with the composer focused.
     pub quick_ask_hotkey: bool,
@@ -58,6 +60,7 @@ impl Default for Prefs {
             send_with: "enter".into(),
             open_on_launch: "last".into(),
             notify_approval: true,
+            notify_done: true,
             sound_on_completion: false,
             quick_ask_hotkey: true,
             quick_ask_key: "ctrl-alt-space".into(),
@@ -89,7 +92,9 @@ impl Prefs {
                 prefs
             }
             Err(error) => {
-                eprintln!("cordata: {} did not parse ({error}); using defaults", path.display());
+                // The next save would replace it: keep the person's file first, as herdr does with session.json.
+                let kept = keep_damaged(path, &text, now()).map_or_else(|e| format!("could not keep a copy: {e}"), |p| format!("kept as {}", p.display()));
+                eprintln!("cordata: {} did not parse ({error}); using defaults, {kept}", path.display());
                 Self::default()
             }
         }
@@ -154,6 +159,43 @@ impl Prefs {
     }
 }
 
+/// How many damaged copies are kept beside the file; older ones go only after a new one is safely written.
+const DAMAGED_KEEP: usize = 3;
+
+/// Copies a file that did not parse to `<name>.damaged-<seconds>` beside it (owner-only), keeping the newest few.
+/// Nothing restores them on its own: the person copies one back.
+fn keep_damaged(path: &Path, text: &str, now: u64) -> std::io::Result<PathBuf> {
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else {
+        return Err(std::io::Error::other("no folder"));
+    };
+    let prefix = format!("{name}.damaged-");
+    let mut existing: Vec<PathBuf> = std::fs::read_dir(dir)?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with(&prefix)))
+        .collect();
+    // The same bytes kept already (every launch reads the damaged file again): nothing new to keep.
+    if let Some(same) = existing.iter().find(|p| std::fs::read_to_string(p).is_ok_and(|t| t == text)) {
+        return Ok(same.clone());
+    }
+    let copy = dir.join(format!("{prefix}{now}"));
+    let tmp = dir.join(format!(".{prefix}{now}.tmp"));
+    std::fs::write(&tmp, text)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+    }
+    std::fs::rename(&tmp, &copy)?;
+    existing.push(copy.clone());
+    existing.sort();
+    let surplus = existing.len().saturating_sub(DAMAGED_KEEP);
+    for old in existing.into_iter().take(surplus) {
+        let _ = std::fs::remove_file(old);
+    }
+    Ok(copy)
+}
+
 pub fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or_default()
 }
@@ -178,6 +220,46 @@ mod tests {
         std::fs::write(&file, "not toml at all [").unwrap();
         assert_eq!(Prefs::load_from(&file), Prefs::default());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_damaged_file_is_kept_before_the_defaults_replace_it() {
+        struct Dir(PathBuf);
+        impl Dir {
+            fn path(&self) -> &Path {
+                &self.0
+            }
+        }
+        impl Drop for Dir {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let dir = Dir(std::env::temp_dir().join(format!("cordata-damaged-{}", std::process::id())));
+        let _ = std::fs::remove_dir_all(dir.path());
+        std::fs::create_dir_all(dir.path()).unwrap();
+        let file = dir.path().join("prefs.toml");
+        let copies = |dir: &Path| {
+            let mut names: Vec<String> = std::fs::read_dir(dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.contains(".damaged-")).collect();
+            names.sort();
+            names
+        };
+        assert_eq!(keep_damaged(&file, "v1 [", 10).unwrap(), dir.path().join("prefs.toml.damaged-10"));
+        assert_eq!(keep_damaged(&file, "v1 [", 11).unwrap(), dir.path().join("prefs.toml.damaged-10"), "the same bytes once");
+        for (n, text) in [(12, "v2 ["), (13, "v3 ["), (14, "v4 [")] {
+            keep_damaged(&file, text, n).unwrap();
+        }
+        assert_eq!(copies(dir.path()), ["prefs.toml.damaged-12", "prefs.toml.damaged-13", "prefs.toml.damaged-14"], "the newest three");
+        std::fs::write(&file, "not toml [").unwrap();
+        assert_eq!(Prefs::load_from(&file), Prefs::default());
+        assert_eq!(copies(dir.path()).len(), 3);
+        assert!(copies(dir.path()).iter().any(|n| std::fs::read_to_string(dir.path().join(n)).unwrap() == "not toml ["));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.path().join("prefs.toml.damaged-14")).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
     }
 
     #[test]

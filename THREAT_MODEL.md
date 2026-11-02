@@ -49,18 +49,24 @@ in the parent's environment never reaches a child. The profile:
   Go modules, Gradle, Maven) and the absolute folders you list in `chat.writable`. Executable locations such as
   `~/.cargo/bin`, `~/.local/bin`, `~/.npm/_npx` or shell start-up files are not writable, so an approved command cannot
   plant something the next shell runs;
-- **makes no direct connection out**: outbound sockets go only to localhost and local Unix sockets; name lookups
-  (mDNSResponder) and the Docker daemon sockets are closed, so data cannot leave in a DNS query or through a container.
-  A call sets `network: true` to go online; its approval card says "with network access", offers no "always", no rule
-  covers it, and `chat.network: "off"` refuses it outright;
+- **makes no direct connection out**: outbound sockets go only to localhost, and name lookups (mDNSResponder) are
+  closed, so data cannot leave in a DNS query. A call sets `network: true` to go online; its approval card says "with
+  network access", offers no "always", no rule covers it, and `chat.network: "off"` refuses it outright;
+- **reaches only its own Unix sockets**, online or not: those under the folders it may write (a test's own server), never
+  launchd's per-login sockets (ssh-agent) or any daemon elsewhere. Local daemons act outside the sandbox — Docker runs
+  containers, herdr and other multiplexers start programs in their panes, Cordata.app's control socket opens threads — so
+  reaching one would be a way out;
+- **cannot change what git runs later**: `.git/config`, `.git/hooks/`, `.git/info/attributes` (and a submodule's) are
+  read-only, so `core.fsmonitor`, `core.hooksPath` and filter drivers cannot be set from a command. Commits still work;
+  `git init`, `git remote add` and `git config` inside the sandbox do not;
 - denies reading or writing `.env` files, `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.netrc`, `~/.config/gh`, `~/.docker/config.json`,
   `~/.kube/config`, `~/.cordata` (offloaded output excepted) and the other credential files listed in `sandbox.rs`.
 
 Fail closed: when `sandbox-exec` cannot be applied, commands do not run. Tool output over 6,000 characters is written
 to `~/.cordata/offloaded/` and replaced by a summary.
 
-Not covered: inside the project a command can write anything, including `.git/` (hooks, config) and code you will later
-run, and reads outside the secret paths are allowed. "Offline" means no direct sockets: a command can still ask a local
+Not covered: inside the project a command can write anything else, including code you will later run, and reads
+outside the secret paths are allowed. "Offline" means no direct sockets: a command can still ask a local
 service to reach out for it (`open https://…` hands a URL to your browser, a local model server or proxy on localhost
 forwards what it is sent). A command you approve with network access can reach any host.
 

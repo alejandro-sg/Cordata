@@ -222,6 +222,7 @@ impl Workspace {
                 let view = &s.view;
                 let active = entity.entity_id() == self.session.entity_id();
                 let waiting = !view.pending.is_empty();
+                let done = !active && view.tab_state() == cordata_view::app::TabState::Done;
                 let kind = match (&view.conn, view.turn_active) {
                     (ConnState::Connecting, _) => Dot::Hollow,
                     (ConnState::Closed { .. }, _) => Dot::Danger,
@@ -261,7 +262,9 @@ impl Workspace {
                             .child(SharedString::from(shown(&title))),
                     )
                     .when(waiting, |row| row.child(ui::badge("Approval", Tone::Amber, cx)))
-                    .when(index < 9 && !waiting, |row| row.child(ui::meta(SharedString::from(format!("⌘{}", index + 1)), cx).text_size(px(t::TEXT_LABEL))))
+                    // Finished while you were elsewhere; ⌘J goes there.
+                    .when(done, |row| row.child(ui::badge("Done", Tone::Neutral, cx)))
+                    .when(index < 9 && !waiting && !done, |row| row.child(ui::meta(SharedString::from(format!("⌘{}", index + 1)), cx).text_size(px(t::TEXT_LABEL))))
                     .when(can_close, |row| {
                         row.child(
                             ui::icon_button(("close-session", index), "×", cx)

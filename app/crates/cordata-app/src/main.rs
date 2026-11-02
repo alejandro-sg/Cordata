@@ -1,10 +1,13 @@
 //! Cordata.app — the native macOS workspace for the Cordata harness (docs/app.md).
 //!
 //!     cordata-app [--cwd DIR] [--prompt TEXT] [--selftest]
+//!     cordata-app status | ls | do <command> [arg]     (drive the open window: `control.rs`)
 //!
 //! The window runs the agent in this process (acp-core's native engine). The UI thread only draws; I/O runs on a
 //! tokio runtime (`session.rs`).
 
+mod control;
+mod detect;
 mod hud;
 mod keychain;
 mod platform;
@@ -13,6 +16,7 @@ mod session;
 mod theme;
 mod transcript;
 mod ui;
+mod vt;
 mod workspace;
 
 use std::path::PathBuf;
@@ -113,6 +117,10 @@ fn bootstrap_path() {
 }
 
 fn main() {
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    if matches!(raw.first().map(String::as_str), Some("status" | "ls" | "read" | "do")) {
+        std::process::exit(control::client(&raw));
+    }
     bootstrap_path();
     let mut args = parse_args();
     let runtime = match Runtime::new() {
@@ -173,7 +181,7 @@ fn main() {
                 let view = cx.new(|cx| Workspace::new(
                     connection.clone(),
                     args.cwd.clone(),
-                    workspace::Launch { prompt: args.prompt.clone(), selftest: args.selftest && args.prompt.is_some(), picker: open_picker, show: std::env::var("CORDATA_APP_SHOW").ok() },
+                    workspace::Launch { prompt: args.prompt.clone(), selftest: args.selftest && args.prompt.is_some(), picker: open_picker, show: std::env::var("CORDATA_APP_SHOW").ok(), control: control::enabled(), shell: true },
                     window,
                     cx,
                 ));

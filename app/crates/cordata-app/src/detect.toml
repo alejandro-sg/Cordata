@@ -1,0 +1,134 @@
+# Which coding agent runs in the dock terminal, and what it is doing — read from the terminal the way a person would.
+#
+# An agent is recognised by its foreground process (`process`: the program's name, or the script a node/bun/python
+# runtime runs). Its state is the highest-priority rule that matches; with none, recent output means `working`,
+# otherwise `idle`.
+#
+# A rule looks at `region`: "title" (what the program set as the terminal title) or "bottom" (the last `lines`
+# non-empty rows, default 15). It matches when every `all` text is there (ignoring case), at least one `any` regular
+# expression matches (when there are any), and no `not` text is there.
+#
+# Add or override agents in ~/Library/Application Support/Cordata/detect.toml (same format; an agent with the same
+# `id` replaces this one). A file that does not parse is ignored and reported; these rules stay.
+#
+# Patterns follow each agent's own interface; herdr's manifests (github.com/herdrdev/herdr, Apache-2.0) were a guide.
+
+[[agent]]
+id = "claude"
+name = "Claude Code"
+process = ["claude", "claude-code"]
+
+[[agent.rule]]
+state = "blocked"
+priority = 100
+region = "bottom"
+lines = 10
+any = [
+  '(?i)do you want to (proceed|make this edit|create|allow|run)',
+  '(?i)enter to (confirm|select).*esc to cancel',
+  '(?im)^\s*❯\s*1\.\s*yes\b',
+]
+
+[[agent.rule]]
+state = "working"
+priority = 90
+region = "title"
+any = ['^[\x{2800}-\x{28FF}\x{25D0}-\x{25D3}✳✶✻✽·] ']
+
+[[agent.rule]]
+state = "working"
+priority = 80
+region = "bottom"
+all = ["esc to interrupt"]
+
+[[agent]]
+id = "codex"
+name = "Codex"
+process = ["codex"]
+
+[[agent.rule]]
+state = "blocked"
+priority = 100
+region = "bottom"
+any = [
+  'Action Required',
+  '(?i)allow (command|this command)\?',
+  '(?i)would you like to (run|make) (the following|these)',
+  '(?i)do you trust the contents of this directory',
+  '(?i)trust this folder\?',
+]
+
+[[agent.rule]]
+state = "working"
+priority = 80
+region = "bottom"
+any = ['(?i)esc to interrupt', '(?:^| )[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏](?: |$)']
+
+[[agent]]
+id = "gemini"
+name = "Gemini CLI"
+process = ["gemini"]
+
+[[agent.rule]]
+state = "blocked"
+priority = 100
+region = "bottom"
+any = ['│ Apply this change', '│ Allow execution', '(?i)waiting for user confirmation', '(?i)│ do you want to proceed']
+
+[[agent.rule]]
+state = "working"
+priority = 80
+region = "bottom"
+all = ["esc to cancel"]
+
+[[agent]]
+id = "opencode"
+name = "OpenCode"
+process = ["opencode"]
+
+[[agent.rule]]
+state = "blocked"
+priority = 100
+region = "bottom"
+any = ['△ Permission required', '(?i)permission required']
+
+[[agent.rule]]
+state = "working"
+priority = 80
+region = "bottom"
+any = ['(?i)esc (again )?to interrupt', '(?i)ctrl\+c to interrupt', '(■|⬝){4,}']
+
+[[agent]]
+id = "cordata"
+name = "Cordata"
+process = ["acp-tui", "cordata"]
+
+# Cordata's own terminal client says what it is doing in the title (`signals.rs`).
+[[agent.rule]]
+state = "blocked"
+priority = 100
+region = "title"
+any = ['^⚠ ']
+
+[[agent.rule]]
+state = "working"
+priority = 90
+region = "title"
+any = ['^[\x{2800}-\x{28FF}] ']
+
+[[agent.rule]]
+state = "idle"
+priority = 85
+region = "title"
+any = ['^✓ ', 'cordata$']
+
+[[agent]]
+id = "aider"
+name = "aider"
+process = ["aider"]
+
+[[agent.rule]]
+state = "blocked"
+priority = 100
+region = "bottom"
+any = ['(?i)\(Y\)es/\(N\)o', '(?i)\[Yes\]:\s*$']

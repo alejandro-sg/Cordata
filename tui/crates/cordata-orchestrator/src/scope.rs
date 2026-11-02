@@ -252,7 +252,23 @@ pub fn scoped_profile<S: AsRef<str>>(root: &str, scope: &[S], home: &str) -> Str
     let base = base_profile(home);
     let (head, tail) = base.split_at(2);
     let rules = seatbelt_rules(root, scope);
-    head.iter().chain(rules.iter()).chain(tail.iter()).cloned().collect::<Vec<_>>().join("\n") + "\n"
+    let sockets = socket_rules(root);
+    head.iter().chain(rules.iter()).chain(tail.iter()).chain(sockets.iter()).cloned().collect::<Vec<_>>().join("\n") + "\n"
+}
+
+/// Unix sockets lead to local daemons that act outside the sandbox (herdr and other multiplexers start programs,
+/// Docker runs containers, ssh-agent signs). A worker reaches only sockets in its project and temporary folders, plus
+/// mDNSResponder's for name resolution; launchd's per-login sockets under `/private/tmp` stay shut.
+pub fn socket_rules(root: &str) -> Vec<String> {
+    let real = std::fs::canonicalize(root).map_or_else(|_| root.to_owned(), |p| p.to_string_lossy().into_owned());
+    vec![
+        "(deny network-outbound (remote unix-socket))".to_owned(),
+        format!(
+            "(allow network-outbound (remote unix-socket (subpath {}) (subpath \"/private/tmp\") (subpath \"/private/var/folders\") (path-literal \"/private/var/run/mDNSResponder\")))",
+            sb_string(&real)
+        ),
+        r#"(deny network-outbound (remote unix-socket (path-regex #"^/private/tmp/com\.apple\.launchd\.[^/]+/")))"#.to_owned(),
+    ]
 }
 
 #[cfg(test)]
@@ -316,5 +332,18 @@ mod tests {
         assert!(allow.contains(&format!("(subpath \"{real}/docs\")")));
         assert!(allow.contains(&format!("(literal \"{real}/calc\")")), "ancestors are writable for renames");
         assert!(allow.contains(r"add\.py\.[^/]*$"), "editor temp siblings: {allow}");
+    }
+
+    #[test]
+    fn workers_reach_only_their_own_unix_sockets_and_git_stays_read_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        let real = std::fs::canonicalize(root).unwrap().to_string_lossy().into_owned();
+        let profile = scoped_profile(root, &["src/"], "/Users/x");
+        let deny = profile.find("(deny network-outbound (remote unix-socket))").expect("sockets are refused first");
+        let allow = profile.find(&format!("(allow network-outbound (remote unix-socket (subpath \"{real}\")")).unwrap();
+        assert!(deny < allow && profile.contains("mDNSResponder") && profile.contains("com\\.apple\\.launchd"));
+        assert!(profile.trim_end().ends_with("[^/]+/\")))"), "the socket rules are last, so they win");
+        assert!(profile.contains(r"/\.git/(config|hooks"));
     }
 }

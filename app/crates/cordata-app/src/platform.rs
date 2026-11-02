@@ -58,7 +58,7 @@ pub fn play_sound(_name: &str) {}
 /// banners macOS labels "Script Editor"; there the text goes through argv to AppleScript's `on run`, never spliced into
 /// the script, so nothing in it is code.
 #[cfg(target_os = "macos")]
-pub fn notify(title: &'static str, body: &'static str) {
+pub fn notify(title: &str, body: &str) {
     if std::env::current_exe().is_ok_and(|exe| is_bundled(&exe)) {
         notify_native(title, body);
     } else {
@@ -99,7 +99,7 @@ fn notify_native(title: &str, body: &str) {
 }
 
 #[cfg(target_os = "macos")]
-fn notify_osascript(title: &'static str, body: &'static str) {
+fn notify_osascript(title: &str, body: &str) {
     let _ = std::process::Command::new("/usr/bin/osascript")
         .args(["-e", "on run argv", "-e", "display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run", title, body])
         .stdin(std::process::Stdio::null())
@@ -109,7 +109,7 @@ fn notify_osascript(title: &'static str, body: &'static str) {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn notify(_title: &'static str, _body: &'static str) {}
+pub fn notify(_title: &str, _body: &str) {}
 
 /// System dictation into the focused text box (Edit → Start Dictation): the composer must have focus first.
 #[cfg(target_os = "macos")]

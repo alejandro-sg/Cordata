@@ -93,6 +93,8 @@ pub fn line(app: &App, width: u16) -> Line<'static> {
                 TabState::Idle => ("", Color::Gray),
                 TabState::Working => ("●", Color::Yellow),
                 TabState::NeedsApproval => ("⚠", Color::Red),
+                // Finished while you were elsewhere (Ctrl+G goes there).
+                TabState::Done => ("✓", Color::Green),
                 TabState::Closed => ("✗", Color::DarkGray),
             };
             let label = if tab.active {

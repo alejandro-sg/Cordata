@@ -1,4 +1,6 @@
+mod herdr;
 mod overlay;
+mod signals;
 mod term;
 mod theme;
 mod ui;
@@ -18,7 +20,10 @@ use clap::Parser;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossterm::cursor::{Hide, Show};
-use crossterm::event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event, EventStream};
+use crossterm::event::{
+    DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste, EnableFocusChange, EnableMouseCapture, Event,
+    EventStream,
+};
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{execute, terminal};
 use futures::StreamExt;
@@ -158,6 +163,16 @@ impl Workspace {
         let next = match target {
             SwitchTarget::Next => (self.active + 1) % len,
             SwitchTarget::Prev => (self.active + len - 1) % len,
+            SwitchTarget::Attention => {
+                let states: Vec<_> = self.slots.iter().map(|slot| slot.app.tab_state()).collect();
+                match app::attention_index(&states, self.active) {
+                    Some(index) => index,
+                    None => {
+                        self.app().messages.push(Message::Info("no session is waiting for you".into()));
+                        return false;
+                    }
+                }
+            }
             SwitchTarget::Slot(number) => {
                 match self.slots.iter().position(|s| s.number == number) {
                     Some(index) => index,
@@ -213,9 +228,16 @@ async fn main() -> Result<()> {
     install_panic_hook();
     let guard = TerminalGuard::enter()?;
     let mut screen = InlineTerm::new(io::stdout());
-    let result = run(&mut workspace, &mut screen, rx, local_rx).await;
+    let herdr = herdr::Herdr::connect(|name| std::env::var(name).ok());
+    if let Some(herdr) = &herdr {
+        herdr.start();
+    }
+    let result = run(&mut workspace, &mut screen, rx, local_rx, herdr.as_ref()).await;
     let _ = screen.clear_live();
     drop(guard);
+    if let Some(herdr) = &herdr {
+        herdr.release().await;
+    }
     for slot in &mut workspace.slots {
         if let Some(handle) = slot.handle.take() {
             handle.shutdown().await;
@@ -232,7 +254,10 @@ struct TerminalGuard;
 impl TerminalGuard {
     fn enter() -> Result<Self> {
         terminal::enable_raw_mode()?;
-        execute!(io::stdout(), EnableBracketedPaste)?;
+        // Focus reports tell a finished turn the person saw from one that happened behind another window.
+        execute!(io::stdout(), EnableBracketedPaste, EnableFocusChange)?;
+        let caps = CAPS.get_or_init(|| signals::Caps::detect(|name| std::env::var(name).ok()));
+        write_raw(signals::enter(caps));
         Ok(Self)
     }
 }
@@ -262,8 +287,23 @@ fn leave_overlay_screen() {
 
 fn restore_terminal() {
     leave_overlay_screen();
-    let _ = execute!(io::stdout(), DisableBracketedPaste, Show);
+    let _ = execute!(io::stdout(), DisableBracketedPaste, DisableFocusChange, Show);
+    if let Some(caps) = CAPS.get() {
+        write_raw(&signals::restore(caps));
+    }
     let _ = terminal::disable_raw_mode();
+}
+
+/// What the terminal understands (title, progress, notifications), read once at start.
+static CAPS: std::sync::OnceLock<signals::Caps> = std::sync::OnceLock::new();
+
+fn write_raw(bytes: &str) {
+    if bytes.is_empty() {
+        return;
+    }
+    let mut out = io::stdout();
+    let _ = io::Write::write_all(&mut out, bytes.as_bytes());
+    let _ = io::Write::flush(&mut out);
 }
 
 fn install_panic_hook() {
@@ -357,8 +397,13 @@ async fn run(
     screen: &mut InlineTerm<io::Stdout>,
     mut events: mpsc::UnboundedReceiver<(usize, AppEvent)>,
     mut local: mpsc::UnboundedReceiver<(usize, LocalEvent)>,
+    herdr: Option<&herdr::Herdr>,
 ) -> Result<()> {
     let mut keys = EventStream::new();
+    let caps = CAPS.get().copied().unwrap_or_else(|| signals::Caps::detect(|name| std::env::var(name).ok()));
+    let mut shown = signals::Shown::default();
+    // Terminals that do not report focus never send FocusLost, so this stays true there.
+    let mut focused = true;
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     let mut last = None;
     let mut banner: Option<Line<'static>> = None;
@@ -395,7 +440,8 @@ async fn run(
                     last = None;
                     last_overlay = None;
                 }
-                _ => {}
+                Event::FocusGained => focused = true,
+                Event::FocusLost => focused = false,
             },
             Some((number, event)) = events.recv() => {
                 workspace.route(number, event);
@@ -422,12 +468,11 @@ async fn run(
         if let Some(effect) = workspace.app().take_queued() {
             effects.push(effect);
         }
-        if std::mem::take(&mut workspace.app().attention) && std::env::var_os("CORDATA_NOTIFY").is_none_or(|v| v != "off") {
-            // A terminal bell: the dock icon bounces / the tab lights up, in the terminals that do either.
-            let mut out = io::stdout();
-            let _ = io::Write::write_all(&mut out, b"\x07");
-            let _ = io::Write::flush(&mut out);
+        if focused {
+            // The shown session is in front of the person: what it finished is seen.
+            workspace.app().mark_seen();
         }
+        signal(workspace, &caps, &mut shown, herdr, focused);
         for effect in effects {
             let outcome = match effect {
                 Effect::Quit => return Ok(()),
@@ -498,6 +543,46 @@ async fn run(
                     .push(Message::Error(format!("session unavailable: {error}")));
             }
         }
+    }
+}
+
+/// Tells the world outside the conversation what the sessions are doing: a bell, and a desktop notification for one
+/// the person cannot see, when a session wants them; the title and progress bar; and herdr, when Cordata runs in it.
+fn signal(workspace: &mut Workspace, caps: &signals::Caps, shown: &mut signals::Shown, herdr: Option<&herdr::Herdr>, focused: bool) {
+    let active = workspace.active;
+    let mut out = String::new();
+    let mut ring = false;
+    // With one session there is no number to name it by.
+    let many = workspace.slots.len() > 1;
+    for (index, slot) in workspace.slots.iter_mut().enumerate() {
+        if !std::mem::take(&mut slot.app.attention) {
+            continue;
+        }
+        ring = true;
+        if !focused || index != active {
+            let reason = slot.app.attention_reason.clone().unwrap_or_else(|| "wants you".into());
+            let title = if many { format!("Cordata · session {}", slot.number) } else { "Cordata".into() };
+            out.extend(signals::notification(caps.notify, &title, &reason));
+        }
+    }
+    if ring && caps.bell {
+        // The dock icon bounces / the tab lights up, in the terminals that do either.
+        out.push('\x07');
+    }
+    let states: Vec<_> = workspace.slots.iter().map(|slot| slot.app.tab_state()).collect();
+    let state = signals::overall(&states);
+    let app = &workspace.slots[active].app;
+    out.push_str(&shown.update(caps, state, app.spinner, &app.title()));
+    write_raw(&out);
+
+    if let Some(herdr) = herdr {
+        let blocked = workspace.slots.iter().find_map(|slot| slot.app.pending.front().map(|p| p.info.title.clone()));
+        let lifecycle = match state.lifecycle() {
+            "done" => "idle",
+            other => other,
+        };
+        let session = workspace.slots[active].app.session.as_ref().map(|s| s.session_id.clone());
+        herdr.report(herdr::Report { state: lifecycle, message: blocked.filter(|_| lifecycle == "blocked"), session });
     }
 }
 

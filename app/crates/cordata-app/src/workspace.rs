@@ -85,6 +85,7 @@ actions!(
         CloseSession,
         NextSession,
         PrevSession,
+        NextAttention,
         CommandMenu,
         OpenPalette,
         SwitchProject,
@@ -155,6 +156,8 @@ pub struct Workspace {
     pub(super) file_filter: Entity<InputState>,
     pub(super) review: review::Review,
     pub(super) terminal: terminal::Terminal,
+    /// Start the dock shell when the Terminal tab is shown (`Launch::shell`).
+    shell_on_show: bool,
     pub(super) settings_view: settings_view::SettingsView,
     /// The window's own preferences.
     pub(super) prefs: Prefs,
@@ -213,6 +216,10 @@ pub struct Launch {
     pub picker: bool,
     /// `CORDATA_APP_SHOW`: open one surface at launch for layout checks — `terminal`, `about`, or `settings:<section>`.
     pub show: Option<String>,
+    /// Serve `cordata-app status|ls|do` (`control.rs`). Off in tests, which must not take the real socket.
+    pub control: bool,
+    /// Start a real shell when the Terminal tab is first shown. Off in tests, which start one by clicking.
+    pub shell: bool,
 }
 
 #[derive(Default)]
@@ -238,7 +245,10 @@ pub fn cordata_home() -> PathBuf {
 
 impl Workspace {
     pub fn new(connection: Connection, cwd: PathBuf, launch: Launch, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let Launch { prompt: initial_prompt, selftest, picker, show } = launch;
+        let Launch { prompt: initial_prompt, selftest, picker, show, control, shell } = launch;
+        if control {
+            Self::serve_control(window, cx);
+        }
         let prefs = cx.try_global::<Prefs>().cloned().unwrap_or_default();
         let composer = cx.new(|cx| TextareaState::new(window, cx).auto_grow(2, 10).submit_on_enter(prefs.send_with != "cmd-enter").placeholder("Ask anything, @mention files, or type / for commands…"));
         let display = cx.try_global::<Display>().copied().unwrap_or_default();
@@ -255,9 +265,12 @@ impl Workspace {
         let terminal = terminal::Terminal::new(window, cx);
         let settings_view = settings_view::SettingsView::default();
         let subscriptions = vec![
-            cx.observe_window_activation(window, |this: &mut Self, window, _| {
+            cx.observe_window_activation(window, |this: &mut Self, window, cx| {
                 if window.is_window_active() {
                     this.notified_away = false;
+                    // Back in front: what the shown thread finished meanwhile is seen now.
+                    this.session.update(cx, |s, _| s.view.mark_seen());
+                    cx.notify();
                 }
             }),
             cx.subscribe_in(&composer, window, Self::on_composer),
@@ -317,6 +330,7 @@ impl Workspace {
             file_filter,
             review: review::Review::default(),
             terminal,
+            shell_on_show: shell,
             settings_view,
             prefs,
             overlays: Vec::new(),
@@ -378,6 +392,9 @@ impl Workspace {
             _ if what == "terminal" => {
                 self.panel_open = true;
                 self.dock_tab = DockTab::Terminal;
+                if self.shell_on_show {
+                    self.ensure_terminal(cx);
+                }
             }
             _ => {}
         }
@@ -399,6 +416,96 @@ impl Workspace {
     }
 
     /// The quick-ask hotkey from anywhere: the window comes forward with the composer focused.
+    /// `cordata-app status|ls|do`: requests from the control socket, answered on the UI thread.
+    fn serve_control(window: &mut Window, cx: &mut Context<Self>) {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        crate::control::listen(tx);
+        cx.spawn_in(window, async move |this, cx| {
+            while let Some(request) = rx.recv().await {
+                let crate::control::Request { line, reply } = request;
+                let answered = this.update_in(cx, |this, window, cx| this.on_control(&line, window, cx));
+                match answered {
+                    Ok(value) => {
+                        let _ = reply.send(value);
+                    }
+                    Err(_) => break,
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// The agent in the dock terminal, if one is recognised (`detect.rs`).
+    fn control_agent(&self) -> serde_json::Value {
+        self.terminal.detection.as_ref().map_or(serde_json::Value::Null, |d| serde_json::json!({"id": d.id, "name": d.name, "state": d.state.label()}))
+    }
+
+    /// One thread as a script sees it.
+    fn control_thread(&self, index: usize, cx: &App) -> serde_json::Value {
+        let entity = &self.sessions[index];
+        let view = &entity.read(cx).view;
+        serde_json::json!({
+            "n": index + 1,
+            "title": view.title(),
+            "state": view.tab_state().lifecycle(),
+            "shown": entity.entity_id() == self.session.entity_id(),
+            "session_id": view.session.as_ref().map(|s| s.session_id.clone()),
+        })
+    }
+
+    fn on_control(&mut self, request: &serde_json::Value, window: &mut Window, cx: &mut Context<Self>) -> serde_json::Value {
+        use serde_json::json;
+        let shown = |this: &Self| this.sessions.iter().position(|s| s.entity_id() == this.session.entity_id()).unwrap_or(0);
+        let arg = request.get("arg").and_then(serde_json::Value::as_str).map(str::trim).filter(|a| !a.is_empty());
+        match (request.get("cmd").and_then(serde_json::Value::as_str), request.get("action").and_then(serde_json::Value::as_str)) {
+            (Some("status"), _) => json!({"ok": true, "project": self.cwd.display().to_string(), "threads": self.sessions.len(), "thread": self.control_thread(shown(self), cx), "terminal_agent": self.control_agent()}),
+            (Some("ls"), _) => json!({"ok": true, "threads": (0..self.sessions.len()).map(|i| self.control_thread(i, cx)).collect::<Vec<_>>()}),
+            // herdr's `pane read`: what the dock terminal shows, as text.
+            (Some("read"), _) => match self.terminal_text(cx) {
+                Some(text) => json!({"ok": true, "title": text.title, "lines": text.lines, "exited": text.exited, "agent": self.control_agent()}),
+                None => json!({"ok": false, "error": "no terminal is running; `cordata-app do run <command>` starts one"}),
+            },
+            (Some("do"), Some(action)) => {
+                match (action, arg) {
+                    ("new", None) => self.open_new(window, cx),
+                    ("close", None) => self.close_active(cx),
+                    ("next", None) => self.switch(SwitchTarget::Next, cx),
+                    ("prev", None) => self.switch(SwitchTarget::Prev, cx),
+                    ("attention", None) => self.switch(SwitchTarget::Attention, cx),
+                    ("switch", Some(n)) => match n.parse::<usize>() {
+                        Ok(n) if (1..=self.sessions.len()).contains(&n) => self.switch(SwitchTarget::Slot(n), cx),
+                        _ => return json!({"ok": false, "error": format!("no thread {n}; `cordata-app ls` lists them")}),
+                    },
+                    ("prompt", Some(text)) => {
+                        let session = self.session.clone();
+                        if !session.read(cx).view.input_enabled() {
+                            return json!({"ok": false, "error": "the shown thread is busy or waiting for an approval"});
+                        }
+                        session.update(cx, |s, cx| s.submit(text, cx));
+                    }
+                    // herdr's `pane run`: types a command into the dock terminal (your shell) and presses Return.
+                    ("run", Some(command)) => {
+                        if !self.panel_open || self.dock_tab != DockTab::Terminal {
+                            self.switch_dock(DockTab::Terminal, cx);
+                        }
+                        self.ensure_terminal(cx);
+                        if !self.terminal_type(&format!("{command}\r")) {
+                            return json!({"ok": false, "error": "the terminal is not running"});
+                        }
+                    }
+                    ("focus", None) => {
+                        cx.activate(true);
+                        window.activate_window();
+                    }
+                    _ => return json!({"ok": false, "error": format!("unknown command `{action}`{}", arg.map_or(String::new(), |a| format!(" {a}")))}),
+                }
+                cx.notify();
+                json!({"ok": true, "thread": self.control_thread(shown(self), cx)})
+            }
+            _ => json!({"ok": false, "error": "expected {\"cmd\": \"status\" | \"ls\" | \"do\"}"}),
+        }
+    }
+
     fn watch_hotkey(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.apply_hotkey() {
             eprintln!("cordata: {} is taken by another app; quick ask is off", self.quick_ask_combo().label);
@@ -457,6 +564,7 @@ impl Workspace {
     }
 
     pub(super) fn show(&mut self, session: Entity<Session>, cx: &mut Context<Self>) {
+        session.update(cx, |s, _| s.view.mark_seen());
         self.session = session;
         let len = self.session.read(cx).view.messages.len();
         self.transcript.reset(len);
@@ -500,6 +608,19 @@ impl Workspace {
             SwitchTarget::Next => (index + 1) % len,
             SwitchTarget::Prev => (index + len - 1) % len,
             SwitchTarget::Slot(n) => n.saturating_sub(1).min(len - 1),
+            SwitchTarget::Attention => {
+                use cordata_view::app::TabState;
+                let states: Vec<_> = self.sessions.iter().map(|s| s.read(cx).view.tab_state()).collect();
+                let next = cordata_view::app::attention_index(&states, index);
+                // A thread waiting on an approval first, then an agent waiting in the terminal, then a Done thread.
+                let terminal_waits = self.terminal.blocked() && !(self.panel_open && self.dock_tab == DockTab::Terminal);
+                match next {
+                    Some(next) if states[next] == TabState::NeedsApproval => next,
+                    _ if terminal_waits => return self.switch_dock(DockTab::Terminal, cx),
+                    Some(next) => next,
+                    None => return,
+                }
+            }
         };
         let session = self.sessions[next].clone();
         self.show(session, cx);
@@ -664,6 +785,8 @@ impl Workspace {
         match tab {
             DockTab::Files => self.load_tree(cx),
             DockTab::Review => self.load_review(cx),
+            // The shell starts the first time the pane is shown (tests click to start one).
+            DockTab::Terminal if self.shell_on_show => self.ensure_terminal(cx),
             _ => {}
         }
         cx.notify();
@@ -675,6 +798,11 @@ impl Workspace {
 
     fn prev_session(&mut self, _: &PrevSession, _: &mut Window, cx: &mut Context<Self>) {
         self.switch(SwitchTarget::Prev, cx);
+    }
+
+    /// ⌘J: the thread that needs you — one waiting on an approval, then one that finished while you were elsewhere.
+    fn next_attention(&mut self, _: &NextAttention, _: &mut Window, cx: &mut Context<Self>) {
+        self.switch(SwitchTarget::Attention, cx);
     }
 
     /// ⌘K: the command menu — the composer with `/` typed, so every command (and custom one) is listed and narrows as
@@ -1040,6 +1168,7 @@ impl Workspace {
         } else {
             self.set_panel(true, cx);
             self.switch_dock(DockTab::Terminal, cx);
+            { let focus = self.terminal.focus.clone(); window.focus(&focus, cx); }
         }
     }
 
@@ -1350,10 +1479,23 @@ impl Workspace {
             (view.turn_active, !view.pending.is_empty())
         };
         let was = self.turn_seen.insert(id, active).unwrap_or(false);
-        if was && !active
-            && self.prefs.sound_on_completion {
+        let in_front = window.is_window_active();
+        if !active && in_front && id == self.session.entity_id() {
+            // Finished in front of the person: nothing to mark Done.
+            session.update(cx, |s, _| s.view.mark_seen());
+        }
+        if was && !active {
+            if self.prefs.sound_on_completion {
                 crate::platform::play_sound("Glass");
             }
+            let (unseen, title) = {
+                let view = &session.read(cx).view;
+                (view.unseen, view.title())
+            };
+            if unseen && !in_front && self.prefs.notify_done && !pending {
+                crate::platform::notify("Cordata finished", &title);
+            }
+        }
         if pending {
             let first = self.pending_seen.insert(id);
             if should_notify(first, self.prefs.notify_approval, window.is_window_active(), self.notified_away) {
@@ -1466,7 +1608,7 @@ impl Render for Workspace {
         let header = self.header(column_w, cx);
         let composer = self.composer(cx);
         let status_bar = self.status_bar(cx);
-        let panel = self.panel_open.then(|| self.side_panel(window_w, cx));
+        let panel = self.panel_open.then(|| self.side_panel(window_w, window, cx));
         let overlays = self.overlay_layer(window, cx);
         let haze = self.prefs.haze && self.display.atmosphere();
         let drop_ring = crate::theme::amber(cx, t::AMBER_BORDER_STRONG);
@@ -1484,6 +1626,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::new_session))
             .on_action(cx.listener(Self::close_session))
             .on_action(cx.listener(Self::next_session))
+            .on_action(cx.listener(Self::next_attention))
             .on_action(cx.listener(Self::prev_session))
             .on_action(cx.listener(Self::command_menu))
             .on_action(cx.listener(Self::open_palette))
@@ -1575,12 +1718,18 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         gpui::KeyBinding::new("escape", StopTurn, Some("Workspace")),
         gpui::KeyBinding::new("cmd-.", StopTurn, Some("Workspace")),
+        // In the terminal these keys belong to the program (vim's Escape, readline's ⌃R, ⌃K, ⌃E).
+        gpui::KeyBinding::new("escape", gpui::NoAction, Some("CordataTerminal")),
+        gpui::KeyBinding::new("ctrl-k", gpui::NoAction, Some("CordataTerminal")),
+        gpui::KeyBinding::new("ctrl-r", gpui::NoAction, Some("CordataTerminal")),
+        gpui::KeyBinding::new("ctrl-e", gpui::NoAction, Some("CordataTerminal")),
         gpui::KeyBinding::new("cmd-l", FocusComposer, Some("Workspace")),
         gpui::KeyBinding::new("cmd-n", NewSession, Some("Workspace")),
         gpui::KeyBinding::new("cmd-w", CloseSession, Some("Workspace")),
         gpui::KeyBinding::new("cmd-w", CloseSession, Some("CordataEditor")),
         gpui::KeyBinding::new("cmd-]", NextSession, Some("Workspace")),
         gpui::KeyBinding::new("cmd-[", PrevSession, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-j", NextAttention, Some("Workspace")),
         gpui::KeyBinding::new("cmd-k", OpenPalette, Some("Workspace")),
         gpui::KeyBinding::new("ctrl-k", CommandMenu, Some("Workspace")),
         gpui::KeyBinding::new("cmd-o", SwitchProject, Some("Workspace")),
@@ -1669,6 +1818,7 @@ pub fn install_menus(cx: &mut App) {
         Menu::new("Go").items([
             MenuItem::action("Next Thread", NextSession),
             MenuItem::action("Previous Thread", PrevSession),
+            MenuItem::action("Thread That Needs You", NextAttention),
             MenuItem::separator(),
             MenuItem::action("Files", ShowFiles),
             MenuItem::action("Editor", ShowEditor),
@@ -1771,6 +1921,65 @@ mod window_tests {
         cx.simulate_keystrokes("cmd-w");
         cx.run_until_parked();
         assert_eq!(view.read_with(cx, |this, _| this.sessions.len()), 1, "…but never the last one");
+    }
+
+    #[gpui::test]
+    fn cmd_j_goes_to_the_thread_that_finished_unseen_and_showing_it_clears_done(cx: &mut TestAppContext) {
+        use cordata_view::app::TabState;
+        let (view, cx) = workspace(cx);
+        cx.simulate_keystrokes("cmd-n");
+        cx.run_until_parked();
+        // The first thread finished while the second was shown.
+        view.update(cx, |this, cx| {
+            this.sessions[0].update(cx, |s, _| {
+                s.view.conn = cordata_view::app::ConnState::Connected;
+                s.view.unseen = true;
+            });
+        });
+        assert_eq!(view.read_with(cx, |this, cx| this.sessions[0].read(cx).view.tab_state()), TabState::Done);
+        cx.simulate_keystrokes("cmd-j");
+        cx.run_until_parked();
+        let (shown_first, state) = view.read_with(cx, |this, cx| {
+            (this.session.entity_id() == this.sessions[0].entity_id(), this.sessions[0].read(cx).view.tab_state())
+        });
+        assert!(shown_first, "⌘J shows the thread that wants you");
+        assert_eq!(state, TabState::Idle, "…and once shown it is seen");
+        cx.simulate_keystrokes("cmd-j");
+        cx.run_until_parked();
+        assert!(view.read_with(cx, |this, _| this.session.entity_id() == this.sessions[0].entity_id()), "nothing else waits: ⌘J stays");
+    }
+
+    #[gpui::test]
+    fn cmd_j_opens_the_terminal_when_its_agent_waits_but_an_approval_comes_first(cx: &mut TestAppContext) {
+        let (view, cx) = workspace(cx);
+        let waiting = crate::detect::Detection { id: "claude".into(), name: "Claude Code".into(), state: crate::detect::State::Blocked };
+        view.update(cx, |this, cx| {
+            this.set_panel(false, cx);
+            this.terminal.detection = Some(waiting);
+        });
+        cx.simulate_keystrokes("cmd-j");
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |this, _| (this.panel_open, this.dock_tab)), (true, super::DockTab::Terminal), "⌘J shows the waiting agent");
+
+        // A thread waiting on an approval outranks it.
+        cx.simulate_keystrokes("cmd-n");
+        cx.run_until_parked();
+        let rx = view.update(cx, |this, cx| {
+            let first = this.sessions[0].clone();
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let info = acp_core::PermissionInfo { tool_call_id: "c".into(), tool_name: "run_command".into(), title: "Run run_command".into(), kind: acp_core::ToolKind::Execute, raw_input: None, always_label: None };
+            first.update(cx, |s, _| {
+                s.view.conn = cordata_view::app::ConnState::Connected;
+                s.view.on_event(acp_core::AppEvent::PermissionRequested { info, decision: tx });
+            });
+            this.set_panel(false, cx);
+            rx
+        });
+        cx.simulate_keystrokes("cmd-j");
+        cx.run_until_parked();
+        let (shown_first, panel) = view.read_with(cx, |this, _| (this.session.entity_id() == this.sessions[0].entity_id(), this.panel_open));
+        assert!(shown_first && !panel, "the approval first, the terminal next time");
+        drop(rx);
     }
 
     fn ask(view: &gpui::Entity<Workspace>, cx: &mut VisualTestContext, tool: &str) -> tokio::sync::oneshot::Receiver<acp_core::ApprovalDecision> {

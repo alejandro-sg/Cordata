@@ -413,6 +413,10 @@ impl Workspace {
             this.prefs.notify_approval = on;
             this.save_prefs(cx);
         }, cx);
+        let notify_done = self.toggle("notify-done", self.prefs.notify_done, "Notify when a thread finishes in the background", |this, on, cx| {
+            this.prefs.notify_done = on;
+            this.save_prefs(cx);
+        }, cx);
         let sound = self.toggle("sound-done", self.prefs.sound_on_completion, "Sound on completion", |this, on, cx| {
             this.prefs.sound_on_completion = on;
             this.save_prefs(cx);
@@ -437,6 +441,7 @@ impl Workspace {
             setting_row("Send message with", "The other key adds a new line.", send, cx),
             sub_heading("notifications", cx),
             setting_row("Notify when approval is needed", "A system notification when a command waits for you and the window is in the back.", notify, cx),
+            setting_row("Notify when a thread finishes", "A system notification when a thread finishes while the window is in the back; it stays marked Done until you look (⌘J goes there).", notify_done, cx),
             setting_row("Sound on completion", "A short sound when a turn finishes.", sound, cx),
         ]
     }

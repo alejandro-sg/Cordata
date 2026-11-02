@@ -29,6 +29,45 @@ with Files, Editor, Review (per-hunk keep/revert, git and pull requests) and Ter
 conversation reducer. Like the terminal client, sessions are saved and resumable (`/history`, `/resume`, `/forget`),
 edits and commands ask first unless your `chat.allow` rules say otherwise, and there are no modes, undo or goal loops.
 
+Every thread in the rail shows what it is doing; one that finished while you were elsewhere is marked **Done** until
+you look, and ⌘J (Go → Thread That Needs You) goes to the next one waiting on an approval, then the next Done one. A
+notification says when a thread finishes or needs you while the window is in the back (Settings → General).
+
+### Driving the window from a shell
+
+```bash
+cordata-app status            # the shown thread: title, state (working, blocked, done, idle), session id
+cordata-app ls                # every open thread
+cordata-app read              # what the dock terminal shows, as text (and the shell's exit code once it ended)
+cordata-app do new            # also: close, next, prev, switch N, attention, focus, prompt TEXT
+cordata-app do run 'cargo test'   # types a command into the dock terminal and presses Return
+```
+
+### The dock terminal
+
+Terminal (⌃`, ⌘⌥5) is a real terminal: your login shell in the project on a PTY, parsed by `alacritty_terminal` (the
+emulator Zed's terminal uses), so full-screen programs — `claude`, `vim`, `htop`, `less` — work, in 256 colours and
+true colour, sized to the pane. It is your shell with your rights, like Terminal.app: the agent's sandbox does not apply,
+and the agent never types into it (`cordata-app do run` is you, from another shell). Keys go to the program — Escape,
+⌃R, ⌃K and ⌃E included — except ⌘ shortcuts, which stay the window's; ⌘V pastes (bracketed, so a pasted newline does
+not run anything early); the wheel scrolls the history, or acts as arrow keys in a full-screen program without mouse
+support. A program may copy to the clipboard (OSC 52) but not read it. The strip shows the program's title and, after
+the shell ends, its exit code and Restart.
+
+**Agents in the terminal.** When a coding agent runs there — Claude Code, Codex, Gemini CLI, OpenCode, aider, or
+Cordata's own terminal client — the strip names it and says whether it is working, **blocked** (waiting for your
+answer) or idle. The agent is recognised by the terminal's foreground process (through node, bun, python or a shell
+wrapper), its state by rules over the title and the bottom rows, and recent output as working when no rule decides.
+A blocked agent sends a notification when the terminal is not in front of you (Settings → General → approvals), and
+⌘J goes to it after any thread waiting on an approval. `cordata-app status` and `read` report it as `terminal_agent` /
+`agent`. The rules are data (`app/crates/cordata-app/src/detect.toml`); add or override an agent in
+`~/Library/Application Support/Cordata/detect.toml` — a file that does not parse is flagged in the strip and the
+built-in rules stay.
+
+One JSON line each way over `~/Library/Application Support/Cordata/cordata-app.sock` (owner-only; the window checks
+the connecting process's user, not just the file's mode). A prompt sent this way still asks before any edit or command,
+and the chat sandbox cannot reach the socket. `CORDATA_APP_CONTROL=off` keeps the window from listening.
+
 ## Crates (`app/crates`)
 
 - `cordata-view`: the state the terminal and the app share: the reducer (`App::on_event`), slash commands, input, menus,

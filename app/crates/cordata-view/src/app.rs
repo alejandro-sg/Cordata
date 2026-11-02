@@ -113,6 +113,18 @@ pub enum SwitchTarget {
     Next,
     Prev,
     Slot(usize),
+    /// The next session that wants the person: one waiting on an approval first, then one that finished unseen.
+    Attention,
+}
+
+/// Where `SwitchTarget::Attention` goes from `active`: the next session (wrapping, the shown one last) that needs an
+/// approval, else the next that finished while nobody was looking. `None` when nothing wants the person.
+pub fn attention_index(states: &[TabState], active: usize) -> Option<usize> {
+    let len = states.len();
+    let order = (1..=len).map(|step| (active + step) % len);
+    [TabState::NeedsApproval, TabState::Done]
+        .into_iter()
+        .find_map(|wanted| order.clone().find(|&i| states[i] == wanted))
 }
 
 /// One session's badge in the footer's tab strip (filled in by `main`).
@@ -129,7 +141,21 @@ pub enum TabState {
     Idle,
     Working,
     NeedsApproval,
+    /// Finished (or failed) while the person was looking elsewhere; `Idle` once they have seen it.
+    Done,
     Closed,
+}
+
+impl TabState {
+    /// The lifecycle word other tools use (herdr, the terminal title): `working`, `blocked`, `done` or `idle`.
+    pub fn lifecycle(self) -> &'static str {
+        match self {
+            TabState::Working => "working",
+            TabState::NeedsApproval => "blocked",
+            TabState::Done => "done",
+            TabState::Connecting | TabState::Idle | TabState::Closed => "idle",
+        }
+    }
 }
 
 pub struct App {
@@ -191,6 +217,10 @@ pub struct App {
     last_turn_secs: f64,
     /// Something wants the person (an approval, a long turn finished): the terminal is rung once, then this clears.
     pub attention: bool,
+    /// A turn ended that the person has not looked at yet (the tab shows `Done` until `mark_seen`).
+    pub unseen: bool,
+    /// What the last attention was for, worded for a desktop notification.
+    pub attention_reason: Option<String>,
     /// The full-screen overlay in front of the conversation (command deck, HUD, diff review), if one is open.
     pub overlay: Option<crate::overlay::Overlay>,
     /// Builds an overlay when one is asked for: the front end's (`overlay::none` for one that draws these its own way).
@@ -245,6 +275,8 @@ impl App {
             suggestion: None,
             last_turn_secs: 0.0,
             attention: false,
+            unseen: false,
+            attention_reason: None,
             overlay: None,
             overlay_factory: crate::overlay::none,
             note: None,
@@ -258,8 +290,19 @@ impl App {
             ConnState::Closed { .. } => TabState::Closed,
             ConnState::Connected if !self.pending.is_empty() => TabState::NeedsApproval,
             ConnState::Connected if self.turn_active => TabState::Working,
+            ConnState::Connected if self.unseen => TabState::Done,
             ConnState::Connected => TabState::Idle,
         }
+    }
+
+    /// The person is looking at this session: a finished turn stops counting as `Done`.
+    pub fn mark_seen(&mut self) {
+        self.unseen = false;
+    }
+
+    fn want_attention(&mut self, reason: String) {
+        self.attention = true;
+        self.attention_reason = Some(reason);
     }
 
     /// What the thread is called in lists: the first thing asked, shortened.
@@ -395,7 +438,7 @@ impl App {
                 {
                     card.raw_input = Some(input);
                 }
-                self.attention = true;
+                self.want_attention(format!("needs approval: {}", info.title));
                 self.pending.push_back(PendingPermission {
                     info,
                     decision: Some(decision),
@@ -410,8 +453,11 @@ impl App {
                 // A turn may have switched branches.
                 self.branch = crate::extras::git_branch(&self.project_dir());
                 self.suggestion = matches!(reason, StopReason::EndTurn).then(|| crate::extras::suggest_next(&self.messages)).flatten();
+                if !matches!(reason, StopReason::Cancelled) {
+                    self.unseen = true;
+                }
                 if self.last_turn_secs >= 20.0 {
-                    self.attention = true;
+                    self.want_attention(format!("finished after {:.0}s", self.last_turn_secs));
                 }
                 if matches!(reason, StopReason::Cancelled) {
                     self.return_queue_to_input();
@@ -423,6 +469,8 @@ impl App {
             }
             AppEvent::TurnFailed(error) => {
                 self.end_turn();
+                self.unseen = true;
+                self.want_attention("the turn failed".into());
                 self.return_queue_to_input();
                 let clean_err = if error.contains("ApiKeyEnvNotFound") || error.contains("NoAuthFound") {
                     let provider = if error.contains("Anthropic") { "Anthropic" } else { "the configured" };
@@ -580,6 +628,10 @@ impl App {
         }
         if ctrl && key.code == KeyCode::Left {
             return Some(Effect::SwitchSession(SwitchTarget::Prev));
+        }
+        // "Go to the one that needs me": an approval first, then a turn that finished unseen.
+        if ctrl && key.code == KeyCode::Char('g') {
+            return Some(Effect::SwitchSession(SwitchTarget::Attention));
         }
         if alt && let KeyCode::Char(c @ '1'..='9') = key.code {
             return Some(Effect::SwitchSession(SwitchTarget::Slot(
@@ -1117,6 +1169,37 @@ mod tests {
         // The banner is covered by its own test; most tests want an empty transcript.
         app.messages.clear();
         app
+    }
+
+    #[test]
+    fn a_finished_turn_is_done_until_seen_and_a_cancelled_one_is_not() {
+        let mut app = connected();
+        app.begin_turn("x".into());
+        assert_eq!(app.tab_state(), TabState::Working);
+        app.on_event(AppEvent::TurnComplete(StopReason::EndTurn));
+        assert_eq!(app.tab_state(), TabState::Done);
+        assert_eq!(app.tab_state().lifecycle(), "done");
+        app.mark_seen();
+        assert_eq!(app.tab_state(), TabState::Idle);
+        app.begin_turn("y".into());
+        app.on_event(AppEvent::TurnComplete(StopReason::Cancelled));
+        assert_eq!(app.tab_state(), TabState::Idle, "the person cancelled it, so there is nothing new to see");
+        app.begin_turn("z".into());
+        app.on_event(AppEvent::TurnFailed("boom".into()));
+        assert_eq!(app.tab_state(), TabState::Done);
+        assert!(app.attention && app.attention_reason.as_deref() == Some("the turn failed"));
+    }
+
+    #[test]
+    fn attention_goes_to_an_approval_first_then_a_done_session() {
+        use TabState::*;
+        assert_eq!(attention_index(&[Idle, Done, Working, NeedsApproval], 0), Some(3));
+        assert_eq!(attention_index(&[Idle, Done, Working, Idle], 0), Some(1));
+        assert_eq!(attention_index(&[Done, Idle, Done], 0), Some(2), "the next one after the shown session");
+        assert_eq!(attention_index(&[NeedsApproval, Idle], 0), Some(0), "the shown one comes last");
+        assert_eq!(attention_index(&[Idle, Working], 1), None);
+        assert_eq!(attention_index(&[], 0), None);
+        assert_eq!(connected().on_key(ctrl('g')), Some(Effect::SwitchSession(SwitchTarget::Attention)));
     }
 
     #[test]

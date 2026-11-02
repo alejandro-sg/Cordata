@@ -53,9 +53,26 @@ network and write scope commands run under. Any `*.md` in `.cordata/commands/` (
 | `a` / `r` | allow / reject a pending tool call; `s` allows that tool for the session; `w` rejects and says why |
 | Esc / Ctrl+C | cancel the turn (inert while the approval box is open: answer it first) |
 | Ctrl+K | command deck: views, sessions and every command, searchable |
+| Ctrl+N · Ctrl+←/→ · Alt+1…9 | new session · previous/next · session n |
+| Ctrl+G | the session that needs you: an approval first, then one that finished unseen (`✓` in the footer) |
 | F4 | diff review: files, hunks, line numbers |
 | `?` or F1 | all keys and commands |
 | Ctrl+Q | quit |
+
+### Knowing when a session needs you
+
+Each session in the footer is working (`●`), waiting for an approval (`⚠`), finished while you were elsewhere (`✓`,
+until you look) or idle. Outside the conversation:
+
+- **Title.** The window or tab title is the thread with a spinner while working, `⚠` when blocked, `✓` when done
+  (the terminal's own title comes back on exit). `CORDATA_TITLE=off` leaves it alone.
+- **Progress.** Ghostty and Windows Terminal show a progress indicator while a turn runs (OSC 9;4).
+- **Notifications.** An approval, a failed turn or a long turn rings the bell; in iTerm2, WezTerm and Ghostty a
+  desktop notification says which session and why, when the terminal is in the background or the session is not the
+  one shown. `CORDATA_NOTIFY=off` silences both.
+- **herdr.** Inside a [herdr](https://herdr.dev) pane Cordata reports its state (and why it is blocked) to herdr, so
+  it shows in herdr's agent list and `herdr agent wait`, and gives the command that resumes the session
+  (`cordata --resume <id>`) after a herdr restart. `CORDATA_HERDR=off` turns it off.
 
 ### Approvals, rules and the sandbox
 
