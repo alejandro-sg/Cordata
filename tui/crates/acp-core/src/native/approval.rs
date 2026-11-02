@@ -13,15 +13,24 @@ pub(crate) enum Verdict {
     Deny(String),
 }
 
+/// What "always allow" remembers: the tool, and for a command whether it reached the network, so allowing offline
+/// commands for the session never lets one go online without asking.
+pub(crate) fn always_key(name: &str, args: &Value) -> String {
+    if name == "run_command" && crate::policy::wants_network(args) { "run_command with network access".into() } else { name.to_owned() }
+}
+
 pub(crate) fn request(id: &str, name: &str, args: &Value) -> PermissionInfo {
     let kind: ToolKind = tools::kind_of(name);
+    let what = always_key(name, args);
+    // Network access is granted call by call: the card offers no "always".
+    let online = name == "run_command" && crate::policy::wants_network(args);
     PermissionInfo {
         tool_call_id: id.to_owned(),
         tool_name: name.to_owned(),
-        title: format!("Run {name}"),
+        title: format!("Run {what}"),
         kind,
         raw_input: Some(args.clone()),
-        always_label: Some(format!("Always allow {name} this session")),
+        always_label: (!online).then(|| format!("Always allow {what} this session")),
     }
 }
 
@@ -46,6 +55,10 @@ mod tests {
         assert_eq!(info.tool_name, "run_command");
         assert_eq!(info.kind, ToolKind::Execute);
         assert!(info.always_label.as_deref().is_some_and(|l| l.contains("run_command")));
+        let online = request("c2", "run_command", &json!({"cmd":"cargo fetch","network":true}));
+        assert_eq!(online.title, "Run run_command with network access");
+        assert!(online.always_label.is_none(), "network access is never allowed for the session");
+        assert_ne!(always_key("run_command", &json!({"network":true})), always_key("run_command", &json!({})));
     }
 
     #[test]

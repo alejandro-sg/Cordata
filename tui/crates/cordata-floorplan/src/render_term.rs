@@ -47,7 +47,7 @@ pub fn render_terminal(fp: &Floorplan, color: bool) -> String {
             fp.active_scope.join(", ")
         ));
     }
-    out.push_str("\n");
+    out.push('\n');
 
     // Group components into layers / sections
     let mut layer_groups: Vec<(usize, Vec<&Component>)> = Vec::new();

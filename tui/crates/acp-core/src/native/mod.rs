@@ -1,10 +1,5 @@
-//! `NativeSession`: an in-process agent, no Python child. Selected with `BackendTransport::Native`
-//! (`acp-tui --transport native`); it speaks the same `Command` / `AppEvent` contract as the ACP
-//! connection, so the UI cannot tell the difference.
-//!
-//! Prototype scope: a streaming chat loop over `genai` (Anthropic, Gemini, OpenAI, Ollama).
-//! Tools, the permission gate and sandboxed commands are the next step (migration plan, Phase 2);
-//! until then a native session answers but does not act.
+//! The in-process agent: a streaming chat loop over `genai` (Anthropic, Gemini, OpenAI, Ollama), its tools, the
+//! permission gate and sandboxed commands. Front ends drive it through `SessionHandle` and read `AppEvent`s.
 
 mod approval;
 mod engine;
@@ -14,3 +9,6 @@ mod sandbox;
 mod tools;
 
 pub(crate) use engine::run;
+pub(crate) use provider::Msg;
+#[cfg(test)]
+pub(crate) use provider::Call;

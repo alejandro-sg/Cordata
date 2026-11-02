@@ -1,5 +1,5 @@
-//! The native agent loop: history in memory, a streamed model turn, tool calls through the
-//! permission gate, repeat until the model answers without a tool. Commands are multiplexed
+//! The native agent loop: history in memory (and on disk, `crate::history`), a streamed model turn, tool calls through
+//! the person's rules and the permission gate, repeat until the model answers without a tool. Commands are multiplexed
 //! against every await so `Cancel` lands mid-token and mid-command.
 
 use std::collections::{BTreeSet, HashSet};
@@ -17,8 +17,10 @@ use tokio::sync::{mpsc, oneshot};
 use super::approval::{self, Verdict};
 use super::provider::{Call, Delta, GenaiProvider, Msg, Provider};
 use super::tools;
-use crate::events::{AppEvent, SessionInfo, StopReason, ToolCallInfo, ToolCallPatch, ToolStatus};
+use crate::events::{AppEvent, Restored, SessionInfo, StopReason, ToolCallInfo, ToolCallPatch, ToolStatus};
+use crate::history;
 use crate::permission::ApprovalDecision;
+use crate::policy::{self, Network, Policy};
 use crate::session::{Attachment, Command, SessionOptions};
 
 const DEFAULT_MODEL: &str = "claude-sonnet-5-5";
@@ -34,7 +36,8 @@ fn default_model(has_anthropic_key: bool, has_ollama_cloud_key: bool) -> &'stati
 const MAX_ROUNDS: usize = 25;
 const SYSTEM_PROMPT: &str = "You are Cordata, a coding agent running in the user's terminal. \
 Answer concisely. Use the tools to read, search and edit the project and to run commands; \
-edits and commands are shown to the user for approval first.";
+edits and commands are shown to the user for approval first. Commands run offline and may write only inside the \
+project: set `network` on a command only when it must reach the internet.";
 
 const MAX_INSTRUCTION_CHARS: usize = 20_000;
 
@@ -83,14 +86,27 @@ pub(crate) async fn run(options: SessionOptions, commands: Commands, events: Eve
     match GenaiProvider::new(model) {
         Ok(provider) => {
             let off = std::env::var_os("CORDATA_ECONOMIZER").is_some_and(|v| v == "off");
-            let state = if off { None } else { cordata_economizer::default_state_dir() };
-            drive(&provider, options, commands, events, tools::offload_dir(), state).await
+            let state_dir = if off { None } else { cordata_economizer::default_state_dir() };
+            let policy = Policy::load(&options.cwd);
+            let sessions_home = policy::cordata_home();
+            let history_home = if policy.history { sessions_home.clone() } else { None };
+            drive(&provider, options, commands, events, Setup { offload: tools::offload_dir(), state_dir, policy, history_home, sessions_home }).await
         }
         Err(error) => {
             let _ = events.send(AppEvent::ConnectionError(format!("could not start the native agent: {error}")));
             let _ = events.send(AppEvent::Closed);
         }
     }
+}
+
+/// What a session starts from besides the provider: where offloaded output goes, the economizer's state, the person's
+/// rules, where sessions are saved (`None`: nowhere), and where saved ones live for `/forget` (even with saving off).
+pub(crate) struct Setup {
+    pub(crate) offload: PathBuf,
+    pub(crate) state_dir: Option<PathBuf>,
+    pub(crate) policy: Policy,
+    pub(crate) history_home: Option<PathBuf>,
+    pub(crate) sessions_home: Option<PathBuf>,
 }
 
 enum Interrupt {
@@ -107,7 +123,7 @@ async fn interruptible<F: Future>(fut: F, commands: &mut Commands, events: &Even
             command = commands.recv() => match command {
                 Some(Command::Cancel) => return Err(Interrupt::Cancel),
                 Some(Command::Shutdown) | None => return Err(Interrupt::Shutdown),
-                Some(Command::Prompt(..)) => {
+                Some(Command::Prompt(..) | Command::Resume(_) | Command::Forget) => {
                     let _ = events.send(AppEvent::Notice("a turn is still running; wait or cancel it first".into()));
                 }
             },
@@ -120,9 +136,56 @@ struct Agent<'a> {
     provider: &'a dyn Provider,
     cwd: PathBuf,
     offload: PathBuf,
-    /// Tools the user chose "always allow" for, this session.
+    /// Tools the user chose "always allow" for, this session (`approval::always_key`).
     always: HashSet<String>,
     economizer: Economizer,
+    policy: Policy,
+}
+
+/// Where this conversation is saved after each turn, if anywhere.
+struct Keeper {
+    home: Option<PathBuf>,
+    id: String,
+    /// The first failure is reported; later ones are not.
+    warned: bool,
+}
+
+impl Keeper {
+    fn save(&mut self, cwd: &Path, model: &str, history: &[Msg], events: &Events) {
+        let Some(home) = &self.home else { return };
+        if history.is_empty() {
+            return;
+        }
+        if let Err(error) = history::save_in(home, cwd, &self.id, model, history)
+            && !std::mem::replace(&mut self.warned, true)
+        {
+            let _ = events.send(AppEvent::Notice(format!("this session could not be saved: {error}")));
+        }
+    }
+}
+
+/// A one-line reminder of what a tool call was given, for a resumed transcript.
+fn call_summary(call: &Call) -> String {
+    let arg = ["cmd", "path", "pattern"].iter().find_map(|k| call.args.get(*k).and_then(|v| v.as_str())).unwrap_or_default();
+    let line = arg.lines().next().unwrap_or_default();
+    if line.chars().count() > 80 { format!("{}…", line.chars().take(79).collect::<String>()) } else { line.to_owned() }
+}
+
+fn restored(history: &[Msg]) -> Vec<Restored> {
+    let mut out = Vec::new();
+    for msg in history {
+        match msg {
+            Msg::User { text } => out.push(Restored::User(text.clone())),
+            Msg::Assistant { text, calls } => {
+                if !text.is_empty() {
+                    out.push(Restored::Agent(text.clone()));
+                }
+                out.extend(calls.iter().map(|c| Restored::Tool { name: c.name.clone(), summary: call_summary(c) }));
+            }
+            Msg::ToolResult { .. } => {}
+        }
+    }
+    out
 }
 
 /// Token-saving state for one session. With no `state_dir` nothing is read from or written to disk.
@@ -174,26 +237,63 @@ pub(crate) async fn drive(
     options: SessionOptions,
     mut commands: Commands,
     events: Events,
-    offload: PathBuf,
-    state_dir: Option<PathBuf>,
+    setup: Setup,
 ) {
+    let Setup { offload, state_dir, policy, history_home, sessions_home } = setup;
+    let mut keeper = Keeper { home: history_home, id: history::new_id(), warned: false };
     let _ = events.send(AppEvent::Connected(SessionInfo {
-        session_id: format!("native-{}", std::process::id()),
+        session_id: keeper.id.clone(),
         cwd: options.cwd.display().to_string(),
         transport: format!("native · {}", provider.model()),
         model: provider.model().to_owned(),
     }));
+    for warning in &policy.warnings {
+        let _ = events.send(AppEvent::Notice(format!("settings: {warning}")));
+    }
 
     let economizer = Economizer::new(provider.model(), state_dir);
-    let mut agent = Agent { provider, cwd: options.cwd.clone(), offload, always: HashSet::new(), economizer };
+    let mut agent = Agent { provider, cwd: options.cwd.clone(), offload, always: HashSet::new(), economizer, policy };
     let mut history: Vec<Msg> = Vec::new();
     while let Some(command) = commands.recv().await {
         match command {
             Command::Prompt(text, attachments) => {
-                history.push(Msg::User(with_attachments(text, &attachments)));
-                if let Err(Interrupt::Shutdown) = agent.turn(&mut history, &mut commands, &events).await {
+                history.push(Msg::User { text: with_attachments(text, &attachments) });
+                let ended = agent.turn(&mut history, &mut commands, &events).await;
+                keeper.save(&options.cwd, provider.model(), &history, &events);
+                if let Err(Interrupt::Shutdown) = ended {
                     break;
                 }
+            }
+            Command::Resume(wanted) => {
+                let Some(home) = keeper.home.clone() else {
+                    let _ = events.send(AppEvent::Notice("session history is off (chat.history), so there is nothing to resume".into()));
+                    continue;
+                };
+                match history::load_in(&home, &options.cwd, &wanted) {
+                    Ok(saved) => {
+                        history = saved.messages;
+                        keeper.id = saved.id;
+                        let _ = events.send(AppEvent::SessionRestored { session_id: keeper.id.clone(), entries: restored(&history) });
+                    }
+                    Err(error) => {
+                        let _ = events.send(AppEvent::Notice(error));
+                    }
+                }
+            }
+            Command::Forget => {
+                // Saving may be off now while sessions from before are still on disk: delete them either way.
+                let note = match sessions_home.as_deref().map(|home| history::forget_in(home, &options.cwd)) {
+                    None => "no home folder, so nothing was saved".to_owned(),
+                    Some(Ok(n)) => {
+                        keeper.home = None;
+                        format!(
+                            "deleted {n} saved session{} of this project; this session will not be saved",
+                            if n == 1 { "" } else { "s" }
+                        )
+                    }
+                    Some(Err(error)) => format!("could not delete the saved sessions: {error}"),
+                };
+                let _ = events.send(AppEvent::Notice(note));
             }
             Command::Cancel => {}
             Command::Shutdown => break,
@@ -208,7 +308,7 @@ impl Agent<'_> {
     /// a cancel is reported to the UI and returns `Ok`.
     async fn turn(&mut self, history: &mut Vec<Msg>, commands: &mut Commands, events: &Events) -> Result<(), Interrupt> {
         self.economizer.guard.reset_turn();
-        let prompt = history.iter().rev().find_map(|m| if let Msg::User(t) = m { Some(t.clone()) } else { None }).unwrap_or_default();
+        let prompt = history.iter().rev().find_map(|m| if let Msg::User { text } = m { Some(text.clone()) } else { None }).unwrap_or_default();
         let specs = self.choose_tools(&prompt);
         let system = self.system_prompt(&prompt).to_owned();
         let tools_json = specs.iter().map(|s| format!("{}{}", s.name, s.schema)).collect::<String>();
@@ -301,7 +401,7 @@ impl Agent<'_> {
 
     /// A failed round-trip: the prompt that had no answer is dropped so the next one doesn't follow it.
     fn fail(&self, history: &mut Vec<Msg>, events: &Events, error: String) {
-        if matches!(history.last(), Some(Msg::User(_))) {
+        if matches!(history.last(), Some(Msg::User { .. })) {
             history.pop();
         }
         let _ = events.send(AppEvent::TurnFailed(error));
@@ -344,15 +444,31 @@ impl Agent<'_> {
             return Ok(reason);
         }
 
-        if tools::needs_approval(&call.name) && !self.always.contains(&call.name) {
+        if call.name == "run_command" && policy::wants_network(&call.args) && self.policy.network == Network::Off {
+            let reason = "refused: network access for commands is off (chat.network). Run it without `network`, or ask the user to run it.".to_owned();
+            let _ = events.send(patch(ToolStatus::Failed, Some(reason.clone())));
+            return Ok(reason);
+        }
+        // The person's rules: a deny refuses without asking, an allow skips the card for a call that would ask.
+        let rule = self.policy.decide(&call.name, &call.args, &self.cwd);
+        if let policy::Verdict::Deny(rule) = &rule {
+            let reason = format!("refused by the rule `{rule}` in the user's settings; do not retry it");
+            let _ = events.send(patch(ToolStatus::Failed, Some(reason.clone())));
+            return Ok(reason);
+        }
+        let key = approval::always_key(&call.name, &call.args);
+        if tools::needs_approval(&call.name) && let policy::Verdict::Allow(rule) = &rule {
+            let _ = events.send(AppEvent::Notice(format!("{} ran without asking: your rule `{rule}`", call.name)));
+        } else if tools::needs_approval(&call.name) && !self.always.contains(&key) {
             let (tx, rx) = oneshot::channel::<ApprovalDecision>();
             let _ = events.send(AppEvent::PermissionRequested { info: approval::request(&call.id, &call.name, &call.args), decision: tx });
             // A dropped sender counts as a rejection.
             let decision = interruptible(rx, commands, events).await?.unwrap_or(ApprovalDecision::Reject);
             match approval::interpret(decision) {
                 Verdict::Allow { always } => {
-                    if always {
-                        self.always.insert(call.name.clone());
+                    // A network call is never remembered, whatever the front end sent.
+                    if always && !(call.name == "run_command" && policy::wants_network(&call.args)) {
+                        self.always.insert(key);
                     }
                 }
                 Verdict::Deny(reason) => {
@@ -370,7 +486,7 @@ impl Agent<'_> {
         self.economizer.pruner.record_tool_invoked(&self.cwd, &call.name);
 
         let _ = events.send(patch(ToolStatus::InProgress, None));
-        let result = interruptible(tools::execute(&call.name, &call.args, &self.cwd), commands, events).await;
+        let result = interruptible(tools::execute(&call.name, &call.args, &self.cwd, &self.policy.writable), commands, events).await;
         let (status, output) = match result {
             Err(interrupt) => {
                 let _ = events.send(patch(ToolStatus::Failed, Some("cancelled".into())));
@@ -465,6 +581,146 @@ mod tests {
         Ok(Delta::Call(Call { id: id.into(), name: name.into(), args }))
     }
 
+    /// No rules, nothing saved, no economizer state.
+    fn plain(cwd: &std::path::Path) -> Setup {
+        Setup { offload: cwd.join(".offload"), state_dir: None, policy: Policy::default(), history_home: None, sessions_home: None }
+    }
+
+    fn rules(doc: serde_json::Value) -> Policy {
+        Policy::from_files(&[("user".into(), doc, true)])
+    }
+
+    /// Sends `commands` in order, each after the previous one's answer, approving every card; returns all events.
+    async fn script(provider: &Fake, cwd: &std::path::Path, setup: Setup, commands: Vec<Command>) -> Vec<AppEvent> {
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let (ev_tx, mut ev_rx) = mpsc::unbounded_channel();
+        let driver = drive(provider, options(cwd), cmd_rx, ev_tx, setup);
+        let run = async {
+            let mut out = Vec::new();
+            for command in commands {
+                cmd_tx.send(command).unwrap();
+                loop {
+                    let event = ev_rx.recv().await.expect("events open");
+                    if let AppEvent::PermissionRequested { info, decision } = event {
+                        let _ = decision.send(ApprovalDecision::Allow);
+                        out.push(AppEvent::Notice(format!("asked:{}", info.tool_name)));
+                        continue;
+                    }
+                    let answered = matches!(event, AppEvent::TurnComplete(_) | AppEvent::TurnFailed(_) | AppEvent::SessionRestored { .. })
+                        || matches!(&event, AppEvent::Notice(n) if !n.contains("without asking"));
+                    out.push(event);
+                    if answered {
+                        break;
+                    }
+                }
+            }
+            cmd_tx.send(Command::Shutdown).unwrap();
+            while let Some(event) = ev_rx.recv().await {
+                out.push(event);
+            }
+            out
+        };
+        let (_, out) = tokio::join!(driver, run);
+        out
+    }
+
+    fn prompt(text: &str) -> Command {
+        Command::Prompt(text.into(), Vec::new())
+    }
+
+    fn notices(events: &[AppEvent]) -> Vec<String> {
+        events.iter().filter_map(|e| if let AppEvent::Notice(n) = e { Some(n.clone()) } else { None }).collect()
+    }
+
+    #[tokio::test]
+    async fn an_allow_rule_skips_the_card_and_a_deny_rule_refuses_without_asking() {
+        let dir = tempfile::tempdir().unwrap();
+        let edit = |n: &str| json!({"path": n, "target": "", "replacement": "x"});
+        let fake = Fake::new(vec![
+            vec![call("c1", "edit_file", edit("src/a.txt"))],
+            vec![call("c2", "edit_file", edit("migrations/1.sql"))],
+            vec![call("c3", "edit_file", edit("other.txt"))],
+            vec![text("done")],
+        ]);
+        let mut setup = plain(dir.path());
+        setup.policy = rules(json!({"chat": {"allow": ["edit_file(src/**)", "edit_file(migrations/**)"], "deny": ["edit_file(migrations/**)"]}}));
+        let events = script(&fake, dir.path(), setup, vec![prompt("go")]).await;
+        assert_eq!(asked(&events), ["edit_file"], "only the call no rule covers asks");
+        assert!(dir.path().join("src/a.txt").exists() && !dir.path().join("migrations/1.sql").exists());
+        assert!(notices(&events).iter().any(|n| n.contains("your rule `edit_file(src/**)`")));
+        assert!(matches!(&fake.seen.lock().unwrap()[2][4], Msg::ToolResult { output, .. } if output.contains("refused by the rule `edit_file(migrations/**)`")));
+    }
+
+    #[tokio::test]
+    async fn network_requests_ask_separately_and_are_refused_when_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let online = json!({"cmd": "true", "network": true});
+        let fake = Fake::new(vec![vec![call("c1", "run_command", online.clone())], vec![text("done")]]);
+        let mut setup = plain(dir.path());
+        setup.policy = rules(json!({"chat": {"network": "off"}}));
+        let events = script(&fake, dir.path(), setup, vec![prompt("go")]).await;
+        assert!(asked(&events).is_empty());
+        assert!(matches!(&fake.seen.lock().unwrap()[1][2], Msg::ToolResult { output, .. } if output.contains("network access for commands is off")));
+        // Allowing offline commands for the session still asks before one goes online.
+        let fake = Fake::new(vec![
+            vec![call("c1", "run_command", json!({"cmd": "true"}))],
+            vec![call("c2", "run_command", json!({"cmd": "true"}))],
+            vec![call("c3", "run_command", online)],
+            vec![text("done")],
+        ]);
+        let events = session(&fake, dir.path(), &["go"], |info| {
+            if info.title.contains("network") { ApprovalDecision::Reject } else { ApprovalDecision::AllowAlways }
+        })
+        .await;
+        assert_eq!(asked(&events), ["run_command", "run_command"]);
+        // Even an "always" answer to a network card covers only that call.
+        let online = json!({"cmd": "true", "network": true});
+        let fake = Fake::new(vec![vec![call("c1", "run_command", online.clone())], vec![call("c2", "run_command", online)], vec![text("done")]]);
+        let events = session(&fake, dir.path(), &["go"], |_| ApprovalDecision::AllowAlways).await;
+        assert_eq!(asked(&events), ["run_command", "run_command"]);
+    }
+
+    #[tokio::test]
+    async fn a_session_is_saved_resumed_and_forgotten() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let saving = |cwd: &std::path::Path| Setup { history_home: Some(home.clone()), sessions_home: Some(home.clone()), ..plain(cwd) };
+        let first = Fake::new(vec![vec![text("first answer")]]);
+        let events = script(&first, dir.path(), saving(dir.path()), vec![prompt("remember 42")]).await;
+        let Some(AppEvent::Connected(info)) = events.first() else { panic!("connected first") };
+        let id = info.session_id.clone();
+
+        let second = Fake::new(vec![vec![text("it was 42")]]);
+        let events = script(&second, dir.path(), saving(dir.path()), vec![Command::Resume("last".into()), prompt("what was it?")]).await;
+        let restored = events.iter().find_map(|e| if let AppEvent::SessionRestored { session_id, entries } = e { Some((session_id, entries)) } else { None });
+        let (session_id, entries) = restored.expect("restored");
+        assert_eq!(session_id, &id);
+        assert_eq!(entries, &[Restored::User("remember 42".into()), Restored::Agent("first answer".into())]);
+        assert_eq!(second.seen.lock().unwrap()[0].len(), 3, "the model sees the resumed conversation");
+        let saved = history::load_in(&home, dir.path(), &id).unwrap();
+        assert_eq!(saved.messages.len(), 4, "the resumed session keeps its id and grows");
+
+        let third = Fake::new(vec![vec![text("x")]]);
+        let events = script(&third, dir.path(), saving(dir.path()), vec![Command::Forget, prompt("not kept")]).await;
+        assert!(notices(&events).iter().any(|n| n.starts_with("deleted 1 saved session")), "{:?}", notices(&events));
+        assert!(history::load_in(&home, dir.path(), "last").is_err(), "nothing kept after /forget, not even this session");
+
+        // With saving switched off later, /forget still deletes what an earlier session saved.
+        script(&Fake::new(vec![vec![text("x")]]), dir.path(), saving(dir.path()), vec![prompt("kept")]).await;
+        let off = Setup { history_home: None, ..saving(dir.path()) };
+        let events = script(&Fake::new(vec![]), dir.path(), off, vec![Command::Forget]).await;
+        assert!(notices(&events).iter().any(|n| n.starts_with("deleted 1 saved session")), "{:?}", notices(&events));
+        assert!(history::load_in(&home, dir.path(), "last").is_err());
+    }
+
+    #[tokio::test]
+    async fn with_history_off_nothing_is_written_and_resume_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Fake::new(vec![vec![text("ok")]]);
+        let events = script(&fake, dir.path(), plain(dir.path()), vec![prompt("hi"), Command::Resume("last".into())]).await;
+        assert!(notices(&events).iter().any(|n| n.contains("history is off")));
+    }
+
     fn options(cwd: &std::path::Path) -> SessionOptions {
         SessionOptions {
             cwd: cwd.to_path_buf(),
@@ -482,8 +738,7 @@ mod tests {
     ) -> Vec<AppEvent> {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (ev_tx, mut ev_rx) = mpsc::unbounded_channel();
-        let offload = cwd.join(".offload");
-        let driver = drive(provider, options(cwd), cmd_rx, ev_tx, offload, None);
+        let driver = drive(provider, options(cwd), cmd_rx, ev_tx, plain(cwd));
         let script = async {
             let mut out = Vec::new();
             for prompt in prompts {
@@ -541,7 +796,7 @@ mod tests {
         let events = session(&fake, dir.path(), &["a", "b"], |_| ApprovalDecision::Reject).await;
         assert_eq!(events.iter().filter(|e| matches!(e, AppEvent::TurnFailed(m) if m == "boom")).count(), 1);
         // "a" got no answer, so the second request carries only "b".
-        assert_eq!(fake.seen.lock().unwrap()[1], vec![Msg::User("b".into())]);
+        assert_eq!(fake.seen.lock().unwrap()[1], vec![Msg::User { text: "b".into() }]);
     }
 
     #[tokio::test]
@@ -667,7 +922,7 @@ mod tests {
         let spy = Spy(Mutex::new(Vec::new()));
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (ev_tx, mut ev_rx) = mpsc::unbounded_channel();
-        let driver = drive(&spy, options(dir.path()), cmd_rx, ev_tx, dir.path().join(".o"), None);
+        let driver = drive(&spy, options(dir.path()), cmd_rx, ev_tx, plain(dir.path()));
         let script = async {
             for prompt in ["hello", "again"] {
                 cmd_tx.send(Command::Prompt(prompt.into(), Vec::new())).unwrap();
@@ -692,7 +947,7 @@ mod tests {
         ]);
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (ev_tx, mut ev_rx) = mpsc::unbounded_channel();
-        let driver = drive(&fake, options(dir.path()), cmd_rx, ev_tx, dir.path().join(".o"), Some(state.clone()));
+        let driver = drive(&fake, options(dir.path()), cmd_rx, ev_tx, Setup { state_dir: Some(state.clone()), ..plain(dir.path()) });
         let script = async {
             cmd_tx.send(Command::Prompt("go".into(), Vec::new())).unwrap();
             loop {

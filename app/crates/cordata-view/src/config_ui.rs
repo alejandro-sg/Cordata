@@ -1,4 +1,5 @@
-//! `/memory`, `/init`, `/status` and the stored display preferences (see `settings.rs`).
+//! `/memory`, `/init`, `/status`, `/permissions`, the saved-session commands (`/history`, `/resume`, `/forget`) and
+//! the stored display preferences (see `settings.rs`).
 //!
 //! Everything here is a method on `App` so it stays unit-testable without a
 //! terminal; files are only touched through `settings::Store`.
@@ -9,6 +10,16 @@ use crate::app::{App, Effect, Message, sanitize};
 use crate::settings::{Prefs, Store, instruction_files};
 
 const INIT_PROMPT: &str = "Look through this project (its README, manifests and layout) and write a CORDATA.md in the project root: concise guidance for a coding agent working here — how to build, test and run it, how the code is laid out, the conventions to follow, and any gotchas. Keep it under 60 lines and state only what you verified in the files; ask me about anything you can't tell.";
+
+/// `42s`, `5m`, `3h`, `2d` ago.
+fn ago(seconds: u64) -> String {
+    match seconds {
+        0..60 => "just now".into(),
+        60..3600 => format!("{}m ago", seconds / 60),
+        3600..86_400 => format!("{}h ago", seconds / 3600),
+        _ => format!("{}d ago", seconds / 86_400),
+    }
+}
 
 /// `$HOME` → `~`, for messages.
 pub fn tidy(path: &Path) -> String {
@@ -104,6 +115,61 @@ impl App {
     }
 
     // ----------------------------------------------------------- /permissions
+
+    pub fn run_permissions(&mut self) {
+        let Some(store) = self.store() else { return };
+        let policy = acp_core::policy::Policy::load_in(Some(&store.user_dir), &store.cwd);
+        let mut lines = vec!["the agent runs under (from chat.* in your settings; a new session picks up changes):".to_owned()];
+        lines.extend(policy.describe().into_iter().map(|line| format!("  {line}")));
+        lines.push("every other edit and command asks first; reads and searches do not.".to_owned());
+        self.info_msg(sanitize(&lines.join("\n")));
+    }
+
+    // ------------------------------------------------------ saved sessions
+
+    fn saved_sessions(&mut self) -> Vec<acp_core::history::Summary> {
+        self.store().map(|store| acp_core::history::list_in(&store.user_dir, &store.cwd)).unwrap_or_default()
+    }
+
+    pub fn run_history(&mut self) {
+        let saved = self.saved_sessions();
+        if saved.is_empty() {
+            self.info_msg("no saved sessions in this project (with chat.history on, each session is saved after every turn)");
+            return;
+        }
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let current = self.session.as_ref().map(|s| s.session_id.clone()).unwrap_or_default();
+        let mut lines = vec!["saved sessions, newest first (/resume <id> continues one, /forget deletes them):".to_owned()];
+        for s in saved.iter().take(20) {
+            let marker = if s.id == current { "  ← this one" } else { "" };
+            let prompts = if s.prompts == 1 { "1 prompt".to_owned() } else { format!("{} prompts", s.prompts) };
+            lines.push(format!("  {:<16} {:>8}  {prompts:<11} {}{marker}", s.id, ago(now.saturating_sub(s.updated)), s.title));
+        }
+        if saved.len() > 20 {
+            lines.push(format!("  … and {} older", saved.len() - 20));
+        }
+        self.info_msg(sanitize(&lines.join("\n")));
+    }
+
+    pub fn run_resume(&mut self, arg: Option<String>) -> Option<Effect> {
+        if !self.input_enabled_for_prompt() {
+            self.info_msg("wait for the turn to end (or cancel it) before resuming a session");
+            return None;
+        }
+        Some(Effect::Resume(arg.unwrap_or_else(|| "last".into())))
+    }
+
+    pub fn run_forget(&mut self, arg: Option<String>) -> Option<Effect> {
+        if arg.as_deref() == Some("confirm") {
+            return Some(Effect::Forget);
+        }
+        let count = self.saved_sessions().len();
+        self.info_msg(match count {
+            0 => "no saved sessions in this project; /forget confirm still stops this one from being saved".to_owned(),
+            n => format!("this deletes {n} saved session{} of this project (this one included) and stops saving the open sessions here (in Cordata.app, other windows keep saving until closed). Type /forget confirm to do it.", if n == 1 { "" } else { "s" }),
+        });
+        None
+    }
 
     // ------------------------------------------------------- trust / memory
 
@@ -262,4 +328,44 @@ mod tests {
         );
     }
 
+
+    #[test]
+    fn permissions_show_the_rules_and_ignore_a_repository_granting_itself_more() {
+        let mut rig = rig();
+        std::fs::write(rig.store.path(Scope::User), r#"{"chat": {"allow": ["run_command(cargo test*)"], "network": "off"}}"#).unwrap();
+        std::fs::create_dir_all(rig.store.cwd.join(".cordata")).unwrap();
+        std::fs::write(rig.store.path(Scope::Project), r#"{"chat": {"allow": ["run_command"], "deny": ["run_command(git push*)"]}}"#).unwrap();
+        run(&mut rig.app, "/permissions");
+        let text = last_info(&rig.app);
+        assert!(text.contains("allow without asking: run_command(cargo test*)\n"), "{text}");
+        assert!(text.contains("refuse without asking: run_command(git push*)"), "{text}");
+        assert!(text.contains("requests for the network are refused"), "{text}");
+        assert!(text.contains("'chat.allow' ignored"), "{text}");
+    }
+
+    #[test]
+    fn forget_asks_for_confirmation_and_resume_defaults_to_the_last_session() {
+        let mut rig = rig();
+        assert_eq!(run(&mut rig.app, "/forget"), None);
+        assert!(last_info(&rig.app).contains("/forget confirm"));
+        assert_eq!(run(&mut rig.app, "/forget confirm"), Some(Effect::Forget));
+        assert_eq!(run(&mut rig.app, "/resume"), Some(Effect::Resume("last".into())));
+        assert_eq!(run(&mut rig.app, "/resume 19ab"), Some(Effect::Resume("19ab".into())));
+        run(&mut rig.app, "/history");
+        assert!(last_info(&rig.app).starts_with("no saved sessions"));
+    }
+
+    #[test]
+    fn a_restored_session_is_redrawn_and_takes_over_the_id() {
+        use acp_core::Restored;
+        let mut rig = rig();
+        rig.app.on_event(AppEvent::SessionRestored {
+            session_id: "abc-1".into(),
+            entries: vec![Restored::User("hi".into()), Restored::Agent("hello".into()), Restored::Tool { name: "run_command".into(), summary: "ls".into() }],
+        });
+        assert!(matches!(&rig.app.messages[1], Message::User(t) if t == "hi"));
+        assert!(matches!(&rig.app.messages[2], Message::Agent(t) if t == "hello"));
+        assert!(matches!(&rig.app.messages[3], Message::Info(t) if t == "↳ run_command ls"));
+        assert_eq!(rig.app.session.as_ref().unwrap().session_id, "abc-1");
+    }
 }

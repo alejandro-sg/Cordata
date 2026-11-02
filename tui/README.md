@@ -43,24 +43,32 @@ live: the unfinished reply, running tool cards, the prompt box (or an approval b
 | `!git status` | runs in the project on your authority; the next prompt carries the output to the agent |
 | anything, while the agent works | queues as the next turn; Esc stops the turn and puts the queue back in the box |
 
-`/diff`, `/copy`, `/export [file]` and `/cost` do what they say. Any `*.md` in `.cordata/commands/` (or `.claude/commands/`) becomes `/name`, with `$ARGUMENTS`.
+`/diff`, `/copy`, `/export [file]` and `/cost` do what they say. `/history` lists this project's saved sessions,
+`/resume [id]` continues one (`acp-tui --resume` at start-up), `/forget` deletes them, and `/permissions` shows the rules,
+network and write scope commands run under. Any `*.md` in `.cordata/commands/` (or `.claude/commands/`) becomes `/name`, with `$ARGUMENTS`.
 
 | key | action |
 |---|---|
 | Enter · Ctrl+J / Alt+Enter | send · newline |
-| `a` / `r` | allow / reject a pending tool call; `s` allows and saves the rule; `w` rejects and says why |
+| `a` / `r` | allow / reject a pending tool call; `s` allows that tool for the session; `w` rejects and says why |
 | Esc / Ctrl+C | cancel the turn (inert while the approval box is open: answer it first) |
 | Ctrl+K | command deck: views, sessions and every command, searchable |
 | F4 | diff review: files, hunks, line numbers |
 | `?` or F1 | all keys and commands |
 | Ctrl+Q | quit |
 
+### Approvals, rules and the sandbox
+
+Every edit and command asks (`a` allows once, `s` allows that tool for the session) unless a rule in
+`~/.cordata/settings.json` says otherwise: `chat.allow` runs matching calls without asking, `chat.deny` refuses them
+(`docs/settings.md`). Commands run offline and write only the project, temporary folders and package caches; one that
+needs the internet asks for it, and the card says so. A built-in guard refuses `.env` and `.git/` writes, recursive
+deletes and `.env` redirects before any prompt.
+
 ### What the chat does not have
 
-No modes and no permission rules: every edit and command asks, always (`a` allows once, `s` allows that tool for the
-session). No undo, goal loop, context compaction or saved sessions, and no settings panel: the model comes from
-`CORDATA_NATIVE_MODEL`. A built-in guard refuses `.env` and `.git/` writes, recursive deletes and `.env` redirects before
-any prompt. `cordata run` has its own checkpoints and rollback.
+No modes, undo, goal loop or context compaction, and no settings panel: the model comes from `CORDATA_NATIVE_MODEL`.
+`cordata run` has its own checkpoints and rollback.
 
 **Instructions.** The agent reads `CORDATA.md` (or `.cordata/CORDATA.md`, `AGENTS.md`, `CLAUDE.md`) from the project, plus
 `~/.cordata/CORDATA.md` and `CORDATA.local.md`, at the first prompt. `/memory` lists them and `/init` drafts one.

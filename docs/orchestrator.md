@@ -26,7 +26,7 @@ still inside the Seatbelt sandbox described in [`THREAT_MODEL.md`](../THREAT_MOD
 environment form of the flag.
 
 `run` also takes `--workers claude_code,antigravity`, `--max-usd N`, `--max-rounds N`, `--max-parallel N` (default 3),
-`--no-research`, `--no-harden`, `--no-tier2`, `--no-conformance` and `--json`. With no installed worker, `run` and
+`--no-research`, `--no-harden`, `--no-tier2`, `--no-screen`, `--no-conformance` and `--json`. With no installed worker, `run` and
 `resume` exit 78 before doing anything. Ctrl+C stops the run where it is and records it `cancelled`. Every run writes
 `~/.cordata/orchestrator/<run_id>/plan.md` and `walkthrough.md`.
 
@@ -54,8 +54,11 @@ Other `orchestrator.*` settings are in [`settings.md`](settings.md).
    worker before the run replans. Before a replan or a failure restores the project, the discarded work is saved as
    `discarded-NNN.patch` beside the plan.
 4. **Harden.** A worker from another model family runs the acceptance commands and fixes real failures inside the scope.
-5. **Audit.** Tier 1 is free and deterministic: scope, criteria, verifier commands run with no network and no project
-   writes, scored by a pattern guard. Tier 2 has the planner compare the result with its plan.
+5. **Audit.** First a reviewer model (not the planner, when another worker has quota) screens every command the audit is
+   about to run and scores its risk; a command at 0.8 or above is refused. Its score is combined with a pattern guard's
+   by taking the higher, so the model can refuse more but never less. Commands are screened once per run. Tier 1 is
+   deterministic: scope, criteria, verifier commands run with no network and no project writes. Tier 2 has the planner
+   compare the result with its plan.
 6. **Conformance.** The planner judges the final diff against its own brief: `accept`, `gaps` or `replan`.
 
 After each step the sandboxed output is checked (syntax of changed Python, JSON, TOML and YAML files, and imports between

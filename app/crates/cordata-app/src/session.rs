@@ -212,6 +212,8 @@ impl Session {
                 if attachments.is_empty() { self.with_handle(|h| h.send_prompt(text)) } else { self.with_handle(|h| h.send_prompt_with(text, attachments)) }
             }
             Effect::Cancel => self.with_handle(SessionHandle::cancel),
+            Effect::Resume(wanted) => self.with_handle(|h| h.resume(wanted)),
+            Effect::Forget => self.with_handle(SessionHandle::forget),
             Effect::Copy(text) => {
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
                 Ok(())

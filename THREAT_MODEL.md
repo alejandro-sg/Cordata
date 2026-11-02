@@ -16,26 +16,59 @@ that runs on a Mac, with no server: the only network traffic is to the model pro
 ## Boundary 1: tool calls need a person
 
 In the chat agent, `edit_file` and `run_command` ask before they run; `read_file`, `code_search` and `code_outline` do
-not. "Always allow" lasts for one session and is per tool. A pending approval that is never answered is denied when its
-sender drops. A built-in guard (`cordata-guard`) refuses, without asking, edits to `.env` files and inside `.git/`, recursive
-deletes of `/`, `~` or `..`, and shell redirects into `.env`.
+not. "Always allow" lasts for one session and is per tool; for `run_command` it never covers a call that asks for the
+network, which asks on its own. A pending approval that is never answered is denied when its sender drops. A built-in guard
+(`cordata-guard`) refuses, without asking, edits to `.env` files and inside `.git/`, recursive deletes of `/`, `~` or `..`,
+and shell redirects into `.env`.
 
-There are no modes and no permission rules: every edit and command asks, always.
+**Rules you write.** `chat.allow` lets named calls run without asking (`run_command(cargo test*)`, `edit_file(src/**)`);
+`chat.deny` refuses named calls without asking. The order is guard → deny → allow → ask. Only `~/.cordata/settings.json`
+may hold `chat.allow` (and `chat.writable`): a repository's own settings can add deny rules and switch the network or
+history off, never grant its agent anything; such keys are ignored and reported. An allow rule never matches a command
+that chains, pipes, redirects or substitutes (`; & | $ \` < > ( )`, backslash, newline), so `cargo test && curl … | sh`
+asks even under `run_command(cargo test*)`. A deny rule is checked against every simple command inside the line (split at
+operators, subshells, substitutions and quotes, with `env`/`sudo`/`then`-style prefixes, `VAR=…` and the binary's folder
+dropped), but a shell can spell a command many ways, so deny rules are a convenience in front of the card and the
+sandbox, not a boundary. File rules match the resolved, case-insensitive path. A user file that does not parse fails
+closed: no allow rules, no network, no history. A call that ran under a rule says so in the transcript, and
+`/permissions` lists what is in effect.
+
+An allow rule for a toolchain runs code the repository controls: with `run_command(cargo test*)` and `edit_file(src/**)`,
+the agent can write a test and run it without a card (`npm run *` and `make *` likewise). The sandbox still bounds what
+that code can do; write such rules for projects you trust.
 
 ## Boundary 2: commands run confined
 
 `run_command` runs under a macOS Seatbelt profile (`sandbox-exec`) with a scrubbed environment: only `PATH`, `HOME`,
 `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `TERM`, `LANG`, `TZ`, `LC_*` and colour variables are inherited, so a provider key
-in the parent's environment never reaches a child. The profile denies reading or writing `.env` files and `~/.aws`,
-`~/.netrc`, `~/.config/gh`, `~/.docker/config.json`, `~/.kube/config`. Fail closed: when `sandbox-exec` cannot be applied,
-commands do not run. Tool output over 6,000 characters is written to `~/.cordata/offloaded/` and replaced by a summary.
+in the parent's environment never reaches a child. The profile:
 
-Not covered: the profile otherwise allows everything, so a command you approve can reach any host and write anywhere you can.
+- **denies writes** everywhere except the project (and the repository it sits in, when it is a subfolder; never `$HOME`
+  itself, even when it is a dotfiles repository), `/private/tmp`,
+  `$TMPDIR`, `/dev`, package caches (`~/Library/Caches`, `~/.cache`, `~/.cargo/registry` and `git`, `~/.npm`, pnpm, yarn,
+  Go modules, Gradle, Maven) and the absolute folders you list in `chat.writable`. Executable locations such as
+  `~/.cargo/bin`, `~/.local/bin`, `~/.npm/_npx` or shell start-up files are not writable, so an approved command cannot
+  plant something the next shell runs;
+- **makes no direct connection out**: outbound sockets go only to localhost and local Unix sockets; name lookups
+  (mDNSResponder) and the Docker daemon sockets are closed, so data cannot leave in a DNS query or through a container.
+  A call sets `network: true` to go online; its approval card says "with network access", offers no "always", no rule
+  covers it, and `chat.network: "off"` refuses it outright;
+- denies reading or writing `.env` files, `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.netrc`, `~/.config/gh`, `~/.docker/config.json`,
+  `~/.kube/config`, `~/.cordata` (offloaded output excepted) and the other credential files listed in `sandbox.rs`.
+
+Fail closed: when `sandbox-exec` cannot be applied, commands do not run. Tool output over 6,000 characters is written
+to `~/.cordata/offloaded/` and replaced by a summary.
+
+Not covered: inside the project a command can write anything, including `.git/` (hooks, config) and code you will later
+run, and reads outside the secret paths are allowed. "Offline" means no direct sockets: a command can still ask a local
+service to reach out for it (`open https://…` hands a URL to your browser, a local model server or proxy on localhost
+forwards what it is sent). A command you approve with network access can reach any host.
 
 ## Boundary 3: file edits stay in the project
 
 `edit_file` resolves the path, refuses anything outside the project folder and refuses secret files (`.env`,
-`.env.*`, except `.env.example`/`.sample`/`.template`/`.dist`). An edit needs a unique target and shows its diff in the
+`.env.*`, except `.env.example`/`.sample`/`.template`/`.dist`) and `.git/`, judged on where the path lands after symlinks,
+so `src/k -> ../.env` is refused like `.env`. An edit needs a unique target and shows its diff in the
 approval card. `read_file` and `code_search` skip secret files.
 
 ## Provider API keys
@@ -58,13 +91,32 @@ credential-shaped token, and `--history` scans every blob.
 - **checkpoints** before each step in a shadow git repository, and copy-on-write sandboxes for parallel waves, harvested
   only after the step's output is checked.
 
-A worker's answer is parsed against a schema, verified by a different model family (HARDEN), then audited: tier 1 runs
-the plan's acceptance commands under a profile that denies project writes and outbound network (a pattern guard refuses
-destructive commands and redacts secrets in the output); tier 2 has the planner compare the result with its plan.
+A worker's answer is parsed against a schema, verified by a different model family (HARDEN), then audited. Before any
+acceptance command runs, a reviewer model (another worker than the planner that wrote them, when one has quota) screens
+them all, fenced as data, and scores each command's risk; at 0.8 or above the command is refused and its criterion fails.
+The screen can only add refusals: a conservative pattern guard scores every command too and the higher score wins, so a
+reviewer talked into passing `rm -rf ~` does not let it through. Tier 1 then runs the commands under a profile that denies
+project writes and outbound network, with secrets redacted from the output; tier 2 has the planner compare the result
+with its plan. When the screen is off (`orchestrator.screen`, `--no-screen`) or cannot answer, the pattern guard decides
+alone and the run records a warning.
 Research findings are kept only when their quoted evidence is found in the file they cite.
 
 Not covered: a worker is a full coding agent. Inside its write scope it can write anything, including code you will later
 run. Read the diff.
+
+## Saved sessions
+
+Each chat session is saved after every turn to `~/.cordata/sessions/<project hash>/<id>.json` so `/resume` (or
+`acp-tui --resume [id]`) can continue it. The folder is `0700` and each file `0600`, written atomically. Credential-shaped
+text (provider keys, tokens, bearer headers, private keys, `password = …`) is masked before it is written, in prompts,
+replies, tool arguments and tool output alike, so a key pasted into the chat never lands on disk. Commands cannot read the
+files: the sandbox denies `~/.cordata`. A project keeps its newest 50 sessions. `/forget confirm` deletes a project's
+sessions, even ones saved before history was switched off, and stops saving every open session in the terminal client
+(in Cordata.app, other windows keep saving until they close); `chat.history: "off"` (which a project may set) keeps
+nothing new.
+
+Not covered: masking is pattern-based, so a secret with no recognisable shape is stored as typed; the files are not
+encrypted beyond FileVault.
 
 ## Checkpoints are recovery, not a boundary
 
@@ -83,8 +135,9 @@ holds the one you set (`Settings → Account`, service `cordata-*-api-key`). Scr
 
 ## Known gaps
 
-- Chat commands have no network or write restriction beyond the secret paths above.
-- There is no "allow without asking" configuration: approval is per call, or per tool for the session.
-- Sessions are not persisted, so there is no session history to protect, or to clear.
-- The orchestrator audit uses a conservative pattern guard, not a model.
+- Inside the project, an approved command can write anything, `.git/` included; read the diff.
+- Offline commands can still reach the internet through a local service that does it for them (a browser via `open`).
+- Command deny rules match spellings, not meaning; the approval card and the sandbox are the boundary.
+- Session masking is pattern-based; a secret with no recognisable shape is saved as typed.
+- The command screen is a model and can be wrong; the pattern guard and the no-network, no-write sandbox stay underneath it.
 - Seatbelt is macOS-only and `sandbox-exec` is deprecated by Apple; if it disappears, commands stop running (fail closed).

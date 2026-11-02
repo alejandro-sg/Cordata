@@ -28,8 +28,39 @@ The terminal client and the app run the agent in their own process. The model an
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OLLAMA_API_KEY` | provider key; wins over the Keychain |
 | Keychain `cordata-anthropic-api-key`, `cordata-ollama-api-key` | provider key (`make key` stores one: `PROVIDER=anthropic` by default, or `ollama`) |
 
-Every edit and command asks first; "Always allow" lasts for the session and is per tool. Reads and searches do not ask.
-There are no modes or permission rules, and sessions are not saved.
+Edits and commands ask first unless a rule says otherwise; "Always allow" lasts for the session and is per tool (a
+command that asks for the network is asked about on its own). Reads and searches do not ask. `/permissions` shows what is
+in effect.
+
+| key | values | default | what |
+|---|---|---|---|
+| `chat.allow` | list of rules | none | calls that run without asking. **User file only** |
+| `chat.deny` | list of rules | none | calls refused without asking; any file may add them |
+| `chat.network` | `ask`, `off` | `ask` | commands run offline; `ask` lets a command request the network (you are asked), `off` refuses it. A project may set `off` |
+| `chat.writable` | list of absolute paths (`~/` allowed) | none | folders commands may write besides the project, temporary folders and package caches. **User file only** |
+| `chat.history` | `on`, `off` | `on` | save sessions to `~/.cordata/sessions` for `/resume`. A project may set `off` |
+
+A rule is `tool` or `tool(pattern)`, for `read_file`, `edit_file`, `run_command`, `code_search`, `code_outline`. For
+`run_command` the pattern is a glob over the whole command (`*` matches anything); for the file tools a glob over the
+project-relative path (`*` stays in one folder, `**` crosses folders). Deny beats allow. An allow rule never matches a
+chained, piped, redirected or substituted command, nor one that asks for the network (that card has no "always"
+either). Path patterns ignore case and match where the path lands after symlinks. A deny rule is checked against every
+simple command in the line (`env git push`, `(git push)`, `sh -c 'git push'` all match `run_command(git push*)`), but it
+matches spellings, not meaning: treat it as a convenience, not a boundary. If `~/.cordata/settings.json` does not parse,
+the chat fails closed (no allow rules, no network, no history) and says so.
+
+An allow rule for a build or test tool runs code the repository controls: `run_command(cargo test*)` together with
+`edit_file(src/**)` lets the agent write a test and run it with no card; `npm run *` and `make *` run whatever the
+project's scripts say. The sandbox still applies. Write such rules for projects you trust:
+
+```json
+{"chat": {"allow": ["run_command(cargo test*)", "run_command(cargo clippy*)", "edit_file(src/**)"],
+          "deny": ["run_command(git push*)"]}}
+```
+
+**Sessions.** Saved after every turn, credentials masked (`THREAT_MODEL.md`). `/history` lists this project's,
+`/resume [id]` continues one (the last by default; an id prefix is enough), `acp-tui --resume [id]` does it at start-up,
+and `/forget` deletes them all (it asks you to type `/forget confirm`).
 
 **Instructions.** At the first prompt the agent reads, broad to specific: `~/.cordata/CORDATA.md`, the first of
 `CORDATA.md`, `.cordata/CORDATA.md`, `AGENTS.md`, `CLAUDE.md` in the project, then `CORDATA.local.md` (this machine).
@@ -48,6 +79,7 @@ Each is capped at 20,000 characters. `/memory` lists what was found and `/init` 
 | `orchestrator.maxTokens` | number | 0 (none) | token cap for one run |
 | `orchestrator.harden` | bool | true | a second model family reviews each step |
 | `orchestrator.tier2` | bool | true | the planner audits the result against its plan |
+| `orchestrator.screen` | bool | true | a reviewer model screens the audit's commands before any runs (`--no-screen` for one run); the pattern guard runs either way |
 | `orchestrator.dispatch`, `.lambda`, `.mu` | | | the learned dispatch policy and its cost and risk weights |
 
 A CLI that is not installed is left out. `CORDATA_CLAUDE_BIN` and `CORDATA_AGY_BIN` name a binary explicitly.

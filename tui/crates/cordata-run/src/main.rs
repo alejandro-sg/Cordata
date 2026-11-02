@@ -44,6 +44,9 @@ enum Command {
         no_conformance: bool,
         #[arg(long)]
         no_tier2: bool,
+        /// skip the model screen of the audit's commands (the pattern guard still runs)
+        #[arg(long)]
+        no_screen: bool,
         #[arg(long)]
         json: bool,
         #[arg(long)]
@@ -81,9 +84,9 @@ enum Command {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     let code = match Cli::parse().command {
-        Command::Run { goal, cwd, workers, dispatch, allow_direct, max_usd, max_rounds, max_parallel, no_harden, no_research, research, no_conformance, no_tier2, json, run_id, session_id } => {
+        Command::Run { goal, cwd, workers, dispatch, allow_direct, max_usd, max_rounds, max_parallel, no_harden, no_research, research, no_conformance, no_tier2, no_screen, json, run_id, session_id } => {
             let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-            cli::run(RunArgs { goal, cwd, workers, dispatch, allow_direct, max_usd, max_rounds, max_parallel, no_harden, no_research, research, no_conformance, no_tier2, json, run_id, session_id }).await
+            cli::run(RunArgs { goal, cwd, workers, dispatch, allow_direct, max_usd, max_rounds, max_parallel, no_harden, no_research, research, no_conformance, no_tier2, no_screen, json, run_id, session_id }).await
         }
         Command::Status { json } => cli::status_cmd(json),
         Command::Show { run_id, json } => cli::show_cmd(&run_id, json),

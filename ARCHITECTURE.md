@@ -26,7 +26,7 @@ process.
 
 | crate | what |
 |---|---|
-| `tui/crates/acp-core` | the session API both front ends use: `SessionHandle`, `AppEvent`, the permission round-trip, and the native engine (`native/`) |
+| `tui/crates/acp-core` | the session API both front ends use: `SessionHandle`, `AppEvent`, the permission round-trip, the person's rules (`policy`), saved sessions (`history`), and the native engine (`native/`) |
 | `tui/crates/cordata-economizer` | token economizer: dynamic tool pruning, micro-skills, loopguard failure interception, prefix cache alignment, head/tail output compactor |
 | `tui/crates/acp-tui` | the inline terminal client |
 | `tui/crates/cordata-ledger` | quota pools, usage, handoffs, events, run records in `~/.cordata/state.db` |
@@ -34,15 +34,16 @@ process.
 | `tui/crates/cordata-orchestrator` | plan → dispatch → execute → harden → audit, workers (`claude`, `agy`), research, the synthesizer |
 | `tui/crates/cordata-run` | the `cordata run` / `status` / `show` / `resume` command |
 | `tui/crates/cordata-doctor` | `cordata doctor` |
-| `tui/crates/cordata-guard` | `cordata-secrets` (no credential in git) and the pre-tool guard the chat engine calls |
+| `tui/crates/cordata-guard` | `cordata-secrets` (no credential in git), the pre-tool guard the chat engine calls, and credential masking (`redact`) |
 | `app/crates/cordata-view`, `cordata-theme`, `cordata-app` | state and palette shared by both front ends; the native window |
 
 ## A turn
 
 1. The prompt goes to the engine with the project's instructions and any attachments.
-2. The provider streams text and tool calls. The guard refuses what it must, then every edit and command passes the approval gate.
-3. Commands run under a Seatbelt profile that scopes writes and drops the environment's secrets.
-4. A checkpoint is taken before anything that may change files, so a turn can be undone.
+2. The provider streams text and tool calls. The guard refuses what it must, then your `chat.deny` / `chat.allow` rules (`acp_core::policy`), then every other edit and command passes the approval gate.
+3. Commands run under a Seatbelt profile that runs them offline (unless the call asked for the network and you approved), scopes writes to the project and caches, and drops the environment's secrets.
+4. The conversation is saved, credentials masked, to `~/.cordata/sessions` (`acp_core::history`) for `/resume`.
+5. A checkpoint is taken before anything that may change files, so a turn can be undone.
 
 ## The orchestrator
 

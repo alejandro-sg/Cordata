@@ -19,8 +19,7 @@ impl GitActivity {
             .arg("--porcelain=v1")
             .current_dir(root)
             .output()
-        {
-            if output.status.success() {
+            && output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 for line in stdout.lines() {
                     if line.len() > 3 {
@@ -35,7 +34,6 @@ impl GitActivity {
                     }
                 }
             }
-        }
 
         // 2. git diff --name-only HEAD
         if let Ok(output) = Command::new("git")
@@ -44,8 +42,7 @@ impl GitActivity {
             .arg("HEAD")
             .current_dir(root)
             .output()
-        {
-            if output.status.success() {
+            && output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 for line in stdout.lines() {
                     let trimmed = line.trim();
@@ -54,7 +51,6 @@ impl GitActivity {
                     }
                 }
             }
-        }
 
         Self {
             modified_files: modified,
@@ -82,11 +78,10 @@ pub fn determine_status(
 
     // Also check if any active_scope item matches component path prefix
     for scope in active_scope {
-        if scope.starts_with(comp_rel_path) || comp_rel_path.starts_with(scope) {
-            if !comp_active_files.contains(scope) {
+        if (scope.starts_with(comp_rel_path) || comp_rel_path.starts_with(scope))
+            && !comp_active_files.contains(scope) {
                 comp_active_files.push(scope.clone());
             }
-        }
     }
 
     // Also check if any git modified file matches component path prefix

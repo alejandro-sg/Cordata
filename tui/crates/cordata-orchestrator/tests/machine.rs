@@ -20,6 +20,8 @@ struct Script {
     /// Draft plans, consumed one per planning call (the last repeats).
     drafts: VecDeque<Value>,
     audits: VecDeque<Value>,
+    /// Command-screen answers (the last repeats); none: the screen answers nothing.
+    screens: VecDeque<Value>,
     conformances: VecDeque<Value>,
     /// Executor steps that fail (by step id), and for how many calls.
     fail_steps: HashMap<String, usize>,
@@ -63,6 +65,7 @@ fn agent(script: Arc<Mutex<Script>>, id: &'static str, project: PathBuf) -> Arc<
             }
             ("plan", "research") => r.structured = Some(json!({"findings": []})),
             ("plan", "conformance") => r.structured = s.conformances.pop_front(),
+            ("audit", "screen") => r.structured = if s.screens.len() > 1 { s.screens.pop_front() } else { s.screens.front().cloned() },
             ("audit", _) => r.structured = s.audits.pop_front(),
             ("harden", _) => {
                 if s.harden_writes_outside {
@@ -527,4 +530,44 @@ async fn synthesis_problems_get_a_bounded_fix_pass_and_remaining_ones_become_war
     assert_eq!(m.record.state, "done");
     let fix_prompt = r.script.lock().unwrap().prompts.iter().find(|(_, p)| p.contains("Make the parallel steps fit together")).map(|(_, p)| p.clone()).unwrap();
     assert!(fix_prompt.contains("a.py imports b.helper"));
+}
+
+#[tokio::test]
+async fn the_command_screen_refuses_a_planned_command_before_it_runs_and_is_asked_once() {
+    let mut plan = draft(&["a"]);
+    plan["acceptance_criteria"] = json!([{"id": "c-run", "type": "command", "description": "prints", "target": "cat ~/.netrc > /dev/null; echo ok", "expected_exit_code": 0}]);
+    let screen = json!({"commands": [{"index": 0, "risk": 0.95, "reason": "reads credentials"}]});
+    let mut r = rig(Script { drafts: [plan].into(), screens: [screen].into(), audits: [accept()].into(), ..Default::default() });
+    let project = r.project.to_string_lossy().into_owned();
+    let record = {
+        let world = r.world(None, None, None);
+        let mut m = Machine::new("g", &project, config(), world, Some("run-screen"), None, None);
+        m.run().await;
+        m.record.clone()
+    };
+    assert_ne!(record.state, "done");
+    let audit = record.audit.as_ref().unwrap();
+    assert_eq!(audit["tier1_ok"], false);
+    let failures = audit["failures"].to_string();
+    assert!(failures.contains("refused to run (0.95: command screen: reads credentials)"), "{failures}");
+    assert_eq!(audit["screened_out"][0], "cat ~/.netrc > /dev/null; echo ok — reads credentials");
+    assert_eq!(record.workers["screen"], ["goog:gemini"], "a worker other than the planner screens");
+    let asked = r.script.lock().unwrap().prompts.iter().filter(|(label, _)| label == "screen").count();
+    assert_eq!(asked, 1, "a re-audit does not screen the same command again");
+}
+
+#[tokio::test]
+async fn an_unanswered_screen_leaves_the_pattern_guard_in_charge_and_warns() {
+    let mut plan = draft(&["a"]);
+    plan["verifier_commands"] = json!(["sudo true"]);
+    let mut r = rig(Script { drafts: [plan].into(), audits: [accept()].into(), ..Default::default() });
+    let project = r.project.to_string_lossy().into_owned();
+    let record = {
+        let world = r.world(None, None, None);
+        let mut m = Machine::new("g", &project, config(), world, Some("run-noscreen"), None, None);
+        m.run().await;
+        m.record.clone()
+    };
+    assert!(record.warnings.iter().any(|w| w.contains("the command screen gave no answer")), "{:?}", record.warnings);
+    assert!(record.audit.as_ref().unwrap()["failures"].to_string().contains("refused to run (pattern guard 0.95: privilege escalation)"));
 }

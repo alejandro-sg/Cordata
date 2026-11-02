@@ -39,6 +39,7 @@ pub struct RunArgs {
     pub research: bool,
     pub no_conformance: bool,
     pub no_tier2: bool,
+    pub no_screen: bool,
     pub json: bool,
     pub run_id: Option<String>,
     pub session_id: Option<String>,
@@ -148,6 +149,7 @@ pub fn run_args_to_config(args: &RunArgs, base: RunConfig) -> RunConfig {
     }
     c.harden &= !args.no_harden;
     c.tier2 &= !args.no_tier2;
+    c.screen &= !args.no_screen;
     if let Some(v) = args.max_rounds {
         c.max_rounds = v.max(0);
     }

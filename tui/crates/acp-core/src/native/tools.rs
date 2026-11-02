@@ -52,9 +52,13 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "run_command",
-            description: "Run a shell command in the project directory, sandboxed. Returns combined stdout and stderr.",
+            description: "Run a shell command in the project directory, sandboxed: it may write only the project, temporary \
+                          folders and package caches, and it runs offline. Set `network` only when the command must reach \
+                          the internet (installing a package, fetching a crate); the user is asked. Returns combined \
+                          stdout and stderr.",
             schema: json!({"type":"object","properties":{
-                "cmd":{"type":"string"},"timeout":{"type":"integer","description":"seconds, default 120"}},
+                "cmd":{"type":"string"},"timeout":{"type":"integer","description":"seconds, default 120"},
+                "network":{"type":"boolean","description":"needs internet access, default false"}},
                 "required":["cmd"]}),
         },
         ToolSpec {
@@ -105,6 +109,24 @@ fn normalize_lexical(path: &Path) -> PathBuf {
     clean
 }
 
+/// Where `path` really lands: its nearest existing ancestor resolved, plus the rest. A symlink in the project named
+/// `src/k` pointing at `../.env` lands on `.env`; `src/g/hooks/x` with `src/g -> ../.git` lands in `.git/hooks`.
+fn landing(path: &Path) -> PathBuf {
+    for ancestor in path.ancestors() {
+        if let Ok(real) = ancestor.canonicalize() {
+            let rest = path.strip_prefix(ancestor).unwrap_or(Path::new(""));
+            return if rest.as_os_str().is_empty() { real } else { real.join(rest) };
+        }
+    }
+    path.to_path_buf()
+}
+
+/// Is `path` (resolved) inside a `.git` folder of the project? The guard sees only the name the model gave.
+fn lands_in_git(path: &Path, cwd: &Path) -> bool {
+    let root = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    landing(path).strip_prefix(&root).is_ok_and(|rel| rel.components().any(|c| c.as_os_str() == ".git"))
+}
+
 /// A path the tools may touch: relative to `cwd` (or within `offload_dir()`), never a secret file.
 /// All tools enforce directory containment and verify that in-tree symlinks do not escape `cwd`.
 fn resolve(cwd: &Path, raw: &str, must_be_inside: bool) -> Result<PathBuf, String> {
@@ -153,6 +175,9 @@ fn resolve(cwd: &Path, raw: &str, must_be_inside: bool) -> Result<PathBuf, Strin
                     return Err(format!("{raw} resolves outside the project directory"));
                 }
         }
+        if sandbox::is_secret_path(&landing(&clean)) {
+            return Err(format!("{raw} leads to a secret file; the sandbox keeps it from tools"));
+        }
 
         return Ok(clean);
     }
@@ -192,12 +217,16 @@ fn apply_edit(path: &Path, args: &Value) -> Result<(Option<String>, String), Str
     }
 }
 
-/// Runs a tool. Output is already length-limited by [`limit_output`] at the call site.
-pub(crate) async fn execute(name: &str, args: &Value, cwd: &Path) -> Result<String, String> {
+/// Runs a tool. Output is already length-limited by [`limit_output`] at the call site. `writable` is the person's
+/// `chat.writable`: what a command may write besides the project, temporary folders and caches.
+pub(crate) async fn execute(name: &str, args: &Value, cwd: &Path, writable: &[PathBuf]) -> Result<String, String> {
     match name {
         "read_file" => read_file(args, cwd),
         "edit_file" => {
             let path = resolve(cwd, arg(args, "path")?, true)?;
+            if lands_in_git(&path, cwd) {
+                return Err(format!("{} leads inside .git/; edits there are refused", arg(args, "path")?));
+            }
             let (old, new) = apply_edit(&path, args)?;
             if old.is_none()
                 && let Some(dir) = path.parent() {
@@ -208,7 +237,8 @@ pub(crate) async fn execute(name: &str, args: &Value, cwd: &Path) -> Result<Stri
         }
         "run_command" => {
             let secs = args.get("timeout").and_then(Value::as_u64).unwrap_or(DEFAULT_TIMEOUT_SECS).clamp(1, 600);
-            sandbox::run(arg(args, "cmd")?, cwd, Duration::from_secs(secs)).await
+            let confinement = sandbox::Confinement { project: cwd, network: crate::policy::wants_network(args), writable };
+            sandbox::run(arg(args, "cmd")?, &confinement, Duration::from_secs(secs)).await
         }
         "code_search" => code_search(args, cwd),
         "code_outline" => {
@@ -317,14 +347,14 @@ mod tests {
         std::fs::write(dir.path().join("a.txt"), "one two one").unwrap();
         let cwd = dir.path();
         let dup = json!({"path":"a.txt","target":"one","replacement":"1"});
-        assert!(execute("edit_file", &dup, cwd).await.unwrap_err().contains("2 times"));
+        assert!(execute("edit_file", &dup, cwd, &[]).await.unwrap_err().contains("2 times"));
         let miss = json!({"path":"a.txt","target":"zzz","replacement":"1"});
-        assert!(execute("edit_file", &miss, cwd).await.unwrap_err().contains("not found"));
+        assert!(execute("edit_file", &miss, cwd, &[]).await.unwrap_err().contains("not found"));
         let ok = json!({"path":"a.txt","target":"two","replacement":"2"});
         let diffs = preview("edit_file", &ok, cwd).unwrap();
         assert_eq!(diffs[0].old_text.as_deref(), Some("one two one"));
         assert_eq!(diffs[0].new_text, "one 2 one");
-        assert!(execute("edit_file", &ok, cwd).await.unwrap().starts_with("edited"));
+        assert!(execute("edit_file", &ok, cwd, &[]).await.unwrap().starts_with("edited"));
         assert_eq!(std::fs::read_to_string(cwd.join("a.txt")).unwrap(), "one 2 one");
     }
 
@@ -333,20 +363,38 @@ mod tests {
         let dir = tmp();
         let cwd = dir.path();
         let new = json!({"path":"sub/n.txt","target":"","replacement":"hi"});
-        assert!(execute("edit_file", &new, cwd).await.unwrap().starts_with("created"));
+        assert!(execute("edit_file", &new, cwd, &[]).await.unwrap().starts_with("created"));
         assert_eq!(std::fs::read_to_string(cwd.join("sub/n.txt")).unwrap(), "hi");
         let out = json!({"path":"../escape.txt","target":"","replacement":"x"});
-        assert!(execute("edit_file", &out, cwd).await.unwrap_err().contains("outside"));
+        assert!(execute("edit_file", &out, cwd, &[]).await.unwrap_err().contains("outside"));
         let env = json!({"path":".env","target":"","replacement":"K=1"});
-        assert!(execute("edit_file", &env, cwd).await.unwrap_err().contains("secret"));
-        assert!(execute("read_file", &json!({"path":".env.local"}), cwd).await.unwrap_err().contains("secret"));
-        assert!(execute("read_file", &json!({"path":"/etc/passwd"}), cwd).await.unwrap_err().contains("outside"));
-        assert!(execute("code_outline", &json!({"path":"/etc/passwd"}), cwd).await.unwrap_err().contains("outside"));
-        assert!(execute("code_search", &json!({"path":"/etc","pattern":"x"}), cwd).await.unwrap_err().contains("outside"));
+        assert!(execute("edit_file", &env, cwd, &[]).await.unwrap_err().contains("secret"));
+        assert!(execute("read_file", &json!({"path":".env.local"}), cwd, &[]).await.unwrap_err().contains("secret"));
+        assert!(execute("read_file", &json!({"path":"/etc/passwd"}), cwd, &[]).await.unwrap_err().contains("outside"));
+        assert!(execute("code_outline", &json!({"path":"/etc/passwd"}), cwd, &[]).await.unwrap_err().contains("outside"));
+        assert!(execute("code_search", &json!({"path":"/etc","pattern":"x"}), cwd, &[]).await.unwrap_err().contains("outside"));
     }
 
     #[tokio::test]
     #[cfg(unix)]
+    async fn symlinks_inside_the_project_cannot_reach_secrets_or_git() {
+        let dir = tmp();
+        let cwd = dir.path();
+        std::fs::write(cwd.join(".env"), "KEY=1").unwrap();
+        std::fs::create_dir_all(cwd.join(".git")).unwrap();
+        std::fs::create_dir_all(cwd.join("src")).unwrap();
+        std::os::unix::fs::symlink("../.env", cwd.join("src/k")).unwrap();
+        std::os::unix::fs::symlink("../.git", cwd.join("src/g")).unwrap();
+        assert!(execute("read_file", &json!({"path":"src/k"}), cwd, &[]).await.unwrap_err().contains("secret"));
+        let edit = json!({"path":"src/k","target":"KEY=1","replacement":"KEY=2"});
+        assert!(execute("edit_file", &edit, cwd, &[]).await.unwrap_err().contains("secret"));
+        let hook = json!({"path":"src/g/hooks/pre-commit","target":"","replacement":"#!/bin/sh"});
+        assert!(execute("edit_file", &hook, cwd, &[]).await.unwrap_err().contains(".git"));
+        assert_eq!(std::fs::read_to_string(cwd.join(".env")).unwrap(), "KEY=1");
+        assert!(!cwd.join(".git/hooks/pre-commit").exists());
+    }
+
+    #[tokio::test]
     async fn symlinks_outside_project_are_refused() {
         let dir = tmp();
         let outside = tmp();
@@ -357,9 +405,9 @@ mod tests {
         std::os::unix::fs::symlink(&target, &link).unwrap();
 
         let cwd = dir.path();
-        assert!(execute("read_file", &json!({"path":"link_to_victim"}), cwd).await.unwrap_err().contains("outside"));
+        assert!(execute("read_file", &json!({"path":"link_to_victim"}), cwd, &[]).await.unwrap_err().contains("outside"));
         let edit = json!({"path":"link_to_victim","target":"secret data","replacement":"compromised"});
-        assert!(execute("edit_file", &edit, cwd).await.unwrap_err().contains("outside"));
+        assert!(execute("edit_file", &edit, cwd, &[]).await.unwrap_err().contains("outside"));
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "secret data");
     }
 
@@ -371,10 +419,10 @@ mod tests {
             body.push_str(&format!("fn f{i}() {{}}\n// filler\n"));
         }
         std::fs::write(dir.path().join("big.rs"), &body).unwrap();
-        let out = execute("read_file", &json!({"path":"big.rs"}), dir.path()).await.unwrap();
+        let out = execute("read_file", &json!({"path":"big.rs"}), dir.path(), &[]).await.unwrap();
         assert!(out.contains("1200 lines") && out.contains("fn f599"));
         assert!(!out.contains("filler"));
-        let ranged = execute("read_file", &json!({"path":"big.rs","offset":2,"limit":1}), dir.path()).await.unwrap();
+        let ranged = execute("read_file", &json!({"path":"big.rs","offset":2,"limit":1}), dir.path(), &[]).await.unwrap();
         assert_eq!(ranged, "    2  // filler\n");
     }
 
@@ -383,10 +431,10 @@ mod tests {
         let dir = tmp();
         std::fs::write(dir.path().join("a.rs"), "let needle = 1;\n").unwrap();
         std::fs::write(dir.path().join(".env"), "needle=secret\n").unwrap();
-        let out = execute("code_search", &json!({"pattern":"needle"}), dir.path()).await.unwrap();
+        let out = execute("code_search", &json!({"pattern":"needle"}), dir.path(), &[]).await.unwrap();
         assert!(out.contains("a.rs:1:let needle"));
         assert!(!out.contains("secret"));
-        let none = execute("code_search", &json!({"pattern":"zzz"}), dir.path()).await.unwrap();
+        let none = execute("code_search", &json!({"pattern":"zzz"}), dir.path(), &[]).await.unwrap();
         assert_eq!(none, "(no matches)");
     }
 

@@ -34,6 +34,10 @@ pub enum Attachment {
 #[derive(Debug)]
 pub(crate) enum Command {
     Prompt(String, Vec<Attachment>),
+    /// Load a saved session (`last`, an id or a prefix) in place of this one's conversation.
+    Resume(String),
+    /// Delete this project's saved sessions and stop saving this one.
+    Forget,
     Cancel,
     Shutdown,
 }
@@ -73,6 +77,17 @@ impl SessionHandle {
     /// A prompt with images and files: the text first, then one content block per attachment.
     pub fn send_prompt_with(&self, text: impl Into<String>, attachments: Vec<Attachment>) -> Result<()> {
         self.send(Command::Prompt(text.into(), attachments))
+    }
+
+    /// Continues a saved session: `last`, an id, or a unique prefix of one (`acp_core::history::list`). Between turns
+    /// only; the result is `SessionRestored` or a `Notice`.
+    pub fn resume(&self, wanted: impl Into<String>) -> Result<()> {
+        self.send(Command::Resume(wanted.into()))
+    }
+
+    /// Deletes every saved session of this project, and keeps this one from being saved. Answered with a `Notice`.
+    pub fn forget(&self) -> Result<()> {
+        self.send(Command::Forget)
     }
 
     /// Stops a running turn, between streamed events. Inert while an approval is unanswered: answer it first.

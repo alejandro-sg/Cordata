@@ -13,7 +13,7 @@ use super::keys;
 use super::tools::ToolSpec;
 
 /// A tool call the model asked for.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Call {
     pub(crate) id: String,
     pub(crate) name: String,
@@ -28,10 +28,11 @@ pub(crate) enum Delta {
     Call(Call),
 }
 
-/// One entry of the conversation handed to the provider.
-#[derive(Debug, Clone, PartialEq)]
+/// One entry of the conversation handed to the provider (and kept on disk, `crate::history`).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "role", rename_all = "snake_case")]
 pub(crate) enum Msg {
-    User(String),
+    User { text: String },
     Assistant { text: String, calls: Vec<Call> },
     ToolResult { id: String, output: String },
 }
@@ -68,7 +69,7 @@ impl GenaiProvider {
 
 fn to_message(msg: &Msg) -> ChatMessage {
     match msg {
-        Msg::User(text) => ChatMessage::user(text.as_str()),
+        Msg::User { text } => ChatMessage::user(text.as_str()),
         Msg::Assistant { text, calls } if calls.is_empty() => ChatMessage::assistant(text.as_str()),
         Msg::Assistant { text, calls } => {
             let mut parts = Vec::new();

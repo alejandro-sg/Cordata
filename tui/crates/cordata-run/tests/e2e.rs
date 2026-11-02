@@ -12,6 +12,8 @@ use serde_json::{Value, json};
 const FAKE_CLAUDE: &str = r##"#!/bin/bash
 PROMPT="$(cat)"
 echo "$@" >> "@DIR@/fake.log"
+# Every call hangs while `slow` exists, whichever phase runs first, so an interrupt always lands mid-call.
+[[ -e "@DIR@/slow" ]] && sleep 30
 if [[ "$PROMPT" == *"conform to the plan"* ]]; then
   echo '{"type":"result","subtype":"success","total_cost_usd":0.01,"structured_output":{"verdict":"accept","gaps":[]}}'
 elif [[ "$PROMPT" == *"You are a research worker exploring the repository"* ]]; then
@@ -23,7 +25,6 @@ elif [[ "$PROMPT" == *"You are the PLANNER"* && "$PROMPT" == *"verified research
 {"type":"result","subtype":"success","total_cost_usd":0.01,"structured_output":{"goal":"write the files","acceptance_criteria":[{"id":"c1","type":"regex_match","description":"a has its content","target":"calc/a.txt::ok a"}],"steps":[{"step_id":"s1","name":"write a","description":"write a","file_scope":["calc/a.txt"],"grounded_in":["f1"]}],"assumptions":["none"]}}
 STREAM
 elif [[ "$PROMPT" == *"You are the PLANNER"* ]]; then
-  [[ -e "@DIR@/slow" ]] && sleep 30
   cat <<'STREAM'
 {"type":"result","subtype":"success","total_cost_usd":0.01,"structured_output":{"goal":"write the files","acceptance_criteria":[{"id":"c1","type":"regex_match","description":"a has its content","target":"calc/a.txt::ok a"},{"id":"c2","type":"file_exists","description":"b exists","target":"calc/b.txt"}],"steps":[{"step_id":"s1","name":"write a","description":"write a","file_scope":["calc/a.txt"]},{"step_id":"s2","name":"write b","description":"write b","file_scope":["calc/b.txt"]}],"assumptions":["none"]}}
 STREAM

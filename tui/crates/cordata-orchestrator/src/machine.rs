@@ -72,6 +72,9 @@ pub struct RunConfig {
     pub max_step_recoveries: i64,
     pub harden: bool,
     pub tier2: bool,
+    /// A reviewer model screens the audit's commands before any runs (`audit::screen`).
+    #[serde(default = "d_true")]
+    pub screen: bool,
     pub step_timeout_s: f64,
     pub plan_timeout_s: f64,
     pub research: bool,
@@ -92,6 +95,7 @@ impl Default for RunConfig {
             max_step_recoveries: 2,
             harden: true,
             tier2: true,
+            screen: true,
             step_timeout_s: 1800.0,
             plan_timeout_s: 600.0,
             research: false,
@@ -104,6 +108,9 @@ impl Default for RunConfig {
     }
 }
 
+fn d_true() -> bool {
+    true
+}
 fn d_state() -> String {
     "plan".into()
 }
@@ -296,6 +303,9 @@ pub fn walkthrough(record: &RunRecord) -> String {
             let detail = text(c, "detail").map(|d| d.lines().next().unwrap_or("").to_owned()).unwrap_or_default();
             lines.push(format!("- {} ({}): {} — {}", text(c, "id").unwrap_or_default(), text(c, "kind").unwrap_or_default(), if c.get("ok").and_then(Value::as_bool).unwrap_or(false) { "ok" } else { "FAIL" }, detail));
         }
+        for refused in audit.get("screened_out").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+            lines.push(format!("- refused by the command screen: `{refused}`"));
+        }
         let changed: Vec<&str> = audit.get("changed").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).take(200).collect();
         if !changed.is_empty() {
             lines.extend(["".into(), "## Changed files".into()]);
@@ -465,6 +475,8 @@ pub struct Machine<'a> {
     resume_packet: Option<HandoffPacket>,
     last_report: Option<AuditReport>,
     recovery_note: String,
+    /// Every command screened this run, so a re-audit after a fix pass only sends the new ones.
+    screened: audit::Screen,
 }
 
 /// Everything a machine needs from the world besides its goal.
@@ -521,6 +533,7 @@ impl<'a> Machine<'a> {
             resume_packet: None,
             last_report: None,
             recovery_note: String::new(),
+            screened: audit::Screen::default(),
         }
     }
 
@@ -915,8 +928,45 @@ impl<'a> Machine<'a> {
         self.config.conformance && self.record.research.is_some()
     }
 
+    /// Has a reviewer screen the commands of `plan` not screened yet this run. The result holds every score so far and
+    /// the notes of this pass only; each note also becomes a run warning.
+    async fn screen_commands(&mut self, plan: &Plan) -> audit::Screen {
+        let fresh: Vec<String> = audit::audit_commands(plan).into_iter().filter(|c| !self.screened.scores.contains_key(c)).collect();
+        let mut notes = Vec::new();
+        if fresh.is_empty() {
+            // nothing new to screen
+        } else if !self.config.screen {
+            notes.push("the command screen is off (orchestrator.screen); the pattern guard checked the audit's commands alone".to_owned());
+        } else {
+            let ranked = self.rank("audit");
+            let mut usable = self.usable(ranked);
+            // The planner wrote the commands; another worker reads them when one is usable.
+            let planner = self.record.planner.clone();
+            usable.sort_by_key(|c| Some(c.key()) == planner);
+            match usable.into_iter().next() {
+                None => notes.push("no reviewer with quota for the command screen; the pattern guard checked the audit's commands alone".to_owned()),
+                Some(candidate) => {
+                    let (screen, result) = audit::screen(&plan.goal, &fresh, &self.project, &candidate, &self.record.run_id, self.config.plan_timeout_s).await;
+                    let model = candidate.candidate.model.clone().or_else(|| result.model.clone());
+                    self.ledger.record_result(&self.record.run_id, Some("audit"), &candidate.candidate.family, model.as_deref(), &result.ledger_outcome(), Some("screen"), Some(&candidate.key()));
+                    self.record.workers.entry("screen".into()).or_default().push(candidate.key());
+                    self.emit_usage();
+                    self.screened.scores.extend(screen.scores);
+                    notes = screen.notes;
+                }
+            }
+        }
+        for note in &notes {
+            if !self.record.warnings.contains(note) {
+                self.record.warnings.push(note.clone());
+            }
+        }
+        audit::Screen { scores: self.screened.scores.clone(), notes }
+    }
+
     async fn audit_phase(&mut self) -> AuditReport {
         let plan = self.plan.clone().expect("a plan exists");
+        let screen = self.screen_commands(&plan).await;
         let mut reviewer = None;
         if self.config.tier2 && !self.conformance_loop() {
             // in the loop, conformance replaces the Tier-2 reviewer
@@ -924,7 +974,7 @@ impl<'a> Machine<'a> {
             reviewer = self.usable(ranked).into_iter().next();
         }
         let start = self.record.start_checkpoint.clone();
-        let report = audit::audit(&plan, &self.project, start.as_deref(), reviewer.as_ref(), &self.record.run_id, &self.audit_env, self.config.plan_timeout_s).await;
+        let report = audit::audit(&plan, &self.project, start.as_deref(), reviewer.as_ref(), &self.record.run_id, &self.audit_env, self.config.plan_timeout_s, &screen).await;
         if let (Some(result), Some(reviewer)) = (&report.tier2_result, &reviewer) {
             let model = reviewer.candidate.model.clone().or_else(|| result.model.clone());
             self.ledger.record_result(&self.record.run_id, Some("audit"), &reviewer.candidate.family, model.as_deref(), &result.ledger_outcome(), Some("audit"), Some(&reviewer.key()));
@@ -974,7 +1024,11 @@ impl<'a> Machine<'a> {
         let start = self.record.start_checkpoint.clone();
         let report = match self.last_report.clone() {
             Some(r) => r,
-            None => audit::tier1(&plan, &self.project, start.as_deref(), &self.audit_env).await, // a resumed run has no report in memory
+            // A resumed run has no report in memory.
+            None => {
+                let screen = self.screen_commands(&plan).await;
+                audit::audit(&plan, &self.project, start.as_deref(), None, &self.record.run_id, &self.audit_env, self.config.plan_timeout_s, &screen).await
+            }
         };
         let Some(candidate) = self.conformance_candidate() else {
             self.transition("done", json!({"verdict": "accept(tier1)"}));

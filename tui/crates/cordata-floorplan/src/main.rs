@@ -84,11 +84,10 @@ fn main() -> ExitCode {
 
         println!("Interactive floorplan generated at: {}", dest.display());
 
-        if args.open || args.html {
-            if let Err(e) = cordata_floorplan::open_in_browser(&dest) {
+        if (args.open || args.html)
+            && let Err(e) = cordata_floorplan::open_in_browser(&dest) {
                 eprintln!("Warning: failed opening browser: {e:#}");
             }
-        }
         return ExitCode::SUCCESS;
     }
 

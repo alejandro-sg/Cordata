@@ -42,6 +42,10 @@ struct Args {
     #[arg(long, value_name = "FILE")]
     debug_log: Option<PathBuf>,
 
+    /// Continue this project's last saved session, or the one whose id starts with ID (`/history` lists them).
+    #[arg(long, value_name = "ID", num_args = 0..=1, default_missing_value = "last")]
+    resume: Option<String>,
+
     /// Initial prompt to send once connected (like Claude Code / agy "prompt").
     #[arg(value_name = "PROMPT")]
     prompt: Option<String>,
@@ -198,7 +202,13 @@ async fn main() -> Result<()> {
         events: tx,
         local: local_tx,
     };
-    workspace.spawn(args.prompt);
+    let first = workspace.spawn(args.prompt);
+    if let Some(wanted) = args.resume
+        && let Some(handle) = workspace.slots[first].handle.as_ref()
+    {
+        // Queued ahead of any prompt, so the initial prompt continues the resumed conversation.
+        let _ = handle.resume(wanted);
+    }
 
     install_panic_hook();
     let guard = TerminalGuard::enter()?;
@@ -477,6 +487,9 @@ async fn run(
                 }
                 Effect::SendPrompt(text) => with_handle(workspace, |h| h.send_prompt(text)),
                 Effect::Cancel => with_handle(workspace, SessionHandle::cancel),
+                Effect::Resume(wanted) => with_handle(workspace, |h| h.resume(wanted)),
+                // Every open session stops saving, or one of them would write the folder back.
+                Effect::Forget => workspace.slots.iter().filter_map(|slot| slot.handle.as_ref()).try_for_each(SessionHandle::forget),
             };
             if let Err(error) = outcome {
                 workspace

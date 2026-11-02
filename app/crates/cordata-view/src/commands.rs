@@ -31,6 +31,14 @@ pub enum Command {
     Switch(Option<String>),
     /// End the shown session.
     Close,
+    /// This project's saved sessions.
+    History,
+    /// Continue a saved session: `last` (the default), an id or a prefix of one.
+    Resume(Option<String>),
+    /// Delete this project's saved sessions; `/forget confirm` does it, plain `/forget` says what it would delete.
+    Forget(Option<String>),
+    /// The rules, network and write scope the agent runs under.
+    Permissions,
     Clear,
     Quit,
     Unknown(String),
@@ -47,6 +55,10 @@ pub const HELP: &[(&str, &str)] = &[
     ("/new", "another session in this project (Ctrl+N) — a new shared conversation on the hub"),
     ("/switch [n]", "show session n (Ctrl+←/→, Alt+1…9)"),
     ("/close", "end the shown session"),
+    ("/history", "this project's saved sessions"),
+    ("/resume [id]", "continue a saved session (the last one by default)"),
+    ("/forget", "delete this project's saved sessions"),
+    ("/permissions", "what runs without asking, what is refused, network and write scope"),
     ("/memory", "show the instruction files the agent reads"),
     ("/init", "have the agent draft CORDATA.md"),
     ("/status", "session, mode, model, rules, quota pools"),
@@ -86,6 +98,10 @@ pub fn parse(input: &str) -> Option<Command> {
         "new" => Command::New,
         "switch" | "session" => Command::Switch(arg),
         "close" => Command::Close,
+        "history" => Command::History,
+        "resume" | "continue" => Command::Resume(arg),
+        "forget" => Command::Forget(arg),
+        "permissions" | "rules" => Command::Permissions,
         "clear" | "cls" => Command::Clear,
         "quit" | "exit" | "q" => Command::Quit,
         other => Command::Unknown(other.to_owned()),
@@ -123,6 +139,9 @@ mod tests {
     #[test]
     fn session_commands_parse() {
         assert_eq!(parse("/switch 2"), Some(Command::Switch(Some("2".into()))));
+        assert_eq!(parse("/resume 19a"), Some(Command::Resume(Some("19a".into()))));
+        assert_eq!(parse("/continue"), Some(Command::Resume(None)));
+        assert_eq!(parse("/forget confirm"), Some(Command::Forget(Some("confirm".into()))));
     }
 
     #[test]

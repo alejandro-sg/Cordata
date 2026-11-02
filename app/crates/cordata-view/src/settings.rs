@@ -54,6 +54,8 @@ pub enum Kind {
     /// A list of app bundle ids (`capture.allowlist`): reverse-DNS labels only, so no path, pattern
     /// or shell fragment can be stored where an app identity is matched.
     BundleIds,
+    /// A list of strings (`chat.allow` rules, `chat.writable` folders).
+    Strings,
 }
 
 /// Where a change takes effect.
@@ -116,6 +118,38 @@ pub const SCHEMA: &[Entry] = &[
         applies: Applies::Now,
         help: "Cordata.app shows reasoning in full",
     },
+    // The chat agent's rules, read by acp-core (`acp_core::policy`). `chat.allow` and `chat.writable` loosen what the
+    // agent may do without asking, so they are user-file only (`USER_ONLY_PREFIXES`).
+    Entry {
+        key: "chat.allow",
+        kind: Kind::Strings,
+        applies: Applies::NextSession,
+        help: "tool calls that run without asking, e.g. [\"run_command(cargo test*)\", \"edit_file(src/**)\"]",
+    },
+    Entry {
+        key: "chat.deny",
+        kind: Kind::Strings,
+        applies: Applies::NextSession,
+        help: "tool calls refused without asking, e.g. [\"run_command(git push*)\"]",
+    },
+    Entry {
+        key: "chat.network",
+        kind: Kind::Enum(&["ask", "off"]),
+        applies: Applies::NextSession,
+        help: "commands run offline; ask = a command may request the network and you are asked, off = never",
+    },
+    Entry {
+        key: "chat.writable",
+        kind: Kind::Strings,
+        applies: Applies::NextSession,
+        help: "absolute folders commands may write besides the project, temporary folders and package caches",
+    },
+    Entry {
+        key: "chat.history",
+        kind: Kind::Enum(&["on", "off"]),
+        applies: Applies::NextSession,
+        help: "keep sessions in ~/.cordata/sessions so /resume can continue them (/forget deletes them)",
+    },
     // Mirror of backend/settings_store.py's SCHEMA. Both front doors reject an
     // unknown key with a warning, so a key added on one side and not the other
     // shows up as a spurious warning in whichever door is behind.
@@ -174,6 +208,12 @@ pub const SCHEMA: &[Entry] = &[
         help: "after the deterministic checks pass, ask a reviewer model accept/drift/replan",
     },
     Entry {
+        key: "orchestrator.screen",
+        kind: Kind::Bool,
+        applies: Applies::NextSession,
+        help: "a reviewer model screens the audit's commands before they run (the pattern guard always does)",
+    },
+    Entry {
         key: "orchestrator.lambda",
         kind: Kind::Float(0.0, 2.0),
         applies: Applies::NextSession,
@@ -195,7 +235,8 @@ static SECRET_KEY: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)(api[_-]?key|token|secret|password|passwd|credential)").unwrap()
 });
 /// Setting groups read only from the user file — mirrors `USER_ONLY_PREFIXES` in `backend/settings_store.py`.
-pub const USER_ONLY_PREFIXES: &[&str] = &["app.", "vault.", "orchestrator."];
+/// `chat.allow` and `chat.writable` are single keys: a repository must not grant its own agent anything.
+pub const USER_ONLY_PREFIXES: &[&str] = &["app.", "vault.", "orchestrator.", "chat.allow", "chat.writable"];
 
 static SECRET_VALUE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -317,6 +358,11 @@ fn check(key: &str, value: &Value, location: &str) -> Result<(), String> {
                 return Err(format!(
                     "{location}: '{key}' must be a number between {low} and {high}"
                 ));
+            }
+        }
+        Kind::Strings => {
+            if !value.as_array().is_some_and(|items| items.iter().all(Value::is_string)) {
+                return Err(format!("{location}: '{key}' must be a list of strings"));
             }
         }
         Kind::BundleIds => {

@@ -27,9 +27,9 @@ pub fn discover_components(root: &Path) -> Result<Vec<RawComponent>> {
     let cargo_roots = vec![root.to_path_buf(), root.join("tui"), root.join("app")];
     for base in cargo_roots {
         let manifest_path = base.join("Cargo.toml");
-        if manifest_path.exists() {
-            if let Ok(content) = fs::read_to_string(&manifest_path) {
-                if let Ok(value) = content.parse::<Value>() {
+        if manifest_path.exists()
+            && let Ok(content) = fs::read_to_string(&manifest_path)
+                && let Ok(value) = content.parse::<Value>() {
                     if let Some(workspace) = value.get("workspace") {
                         if let Some(members) = workspace.get("members").and_then(Value::as_array) {
                             for member in members {
@@ -37,31 +37,27 @@ pub fn discover_components(root: &Path) -> Result<Vec<RawComponent>> {
                                     let member_dir = base.join(m_str);
                                     if member_dir.exists() && member_dir.is_dir() {
                                         let canonical = member_dir.canonicalize().unwrap_or(member_dir.clone());
-                                        if visited_paths.insert(canonical) {
-                                            if let Some(comp) = inspect_cargo_crate(root, &member_dir) {
+                                        if visited_paths.insert(canonical)
+                                            && let Some(comp) = inspect_cargo_crate(root, &member_dir) {
                                                 raw_components.push(comp);
                                             }
-                                        }
                                     }
                                 }
                             }
                         }
                     } else if value.get("package").is_some() {
                         let canonical = base.canonicalize().unwrap_or(base.clone());
-                        if visited_paths.insert(canonical) {
-                            if let Some(comp) = inspect_cargo_crate(root, &base) {
+                        if visited_paths.insert(canonical)
+                            && let Some(comp) = inspect_cargo_crate(root, &base) {
                                 raw_components.push(comp);
                             }
-                        }
                     }
                 }
-            }
-        }
     }
 
     // 2. If no components found, fallback to top-level directories
-    if raw_components.is_empty() {
-        if let Ok(entries) = fs::read_dir(root) {
+    if raw_components.is_empty()
+        && let Ok(entries) = fs::read_dir(root) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
@@ -82,7 +78,6 @@ pub fn discover_components(root: &Path) -> Result<Vec<RawComponent>> {
                 }
             }
         }
-    }
 
     // Filter dependency names so they only refer to existing component IDs
     let all_ids: HashSet<String> = raw_components.iter().map(|c| c.id.clone()).collect();
@@ -118,11 +113,10 @@ fn inspect_cargo_crate(root: &Path, crate_dir: &Path) -> Option<RawComponent> {
     if let Some(deps) = value.get("dependencies").and_then(Value::as_table) {
         for (dep_name, dep_val) in deps {
             // Check if it's a path dependency or matches one of our crates
-            if let Some(table) = dep_val.as_table() {
-                if table.contains_key("path") {
+            if let Some(table) = dep_val.as_table()
+                && table.contains_key("path") {
                     internal_deps.push(dep_name.clone());
                 }
-            }
         }
     }
 

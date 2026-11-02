@@ -561,6 +561,7 @@ name = "cordata-orchestrator"
 version = "0.1.0"
 dependencies = [
  "cordata-checkpoints",
+ "cordata-guard",
  "cordata-ledger",
  "futures",
  "jsonschema",

@@ -4,7 +4,7 @@
 use std::collections::VecDeque;
 use std::time::Instant;
 
-use acp_core::{AppEvent, ApprovalDecision, FileDiff, PermissionInfo, SessionInfo, StopReason, ToolCallInfo, ToolKind, ToolStatus};
+use acp_core::{AppEvent, ApprovalDecision, FileDiff, PermissionInfo, Restored, SessionInfo, StopReason, ToolCallInfo, ToolKind, ToolStatus};
 use crate::key::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use serde_json::Value;
 use tokio::sync::oneshot;
@@ -77,6 +77,10 @@ pub enum Effect {
     SwitchSession(SwitchTarget),
     /// End the shown session (its engine shuts down).
     CloseSession,
+    /// Load a saved session into the shown one (`SessionHandle::resume`).
+    Resume(String),
+    /// Delete this project's saved sessions and stop saving the shown one (`SessionHandle::forget`).
+    Forget,
     /// A command run in the project folder, reported back as a `LocalEvent`. `share` hands its output to the agent
     /// with the next prompt (`!command`); `as_diff` shows it as a coloured diff (`/diff`).
     Shell {
@@ -432,6 +436,20 @@ impl App {
             }
             AppEvent::Notice(note) => {
                 self.messages.push(Message::Info(sanitize(&note)));
+            }
+            AppEvent::SessionRestored { session_id, entries } => {
+                self.messages.push(Message::Divider(format!("resumed session {session_id}")));
+                for entry in entries {
+                    self.messages.push(match entry {
+                        Restored::User(text) => Message::User(sanitize(&text)),
+                        Restored::Agent(text) => Message::Agent(sanitize(&text)),
+                        Restored::Tool { name, summary } => Message::Info(sanitize(&format!("↳ {name} {summary}"))),
+                    });
+                }
+                self.messages.push(Message::Divider("continuing".into()));
+                if let Some(session) = &mut self.session {
+                    session.session_id = session_id;
+                }
             }
             AppEvent::ConnectionError(error) => {
                 self.close(Some(error.clone()));
@@ -924,6 +942,10 @@ impl App {
                 };
             }
             Command::Close => return Some(Effect::CloseSession),
+            Command::History => self.run_history(),
+            Command::Resume(arg) => return self.run_resume(arg),
+            Command::Forget(arg) => return self.run_forget(arg),
+            Command::Permissions => self.run_permissions(),
             Command::Unknown(name) => self.info(format!("unknown command /{name} — try /help")),
         }
         None

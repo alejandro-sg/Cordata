@@ -123,6 +123,15 @@ pub struct SessionInfo {
     pub transport: String,
 }
 
+/// One entry of a resumed session, for the front end to redraw.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Restored {
+    User(String),
+    Agent(String),
+    /// A tool call: its name and a one-line summary of its input.
+    Tool { name: String, summary: String },
+}
+
 #[derive(Debug)]
 pub enum AppEvent {
     Connected(SessionInfo),
@@ -138,8 +147,10 @@ pub enum AppEvent {
     TurnComplete(StopReason),
     /// The turn failed; the session stays usable.
     TurnFailed(String),
-    /// Non-fatal problem.
+    /// Non-fatal problem, or something the person should know (a rule that allowed a call without asking).
     Notice(String),
+    /// A saved session was loaded (`/resume`): the conversation so far, and the id it keeps being saved under.
+    SessionRestored { session_id: String, entries: Vec<Restored> },
     /// The connection died; no more events follow except `Closed`.
     ConnectionError(String),
     Closed,
