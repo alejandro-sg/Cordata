@@ -282,41 +282,6 @@ pub fn file_rows(
     rows
 }
 
-/// A unified patch (``apply_patch`` input, a self-heal proposal) as coloured
-/// rows: headers bold, hunks cyan, removals red, additions green.
-pub fn patch_rows(patch: &str, width: usize, max_rows: Option<usize>) -> Vec<Vec<Span<'static>>> {
-    let lines: Vec<&str> = patch.lines().collect();
-    let limit = max_rows.unwrap_or(usize::MAX);
-    let mut rows: Vec<Vec<Span<'static>>> = lines
-        .iter()
-        .take(limit)
-        .map(|line| {
-            let style = if line.starts_with("+++") || line.starts_with("---") {
-                Style::new().add_modifier(Modifier::BOLD)
-            } else if line.starts_with("@@") {
-                Style::new().fg(Color::Cyan)
-            } else if line.starts_with('+') {
-                Style::new().fg(Color::Green)
-            } else if line.starts_with('-') {
-                Style::new().fg(Color::Red)
-            } else {
-                Style::new().fg(Color::Gray)
-            };
-            vec![Span::styled(
-                truncate(&crate::app::sanitize(line), width.max(8)),
-                style,
-            )]
-        })
-        .collect();
-    if lines.len() > limit {
-        rows.push(vec![Span::styled(
-            format!("… +{} more lines", lines.len() - limit),
-            Style::new().fg(Color::Gray).add_modifier(Modifier::ITALIC),
-        )]);
-    }
-    rows
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

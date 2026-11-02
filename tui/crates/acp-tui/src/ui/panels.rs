@@ -90,12 +90,6 @@ fn permission_panel(app: &App, width: u16) -> Option<Panel> {
         ),
         Span::styled(format!("  ({})", info.kind.label()), label),
     ]));
-    if info.untrusted_source {
-        lines.push(Line::styled(
-            "⚠ its result will be untrusted content (web page / memory / MCP) — don't let it steer you",
-            Style::new().fg(Color::Magenta),
-        ));
-    }
     if let Some(reason) = info.title.split_once(" — ").map(|(_, why)| why.to_owned()) {
         lines.push(Line::styled(
             truncate(&format!("⚠ {}", sanitize(&reason)), inner_width),
@@ -105,22 +99,13 @@ fn permission_panel(app: &App, width: u16) -> Option<Panel> {
     // An edit: show what it will change (read from disk before it runs).
     let card = app.card(&info.tool_call_id);
     let diffs = card.map(|c| c.diffs.as_slice()).unwrap_or_default();
-    let patch = (info.tool_name == "apply_patch")
-        .then(|| {
-            info.raw_input
-                .as_ref()?
-                .get("patch")?
-                .as_str()
-                .map(str::to_owned)
-        })
-        .flatten();
     let cap = Some(if app.diff_expanded {
         400
     } else {
         MAX_DIFF_ROWS
     });
     let cwd = app.session.as_ref().map_or("", |s| s.cwd.as_str());
-    let shows_diff = !diffs.is_empty() || patch.is_some();
+    let shows_diff = !diffs.is_empty();
     if !diffs.is_empty() {
         for file in diffs {
             for row in super::diff::file_rows(file, cwd, inner_width.saturating_sub(2), cap) {
@@ -128,12 +113,6 @@ fn permission_panel(app: &App, width: u16) -> Option<Panel> {
                 spans.extend(row);
                 lines.push(Line::from(spans));
             }
-        }
-    } else if let Some(patch) = patch {
-        for row in super::diff::patch_rows(&patch, inner_width.saturating_sub(2), cap) {
-            let mut spans = vec![Span::raw("  ")];
-            spans.extend(row);
-            lines.push(Line::from(spans));
         }
     } else {
         let rendered_input = match &info.raw_input {

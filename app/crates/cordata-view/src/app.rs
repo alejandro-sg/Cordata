@@ -22,13 +22,6 @@ pub struct ToolCard {
     pub raw_input: Option<Value>,
     /// The tool's result (what it returned).
     pub content: String,
-    /// Live progress streamed while it runs (a sub-agent team's activity log);
-    /// kept apart from `content` so the final result doesn't erase who did what.
-    pub progress: String,
-    /// Result text carries the backend's untrusted-output guard markers.
-    pub untrusted: bool,
-    /// Tool whose output the backend wraps as untrusted (a hint, pre-result).
-    pub untrusted_source: bool,
     /// What an edit changes (old text read before it ran), for the diff viewer.
     pub diffs: Vec<FileDiff>,
 }
@@ -386,15 +379,8 @@ impl App {
                         card.diffs = diffs;
                     }
                     if let Some(content) = patch.content {
-                        // An in-progress update is a live log (replacing the
-                        // last one); only a terminal update is the result.
-                        if matches!(patch.status, Some(ToolStatus::InProgress)) {
-                            card.progress = sanitize(&content);
-                        } else {
-                            card.content = sanitize(&content);
-                        }
+                        card.content = sanitize(&content);
                     }
-                    card.untrusted |= patch.untrusted;
                 }
             }
             AppEvent::PermissionRequested { info, decision } => {
@@ -1048,9 +1034,6 @@ fn card_from(info: ToolCallInfo) -> ToolCard {
         status: info.status,
         raw_input: info.raw_input,
         content: sanitize(&info.content),
-        progress: String::new(),
-        untrusted: info.untrusted,
-        untrusted_source: info.untrusted_source,
         diffs: info.diffs,
     }
 }
@@ -1088,8 +1071,6 @@ pub fn sanitize(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use acp_core::ToolCallPatch;
-
     use super::*;
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -1272,9 +1253,7 @@ mod tests {
                 title: "Run shell".into(),
                 kind: ToolKind::Execute,
                 raw_input: None,
-                untrusted_source: false,
                 always_label: None,
-                options: vec![],
             },
             decision: tx,
         });
@@ -1293,9 +1272,7 @@ mod tests {
                 title: "Run shell".into(),
                 kind: ToolKind::Execute,
                 raw_input: None,
-                untrusted_source: false,
                 always_label: None,
-                options: vec![],
             },
             decision: tx,
         });
@@ -1322,42 +1299,12 @@ mod tests {
                 title: "Run shell".into(),
                 kind: ToolKind::Execute,
                 raw_input: None,
-                untrusted_source: false,
                 always_label: None,
-                options: vec![],
             },
             decision: tx,
         });
         assert_eq!(app.on_key(ctrl('c')), None);
         assert!(app.hint.as_deref().unwrap().contains("permission"));
-    }
-
-    #[test]
-    fn tool_update_replaces_content_and_flags_untrusted() {
-        let mut app = connected();
-        app.on_event(AppEvent::ToolCallStarted(ToolCallInfo {
-            id: "t1".into(),
-            name: "http_request".into(),
-            kind: ToolKind::Fetch,
-            status: ToolStatus::Pending,
-            raw_input: None,
-            content: String::new(),
-            untrusted_source: true,
-            untrusted: false,
-            diffs: vec![],
-        }));
-        app.on_event(AppEvent::ToolCallUpdated(ToolCallPatch {
-            id: "t1".into(),
-            status: Some(ToolStatus::Completed),
-            content: Some("<<<UNTRUSTED_TOOL_OUTPUT>>>\nx".into()),
-            untrusted: true,
-            ..Default::default()
-        }));
-        let Message::Tool(card) = &app.messages[0] else {
-            panic!()
-        };
-        assert_eq!(card.status, ToolStatus::Completed);
-        assert!(card.untrusted && card.content.contains("x"));
     }
 
     #[test]
@@ -1371,9 +1318,7 @@ mod tests {
                 title: "Run shell".into(),
                 kind: ToolKind::Execute,
                 raw_input: None,
-                untrusted_source: false,
                 always_label: None,
-                options: vec![],
             },
             decision: tx,
         });
@@ -1399,47 +1344,6 @@ mod tests {
             "no info containing {needle:?}: {:?}",
             app.messages
         );
-    }
-
-    #[test]
-    fn in_progress_updates_are_a_live_log_and_the_terminal_update_is_the_result() {
-        let mut app = connected();
-        app.on_event(AppEvent::ToolCallStarted(ToolCallInfo {
-            id: "t".into(),
-            name: "local_graph".into(),
-            kind: ToolKind::Other,
-            status: ToolStatus::Pending,
-            raw_input: None,
-            content: String::new(),
-            untrusted_source: false,
-            untrusted: false,
-            diffs: vec![],
-        }));
-        for log in ["started: a", "started: a\nfinished: a - ok"] {
-            app.on_event(AppEvent::ToolCallUpdated(ToolCallPatch {
-                id: "t".into(),
-                status: Some(ToolStatus::InProgress),
-                content: Some(log.into()),
-                untrusted: false,
-                ..Default::default()
-            }));
-        }
-        app.on_event(AppEvent::ToolCallUpdated(ToolCallPatch {
-            id: "t".into(),
-            status: Some(ToolStatus::Completed),
-            content: Some("final answer".into()),
-            untrusted: false,
-            ..Default::default()
-        }));
-        let Message::Tool(card) = &app.messages[0] else {
-            panic!()
-        };
-        assert_eq!(
-            card.progress, "started: a\nfinished: a - ok",
-            "the last progress log is kept, not replaced by the result"
-        );
-        assert_eq!(card.content, "final answer");
-        assert_eq!(app.turn_tools, 1);
     }
 
     #[test]

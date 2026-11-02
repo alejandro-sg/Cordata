@@ -97,10 +97,6 @@ pub struct ToolCallInfo {
     pub status: ToolStatus,
     pub raw_input: Option<Value>,
     pub content: String,
-    /// Tool whose output is untrusted content (a hint, pre-result).
-    pub untrusted_source: bool,
-    /// The result text contains the untrusted guard markers.
-    pub untrusted: bool,
     pub diffs: Vec<FileDiff>,
 }
 
@@ -111,7 +107,6 @@ pub struct ToolCallPatch {
     pub id: String,
     pub status: Option<ToolStatus>,
     pub content: Option<String>,
-    pub untrusted: bool,
     /// The call's complete input (the start event carries only what had streamed).
     pub raw_input: Option<Value>,
     /// What an edit will change, sent before it runs.

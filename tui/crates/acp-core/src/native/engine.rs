@@ -319,8 +319,6 @@ impl Agent<'_> {
             status: ToolStatus::Pending,
             raw_input: Some(call.args.clone()),
             content: String::new(),
-            untrusted_source: false,
-            untrusted: false,
             diffs,
         }));
         let patch = |status, content: Option<String>| {

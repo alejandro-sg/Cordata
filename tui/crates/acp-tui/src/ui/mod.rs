@@ -180,8 +180,6 @@ mod tests {
             status: ToolStatus::Completed,
             raw_input: Some(serde_json::json!({"command": "echo hi"})),
             content: "hi".into(),
-            untrusted_source: false,
-            untrusted: false,
             diffs: vec![],
         }));
         app.on_event(AppEvent::AgentText("all done".into()));
@@ -368,9 +366,7 @@ mod tests {
                 title: "Run shell".into(),
                 kind: ToolKind::Execute,
                 raw_input: Some(serde_json::json!({"command": "rm -rf /tmp/x"})),
-                untrusted_source: false,
                 always_label: None,
-                options: vec![],
             },
             decision: tx,
         });
@@ -396,9 +392,7 @@ mod tests {
                     title: "Run shell".into(),
                     kind: ToolKind::Execute,
                     raw_input: Some(serde_json::json!({"command": "git status"})),
-                    untrusted_source: false,
                     always_label: label.map(Into::into),
-                    options: vec![],
                 },
                 decision: tx,
             });
@@ -465,8 +459,6 @@ mod tests {
             status: ToolStatus::Pending,
             raw_input: None,
             content: String::new(),
-            untrusted_source: false,
-            untrusted: false,
             diffs: vec![],
         }));
         let old: String = (1..=40).map(|i| format!("line {i}\n")).collect();
@@ -492,9 +484,7 @@ mod tests {
                 title: "Run editor".into(),
                 kind: ToolKind::Edit,
                 raw_input: Some(serde_json::json!({"command": "str_replace", "path": "src/a.rs", "old_str": "line 20", "new_str": "LINE TWENTY"})),
-                untrusted_source: false,
                 always_label: None,
-                options: vec![],
             },
             decision: tx,
         });

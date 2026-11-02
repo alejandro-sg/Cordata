@@ -131,9 +131,6 @@ mod tests {
             status,
             raw_input: command.map(|c| json!({"cmd": c})),
             content: String::new(),
-            progress: String::new(),
-            untrusted: false,
-            untrusted_source: false,
             diffs: vec![],
         })
     }

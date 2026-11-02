@@ -10,6 +10,6 @@ pub mod transport;
 
 pub use error::{Error, Result};
 pub use events::{AppEvent, FileDiff, SessionInfo, StopReason, ToolCallInfo, ToolCallPatch, ToolKind, ToolStatus};
-pub use permission::{ApprovalDecision, ChoiceKind, PermissionChoice, PermissionInfo, Unwrapped, unwrap_untrusted};
+pub use permission::{ApprovalDecision, PermissionInfo};
 pub use session::{Attachment, SessionHandle, SessionOptions};
 pub use transport::BackendTransport;

@@ -480,7 +480,6 @@ fn tool(card: &ToolCard, edge: GroupEdge, expanded: bool, cx: &App) -> AnyElemen
         ToolStatus::InProgress => ("◆", tk.amber),
         ToolStatus::Pending => ("◆", tk.amber_dim),
     };
-    let untrusted = card.untrusted || card.untrusted_source;
     let (server, _) = attribution(&card.name);
     let radius = px(t::RADIUS_CARD);
     let row_hover = line(cx, t::HOVER);
@@ -521,14 +520,12 @@ fn tool(card: &ToolCard, edge: GroupEdge, expanded: bool, cx: &App) -> AnyElemen
         let shown_lines = lines.len().min(RESULT_PREVIEW_LINES);
         let more = lines.len().saturating_sub(shown_lines);
         let text = lines[..shown_lines].iter().map(|line| cut(line)).collect::<Vec<_>>().join("\n");
-        let progress = (!card.progress.is_empty() && matches!(card.status, ToolStatus::InProgress)).then(|| shown(&card.progress));
         div()
             .px(px(12.))
             .pb(px(10.))
             .flex()
             .flex_col()
             .gap(px(6.))
-            .when_some(progress, |d, p| d.child(div().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.teal)).child(SharedString::from(p))))
             .children(diff_blocks)
             .when(!text.is_empty() && (card.diffs.is_empty() || card.status == ToolStatus::Failed), |d| d.child(ui::code_block(SharedString::from(text), cx)))
             .when(more > 0 && card.diffs.is_empty(), |d| d.child(ui::meta(SharedString::from(format!("… {more} more lines (Ctrl+E expands all)")), cx)))
@@ -539,7 +536,7 @@ fn tool(card: &ToolCard, edge: GroupEdge, expanded: bool, cx: &App) -> AnyElemen
         .when(edge.last, |d| d.mb(px(6.)))
         .border_l_1()
         .border_r_1()
-        .border_color(if untrusted { teal(cx, t::TEAL_BORDER) } else { line(cx, t::LINE_DEFAULT) })
+        .border_color(line(cx, t::LINE_DEFAULT))
         .when(edge.first, |d| d.border_t_1().rounded_tl(radius).rounded_tr(radius))
         .when(edge.last, |d| d.border_b_1().rounded_bl(radius).rounded_br(radius))
         .when(!edge.first, |d| d.border_t_1().border_color(line(cx, t::LINE_SUBTLE)))
@@ -558,7 +555,6 @@ fn tool(card: &ToolCard, edge: GroupEdge, expanded: bool, cx: &App) -> AnyElemen
                 .child(div().w(px(62.)).flex_shrink_0().font_weight(FontWeight::MEDIUM).text_color(c(tk.text_secondary)).child(verb_display(&card.name)))
                 .when_some(server, |d, server| d.child(ui::badge(server, Tone::Teal, cx)))
                 .child(div().flex_1().min_w_0().truncate().text_color(c(tk.text_body)).child(SharedString::from(cut(&shown(&target(card))))))
-                .when(untrusted, |d| d.child(ui::badge("untrusted", Tone::Teal, cx)))
                 .child(right_meta)
                 .child(div().flex_shrink_0().text_color(c(tk.text_faint)).child(if expanded { "⌃" } else { "⌄" })),
         )

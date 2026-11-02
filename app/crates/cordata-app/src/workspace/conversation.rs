@@ -417,13 +417,12 @@ impl Workspace {
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(c(tk.amber))
                                     .child(SharedString::from(t::tracked_text(label, t::Tracking::Label, true))),
-                            )
-                            .when(info.untrusted_source, |row| row.child(ui::badge("from untrusted content", Tone::Teal, cx))),
+                            ),
                     )
                     .when(self.saying, |row| row.child(ui::badge("Type response below · ↵ sends", Tone::Amber, cx))),
             )
             .child(div().text_size(px(t::TEXT_BODY)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(SharedString::from(shown(&sentence))))
-            .when_some(block, |card, text| card.child(ui::code_block(SharedString::from(shown(&text)), cx).text_color(c(if info.untrusted_source { tk.teal } else { tk.text_body }))))
+            .when_some(block, |card, text| card.child(ui::code_block(SharedString::from(shown(&text)), cx).text_color(c(tk.text_body))))
             .child(div().flex().flex_wrap().items_center().gap(px(8.)).children(buttons))
             .into_any_element()
     }

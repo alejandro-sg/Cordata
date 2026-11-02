@@ -2,7 +2,7 @@
 //! result. Untrusted results get a double-line magenta border so they're
 //! impossible to mistake for the agent's own words.
 
-use acp_core::{ToolStatus, unwrap_untrusted};
+use acp_core::ToolStatus;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -14,7 +14,7 @@ const COLLAPSED_RESULT_LINES: usize = 4;
 const COLLAPSED_DIFF_ROWS: usize = 12;
 
 fn is_edit_tool(name: &str) -> bool {
-    matches!(name, "editor" | "file_write" | "apply_patch")
+    name == "edit_file"
 }
 
 /// Spans inside the card's side borders, padded to the inner width.
@@ -66,14 +66,8 @@ pub fn render_in(
 ) -> Vec<Line<'static>> {
     let width = (width as usize).max(24);
     let inner = width - 4;
-    let (tl, tr, bl, br, h, v) = if card.untrusted {
-        ('╔', '╗', '╚', '╝', '═', '║')
-    } else {
-        ('╭', '╮', '╰', '╯', '─', '│')
-    };
-    let border = if card.untrusted {
-        Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD)
-    } else if awaiting {
+    let (tl, tr, bl, br, h, v) = ('╭', '╮', '╰', '╯', '─', '│');
+    let border = if awaiting {
         Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)
     } else if card.status == ToolStatus::Failed {
         Style::new().fg(Color::Red)
@@ -87,32 +81,13 @@ pub fn render_in(
         truncate(&card.name, 30),
         card.kind.label()
     );
-    let (flag, flag_color) = if card.untrusted {
-        (" ⚠ UNTRUSTED CONTENT ".to_owned(), Color::Magenta)
-    } else if card.untrusted_source {
-        (
-            " ⚠ may return untrusted content ".to_owned(),
-            Color::Magenta,
-        )
-    } else {
-        (String::new(), Color::Magenta)
-    };
-    let flag = if 3 + display_width(&title) + display_width(&flag) + 1 > width {
-        String::new()
-    } else {
-        flag
-    };
-    let fill = width.saturating_sub(2 + display_width(&title) + display_width(&flag) + 1);
+    let fill = width.saturating_sub(2 + display_width(&title) + 1);
 
     let mut lines = vec![Line::from(vec![
         Span::styled(format!("{tl}{h}"), border),
         Span::styled(
             title,
             Style::new().fg(glyph_color).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            flag,
-            Style::new().fg(flag_color).add_modifier(Modifier::BOLD),
         ),
         Span::styled(format!("{}{tr}", h.to_string().repeat(fill)), border),
     ])];
@@ -127,15 +102,6 @@ pub fn render_in(
 
     let dim = Style::new().fg(Color::Gray);
     // Edits: the diff viewer instead of the raw input.
-    let patch_text = (card.name == "apply_patch")
-        .then(|| {
-            card.raw_input
-                .as_ref()?
-                .get("patch")?
-                .as_str()
-                .map(str::to_owned)
-        })
-        .flatten();
     let cap = (!expanded).then_some(COLLAPSED_DIFF_ROWS);
     if is_edit_tool(&card.name) && !card.diffs.is_empty() && awaiting {
         // The approval panel right below shows this diff in full; one line here.
@@ -166,10 +132,6 @@ pub fn render_in(
                 lines.push(boxed(row, inner, border, v));
             }
         }
-    } else if let Some(patch) = patch_text {
-        for row in super::diff::patch_rows(&patch, inner, cap) {
-            lines.push(boxed(row, inner, border, v));
-        }
     } else if let Some(summary) = input_summary(card) {
         let summary = truncate(&summary.replace('\n', " ⏎ "), 600);
         for row in wrap(&summary, inner) {
@@ -178,29 +140,8 @@ pub fn render_in(
     }
 
     if !card.content.trim().is_empty() {
-        // The guard wrapper is the same boilerplate on every untrusted result;
-        // show what matters about it (where it came from, whether the
-        // classifier flagged it) and then the body, not nine words of
-        // header before every result.
-        let (body, source, flagged) = match unwrap_untrusted(&card.content) {
-            Some(unwrapped) => (unwrapped.body, unwrapped.source, unwrapped.flagged),
-            None => (card.content.clone(), None, false),
-        };
-        let style = if card.untrusted {
-            Style::new().fg(Color::Magenta)
-        } else {
-            Style::new()
-        };
-        if let Some(source) = source {
-            let label = truncate(&format!("source: {source}"), inner);
-            lines.push(body_line(&label, style.add_modifier(Modifier::ITALIC)));
-        }
-        if flagged {
-            lines.push(body_line(
-                "⚠ a local classifier flagged this as a likely injection attempt",
-                Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
-            ));
-        }
+        let body = card.content.clone();
+        let style = Style::new();
         let rows = wrap(body.trim_end(), inner);
         let shown = if expanded {
             rows.len()
@@ -229,17 +170,14 @@ mod tests {
 
     use super::*;
 
-    fn card(content: &str, untrusted: bool) -> ToolCard {
+    fn card(content: &str) -> ToolCard {
         ToolCard {
             id: "t".into(),
-            name: "shell".into(),
+            name: "run_command".into(),
             kind: ToolKind::Execute,
             status: ToolStatus::Completed,
-            raw_input: Some(serde_json::json!({"command": "echo hi"})),
+            raw_input: Some(serde_json::json!({"cmd": "echo hi"})),
             content: content.into(),
-            progress: String::new(),
-            untrusted,
-            untrusted_source: false,
             diffs: vec![],
         }
     }
@@ -253,7 +191,7 @@ mod tests {
 
     #[test]
     fn card_lines_all_have_equal_width() {
-        let lines = plain(&render(&card("hello\nworld", false), 40, false, false, 0));
+        let lines = plain(&render(&card("hello\nworld"), 40, false, false, 0));
         assert!(lines.iter().all(|l| display_width(l) == 40), "{lines:#?}");
         assert!(lines[1].contains("$ echo hi"));
     }
@@ -264,16 +202,16 @@ mod tests {
             .map(|i| format!("line{i}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let collapsed = plain(&render(&card(&long, false), 40, false, false, 0));
+        let collapsed = plain(&render(&card(&long), 40, false, false, 0));
         assert!(collapsed.iter().any(|l| l.contains("+6 more lines")));
-        let expanded = plain(&render(&card(&long, false), 40, true, false, 0));
+        let expanded = plain(&render(&card(&long), 40, true, false, 0));
         assert!(expanded.iter().any(|l| l.contains("line9")));
     }
 
     #[test]
     fn edit_cards_show_the_diff_with_equal_width_rows() {
-        let mut edit = card("patched", false);
-        edit.name = "editor".into();
+        let mut edit = card("patched");
+        edit.name = "edit_file".into();
         edit.kind = ToolKind::Edit;
         edit.diffs = vec![acp_core::FileDiff {
             path: "/proj/src/a.rs".into(),
@@ -293,8 +231,8 @@ mod tests {
 
     #[test]
     fn while_awaiting_approval_the_card_defers_the_diff_to_the_panel() {
-        let mut edit = card("", false);
-        edit.name = "file_write".into();
+        let mut edit = card("");
+        edit.name = "edit_file".into();
         edit.diffs = vec![acp_core::FileDiff {
             path: "/p/a.txt".into(),
             old_text: None,
@@ -303,22 +241,5 @@ mod tests {
         let lines = plain(&render_in(&edit, 60, false, true, 0, "/p"));
         assert_eq!(lines.len(), 3, "{lines:#?}");
         assert!(lines[1].contains("✎ a.txt  +2 −0  — review it below"));
-    }
-
-    #[test]
-    fn a_patch_without_a_preview_is_still_coloured() {
-        let mut patch = card("", false);
-        patch.name = "apply_patch".into();
-        patch.raw_input =
-            Some(serde_json::json!({"patch": "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n"}));
-        let lines = render(&patch, 40, false, false, 0);
-        assert!(plain(&lines).iter().any(|l| l.contains("+b")));
-    }
-
-    #[test]
-    fn untrusted_results_use_a_distinct_double_border_and_label() {
-        let lines = plain(&render(&card("x", true), 50, false, false, 0));
-        assert!(lines[0].starts_with('╔') && lines[0].contains("UNTRUSTED"));
-        assert!(lines.last().unwrap().starts_with('╚'));
     }
 }

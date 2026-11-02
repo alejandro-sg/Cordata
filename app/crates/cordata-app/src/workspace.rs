@@ -1793,9 +1793,7 @@ mod window_tests {
             title: format!("Run {tool}"),
             kind: acp_core::ToolKind::Execute,
             raw_input: Some(serde_json::json!({"command": "make deploy"})),
-            untrusted_source: false,
             always_label: Some("shell(make deploy)".into()),
-            options: Vec::new(),
         };
         view.update(cx, |this, cx| {
             this.session.update(cx, |s, cx| {
