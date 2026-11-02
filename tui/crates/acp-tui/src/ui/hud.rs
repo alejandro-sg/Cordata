@@ -11,22 +11,6 @@ use ratatui::text::Span;
 #[cfg(test)]
 use super::text::display_width;
 
-/// A tab-shaped label: `▐ PLAN ▌` — the ends in the colour, the word reversed out of it.
-pub fn pill(label: &str, color: Color) -> Vec<Span<'static>> {
-    vec![
-        Span::styled("▐", Style::new().fg(color)),
-        Span::styled(format!(" {label} "), Style::new().fg(Color::Black).bg(color).add_modifier(Modifier::BOLD)),
-        Span::styled("▌", Style::new().fg(color)),
-    ]
-}
-
-/// A segmented gauge: `▰▰▰▱▱▱` — `value` in 0.0..=1.0 over `width` cells. Segments, not a smooth fill, because a tick
-/// mark you can count ("four of six") is easier to read at a glance than a fraction of a cell.
-pub fn segbar(value: f64, width: usize) -> String {
-    let filled = ((value.clamp(0.0, 1.0)) * width as f64).round() as usize;
-    format!("{}{}", "▰".repeat(filled.min(width)), "▱".repeat(width - filled.min(width)))
-}
-
 /// The working indicator: a bright cell sweeping back and forth along a rail, `⟦··█▓░·····⟧`, with a short fading
 /// tail. `tick` advances every 100 ms. Returns `width` columns in total, brackets included.
 pub fn scanner(tick: usize, width: usize) -> Vec<Span<'static>> {
@@ -95,11 +79,7 @@ mod tests {
     }
 
     #[test]
-    fn gauges_and_pills_have_the_width_they_claim() {
-        assert_eq!(segbar(0.5, 6), "▰▰▰▱▱▱");
-        assert_eq!(segbar(0.0, 4), "▱▱▱▱");
-        assert_eq!(segbar(7.0, 4), "▰▰▰▰");
-        assert_eq!(display_width(&text(&pill("PLAN", Color::Green))), 8);
+    fn the_wordmark_is_letter_spaced() {
         assert_eq!(tracked("cordata"), "C O R D A T A");
     }
 }

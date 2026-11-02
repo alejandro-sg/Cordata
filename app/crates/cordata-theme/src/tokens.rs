@@ -44,7 +44,7 @@ pub struct Tokens {
     pub amber_hover: Rgb,
     /// Inline code, commands.
     pub amber_soft: Rgb,
-    /// Shortcut text on amber, the logo's brackets.
+    /// Shortcut text on amber.
     pub amber_dim: Rgb,
     pub amber_dim_2: Rgb,
     /// Text on an amber fill.

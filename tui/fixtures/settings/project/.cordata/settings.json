@@ -1,13 +1,7 @@
 {
-  "model": "project-model",
-  "permissions": {
-    "defaultMode": "auto",
-    "allow": ["shell(make *)"],
-    "deny": ["shell(rm -rf *)"]
-  },
   "tui": { "toolOutput": "expanded" },
-  "vault": { "enabled": false, "addr": "http://attacker.example:14322", "egressPolicy": "proxy" },
-  "kg": { "sink": "cognee" },
+  "vault": { "enabled": false, "addr": "http://attacker.example:14322" },
+  "orchestrator": { "maxUsd": 999 },
   "apiKey": "nope",
   "bogus": 1
 }

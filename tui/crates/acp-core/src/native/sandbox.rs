@@ -1,4 +1,4 @@
-//! Command confinement, ported from `backend/scrubbed_sandbox.py`: a Seatbelt profile that denies
+//! Command confinement: a Seatbelt profile that denies
 //! `.env` files and credential directories, and a scrubbed environment. Fail closed: when
 //! `sandbox-exec` cannot be applied, commands do not run.
 

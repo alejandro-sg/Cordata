@@ -13,7 +13,7 @@ use gpui_component::text::{TextView, TextViewStyle};
 
 use crate::hud;
 use crate::theme::{amber, c, ca, line, mono, teal, tk};
-use crate::ui::{self, Tone};
+use crate::ui::{self};
 
 /// Rows of a tool's result shown when it is opened, before "… N more lines".
 const RESULT_PREVIEW_LINES: usize = 40;
@@ -49,15 +49,6 @@ pub fn block(message: &Message, ix: usize, edge: GroupEdge, expanded: bool, show
         Message::Diff(text) => div().py(px(6.)).child(unified_diff_block(text, cx)).into_any_element(),
         Message::Welcome(_) => div().into_any_element(),
         Message::Help => notice("⌘K palette · ⌘B sidebar · ⌘\\ inspector · / commands · @ files · ! shell · ⇧Tab mode · Esc stops", tk(cx).text_muted, cx),
-        Message::Laya(decision) => {
-            let route = decision.route.as_deref().unwrap_or("direct");
-            pill_notice("⚡", &format!("Auto-routed → {route} ({:.0}% confidence)", decision.route_confidence * 100.0), tk(cx).info, cx)
-        }
-        Message::LayaOutcome(_) => div().into_any_element(),
-        Message::Heal(info) => {
-            let detail = info.root_cause.as_deref().map(|cause| format!(" — {cause}")).unwrap_or_default();
-            pill_notice("🛡", &format!("Self-heal · {}{detail}", info.phase), tk(cx).amber, cx)
-        }
     }
 }
 
@@ -264,31 +255,6 @@ fn notice(text: &str, ink: cordata_theme::Rgb, _cx: &App) -> AnyElement {
     div().py(px(4.)).text_size(px(t::TEXT_UI)).text_color(c(ink)).child(SharedString::from(shown(text))).into_any_element()
 }
 
-fn pill_notice(icon: &'static str, text: &str, ink: cordata_theme::Rgb, cx: &App) -> AnyElement {
-    div()
-        .py(px(4.))
-        .flex()
-        .items_center()
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .px(px(10.))
-                .py(px(4.))
-                .rounded(px(t::RADIUS_CARD))
-                .bg(line(cx, t::FILL_FAINT))
-                .border_1()
-                .border_color(line(cx, t::LINE_SUBTLE))
-                .font_family(mono(cx))
-                .text_size(px(t::TEXT_META))
-                .text_color(c(ink))
-                .child(icon)
-                .child(SharedString::from(shown(text))),
-        )
-        .into_any_element()
-}
-
 fn error_banner(text: &str, cx: &App) -> AnyElement {
     let tk = tk(cx);
     div()
@@ -313,48 +279,34 @@ fn error_banner(text: &str, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-/// The canonical verb token a tool row maps to (`read` · `edit` · `run` · …).
+/// The canonical verb token a tool row maps to, for the engine's five tools (`read` · `edit` · `run` · `search`).
 pub fn verb(name: &str) -> &'static str {
-    let name = name.rsplit("__").next().unwrap_or(name).to_ascii_lowercase();
-    match name.as_str() {
-        n if n.contains("read") || n == "view" || n == "cat" => "read",
-        n if n.contains("edit") || n.contains("write") || n.contains("patch") || n.contains("replace") => "edit",
-        n if n.contains("shell") || n.contains("bash") || n.contains("exec") || n.contains("run") || n.contains("command") => "run",
-        n if n.contains("search") || n.contains("grep") || n.contains("glob") || n.contains("find") => "search",
-        n if n.contains("fetch") || n.contains("http") || n.contains("web") || n.contains("browse") => "fetch",
-        n if n.contains("todo") || n.contains("plan") || n.contains("task") => "plan",
+    match name {
+        "read_file" | "code_outline" => "read",
+        "edit_file" => "edit",
+        "run_command" => "run",
+        "code_search" => "search",
         _ => "call",
     }
 }
 
 /// Human-friendly Title Case action label shown in tool call rows.
 pub fn verb_display(name: &str) -> &'static str {
-    if cordata_view::team::is_team_tool(name) {
-        return "Agent";
-    }
     match verb(name) {
         "read" => "Read",
         "edit" => "Edited",
         "run" => "Ran",
         "search" => "Searched",
-        "fetch" => "Fetched",
-        "plan" => "Planned",
         _ => "Called",
     }
 }
 
-/// The thing a tool acted on: a path, a command, a URL — from its input; else the tool's own name.
+/// The thing a tool acted on: a command, a path, a pattern — from its input; else the tool's own name.
 pub fn target(card: &ToolCard) -> String {
-    let input = card.raw_input.as_ref();
-    let field = |k: &str| input.and_then(|i| i.get(k)).and_then(|v| v.as_str()).map(str::to_owned);
-    field("path")
-        .or_else(|| field("file_path"))
-        .or_else(|| field("command"))
-        .or_else(|| field("url"))
-        .or_else(|| field("pattern"))
-        .or_else(|| field("query"))
-        .or_else(|| card.raw_input.as_ref().and_then(|i| cordata_view::view::summarize_input(i, cordata_view::team::is_team_tool(&card.name))))
-        .unwrap_or_else(|| attribution(&card.name).1.to_owned())
+    card.raw_input
+        .as_ref()
+        .and_then(cordata_view::view::summarize_input)
+        .unwrap_or_else(|| card.name.clone())
 }
 
 fn diff_counts(diffs: &[FileDiff]) -> (usize, usize) {
@@ -517,8 +469,6 @@ fn tool(card: &ToolCard, edge: GroupEdge, expanded: bool, cx: &App) -> AnyElemen
         ToolStatus::InProgress => ("◆", tk.amber),
         ToolStatus::Pending => ("◆", tk.amber_dim),
     };
-    let untrusted = card.untrusted || card.untrusted_source;
-    let (server, _) = attribution(&card.name);
     let radius = px(t::RADIUS_CARD);
     let row_hover = line(cx, t::HOVER);
 
@@ -558,36 +508,23 @@ fn tool(card: &ToolCard, edge: GroupEdge, expanded: bool, cx: &App) -> AnyElemen
         let shown_lines = lines.len().min(RESULT_PREVIEW_LINES);
         let more = lines.len().saturating_sub(shown_lines);
         let text = lines[..shown_lines].iter().map(|line| cut(line)).collect::<Vec<_>>().join("\n");
-        let progress = (!card.progress.is_empty() && matches!(card.status, ToolStatus::InProgress) && !cordata_view::team::is_team_tool(&card.name)).then(|| shown(&card.progress));
         div()
             .px(px(12.))
             .pb(px(10.))
             .flex()
             .flex_col()
             .gap(px(6.))
-            .when_some(progress, |d, p| d.child(div().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.teal)).child(SharedString::from(p))))
             .children(diff_blocks)
             .when(!text.is_empty() && (card.diffs.is_empty() || card.status == ToolStatus::Failed), |d| d.child(ui::code_block(SharedString::from(text), cx)))
             .when(more > 0 && card.diffs.is_empty(), |d| d.child(ui::meta(SharedString::from(format!("… {more} more lines (Ctrl+E expands all)")), cx)))
     });
-
-    // A sub-agent call (`subagent`, teams): live rows shown without expanding the card.
-    let team = cordata_view::team::is_team_tool(&card.name).then(|| {
-        let mut rows = cordata_view::team::parse(&card.progress);
-        if !matches!(card.status, ToolStatus::InProgress | ToolStatus::Pending) {
-            cordata_view::team::settle(&mut rows);
-        }
-        rows
-    });
-    let team = team.filter(|rows| !rows.is_empty() && (expanded || matches!(card.status, ToolStatus::InProgress)));
-    let team = team.map(|rows| team_rows(&rows, cx));
 
     div()
         .when(edge.first, |d| d.mt(px(6.)))
         .when(edge.last, |d| d.mb(px(6.)))
         .border_l_1()
         .border_r_1()
-        .border_color(if untrusted { teal(cx, t::TEAL_BORDER) } else { line(cx, t::LINE_DEFAULT) })
+        .border_color(line(cx, t::LINE_DEFAULT))
         .when(edge.first, |d| d.border_t_1().rounded_tl(radius).rounded_tr(radius))
         .when(edge.last, |d| d.border_b_1().rounded_bl(radius).rounded_br(radius))
         .when(!edge.first, |d| d.border_t_1().border_color(line(cx, t::LINE_SUBTLE)))
@@ -604,85 +541,12 @@ fn tool(card: &ToolCard, edge: GroupEdge, expanded: bool, cx: &App) -> AnyElemen
                 .text_size(px(t::TEXT_SMALL))
                 .child(div().w(px(12.)).flex_shrink_0().text_color(c(ink)).child(mark))
                 .child(div().w(px(62.)).flex_shrink_0().font_weight(FontWeight::MEDIUM).text_color(c(tk.text_secondary)).child(verb_display(&card.name)))
-                .when_some(server, |d, server| d.child(ui::badge(server, Tone::Teal, cx)))
                 .child(div().flex_1().min_w_0().truncate().text_color(c(tk.text_body)).child(SharedString::from(cut(&shown(&target(card))))))
-                .when(untrusted, |d| d.child(ui::badge("untrusted", Tone::Teal, cx)))
                 .child(right_meta)
                 .child(div().flex_shrink_0().text_color(c(tk.text_faint)).child(if expanded { "⌃" } else { "⌄" })),
         )
-        .children(team)
         .children(body)
         .into_any_element()
-}
-
-/// The agents of a sub-agent call, one block each: ◆ running (amber) or ✓ done, its name, what it is reasoning about
-/// now, and the tools it called.
-fn team_rows(rows: &[cordata_view::team::TeamRow], cx: &App) -> AnyElement {
-    use cordata_view::team::{NodeState, TeamRow};
-    let tk = tk(cx);
-    div()
-        .px(px(12.))
-        .pb(px(8.))
-        .flex()
-        .flex_col()
-        .gap(px(4.))
-        .font_family(mono(cx))
-        .text_size(px(t::TEXT_META))
-        .children(rows.iter().map(|row| match row {
-            TeamRow::Node(node) => {
-                let running = node.state == NodeState::Running;
-                let (mark, ink) = if running { ("◆", tk.amber) } else { ("✓", tk.teal) };
-                let detail = if running {
-                    if node.thinking.is_empty() { "working…".to_owned() } else { format!("💭 {}", cut(&node.thinking)) }
-                } else if node.summary.is_empty() {
-                    format!("done after {} tool call{}", node.tools.len(), if node.tools.len() == 1 { "" } else { "s" })
-                } else {
-                    cut(&node.summary)
-                };
-                let tools = (!node.tools.is_empty()).then(|| {
-                    let shown: Vec<&str> = node.tools.iter().rev().take(6).rev().map(String::as_str).collect();
-                    let more = node.tools.len().saturating_sub(shown.len());
-                    let prefix = if more > 0 { format!("↳ +{more} · ") } else { "↳ ".to_owned() };
-                    div().pl(px(22.)).text_color(c(tk.text_faint)).child(SharedString::from(format!("{prefix}{}", shown.join(" · "))))
-                });
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .flex()
-                            .gap(px(10.))
-                            .child(div().w(px(12.)).flex_shrink_0().text_color(c(ink)).child(mark))
-                            .child(div().flex_shrink_0().font_weight(FontWeight::MEDIUM).text_color(c(tk.text_body)).child(SharedString::from(node.name.clone())))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .italic()
-                                    .text_color(c(if running { tk.text_muted } else { tk.text_faint }))
-                                    .child(SharedString::from(detail)),
-                            ),
-                    )
-                    .children(tools)
-                    .into_any_element()
-            }
-            TeamRow::Handoff { from, to, message } => div()
-                .text_color(c(tk.teal))
-                .child(SharedString::from(format!("→ {from} → {to}  {}", cut(message))))
-                .into_any_element(),
-        }))
-        .into_any_element()
-}
-
-/// `mcp__github__create_issue` → (`github`, `create_issue`): which server a tool came from. A built-in has none.
-fn attribution(name: &str) -> (Option<&str>, &str) {
-    if let Some(rest) = name.strip_prefix("mcp__")
-        && let Some((server, tool)) = rest.split_once("__")
-    {
-        return (Some(server), tool);
-    }
-    (None, name)
 }
 
 fn cut(line: &str) -> String {
@@ -704,13 +568,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mcp_tools_are_attributed_to_their_server() {
-        assert_eq!(attribution("mcp__github__create_issue"), (Some("github"), "create_issue"));
-        assert_eq!(attribution("shell"), (None, "shell"));
-        assert_eq!(attribution("mcp__odd"), (None, "mcp__odd"));
-    }
-
-    #[test]
     fn a_huge_line_is_cut_before_layout() {
         let line = "x".repeat(2_000_000);
         let out = cut(&line);
@@ -719,13 +576,14 @@ mod tests {
 
     #[test]
     fn verbs_read_at_a_glance() {
-        assert_eq!(verb("file_read"), "read");
+        assert_eq!(verb("read_file"), "read");
+        assert_eq!(verb("code_outline"), "read");
         assert_eq!(verb("edit_file"), "edit");
-        assert_eq!(verb("shell"), "run");
-        assert_eq!(verb("mcp__github__search_code"), "search");
+        assert_eq!(verb("run_command"), "run");
+        assert_eq!(verb("code_search"), "search");
         assert_eq!(verb("frobnicate"), "call");
         assert_eq!(verb_display("edit_file"), "Edited");
-        assert_eq!(verb_display("shell"), "Ran");
+        assert_eq!(verb_display("run_command"), "Ran");
     }
 
     #[test]

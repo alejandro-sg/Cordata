@@ -1,4 +1,4 @@
-//! `ClaudeCodeWorker` (`backend/workers/claude_worker.py`): the Claude Code CLI (`claude -p`) as an orchestrator worker.
+//! `ClaudeCodeWorker`: the Claude Code CLI (`claude -p`) as an orchestrator worker.
 //!
 //! plan / audit run with `--permission-mode plan` and read-only tools, and `--json-schema` makes the CLI return the
 //! answer as `structured_output`. execute / harden run with `acceptEdits` and the engineer's allowlist; Seatbelt
@@ -65,12 +65,11 @@ pub fn provider_windows(info: &Value) -> Value {
             }
         }
     }
-    if windows.is_empty() {
-        if let Some(u) = info.get("utilization").and_then(Value::as_f64) {
+    if windows.is_empty()
+        && let Some(u) = info.get("utilization").and_then(Value::as_f64) {
             let name = info.get("rateLimitType").and_then(Value::as_str).unwrap_or("five_hour");
             windows.insert(name.to_owned(), json!({"utilization": u, "resets_at": info.get("resetsAt").cloned().unwrap_or(Value::Null)}));
         }
-    }
     json!({"status": info.get("status").cloned().unwrap_or(Value::Null), "limit_type": info.get("rateLimitType").cloned().unwrap_or(Value::Null),
            "resets_at": info.get("resetsAt").cloned().unwrap_or(Value::Null), "windows": windows})
 }

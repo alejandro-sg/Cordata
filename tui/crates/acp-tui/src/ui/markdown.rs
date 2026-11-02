@@ -11,7 +11,7 @@
 //! row (the first column as the label, the rest under it), which survives a
 //! narrow terminal. `<br>` is a line break everywhere outside a code fence.
 //! The Discord front door does the same conversion
-//! (`backend/daemon/discord_cards.py: discord_markdown`) — keep them in step.
+//! — keep them in step.
 //!
 //! Wrapping happens before inline styling, so an inline span that happens to
 //! straddle a wrap boundary loses its style on the second row; the text is intact.

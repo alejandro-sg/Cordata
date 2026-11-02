@@ -241,10 +241,10 @@ mod tests {
         app.refresh_menu();
         let all = app.menu.as_ref().expect("menu").items.len();
         assert!(all > 10, "{all}");
-        app.input.set_text("/mo");
+        app.input.set_text("/c");
         app.refresh_menu();
         let labels: Vec<_> = app.menu.as_ref().unwrap().items.iter().map(|i| i.label.as_str()).collect();
-        assert_eq!(labels[..2], ["/mode", "/model"], "{labels:?}");
+        assert_eq!(labels[..2], ["/close", "/copy"], "{labels:?}");
     }
 
     #[test]
@@ -270,18 +270,12 @@ mod tests {
     }
 
     #[test]
-    fn enter_runs_a_command_without_arguments_and_completes_one_that_needs_them() {
+    fn enter_runs_a_command_without_arguments() {
         let mut app = app_with("/hel");
         app.refresh_menu();
         let effect = app.menu_accept(true);
         assert!(effect.is_none(), "/help prints, it sends nothing");
         assert!(app.input.is_empty(), "the command ran and the box was emptied");
-
-        let mut needs = app_with("/ope");
-        needs.refresh_menu();
-        assert_eq!(needs.menu.as_ref().and_then(|m| m.current()).map(|i| i.label.as_str()), Some("/open"));
-        needs.menu_accept(true);
-        assert_eq!(needs.input.text(), "/open ", "it needs a handle, so Enter completes and waits");
     }
 
     #[test]
@@ -362,10 +356,7 @@ mod tests {
             session_id: "s".into(),
             cwd: dir.path().to_string_lossy().into_owned(),
             transport: "stdio".into(),
-            resumed: false,
-            current_mode: "build".into(),
-            modes: vec![],
-            config_options: vec![],
+            model: "m1".into(),
         });
         app.refresh_menu();
         let menu = app.menu.as_ref().expect("file menu");
@@ -385,10 +376,7 @@ mod tests {
             session_id: "s".into(),
             cwd: dir.path().to_string_lossy().into_owned(),
             transport: "stdio".into(),
-            resumed: false,
-            current_mode: "build".into(),
-            modes: vec![],
-            config_options: vec![],
+            model: "m1".into(),
         });
         app.refresh_menu();
         assert_eq!(app.menu.as_ref().unwrap().current().unwrap().label, "src/");

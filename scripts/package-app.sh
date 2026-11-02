@@ -38,9 +38,13 @@ if compgen -G "$ROOT/app/assets/fonts/*.[ot]tf" >/dev/null; then
 fi
 cp "$ROOT/app/target/release/cordata-app" "$APP/Contents/MacOS/cordata-app"
 
-# No icon is generated: the bundle gets the generic one. Drop a Cordata.icns into Contents/Resources and set
-# ICON_KEY to "<key>CFBundleIconFile</key><string>Cordata</string>" to brand it.
+# The app icon is app/assets/brand/Cordata.icns (rebuilt from cordata-icon.svg, see the README beside it); without it
+# the bundle gets the generic icon.
 ICON_KEY=""
+if [ -f "$ROOT/app/assets/brand/Cordata.icns" ]; then
+  cp "$ROOT/app/assets/brand/Cordata.icns" "$APP/Contents/Resources/Cordata.icns"
+  ICON_KEY="<key>CFBundleIconFile</key><string>Cordata</string>"
+fi
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

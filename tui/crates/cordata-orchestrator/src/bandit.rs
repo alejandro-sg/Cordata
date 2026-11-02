@@ -41,8 +41,8 @@ impl Bandit {
     /// Loads `path` if it is a readable version-1 table; otherwise starts empty. `save` writes back to `path`.
     pub fn open(path: &Path) -> Self {
         let mut table = Self { path: Some(path.to_owned()), seen: json!([]), ..Self::default() };
-        if let Some(data) = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) {
-            if data.get("version").and_then(Value::as_u64) == Some(VERSION) {
+        if let Some(data) = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            && data.get("version").and_then(Value::as_u64) == Some(VERSION) {
                 if let Some(contexts) = data.get("contexts").and_then(Value::as_object) {
                     table.contexts = contexts.iter().filter(|(_, v)| v.is_object()).map(|(k, v)| (k.clone(), v.clone())).collect();
                 }
@@ -50,7 +50,6 @@ impl Bandit {
                     table.seen = seen.clone();
                 }
             }
-        }
         table
     }
 

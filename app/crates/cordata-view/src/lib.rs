@@ -2,7 +2,7 @@
 //!
 //! Everything here is plain state and pure-ish functions over it: the conversation reducer ([`app::App::on_event`] turns
 //! acp-core's events into messages, tool cards, pending approvals, gauges), the slash commands, the composer's input
-//! model, menus, `@` mentions, `!` shell, custom commands, the settings schema and its editor, the Lab and the run
+//! model, menus, `@` mentions, `!` shell, custom commands, the settings schema and its editor and the run
 //! board. Nothing draws: no ratatui, no GPUI, no terminal. Keys and pointer events arrive as [`key`]'s neutral types;
 //! the full-screen overlays are the front end's, behind [`overlay::View`].
 //!
@@ -16,15 +16,12 @@ pub mod custom;
 pub mod extras;
 pub mod input;
 pub mod key;
-pub mod lab;
 pub mod mentions;
 pub mod menu;
 pub mod overlay;
 pub mod redact;
 pub mod review;
-pub mod run_board;
 pub mod settings;
-pub mod team;
 pub mod shell;
 pub mod tree;
 pub mod view;

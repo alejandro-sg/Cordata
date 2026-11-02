@@ -5,7 +5,7 @@
 //! Scrollback is immutable, so a message may only be written once it can no
 //! longer change:
 //!
-//! * a user line, notice, divider, error, help block, Laya line — immediately;
+//! * a user line, notice, divider, error, help block — immediately;
 //! * a tool card — once it has completed or failed (while it runs it is live,
 //!   spinner and sub-agent rows included);
 //! * reasoning — once something else follows it (while it streams it is a live
@@ -20,7 +20,7 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::{heal, help, laya, markdown, text::wrap, tool_card};
+use super::{help, markdown, text::wrap, tool_card};
 use crate::app::{App, Message};
 use acp_core::ToolStatus;
 
@@ -32,9 +32,6 @@ fn blank_between(previous: Option<Kind>, next: Kind) -> bool {
         (previous, next),
         (None, _)
             | (Some(Kind::Tool), Kind::Tool)
-            | (Some(Kind::User), Kind::Laya)
-            | (Some(Kind::Laya), Kind::LayaOutcome)
-            | (Some(Kind::Heal), Kind::Heal)
     )
 }
 
@@ -129,8 +126,6 @@ fn message_lines(app: &App, index: usize, width: u16) -> Vec<Line<'static>> {
         ),
         Message::Agent(text) => markdown::render(text, w),
         Message::Thought(text) => thought_lines(text, w, app.thoughts_expanded, streaming),
-        // The checklist panel above the prompt is how this tool is shown.
-        Message::Tool(card) if card.name == "todo_write" => Vec::new(),
         Message::Tool(card) => tool_card::render_in(
             card,
             width,
@@ -165,11 +160,7 @@ fn message_lines(app: &App, index: usize, width: u16) -> Vec<Line<'static>> {
             Style::new().fg(Color::Red),
             Style::new().fg(Color::Red),
         ),
-        Message::Laya(decision) if app.show_laya => laya::decision_lines(decision, width),
-        Message::LayaOutcome(outcome) if app.show_laya => laya::outcome_lines(outcome, width),
-        Message::Laya(_) | Message::LayaOutcome(_) => Vec::new(),
         Message::Help => help::lines(width),
-        Message::Heal(info) => heal::lines(info, width, app.expand_tools),
         Message::Welcome(info) => crate::ui::welcome_lines(info, width),
     }
 }
@@ -261,21 +252,3 @@ pub fn live_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     out
 }
 
-/// All conversation messages formatted for display in the workspace (history + live).
-pub fn all_conversation_lines(app: &App, width: u16) -> Vec<Line<'static>> {
-    let mut out = Vec::new();
-    let mut previous = None;
-    for index in 0..app.messages.len() {
-        let kind = app.messages[index].kind();
-        let lines = message_lines(app, index, width);
-        if lines.is_empty() {
-            continue;
-        }
-        if blank_between(previous, kind) {
-            out.push(Line::raw(""));
-        }
-        out.extend(lines);
-        previous = Some(kind);
-    }
-    out
-}

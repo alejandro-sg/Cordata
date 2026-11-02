@@ -1,4 +1,4 @@
-//! The single line under the prompt: connection, mode, model and directory on the
+//! The single line under the prompt: connection, model and directory on the
 //! left; on the right, the key hints — or, while the agent works, how long and
 //! how many tool calls so far.
 
@@ -7,28 +7,6 @@ use ratatui::text::{Line, Span};
 
 use super::text::{display_width, truncate};
 use crate::app::{App, ConnState, TabState};
-
-/// Risk-ordered, not menu-ordered: plan runs nothing (mint), build gates dangerous tools behind approval (sodium
-/// amber, the colour of the product itself), edit lets file edits through (pale gold), auto gates nothing (vermilion).
-pub fn mode_color(mode: &str) -> Color {
-    match mode {
-        "plan" => Color::Green,
-        "build" => Color::Cyan,
-        "edit" => Color::Yellow,
-        "auto" => Color::Red,
-        _ => Color::Gray,
-    }
-}
-
-/// The mode's colour, except for a moment after it changes: then the pill blinks white, so a switch the harness made
-/// (or a Tab pressed while looking elsewhere) is seen rather than inferred.
-fn pill_color(app: &App) -> Color {
-    let base = mode_color(&app.mode);
-    match app.mode_changed_at {
-        Some(at) if at.elapsed().as_millis() < 1500 && (at.elapsed().as_millis() / 250) % 2 == 0 => Color::White,
-        _ => base,
-    }
-}
 
 fn spans_width(spans: &[Span<'_>]) -> usize {
     spans.iter().map(|s| display_width(&s.content)).sum()
@@ -74,8 +52,7 @@ fn right_variants(app: &App) -> Vec<Vec<Span<'static>>> {
     }
     let hint = |text: &str| vec![Span::styled(text.to_owned(), Style::new().fg(Color::DarkGray))];
     vec![
-        hint("? help · Tab mode · Ctrl+K palette · Ctrl+O model · Ctrl+Q quit"),
-        hint("? help · Tab mode · Ctrl+K palette · Ctrl+Q quit"),
+        hint("? help · Ctrl+K palette · Ctrl+Q quit"),
         hint("? help · Ctrl+Q quit"),
         hint("? help"),
     ]
@@ -94,16 +71,6 @@ fn activity(app: &App) -> Option<String> {
         }),
         _ => None,
     })
-}
-
-fn context_color(pct: f64) -> Color {
-    if pct >= 0.85 {
-        Color::Red
-    } else if pct >= 0.6 {
-        Color::Yellow
-    } else {
-        Color::Cyan
-    }
 }
 
 pub fn line(app: &App, width: u16) -> Line<'static> {
@@ -144,55 +111,16 @@ pub fn line(app: &App, width: u16) -> Line<'static> {
     if matches!(app.conn, ConnState::Connecting) {
         head.push(Span::styled(" connecting…", dim));
     }
-    if !app.mode.is_empty() {
-        head.push(Span::raw(" "));
-        head.extend(super::hud::pill(&app.mode.to_uppercase(), pill_color(app)));
-        if let Some(pending) = app
-            .pending_mode
-            .as_deref()
-            .filter(|pending| *pending != app.mode)
-        {
-            head.push(Span::styled(
-                format!(" → {pending}…"),
-                Style::new().fg(mode_color(pending)),
-            ));
-        }
-    }
-
-    // Optional segments in the order they are worth keeping on a narrow terminal: the goal being chased, how full the
-    // context is, the model, then where we are. Each is a few spans and its width.
+    // Optional segments in the order they are worth keeping on a narrow terminal: the model, then where we are. Each is a few spans and its width.
     let mut segments: Vec<(Vec<Span<'static>>, usize)> = Vec::new();
     let mut add = |spans: Vec<Span<'static>>| {
         let w = spans.iter().map(|s| display_width(&s.content)).sum::<usize>();
         segments.push((spans, w));
     };
-    if let Some(goal) = &app.goal {
-        let label = if goal.checking {
-            format!("◎ goal {}/{} checking", goal.turn, goal.max)
-        } else {
-            format!("◎ goal {}/{}", goal.turn, goal.max)
-        };
-        add(vec![Span::styled(label, Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD))]);
-    }
-    if let Some(gauge) = &app.context {
-        let approx = if gauge.estimated { "~" } else { "" };
-        match gauge.pct {
-            Some(pct) => add(vec![
-                Span::styled("ctx ", dim),
-                Span::styled(super::hud::segbar(pct, 6), Style::new().fg(context_color(pct))),
-                Span::styled(format!(" {approx}{:.0}%", pct * 100.0), Style::new().fg(context_color(pct))),
-            ]),
-            None => add(vec![Span::styled(format!("ctx {approx}{}", crate::extras::short_count(gauge.used)), dim)]),
-        }
-    }
-    let model = [app.config("model"), app.config("temperature")]
-        .into_iter()
-        .flatten()
-        .map(|option| option.current_name().to_owned())
-        .collect::<Vec<_>>()
-        .join(" · ");
-    if !model.is_empty() {
-        add(vec![Span::styled(model, Style::new())]);
+    if let Some(session) = &app.session
+        && !session.model.is_empty()
+    {
+        add(vec![Span::styled(session.model.clone(), Style::new())]);
     }
     let cwd = app
         .session

@@ -1,4 +1,4 @@
-//! What a worker changed (`backend/workers/tree.py`): a cheap before/after snapshot of the project, and git's view of
+//! What a worker changed: a cheap before/after snapshot of the project, and git's view of
 //! it. A snapshot is `{relative path: (size, mtime_ns)}` minus dependency/build directories and secrets files — it
 //! sees a change in any directory, git repository or not, tracked or not, and a second edit to an already-dirty file.
 

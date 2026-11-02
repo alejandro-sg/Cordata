@@ -17,13 +17,8 @@ pub struct SessionOptions {
     pub cwd: PathBuf,
     /// How to reach the agent.
     pub transport: BackendTransport,
-    /// Resume an existing session id via `session/load` instead of creating one.
-    pub resume: Option<String>,
     /// Append diagnostics here. Never stdout/stdin — the TUI owns those.
     pub debug_log: Option<PathBuf>,
-    /// With no `resume`, ask the backend (`session/list`) for the newest session
-    /// in `cwd` and load that one; a fresh session when there is none.
-    pub continue_latest: bool,
 }
 
 /// Something sent with a prompt: an image (a pasted screenshot, a dropped picture) or a file's text.
@@ -31,29 +26,15 @@ pub struct SessionOptions {
 pub enum Attachment {
     /// Base64-encoded image bytes and their MIME type.
     Image { mime: String, data_base64: String },
-    /// A text file, embedded as an ACP resource (`file://` URI).
+    /// A text file, with its `file://` URI.
     Text { uri: String, text: String },
 }
 
-/// What the front end asks of a session. The native engine answers mode, config and extension requests with a notice;
-/// their payloads are kept so a front end can still send them.
-#[allow(dead_code)]
+/// What the front end asks of a session.
 #[derive(Debug)]
 pub(crate) enum Command {
     Prompt(String, Vec<Attachment>),
     Cancel,
-    SetMode(String),
-    SetConfigOption {
-        id: String,
-        value: String,
-    },
-    /// An extension request (`_cordata/...`, or a standard method the typed
-    /// API doesn't cover); the answer arrives as `AppEvent::ExtResult { tag }`.
-    Ext {
-        method: String,
-        params: serde_json::Value,
-        tag: String,
-    },
     Shutdown,
 }
 
@@ -94,37 +75,9 @@ impl SessionHandle {
         self.send(Command::Prompt(text.into(), attachments))
     }
 
-    /// `session/cancel`. Only stops a running turn, and only between streamed
-    /// events — it is inert while the server is blocked on an unanswered
-    /// permission request (answer the request first).
+    /// Stops a running turn, between streamed events. Inert while an approval is unanswered: answer it first.
     pub fn cancel(&self) -> Result<()> {
         self.send(Command::Cancel)
-    }
-
-    pub fn set_mode(&self, mode_id: impl Into<String>) -> Result<()> {
-        self.send(Command::SetMode(mode_id.into()))
-    }
-
-    pub fn set_config_option(&self, id: impl Into<String>, value: impl Into<String>) -> Result<()> {
-        self.send(Command::SetConfigOption {
-            id: id.into(),
-            value: value.into(),
-        })
-    }
-
-    /// Send an extension request; the reply comes back as `AppEvent::ExtResult`
-    /// carrying `tag`, so the caller knows which request it answers.
-    pub fn ext(
-        &self,
-        method: impl Into<String>,
-        params: serde_json::Value,
-        tag: impl Into<String>,
-    ) -> Result<()> {
-        self.send(Command::Ext {
-            method: method.into(),
-            params,
-            tag: tag.into(),
-        })
     }
 
     /// Stops the session and waits until its task has ended.

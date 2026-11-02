@@ -282,8 +282,8 @@ pub fn file_rows(
     rows
 }
 
-/// A unified patch (``apply_patch`` input, a self-heal proposal) as coloured
-/// rows: headers bold, hunks cyan, removals red, additions green.
+/// A unified patch as coloured rows: headers bold, hunks cyan, removals red, additions green.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn patch_rows(patch: &str, width: usize, max_rows: Option<usize>) -> Vec<Vec<Span<'static>>> {
     let lines: Vec<&str> = patch.lines().collect();
     let limit = max_rows.unwrap_or(usize::MAX);
@@ -419,14 +419,5 @@ mod tests {
         let new: String = (0..3000).map(|i| format!("b{i}\n")).collect();
         let lines = line_diff(&old, &new);
         assert_eq!(stats(&lines), (3000, 3000));
-    }
-
-    #[test]
-    fn patches_are_coloured_by_line_kind() {
-        let rows = patch_rows("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n", 40, None);
-        assert_eq!(rows.len(), 5);
-        assert_eq!(rows[3][0].style.fg, Some(Color::Red));
-        assert_eq!(rows[4][0].style.fg, Some(Color::Green));
-        assert_eq!(rows[2][0].style.fg, Some(Color::Cyan));
     }
 }

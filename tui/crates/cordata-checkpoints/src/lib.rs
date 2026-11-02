@@ -1,4 +1,4 @@
-//! Checkpoints, ported from `backend/checkpoints.py`: what makes `auto` mode and the orchestrator's rollbacks
+//! Checkpoints: what makes `auto` mode and the orchestrator's rollbacks
 //! reversible.
 //!
 //! Before any step that may change files, the project is snapshotted into a **shadow git repository** under
@@ -243,6 +243,7 @@ fn escape_glob(path: &str) -> String {
     path.chars().flat_map(|c| if "\\*?[]!#".contains(c) { vec!['\\', c] } else { vec![c] }).collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn meta_message(kind: &str, tool: &str, agent: &str, session_id: &str, turn: &str, call: &str, paths: &[String], extra: &Map<String, Value>) -> String {
     let mut data = Map::new();
     data.insert("v".into(), json!(SCHEMA));
@@ -509,11 +510,10 @@ impl Store {
 
     fn clear_stale_lock(&self, project: &str) {
         let lock = self.git(project).dir.join("index.lock");
-        if let Ok(meta) = std::fs::metadata(&lock) {
-            if meta.modified().ok().and_then(|m| m.elapsed().ok()).is_some_and(|age| age > Duration::from_secs(5)) {
+        if let Ok(meta) = std::fs::metadata(&lock)
+            && meta.modified().ok().and_then(|m| m.elapsed().ok()).is_some_and(|age| age > Duration::from_secs(5)) {
                 let _ = std::fs::remove_file(lock);
             }
-        }
     }
 
     // ------------------------------------------------------------------------------ taking one
@@ -629,11 +629,10 @@ impl Store {
         let mut undone: HashSet<String> = HashSet::new();
         for row in &rows {
             // newest first
-            if row.str("kind") == Some("restore") {
-                if let Some(u) = row.meta.get("undid").and_then(Value::as_str).filter(|u| !u.is_empty()) {
+            if row.str("kind") == Some("restore")
+                && let Some(u) = row.meta.get("undid").and_then(Value::as_str).filter(|u| !u.is_empty()) {
                     undone.insert(u.to_owned());
                 }
-            }
             let turn = row.str("turn").unwrap_or("");
             if turn.is_empty() || !matches!(row.str("kind"), Some("pre" | "end")) {
                 continue;
@@ -661,11 +660,10 @@ impl Store {
                 entry.calls += 1;
                 entry.started = Some(row.ts);
                 for (list, key) in [(&mut entry.tools, "tool"), (&mut entry.agents, "agent")] {
-                    if let Some(v) = row.str(key).filter(|v| !v.is_empty()) {
-                        if !list.iter().any(|x| x == v) {
+                    if let Some(v) = row.str(key).filter(|v| !v.is_empty())
+                        && !list.iter().any(|x| x == v) {
                             list.push(v.to_owned());
                         }
-                    }
                 }
                 if entry.last_call.as_deref().is_none_or(str::is_empty) {
                     entry.last_call = row.str("call").map(str::to_owned);
@@ -678,12 +676,11 @@ impl Store {
         for name in order.into_iter().take(limit.max(1)) {
             let mut entry = by_turn.remove(&name).expect("ordered");
             entry.undone = undone.contains(&entry.turn);
-            if let (Some(first), Some(end)) = (&entry.first, &entry.end) {
-                if let Ok(changes) = Self::name_status(&git, first, Some(end), false) {
+            if let (Some(first), Some(end)) = (&entry.first, &entry.end)
+                && let Ok(changes) = Self::name_status(&git, first, Some(end), false) {
                     entry.file_count = Some(changes.len());
                     entry.files = Some(changes.into_iter().take(MAX_LIST).collect());
                 }
-            }
             result.push(entry);
         }
         result
@@ -1006,7 +1003,7 @@ fn group_thousands(n: usize) -> String {
     let digits = n.to_string();
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);

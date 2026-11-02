@@ -1,11 +1,10 @@
 //! The window's own preferences: how it looks and behaves, the recent projects, whether the side panel is open.
 //! `~/Library/Application Support/Cordata/prefs.toml`, written atomically and readable only by its owner.
 //!
-//! What the harness itself decides (the model, permission rules, trusted folders) is not here: those live in the
+//! What the agent itself decides (the model, what it may run) is not here: those live in the
 //! backend's settings files and are changed through `_cordata/settings/*` and `_cordata/trust/*`. Secrets are never
 //! here either — the API key is in the Keychain (`keychain.rs`).
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -36,13 +35,6 @@ pub struct Prefs {
     pub quick_ask_hotkey: bool,
     /// Which combination it is, `ctrl-alt-space` form (`platform::Combo::parse`).
     pub quick_ask_key: String,
-    /// The local Ollama model for ghost-text completions in the editor; empty is off.
-    pub completion_model: String,
-    /// Show the session's estimated cost in the status bar (Claude models at list price; `prices` adds others).
-    pub show_cost: bool,
-    /// Dollars per million tokens, `[input, output]`, keyed by (part of) a model name: overrides the built-in list
-    /// prices or prices a model that has none. Only ever set by hand in this file.
-    pub prices: BTreeMap<String, [f64; 2]>,
     /// Most recent first.
     pub recents: Vec<RecentProject>,
 }
@@ -52,9 +44,6 @@ pub struct RecentProject {
     pub path: PathBuf,
     /// Seconds since the epoch.
     pub opened: u64,
-    /// The trust last seen for it (the backend is the authority; this colours the picker's dot).
-    #[serde(default)]
-    pub trusted: bool,
 }
 
 impl Default for Prefs {
@@ -70,11 +59,8 @@ impl Default for Prefs {
             open_on_launch: "last".into(),
             notify_approval: true,
             sound_on_completion: false,
-            completion_model: String::new(),
             quick_ask_hotkey: true,
             quick_ask_key: "ctrl-alt-space".into(),
-            show_cost: true,
-            prices: BTreeMap::new(),
             recents: Vec::new(),
         }
     }
@@ -152,27 +138,15 @@ impl Prefs {
         if crate::platform::Combo::parse(&self.quick_ask_key).is_err() {
             self.quick_ask_key = fallback.quick_ask_key;
         }
-        self.prices.retain(|_, [input, output]| input.is_finite() && output.is_finite() && *input >= 0.0 && *output >= 0.0);
         self.code_font_size = self.code_font_size.clamp(10.0, 20.0);
         self.recents.truncate(RECENTS_CAP);
     }
 
-    /// Put `path` first in the recents (new folders arrive untrusted until the backend says otherwise).
+    /// Put `path` first in the recents.
     pub fn touch_recent(&mut self, path: &Path, now: u64) {
-        let trusted = self.recents.iter().find(|r| r.path == path).is_some_and(|r| r.trusted);
         self.recents.retain(|r| r.path != path);
-        self.recents.insert(0, RecentProject { path: path.to_path_buf(), opened: now, trusted });
+        self.recents.insert(0, RecentProject { path: path.to_path_buf(), opened: now });
         self.recents.truncate(RECENTS_CAP);
-    }
-
-    pub fn set_trusted(&mut self, path: &Path, trusted: bool) -> bool {
-        match self.recents.iter_mut().find(|r| r.path == path) {
-            Some(row) if row.trusted != trusted => {
-                row.trusted = trusted;
-                true
-            }
-            _ => false,
-        }
     }
 
     pub fn last_project(&self) -> Option<&Path> {
@@ -193,7 +167,6 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("cordata-prefs-{}", std::process::id()));
         let file = dir.join("prefs.toml");
         let mut prefs = Prefs { theme: "dim".into(), panel_open: Some(false), ..Prefs::default() };
-        prefs.prices.insert("glm-4.6".into(), [0.6, 2.2]);
         prefs.touch_recent(Path::new("/tmp/a"), 1);
         prefs.save_to(&file).unwrap();
         assert_eq!(Prefs::load_from(&file), prefs);
@@ -201,8 +174,6 @@ mod tests {
         let repaired = Prefs::load_from(&file);
         assert_eq!(repaired.theme, "system");
         assert_eq!(repaired.quick_ask_key, "ctrl-alt-space");
-        std::fs::write(&file, "[prices]\nok = [1.0, 2.0]\nnegative = [-1.0, 2.0]\n").unwrap();
-        assert_eq!(Prefs::load_from(&file).prices.keys().collect::<Vec<_>>(), ["ok"]);
         assert_eq!(repaired.code_font_size, 20.0);
         std::fs::write(&file, "not toml at all [").unwrap();
         assert_eq!(Prefs::load_from(&file), Prefs::default());
@@ -210,17 +181,15 @@ mod tests {
     }
 
     #[test]
-    fn recents_are_most_recent_first_capped_and_keep_trust() {
+    fn recents_are_most_recent_first_and_capped() {
         let mut prefs = Prefs::default();
         for i in 0..25 {
             prefs.touch_recent(&PathBuf::from(format!("/p/{i}")), i);
         }
         assert_eq!(prefs.recents.len(), RECENTS_CAP);
         assert_eq!(prefs.recents[0].path, PathBuf::from("/p/24"));
-        assert!(prefs.set_trusted(Path::new("/p/20"), true));
         prefs.touch_recent(Path::new("/p/20"), 99);
         assert_eq!(prefs.recents[0].path, PathBuf::from("/p/20"));
-        assert!(prefs.recents[0].trusted, "touching keeps the trust seen");
         assert_eq!(prefs.recents.iter().filter(|r| r.path == Path::new("/p/20")).count(), 1);
     }
 }

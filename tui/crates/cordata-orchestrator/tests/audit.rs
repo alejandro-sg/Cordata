@@ -54,7 +54,7 @@ async fn destructive_commands_are_refused_and_runaways_time_out() {
     }
     let (_d, root) = project();
     let (ok, detail) = run_command(&root, "sudo rm -rf /", &PatternGuard, 20.0, 0, &environ()).await;
-    assert!(!ok && detail.starts_with("refused to run (Laya Guard 0.95: "), "{detail}");
+    assert!(!ok && detail.starts_with("refused to run (pattern guard 0.95: "), "{detail}");
     let started = std::time::Instant::now();
     let (ok, detail) = run_command(&root, "sleep 30", &PatternGuard, 1.0, 0, &environ()).await;
     assert!(!ok && detail == "timed out after 1s" && started.elapsed().as_secs() < 10, "{detail}");

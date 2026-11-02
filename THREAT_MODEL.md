@@ -17,11 +17,10 @@ that runs on a Mac, with no server: the only network traffic is to the model pro
 
 In the chat agent, `edit_file` and `run_command` ask before they run; `read_file`, `code_search` and `code_outline` do
 not. "Always allow" lasts for one session and is per tool. A pending approval that is never answered is denied when its
-sender drops. The pre-tool hook (`scripts/guard.sh` → `cordata-guard`) blocks, without asking, writes to `.env`, writes
-inside `.git/`, recursive deletes of `/`, `~` or `..`, and shell redirects into `.env`.
+sender drops. A built-in guard (`cordata-guard`) refuses, without asking, edits to `.env` files and inside `.git/`, recursive
+deletes of `/`, `~` or `..`, and shell redirects into `.env`.
 
-Not covered: the permission-rule files (`permissions.allow`/`deny`) and the plan/edit/auto modes are not enforced by
-the current engine.
+There are no modes and no permission rules: every edit and command asks, always.
 
 ## Boundary 2: commands run confined
 
@@ -69,7 +68,7 @@ run. Read the diff.
 
 ## Checkpoints are recovery, not a boundary
 
-Shadow-git snapshots (`~/.cordata/checkpoints/<hash>/git`) let `/undo` and the orchestrator roll files back. They protect
+Shadow-git snapshots (`~/.cordata/checkpoints/<hash>/git`) let the orchestrator roll files back. They protect
 against a bad edit, not against a hostile command: a command can also touch things a snapshot does not hold.
 
 ## Prompt injection
@@ -85,7 +84,7 @@ holds the one you set (`Settings → Account`, service `cordata-*-api-key`). Scr
 ## Known gaps
 
 - Chat commands have no network or write restriction beyond the secret paths above.
-- Permission rules and modes are not enforced by the native engine (see Boundary 1).
+- There is no "allow without asking" configuration: approval is per call, or per tool for the session.
 - Sessions are not persisted, so there is no session history to protect, or to clear.
-- Laya Guard is gone; the orchestrator audit uses a conservative pattern guard.
+- The orchestrator audit uses a conservative pattern guard, not a model.
 - Seatbelt is macOS-only and `sandbox-exec` is deprecated by Apple; if it disappears, commands stop running (fail closed).

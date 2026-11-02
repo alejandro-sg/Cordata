@@ -1,6 +1,5 @@
 //! The project picker (⌘O, or a click on the project card): a 360px popover under the card. Search the recent
 //! projects or paste a path; open a folder with the system panel, clone a repository, or start an empty project.
-//! A folder opened for the first time arrives untrusted; trust is the backend's, per folder.
 
 use std::path::{Path, PathBuf};
 
@@ -12,7 +11,7 @@ use gpui_component::input::Input;
 use super::{Overlay, Workspace, tilde};
 use crate::prefs;
 use crate::theme::{amber, c, line, mono, tk};
-use crate::ui::{self, Dot, Kind};
+use crate::ui::{self, Kind};
 
 /// What the picker's search box holds: a filter, or a path to open.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,7 +79,7 @@ impl Workspace {
         let text = self.picker_input.read(cx).value().to_string();
         let mut rows = self.prefs.recents.clone();
         if !rows.iter().any(|r| r.path == self.cwd) {
-            rows.insert(0, prefs::RecentProject { path: self.cwd.clone(), opened: prefs::now(), trusted: self.settings_view.trusted });
+            rows.insert(0, prefs::RecentProject { path: self.cwd.clone(), opened: prefs::now() });
         }
         match parse_query(&text, &self.cwd) {
             Query::Filter(filter) if !filter.is_empty() => rows.into_iter().filter(|r| r.path.to_string_lossy().to_lowercase().contains(&filter)).collect(),
@@ -202,11 +201,9 @@ impl Workspace {
                 let current = row.path == self.cwd;
                 let path = row.path.clone();
                 let name = row.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| tilde(&row.path));
-                let trusted = if current { self.settings_view.trusted } else { row.trusted };
                 ui::row(("picker-row", index), current || index == self.picker_ix, cx)
                     .when(current, |r| r.bg(amber(cx, t::AMBER_FILL_MID)))
                     .on_click(cx.listener(move |this, _, window, cx| this.switch_project(path.clone(), window, cx)))
-                    .child(ui::dot(if trusted { Dot::Ok } else { Dot::Amber }, cx).size(px(t::DOT_SMALL)))
                     .child(
                         div()
                             .flex_1()

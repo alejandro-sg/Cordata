@@ -675,6 +675,7 @@ impl<'a> Machine<'a> {
 
     /// One worker call. `role` is the worker's role (what its sandbox allows); `label` is the machine's phase — the task
     /// id's middle part, the ledger's role and the record's `workers` key.
+    #[allow(clippy::too_many_arguments)]
     async fn one_shot(&mut self, role: &str, candidate: &Runnable, prompt: &str, schema: Option<Value>, scope: Vec<String>, timeout: f64, label: &str) -> WorkerResult {
         let (usd, tokens, _) = self.envelope_left();
         let allowance = self.ledger.step_allowance(&candidate.candidate.family, candidate.candidate.model.as_deref());
@@ -900,11 +901,10 @@ impl<'a> Machine<'a> {
         let timeout = self.config.step_timeout_s;
         let result = self.one_shot("harden", &candidate, &prompt, None, scope, timeout, "harden").await;
         let bad = result.status != "completed" || !result.out_of_scope.is_empty();
-        if bad && snap.ok {
-            if let Some(id) = &snap.id {
+        if bad && snap.ok
+            && let Some(id) = &snap.id {
                 self.checkpoints.restore(Path::new(&self.project), id, None, &self.record.run_id);
             }
-        }
         if bad {
             let why = result.error_message.clone().unwrap_or_else(|| format!("wrote outside the scope: {}", result.out_of_scope.join(", ")));
             self.record.warnings.push(format!("harden by {} discarded: {why}", candidate.key()));

@@ -1,4 +1,4 @@
-//! Isolated parallel waves and the SYNTHESIZE pass that folds them back together (`backend/orchestrator/synthesizer.py`).
+//! Isolated parallel waves and the SYNTHESIZE pass that folds them back together.
 //!
 //! **Why isolate.** Steps of one wave have pairwise-disjoint scopes, but they still share one working tree: a worker's
 //! changed-files list sees its siblings' writes, a rollback has to be narrowed to the step's scope, and a build a worker
@@ -177,7 +177,7 @@ fn group(n: usize) -> String {
     let digits = n.to_string();
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);

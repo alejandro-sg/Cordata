@@ -37,15 +37,8 @@ impl ToolDefinition {
     }
 }
 
-/// Words in a prompt that call for a family of tools, matched by prefix on whole words.
-const INTENTS: &[(&str, &[&str])] = &[
-    ("lsp_", &["definition", "reference", "symbol", "diagnostic", "rename", "hover", "lsp"]),
-    ("git_", &["git", "commit", "branch", "rebase", "merge", "stash", "blame", "diff"]),
-    ("web_", &["web", "http", "url", "online", "internet", "latest", "docs"]),
-    ("db_", &["sql", "database", "query", "table", "schema", "migration"]),
-    ("subagent", &["subagent", "delegate", "parallel", "research"]),
-    ("code_outline", &["outline", "structure", "overview"]),
-];
+/// Words in a prompt that call for a tool beyond the core, matched by prefix on whole words.
+const INTENTS: &[(&str, &[&str])] = &[("code_outline", &["outline", "structure", "overview"])];
 
 /// Name fragments too common to signal intent on their own.
 const GENERIC: [&str; 4] = ["code", "file", "tool", "run"];
@@ -128,21 +121,15 @@ mod tests {
     use super::*;
     use crate::profile::Profile;
 
+    /// The engine's five tools: the core four and the outline.
     fn catalog() -> Vec<ToolDefinition> {
         let mut names: Vec<String> = CORE_TOOLS.iter().map(|s| (*s).to_owned()).collect();
         names.push("code_outline".into());
-        for family in ["lsp_definition", "lsp_references", "lsp_rename", "lsp_diagnostics", "lsp_hover", "lsp_symbols"] {
-            names.push(family.into());
-        }
-        for family in ["git_status", "git_diff", "git_log", "git_commit", "git_branch", "git_blame", "git_stash", "git_show"] {
-            names.push(family.into());
-        }
-        names.extend(["web_search", "web_fetch", "subagent", "db_query", "db_schema", "db_migrate"].map(String::from));
         names
             .into_iter()
             .map(|name| ToolDefinition {
                 description: format!("{name}: a tool with a deliberately wordy description so each schema costs real tokens, {}", "lorem ipsum ".repeat(12)),
-                schema: json!({"type":"object","properties":{"path":{"type":"string","description":"x".repeat(150)},"query":{"type":"string","description":"y".repeat(150)}},"required":["path"]}),
+                schema: json!({"type":"object","properties":{"path":{"type":"string","description":"x".repeat(150)}},"required":["path"]}),
                 name,
             })
             .collect()
@@ -153,45 +140,41 @@ mod tests {
     }
 
     #[test]
-    fn ollama_gets_only_the_core_and_cuts_the_payload_by_over_75_percent() {
+    fn a_small_model_gets_only_the_core_and_pays_for_fewer_tools() {
         let all = catalog();
         let selected = ToolPruner::default().select_tools(Path::new("/r"), "explain this function", &all, &Profile::for_model("llama3"));
         assert_eq!(names(&selected), CORE_TOOLS);
         let full: usize = all.iter().map(ToolDefinition::tokens).sum();
         let pruned: usize = selected.iter().map(|t| t.tokens()).sum();
-        assert!(pruned * 4 < full, "pruned {pruned} of {full}");
+        assert!(pruned < full, "pruned {pruned} of {full}");
     }
 
     #[test]
-    fn intent_pulls_in_a_family_up_to_the_cap() {
+    fn asking_for_a_structure_pulls_in_the_outline_in_registry_order() {
         let all = catalog();
         let claude = Profile::for_model("claude-sonnet-5-5");
-        let selected = ToolPruner::default().select_tools(Path::new("/r"), "show the git diff and commit it", &all, &claude);
-        let got = names(&selected);
-        assert!(got.contains(&"git_diff".into()) && got.contains(&"git_commit".into()));
-        assert!(!got.iter().any(|n| n.starts_with("lsp_")));
-        assert!(got.len() <= claude.max_tools);
-        // Registry order is preserved so the serialized list is byte-stable.
-        let positions: Vec<usize> = got.iter().map(|n| all.iter().position(|t| &t.name == n).unwrap()).collect();
-        assert!(positions.windows(2).all(|w| w[0] < w[1]));
+        let got = names(&ToolPruner::default().select_tools(Path::new("/r"), "give me an overview of the structure", &all, &claude));
+        assert_eq!(got, ["read_file", "edit_file", "run_command", "code_search", "code_outline"]);
+        let quiet = names(&ToolPruner::default().select_tools(Path::new("/r"), "fix the bug", &all, &claude));
+        assert_eq!(quiet, CORE_TOOLS);
     }
 
     #[test]
-    fn usage_history_adds_tools_for_roomier_profiles_only() {
+    fn usage_history_adds_the_outline_for_roomier_profiles_only() {
         let all = catalog();
         let repo = Path::new("/r");
         let mut pruner = ToolPruner::default();
-        pruner.record_tool_invoked(repo, "web_search");
-        assert!(names(&pruner.select_tools(repo, "hello", &all, &Profile::for_model("claude-x"))).contains(&"web_search".into()));
-        assert!(!names(&pruner.select_tools(repo, "hello", &all, &Profile::for_model("llama3"))).contains(&"web_search".into()));
-        assert!(!names(&pruner.select_tools(Path::new("/other"), "hello", &all, &Profile::for_model("claude-x"))).contains(&"web_search".into()));
+        pruner.record_tool_invoked(repo, "code_outline");
+        assert!(names(&pruner.select_tools(repo, "hello", &all, &Profile::for_model("claude-x"))).contains(&"code_outline".into()));
+        assert!(!names(&pruner.select_tools(repo, "hello", &all, &Profile::for_model("llama3"))).contains(&"code_outline".into()));
+        assert!(!names(&pruner.select_tools(Path::new("/other"), "hello", &all, &Profile::for_model("claude-x"))).contains(&"code_outline".into()));
     }
 
     #[test]
     fn words_match_by_prefix_not_substring() {
         let all = catalog();
-        let selected = ToolPruner::default().select_tools(Path::new("/r"), "digit widget", &all, &Profile::for_model("claude-x"));
-        assert!(!names(&selected).iter().any(|n| n.starts_with("git_")));
+        let selected = ToolPruner::default().select_tools(Path::new("/r"), "outlook widget", &all, &Profile::for_model("claude-x"));
+        assert!(!names(&selected).contains(&"code_outline".into()));
     }
 
     #[test]
@@ -199,11 +182,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("sub/tools.json");
         let mut pruner = ToolPruner::default();
-        pruner.record_tool_invoked(Path::new("/r"), "git_diff");
-        pruner.record_tool_invoked(Path::new("/r"), "git_diff");
+        pruner.record_tool_invoked(Path::new("/r"), "code_outline");
+        pruner.record_tool_invoked(Path::new("/r"), "code_outline");
         pruner.save(&file).unwrap();
-        assert_eq!(ToolPruner::load(&file).usage(Path::new("/r"), "git_diff"), 2);
+        assert_eq!(ToolPruner::load(&file).usage(Path::new("/r"), "code_outline"), 2);
         std::fs::write(&file, "{not json").unwrap();
-        assert_eq!(ToolPruner::load(&file).usage(Path::new("/r"), "git_diff"), 0);
+        assert_eq!(ToolPruner::load(&file).usage(Path::new("/r"), "code_outline"), 0);
     }
 }

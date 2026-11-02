@@ -1,4 +1,8 @@
-.PHONY: app app-run app-test app-check tui tui-build tui-test stress tui-cloud stress-cloud key check-key secrets hooks verify install-cli cli
+.PHONY: install app app-run app-test app-check tui tui-build tui-test key check-key secrets hooks verify install-cli cli
+
+# One step for a fresh clone: release binaries, `cordata` on your PATH, then the environment check.
+install: tui-build cli
+	@bin/cordata doctor
 
 # Cordata.app, the native workspace (app/, docs/app.md). `app` builds, signs and self-tests the bundle into
 # app/target/Cordata.app (SIGN_IDENTITY="Cordata Local" keeps macOS privacy grants across rebuilds; INSTALL=1 copies it
@@ -30,22 +34,11 @@ tui-build:
 tui-test:
 	@cd tui && cargo test --workspace
 
-stress:
-	@cd tui && cargo run -q -p acp-stress -- $(or $(SCENARIOS),scenarios/smoke.json) $(ARGS)
-
-# Same, on the cloud-model profile (scripts/cloud-env.sh): Ollama Cloud,
-# cheapest tool-calling model; key from your shell or the macOS Keychain.
-tui-cloud:
-	@scripts/cloud-env.sh $(MAKE) --no-print-directory tui
-
-stress-cloud:
-	@scripts/cloud-env.sh $(MAKE) --no-print-directory stress
-
-# Store the Ollama API key in the macOS Keychain (hidden prompt) and verify it.
+# Store a provider's API key in the macOS Keychain (hidden prompt): PROVIDER=anthropic (default) or ollama.
 key:
-	@scripts/store-key.sh
+	@scripts/store-key.sh $(PROVIDER)
 
-# Where is the key coming from, and does Ollama accept it? (never prints the key)
+# Where is the Ollama key coming from, and does Ollama accept it? (never prints the key)
 check-key:
 	@scripts/check-key.sh
 

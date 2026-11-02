@@ -1,4 +1,4 @@
-//! The words around a task (`backend/workers/prompting.py`): the role brief every worker gets, and the fenced handoff
+//! The words around a task: the role brief every worker gets, and the fenced handoff
 //! it may carry. A handoff packet is *data written by another model*; it reaches the next worker secret-scrubbed and
 //! fenced as untrusted, so a worker that wrote "ignore your instructions" into its notes has written a string.
 
@@ -126,11 +126,10 @@ pub fn parse_json_answer(text: &str) -> Option<Value> {
             });
         }
     }
-    if let (Some(first), Some(last)) = (raw.find('{'), raw.rfind('}')) {
-        if first < last {
+    if let (Some(first), Some(last)) = (raw.find('{'), raw.rfind('}'))
+        && first < last {
             candidates.push(raw[first..=last].to_owned());
         }
-    }
     candidates.iter().find_map(|c| serde_json::from_str::<Value>(c.trim()).ok().filter(Value::is_object))
 }
 

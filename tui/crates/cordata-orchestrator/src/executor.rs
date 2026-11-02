@@ -1,4 +1,4 @@
-//! The EXECUTE phase, ported from `backend/orchestrator/executor.py`: run a plan's steps in order, each inside a
+//! The EXECUTE phase: run a plan's steps in order, each inside a
 //! checkpoint, handing off at safe points.
 //!
 //! For each pending step: **checkpoint** (a failed snapshot degrades the rollback policy to `keep_partial` — never
@@ -503,15 +503,14 @@ impl<'a> StepExecutor<'a> {
                 self.emit("paused", json!({"step_id": step.step_id, "handoff_id": packet.handoff_id}));
                 return "paused";
             };
-            if ctx.packet.is_none() && !self.out(|o| o.workers_used.is_empty()) {
-                if let Some(prev) = ctx.current.as_ref().filter(|p| p.key() != candidate.key()) {
+            if ctx.packet.is_none() && !self.out(|o| o.workers_used.is_empty())
+                && let Some(prev) = ctx.current.as_ref().filter(|p| p.key() != candidate.key()) {
                     // A switch at a step boundary (soft line, or the previous worker's pool went away): leave a note.
                     let reason = if self.level(prev) == "soft" { "quota_soft_limit_reached" } else { "worker_unavailable" };
                     let packet = self.packet_for(index, &step, reason, Some(prev), Some(&candidate), &failures, false, None);
                     ctx.packet = Some(packet.clone());
                     self.out(|o| o.handoffs.push(packet));
                 }
-            }
             ctx.current = Some(candidate.clone());
             self.out(|o| {
                 if !o.workers_used.contains(&candidate.key()) {
@@ -577,8 +576,8 @@ impl<'a> StepExecutor<'a> {
                        "error": result.error_message, "files": result.files_changed.iter().take(50).collect::<Vec<_>>()}),
             );
 
-            if result.status == "completed" && result.out_of_scope.is_empty() && ctx.isolated {
-                if let (Some(sandbox), Some(isolation)) = (&ctx.sandbox, &self.cfg.isolation) {
+            if result.status == "completed" && result.out_of_scope.is_empty() && ctx.isolated
+                && let (Some(sandbox), Some(isolation)) = (&ctx.sandbox, &self.cfg.isolation) {
                     let taken = isolation.harvest(sandbox, &result.files_changed, &step.file_scope);
                     self.emit("harvest", json!({"step_id": step.step_id, "written": taken.written.iter().take(50).collect::<Vec<_>>(), "deleted": taken.deleted.iter().take(50).collect::<Vec<_>>(),
                                                 "conflicts": taken.conflicts.iter().take(50).collect::<Vec<_>>(), "skipped": taken.skipped.iter().take(50).collect::<Vec<_>>()}));
@@ -592,7 +591,6 @@ impl<'a> StepExecutor<'a> {
                         result.error_message = Some(format!("changed in the project while this step ran (not overwritten): {}", taken.conflicts.iter().take(10).cloned().collect::<Vec<_>>().join(", ")));
                     }
                 }
-            }
             if result.status == "completed" && result.out_of_scope.is_empty() {
                 self.update_step(index, |s| s.status = "completed".into());
                 ctx.packet = None;

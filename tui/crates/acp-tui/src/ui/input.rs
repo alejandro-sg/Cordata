@@ -77,16 +77,12 @@ pub fn height_for(app: &App, width: u16) -> u16 {
 ///  ❯ then run the tests
 ///  ───────────────────────────────────────────────────────────────────
 /// ```
-///
-/// The short heavy stroke on the top rule takes the mode's colour (plan green, build yellow, auto red), so the one
-/// place the eyes are while typing says how much the agent may do on its own. Returns where the text cursor belongs
-/// (column, row within `buffer`) when the box accepts input, else `None`.
+/// Returns where the text cursor belongs (column, row within `buffer`) when the box accepts input, else `None`.
 pub fn render(buffer: &mut Buffer, area: Rect, app: &App) -> Option<(u16, u16)> {
     let enabled = app.can_type();
     let width = area.width as usize;
     let rule_style = Style::new().fg(Color::DarkGray);
-    let accent = if enabled { super::footer::mode_color(&app.mode) } else { Color::DarkGray };
-    let accent = if app.mode.is_empty() && enabled { Color::Cyan } else { accent };
+    let accent = if enabled { Color::Cyan } else { Color::DarkGray };
     let (title, title_style) = if enabled && app.turn_active {
         // The agent is working; what is typed now waits its turn.
         ("working — enter queues your next message", rule_style)

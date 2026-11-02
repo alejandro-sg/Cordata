@@ -17,7 +17,7 @@ process.
  └──────────────────────────────────────────────────────────────────────┘
         │ providers: Anthropic · Gemini · OpenAI-compatible · Ollama
         ▼
- ~/.cordata  (settings, sessions, state.db ledger, checkpoints)
+ ~/.cordata  (settings, state.db ledger, checkpoints)
 
  cordata run / status / show / resume ──► cordata-run ──► cordata-orchestrator
 ```
@@ -29,19 +29,18 @@ process.
 | `tui/crates/acp-core` | the session API both front ends use: `SessionHandle`, `AppEvent`, the permission round-trip, and the native engine (`native/`) |
 | `tui/crates/cordata-economizer` | token economizer: dynamic tool pruning, micro-skills, loopguard failure interception, prefix cache alignment, head/tail output compactor |
 | `tui/crates/acp-tui` | the inline terminal client |
-| `tui/crates/acp-stress` | scriptable concurrent runner |
 | `tui/crates/cordata-ledger` | quota pools, usage, handoffs, events, run records in `~/.cordata/state.db` |
-| `tui/crates/cordata-checkpoints` | the shadow-git checkpoint store behind `/undo` and the orchestrator's rollbacks |
+| `tui/crates/cordata-checkpoints` | the shadow-git checkpoint store behind the orchestrator's rollbacks |
 | `tui/crates/cordata-orchestrator` | plan → dispatch → execute → harden → audit, workers (`claude`, `agy`), research, the synthesizer |
 | `tui/crates/cordata-run` | the `cordata run` / `status` / `show` / `resume` command |
 | `tui/crates/cordata-doctor` | `cordata doctor` |
-| `tui/crates/cordata-guard` | `cordata-secrets` (no credential in git) and `cordata-guard` (the pre-tool hook) |
+| `tui/crates/cordata-guard` | `cordata-secrets` (no credential in git) and the pre-tool guard the chat engine calls |
 | `app/crates/cordata-view`, `cordata-theme`, `cordata-app` | state and palette shared by both front ends; the native window |
 
 ## A turn
 
 1. The prompt goes to the engine with the project's instructions and any attachments.
-2. The provider streams text and tool calls. Every tool call passes the approval gate (mode, rules, trust).
+2. The provider streams text and tool calls. The guard refuses what it must, then every edit and command passes the approval gate.
 3. Commands run under a Seatbelt profile that scopes writes and drops the environment's secrets.
 4. A checkpoint is taken before anything that may change files, so a turn can be undone.
 

@@ -7,9 +7,8 @@ use cordata_view::shown;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement, SharedString, StatefulInteractiveElement as _, Styled, Window, anchored, deferred, div, px, relative};
 use gpui_component::input::Input;
-use serde_json::{Value, json};
 
-use super::{Confirm, Overlay, Workspace, conversation::always_prefix, tilde};
+use super::{Confirm, Overlay, Workspace};
 use crate::theme::{amber, c, inset_ring, line, mono, tk};
 use crate::ui::{self, Dot, Kind};
 
@@ -17,28 +16,20 @@ use crate::ui::{self, Dot, Kind};
 pub enum Section {
     #[default]
     General,
-    Models,
-    Permissions,
-    Customize,
     Appearance,
     Shortcuts,
-    Connections,
     Account,
     Advanced,
 }
 
 impl Section {
-    pub const ALL: [Section; 9] = [Section::General, Section::Models, Section::Permissions, Section::Customize, Section::Appearance, Section::Shortcuts, Section::Connections, Section::Account, Section::Advanced];
+    pub const ALL: [Section; 5] = [Section::General, Section::Appearance, Section::Shortcuts, Section::Account, Section::Advanced];
 
     fn icon(self) -> &'static str {
         match self {
             Section::General => "◎",
-            Section::Models => "◇",
-            Section::Permissions => "⛨",
-            Section::Customize => "✎",
             Section::Appearance => "◐",
             Section::Shortcuts => "⌘",
-            Section::Connections => "⇄",
             Section::Account => "◉",
             Section::Advanced => "⚑",
         }
@@ -47,12 +38,8 @@ impl Section {
     fn title(self) -> &'static str {
         match self {
             Section::General => "General",
-            Section::Models => "Models",
-            Section::Permissions => "Permissions",
-            Section::Customize => "Customize",
             Section::Appearance => "Appearance",
             Section::Shortcuts => "Shortcuts",
-            Section::Connections => "Connections",
             Section::Account => "Account",
             Section::Advanced => "Advanced",
         }
@@ -62,12 +49,8 @@ impl Section {
     fn keywords(self) -> &'static str {
         match self {
             Section::General => "launch startup quick ask hotkey send enter cost notifications sound",
-            Section::Models => "model default fast thinking tokens compact orchestrator routing completions ollama vision image screenshot cloud subagent sub-agent delegation depth research background",
-            Section::Permissions => "allow commands trust project approvals mode",
-            Section::Customize => "instructions prompt commands skills mcp",
             Section::Appearance => "theme dark light haze density font size",
             Section::Shortcuts => "keys keyboard bindings hotkeys",
-            Section::Connections => "hub mcp servers plugins",
             Section::Account => "api key anthropic sign out usage keychain",
             Section::Advanced => "logs diagnostics reset clear history",
         }
@@ -82,12 +65,8 @@ impl Section {
     fn description(self) -> &'static str {
         match self {
             Section::General => "Launch, sending and notifications.",
-            Section::Models => "Which models answer, and how much they think.",
-            Section::Permissions => "What Cordata may do without asking.",
-            Section::Customize => "Instructions, prompt commands, skills and one-click MCP servers.",
             Section::Appearance => "Theme, haze and density.",
             Section::Shortcuts => "Every key the window answers to.",
-            Section::Connections => "The hub and the MCP servers this project uses.",
             Section::Account => "Your key and usage.",
             Section::Advanced => "Logs, diagnostics and resets.",
         }
@@ -98,23 +77,15 @@ impl Section {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Select {
     OpenOnLaunch,
-    DefaultModel,
-    FastModel,
-    MaxTokens,
     CodeFont,
-    CompletionModel,
     QuickAskKey,
-    VisionModel,
 }
-
-/// The Vision Model choices: Ollama `:cloud` models that read images (the backend's `CLOUD_VISION_MODELS`).
-pub const VISION_MODELS: [&str; 3] = ["mistral-large-4:cloud", "gemma4:31b:cloud", "minimax-m3.1-flash:cloud"];
 
 /// Its keys are the person's choice, shown live rather than from this table.
 const QUICK_ASK_SHORTCUT: &str = "Quick ask, from any app";
 
 /// The read-only shortcut reference.
-pub const SHORTCUTS: [(&str, &str); 18] = [
+pub const SHORTCUTS: [(&str, &str); 16] = [
     ("Command palette", "⌘K"),
     ("Switch project", "⌘O"),
     ("New conversation", "⌘N"),
@@ -127,8 +98,6 @@ pub const SHORTCUTS: [(&str, &str); 18] = [
     ("New line", "⇧↵"),
     ("Deny / close overlay", "esc"),
     ("Stop the run", "esc esc"),
-    ("Cycle permission mode", "⇧Tab"),
-    ("Start mission run", "⌘↵"),
     (QUICK_ASK_SHORTCUT, "⌃⌥Space"),
     ("Find a file", "⌘P"),
     ("Save the open file", "⌘S"),
@@ -136,21 +105,6 @@ pub const SHORTCUTS: [(&str, &str); 18] = [
 ];
 
 impl Workspace {
-    fn value(&self, key: &str) -> Option<&Value> {
-        self.settings_view.values.get(key)
-    }
-
-    fn value_str(&self, key: &str) -> String {
-        self.value(key).map(|v| v.as_str().map(str::to_owned).unwrap_or_else(|| v.to_string())).unwrap_or_default()
-    }
-
-    /// A harness setting, written to the person's own settings file.
-    pub(super) fn set_user_setting(&mut self, key: &str, value: Value, cx: &mut Context<Self>) {
-        self.settings_view.values.insert(key.to_owned(), value.clone());
-        self.set_setting("user", key, value, cx);
-        cx.notify();
-    }
-
     fn save_prefs(&mut self, cx: &mut Context<Self>) {
         self.prefs.save();
         cx.set_global(self.prefs.clone());
@@ -218,9 +172,6 @@ impl Workspace {
         let section = self.settings_section;
         let body: Vec<AnyElement> = match section {
             Section::General => self.general_rows(cx),
-            Section::Models => self.model_rows(cx),
-            Section::Permissions => self.permission_rows(cx),
-            Section::Customize => self.customize_rows(cx),
             Section::Appearance => self.appearance_rows(cx),
             Section::Shortcuts => {
                 let quick_ask = self.quick_ask_combo().label;
@@ -232,7 +183,6 @@ impl Workspace {
                     })
                     .collect()
             }
-            Section::Connections => self.connection_rows(cx),
             Section::Account => self.account_rows(cx),
             Section::Advanced => self.advanced_rows(cx),
         };
@@ -350,27 +300,9 @@ impl Workspace {
     }
 
     /// Loads what a section shows when it opens.
-    pub(super) fn on_settings_section(&mut self, cx: &mut Context<Self>) {
-        match self.settings_section {
-            Section::Connections => {
-                self.load_plugins(cx);
-                self.load_skills(cx);
-            }
-            Section::Permissions => self.load_trusted_projects(cx),
-            Section::Customize => self.load_skills(cx),
-            Section::Account => self.api_key_masked = crate::keychain::masked(),
-            Section::Models => {
-                let job = cx.background_executor().spawn(async { super::completions::installed_models() });
-                cx.spawn(async move |this, cx| {
-                    let models = job.await;
-                    let _ = this.update(cx, |this, cx| {
-                        this.ollama_models = models;
-                        cx.notify();
-                    });
-                })
-                .detach();
-            }
-            _ => {}
+    pub(super) fn on_settings_section(&mut self, _cx: &mut Context<Self>) {
+        if self.settings_section == Section::Account {
+            self.api_key_masked = crate::keychain::masked();
         }
     }
 
@@ -420,14 +352,8 @@ impl Workspace {
                 _ => "last project",
             }
             .into(),
-            Select::FastModel if value.is_empty() => "same as main".into(),
-            Select::MaxTokens if value.is_empty() => "16384".into(),
             Select::CodeFont => format!("{value} px"),
-            Select::CompletionModel if value.is_empty() => "off".into(),
-            Select::VisionModel if value.is_empty() => "session model".into(),
             Select::QuickAskKey => crate::platform::Combo::parse(value).map(|c| c.label).unwrap_or_else(|_| value.into()),
-            _ if value.is_empty() => "—".into(),
-            _ => value.into(),
         }
     }
 
@@ -437,12 +363,6 @@ impl Workspace {
                 self.prefs.open_on_launch = value;
                 self.save_prefs(cx);
             }
-            Select::DefaultModel => {
-                self.set_user_setting("model", json!(value), cx);
-                self.session.update(cx, |s, cx| s.set_config("model", &value, cx));
-            }
-            Select::FastModel => self.set_user_setting("tiers.fast", json!(value), cx),
-            Select::MaxTokens => self.set_user_setting("model.maxTokens", json!(value.parse::<f64>().unwrap_or(16384.0)), cx),
             Select::CodeFont => {
                 self.prefs.code_font_size = value.parse().unwrap_or(13.0);
                 self.save_prefs(cx);
@@ -456,12 +376,6 @@ impl Workspace {
                     self.prefs.quick_ask_key = before;
                     self.settings_view.set_notice(format!("{taken} is taken by another app; kept {}.", self.quick_ask_combo().label), true);
                 }
-            }
-            Select::VisionModel => self.set_user_setting("capture.visionModel", json!(value), cx),
-            Select::CompletionModel => {
-                self.prefs.completion_model = value;
-                self.save_prefs(cx);
-                self.apply_completions_to_all(cx);
             }
         }
     }
@@ -516,131 +430,14 @@ impl Workspace {
             keys.insert(0, (self.prefs.quick_ask_key.clone(), combo.label.clone()));
         }
         let key = self.select(Select::QuickAskKey, &self.prefs.quick_ask_key.clone(), keys, cx);
-        let cost = self.toggle("show-cost", self.prefs.show_cost, "Show session cost", |this, on, cx| {
-            this.prefs.show_cost = on;
-            this.save_prefs(cx);
-        }, cx);
         let quick_ask = div().flex().items_center().gap(px(8.)).child(key).child(hotkey).into_any_element();
         vec![
             setting_row("Open on launch", "What the window shows when Cordata starts.", launch, cx),
             setting_row("Quick ask", "From any app: bring Cordata forward with the composer ready. Any other combination can go in prefs.toml as quick_ask_key (e.g. \"cmd-alt-j\").", quick_ask, cx),
             setting_row("Send message with", "The other key adds a new line.", send, cx),
-            setting_row("Show session cost", "An estimate in the status bar: Claude models at Anthropic's list price; local models show none. Add or change a price under [prices] in prefs.toml (dollars per million tokens, [in, out]).", cost, cx),
             sub_heading("notifications", cx),
             setting_row("Notify when approval is needed", "A system notification when a command waits for you and the window is in the back.", notify, cx),
             setting_row("Sound on completion", "A short sound when a turn finishes.", sound, cx),
-        ]
-    }
-
-    fn model_choices(&self, cx: &Context<Self>) -> Vec<(String, String)> {
-        self.session.read(cx).view.config("model").map(|o| o.choices.iter().map(|c| (c.value.clone(), shown(&c.name))).collect()).unwrap_or_default()
-    }
-
-    fn model_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let choices = self.model_choices(cx);
-        let current = {
-            let set = self.value_str("model");
-            if set.is_empty() { self.session.read(cx).view.config("model").map(|o| o.current_value.clone()).unwrap_or_default() } else { set }
-        };
-        let default_model = if choices.is_empty() { note_control("Connect to choose a model.", cx) } else { self.select(Select::DefaultModel, &current, choices.clone(), cx) };
-        let mut fast_options = vec![(String::new(), "same as main".to_owned())];
-        fast_options.extend(choices);
-        let fast = self.select(Select::FastModel, &self.value_str("tiers.fast"), fast_options, cx);
-        let thinking = self.value_str("model.thinking");
-        let thinking = self.segmented("thinking", &[("off", "off"), ("auto", "auto"), ("always", "always")], if thinking.is_empty() { "off" } else { &thinking }, |this, v, cx| this.set_user_setting("model.thinking", json!(v), cx), cx);
-        let max_tokens = self.value("model.maxTokens").and_then(Value::as_f64).map(|v| format!("{v:.0}")).unwrap_or_default();
-        let max_tokens = self.select(Select::MaxTokens, &max_tokens, ["4096", "8192", "16384", "32000", "64000"].iter().map(|v| ((*v).to_owned(), (*v).to_owned())).collect(), cx);
-        let compact = self.value_str("context.autoCompact");
-        let compact = self.segmented("auto-compact", &[("80", "80%"), ("90", "90%"), ("off", "off")], &compact, |this, v, cx| this.set_user_setting("context.autoCompact", json!(v), cx), cx);
-        let dispatch = self.value_str("orchestrator.dispatch");
-        let dispatch = self.segmented(
-            "orch-dispatch",
-            &[("auto", "auto"), ("shadow", "shadow"), ("off", "static")],
-            if dispatch.is_empty() { "shadow" } else { &dispatch },
-            |this, v, cx| this.set_user_setting("orchestrator.dispatch", json!(v), cx),
-            cx,
-        );
-        let depth = self.value("subagents.maxDepth").and_then(Value::as_f64).map(|v| format!("{v:.0}")).unwrap_or_else(|| "2".into());
-        let depth = self.segmented("subagent-depth", &[("1", "1"), ("2", "2"), ("3", "3")], &depth, |this, v, cx| this.set_user_setting("subagents.maxDepth", json!(v.parse::<f64>().unwrap_or(2.0)), cx), cx);
-        let background = self.toggle("subagent-background", self.value("subagents.background").and_then(Value::as_bool).unwrap_or(true), "Run sub-agents in the background", |this, on, cx| this.set_user_setting("subagents.background", json!(on), cx), cx);
-        let mut local = vec![(String::new(), "off".to_owned())];
-        local.extend(self.ollama_models.iter().map(|m| (m.clone(), m.clone())));
-        let completion = self.select(Select::CompletionModel, &self.prefs.completion_model.clone(), local, cx);
-        let vision_value = self.value_str("capture.visionModel");
-        let mut vision = vec![(String::new(), "session model".to_owned())];
-        vision.extend(VISION_MODELS.iter().map(|m| ((*m).to_owned(), (*m).to_owned())));
-        if !vision_value.is_empty() && !VISION_MODELS.contains(&vision_value.as_str()) {
-            vision.push((vision_value.clone(), vision_value.clone()));
-        }
-        let vision = self.select(Select::VisionModel, &vision_value, vision, cx);
-        let vision_cloud = self.toggle("vision-cloud", self.value("capture.screenshotCloud").and_then(Value::as_bool).unwrap_or(false), "Send images to cloud vision models", |this, on, cx| this.set_user_setting("capture.screenshotCloud", json!(on), cx), cx);
-        vec![
-            setting_row("Default model", "Used by new conversations; the header's model chip changes the current one.", default_model, cx),
-            setting_row("Orchestrator routing", "Auto Mode scores Claude, Antigravity and zero-download Ollama :cloud models by API cost, real context window, task capabilities and per-step RLAIF.", dispatch, cx),
-            setting_row("Fast model", "Titles, summaries and compaction.", fast, cx),
-            setting_row("Extended thinking", "Anthropic models only. Auto: adaptive thinking (the model decides). Always: adaptive at high effort every turn.", thinking, cx),
-            setting_row("Max output tokens", "The longest single reply.", max_tokens, cx),
-            setting_row("Auto-compact at", "Summarise older turns when the context window is this full (unset: 70%).", compact, cx),
-            sub_heading("vision", cx),
-            setting_row("Vision model", "Reads attached images and menu-bar screenshots. Session model: Claude and Ollama :cloud vision models see attachments themselves; any other model needs one named here.", vision, cx),
-            setting_row("Send images to cloud vision models", "A :cloud vision model runs off this Mac: images go to it only with this on (capture.screenshotCloud).", vision_cloud, cx),
-            sub_heading("sub-agents", cx),
-            setting_row("Delegation depth", "How many levels of sub-agents a turn may build: 1 is children only; 2 lets a child hand part of its task to its own sub-agent. Read-only roles (explorer, researcher, architect) only delegate to read-only roles, and every level asks through the same approvals.", depth, cx),
-            setting_row("Background sub-agents", "The main agent keeps working while up to 3 sub-agents run; the turn waits for their answers before it ends.", background, cx),
-            sub_heading("editor", cx),
-            setting_row("Inline completions", "Ghost text in the editor from a local Ollama model (a coder model with fill-in-the-middle, e.g. qwen2.5-coder). Code stays on this Mac. Tab accepts.", completion, cx),
-        ]
-    }
-
-    fn permission_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let tk = tk(cx);
-        let mode = self.value_str("permissions.defaultMode");
-        let mode = self.segmented("default-mode", &[("build", "ask first"), ("edit", "auto-edit"), ("plan", "plan only")], if mode.is_empty() { "build" } else { &mode }, |this, v, cx| this.set_user_setting("permissions.defaultMode", json!(v), cx), cx);
-        let allowed: Vec<AnyElement> = self
-            .settings_view
-            .rules
-            .iter()
-            .filter(|r| r.kind == "allow" && r.scope == "user")
-            .enumerate()
-            .map(|(index, rule)| {
-                let text = rule.text.clone();
-                removable_chip(("allow-chip", index), &always_prefix(&rule.text), cx).on_click(cx.listener(move |this, _, _, cx| this.remove_rule(&text.clone(), cx))).into_any_element()
-            })
-            .collect();
-        let adding = self.adding_allow;
-        let add: AnyElement = if adding {
-            div()
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .child(div().w(px(180.)).h(px(26.)).flex().items_center().px(px(8.)).rounded(px(t::RADIUS_CONTROL)).border_1().border_color(amber(cx, t::AMBER_BORDER_STRONG)).font_family(mono(cx)).text_size(px(t::TEXT_SMALL)).child(Input::new(&self.allow_input).appearance(false)))
-                .child(ui::button("allow-save", "Add", Kind::Tint, cx).h(px(26.)).on_click(cx.listener(|this, _, window, cx| this.add_allowed_command(window, cx))))
-                .into_any_element()
-        } else {
-            ui::button("allow-add", "+ add", Kind::Ghost, cx).h(px(26.)).on_click(cx.listener(|this, _, window, cx| {
-                this.adding_allow = true;
-                this.allow_input.update(cx, |s, cx| s.focus(window, cx));
-                cx.notify();
-            })).into_any_element()
-        };
-        let chips = div().flex().flex_wrap().justify_end().gap(px(6.)).max_w(px(420.)).children(allowed).child(add).into_any_element();
-        let trusted: Vec<AnyElement> = self
-            .trusted_projects
-            .iter()
-            .enumerate()
-            .map(|(index, path)| {
-                let target = path.clone();
-                removable_chip(("trusted-chip", index), &tilde(std::path::Path::new(path)), cx).on_click(cx.listener(move |this, _, _, cx| this.revoke_trust(Some(target.clone()), cx))).into_any_element()
-            })
-            .collect();
-        let trusted_el = if trusted.is_empty() { note_control("No trusted projects.", cx) } else { div().flex().flex_wrap().justify_end().gap(px(6.)).max_w(px(420.)).children(trusted).into_any_element() };
-        vec![
-            setting_row("Default mode for new projects", "How much a new conversation may do before it asks.", mode, cx),
-            setting_row("Always-allowed commands", "Shell commands that never ask. \"Always allow\" on an approval adds one here.", chips, cx),
-            setting_row("Ask before network access", "Enforced by the harness's tool policy (THREAT_MODEL.md); not a per-window switch yet.", status_control(Dot::Ok, "always on", cx), cx),
-            setting_row("Sandbox shell commands", "Self-heal verification runs in the sandbox; other shell commands follow the approval rules above.", status_control(Dot::Muted, "per approval", cx), cx),
-            setting_row("Trusted projects", "Removing one revokes its trust: its settings, rules and MCP servers stop applying.", trusted_el, cx),
-            div().pt(px(6.)).text_size(px(t::TEXT_SMALL)).text_color(c(tk.text_muted)).child("Raw rules, gated keys and the doctor are under Advanced → Harness.").into_any_element(),
         ]
     }
 
@@ -668,71 +465,6 @@ impl Workspace {
         ]
     }
 
-    fn connection_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let tk = tk(cx);
-        let (kind, health) = self.hub_health(cx);
-        let mut rows = vec![
-            setting_row("Hub endpoint", "Where this window's conversations run. Set by the daemon (CORDATA_HOME); --transport stdio runs a private backend.", mono_value(&self.endpoint(), cx), cx),
-            setting_row("Hub status", "", status_control(kind, &health, cx), cx),
-            sub_heading("mcp servers", cx),
-        ];
-        if let Some((note, error)) = self.customize.registry_note.clone() {
-            rows.push(div().py(px(6.)).text_size(px(t::TEXT_SMALL)).text_color(c(if error { tk.danger } else { tk.teal })).child(SharedString::from(note)).into_any_element());
-        }
-        if self.plugins.is_empty() {
-            rows.push(div().py(px(12.)).text_size(px(t::TEXT_SMALL)).text_color(c(tk.text_muted)).child("No MCP servers configured yet. Add one below in one click or browse the catalog.").into_any_element());
-        }
-        for (index, plugin) in self.plugins.iter().enumerate() {
-            let name = plugin.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
-            let status = plugin.get("status").and_then(Value::as_str).unwrap_or_default().to_owned();
-            let error = plugin.get("error").and_then(Value::as_str).filter(|e| !e.is_empty()).map(str::to_owned);
-            let tools = plugin.get("tools").and_then(Value::as_array).map_or(0, Vec::len);
-            let transport = plugin.get("transport").and_then(Value::as_str).unwrap_or_default();
-            let source = plugin.get("source").and_then(Value::as_str).unwrap_or_default().to_owned();
-            let on = matches!(status.as_str(), "running" | "starting" | "enabled");
-            let desc = match &error {
-                Some(e) => shown(e),
-                None => format!("{transport} · {source} · {tools} tool{}", if tools == 1 { "" } else { "s" }),
-            };
-            let target = name.clone();
-            let rm_target = name.clone();
-            let removable = matches!(source.as_str(), "user" | "project");
-            let is_proj = source == "project";
-            let controls = div()
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .when(removable, |el| {
-                    el.child(ui::button(("mcp-conn-rm", index), "Remove", Kind::Ghost, cx).h(px(24.)).on_click(cx.listener(move |this, _, _, cx| this.remove_mcp(rm_target.clone(), is_proj, cx))))
-                })
-                .child(ui::switch(("mcp-switch", index), on, cx).aria_label(SharedString::from(format!("{name} enabled"))).on_click(cx.listener(move |this, _, _, cx| this.toggle_plugin(&target, !on, cx))))
-                .into_any_element();
-            rows.push(setting_row_owned(name, desc, error.is_some(), controls, cx));
-        }
-        rows.push(
-            div()
-                .pt(px(12.))
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap(px(8.))
-                .child(div().w(px(300.)).h(px(28.)).flex().items_center().px(px(8.)).rounded(px(t::RADIUS_CONTROL)).bg(c(tk.bg_input)).border_1().border_color(line(cx, t::LINE_CONTROL_STRONG)).font_family(mono(cx)).text_size(px(t::TEXT_SMALL)).child(Input::new(&self.customize.mcp_quick).appearance(false)))
-                .child(ui::button("mcp-conn-quick", "+ Add server", Kind::Tint, cx).tooltip(ui::tip("Zero-config: catalog id, @scope/pkg, uvx:pkg or https://host/mcp — attaches live")).on_click(cx.listener(|this, _, window, cx| {
-                    let spec = this.customize.mcp_quick.read(cx).value().trim().to_owned();
-                    this.customize.mcp_quick.update(cx, |s, cx| s.set_value("", window, cx));
-                    this.install_mcp(spec, cx);
-                })))
-                .child(ui::button("mcp-browse-catalog", "Browse catalog →", Kind::Outline, cx).on_click(cx.listener(|this, _, _, cx| {
-                    this.settings_section = Section::Customize;
-                    this.on_settings_section(cx);
-                    cx.notify();
-                })))
-                .child(ui::button("mcp-edit-json", "Edit .mcp.json", Kind::Ghost, cx).tooltip(ui::tip("Opens project .mcp.json in the editor")).on_click(cx.listener(|this, _, window, cx| this.add_mcp_server(window, cx))))
-                .into_any_element(),
-        );
-        rows
-    }
-
     fn account_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let signed_in = self.api_key_masked.is_some();
         let key: AnyElement = div()
@@ -745,40 +477,20 @@ impl Workspace {
         let (in_t, out_t) = self.session.read(cx).view.session_tokens;
         vec![
             setting_row("Signed in", "An Anthropic API key in the Keychain is what signs Cordata in.", status_control(if signed_in { Dot::Ok } else { Dot::Muted }, if signed_in { "key stored" } else { "no key" }, cx), cx),
-            setting_row_owned("API key".into(), format!("Stored in the login Keychain only ({}). Used by the next backend that starts.{}", crate::keychain::SERVICE, self.api_key_masked.as_ref().map(|m| format!(" Current: {m}")).unwrap_or_default()), false, key, cx),
+            setting_row_owned("API key".into(), format!("Stored in the login Keychain only ({}). Read at the next request.{}", crate::keychain::SERVICE, self.api_key_masked.as_ref().map(|m| format!(" Current: {m}")).unwrap_or_default()), false, key, cx),
             setting_row("Usage this session", "Monthly usage is not tracked by the harness; these are this conversation's tokens.", mono_value(&format!("{in_t} in · {out_t} out"), cx), cx),
             setting_row("Sign out", "Removes the key from the Keychain.", ui::button("sign-out", "Sign out", Kind::Danger, cx).on_click(cx.listener(|this, _, window, cx| this.ask_confirm(Confirm::SignOut, window, cx))).into_any_element(), cx),
         ]
     }
 
-    fn clear_history_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        ui::button("clear-history", "Clear…", Kind::Danger, cx).opacity(0.5).cursor_default().tooltip(ui::tip("There is no daemon history to clear")).into_any_element()
-    }
-
     fn advanced_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         vec![
             setting_row("Logs folder", "The harness's state, trajectories and logs (~/.cordata).", ui::button("open-logs", "Reveal in Finder", Kind::Outline, cx).on_click(cx.listener(|_, _, _, cx| cx.reveal_path(&super::cordata_home()))).into_any_element(), cx),
-            setting_row("Clear conversation history", "Deletes every conversation and its saved history from this Mac, in every project. Running ones are kept.", self.clear_history_button(cx), cx),
             setting_row("Reset all settings", "Restores this window's preferences (theme, layout, recents). Harness settings files are untouched.", ui::button("reset-prefs", "Reset…", Kind::Danger, cx).on_click(cx.listener(|this, _, window, cx| this.ask_confirm(Confirm::ResetPrefs, window, cx))).into_any_element(), cx),
-            sub_heading("harness", cx),
-            div().pt(px(8.)).child(self.settings_panel(cx)).into_any_element(),
         ]
     }
 
     // ------------------------------------------------------------------------------------------------ actions
-
-    pub(super) fn add_allowed_command(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let text = self.allow_input.read(cx).value().trim().to_owned();
-        self.adding_allow = false;
-        self.allow_input.update(cx, |s, cx| s.set_value("", window, cx));
-        if text.is_empty() {
-            cx.notify();
-            return;
-        }
-        let rule = if text.contains('(') { text } else { format!("shell({text})") };
-        self.session.read(cx).request("_cordata/settings/rules/add", json!({ "kind": "allow", "rule": rule, "scope": "user" }), super::settings_view::SETTINGS_RULE_ADD_TAG);
-        cx.notify();
-    }
 
     pub(super) fn save_api_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let key = self.api_key_input.read(cx).value().to_string();
@@ -787,39 +499,13 @@ impl Workspace {
         match crate::keychain::store(&key) {
             Ok(()) => {
                 self.api_key_masked = crate::keychain::masked();
-                self.settings_view.set_notice("Key saved to the Keychain. Restart the backend to use it.".into(), false);
+                self.settings_view.set_notice("Key saved to the Keychain. The next message uses it.".into(), false);
             }
             Err(error) => self.settings_view.set_notice(error, true),
         }
         cx.notify();
     }
 
-    fn toggle_plugin(&mut self, name: &str, on: bool, cx: &mut Context<Self>) {
-        let method = if on { "_cordata/plugins/enable" } else { "_cordata/plugins/disable" };
-        self.session.read(cx).request(method, json!({ "name": name, "persist": true }), super::PLUGIN_TOGGLE_TAG);
-        if let Some(row) = self.plugins.iter_mut().find(|p| p.get("name").and_then(Value::as_str) == Some(name))
-            && let Some(obj) = row.as_object_mut()
-        {
-            obj.insert("status".into(), json!(if on { "starting" } else { "disabled" }));
-        }
-        cx.notify();
-    }
-
-    /// Opens the project's `.mcp.json` (created empty when missing) in the editor; project servers start once the
-    /// project is trusted.
-    fn add_mcp_server(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let path = self.cwd.join(".mcp.json");
-        if !path.exists()
-            && let Err(error) = std::fs::write(&path, "{\n  \"mcpServers\": {}\n}\n")
-        {
-            self.settings_view.set_notice(format!("Could not create .mcp.json: {error}"), true);
-            cx.notify();
-            return;
-        }
-        self.close_overlay(Overlay::Settings, window, cx);
-        self.set_panel(true, cx);
-        self.open_file(".mcp.json", None, window, cx);
-    }
 }
 
 /// One settings row: the label and its description on the left, the control on the right.
@@ -862,30 +548,3 @@ fn mono_value(text: &str, cx: &mut Context<Workspace>) -> AnyElement {
     div().max_w(px(320.)).truncate().font_family(mono(cx)).text_size(px(t::TEXT_SMALL)).text_color(c(tk(cx).text_secondary)).child(SharedString::from(text.to_owned())).into_any_element()
 }
 
-fn note_control(text: &str, cx: &mut Context<Workspace>) -> AnyElement {
-    div().text_size(px(t::TEXT_SMALL)).text_color(c(tk(cx).text_muted)).child(SharedString::from(text.to_owned())).into_any_element()
-}
-
-fn removable_chip(id: impl Into<gpui::ElementId>, text: &str, cx: &mut Context<Workspace>) -> gpui::Stateful<gpui::Div> {
-    let tk = tk(cx);
-    let hover = c(tk.danger);
-    div()
-        .id(id)
-        .role(gpui::Role::Button)
-        .aria_label(SharedString::from(format!("Remove {text}")))
-        .flex()
-        .items_center()
-        .gap(px(6.))
-        .h(px(26.))
-        .px(px(8.))
-        .rounded(px(t::RADIUS_CONTROL))
-        .border_1()
-        .border_color(line(cx, t::LINE_CONTROL_STRONG))
-        .whitespace_nowrap()
-        .cursor_pointer()
-        .font_family(mono(cx))
-        .text_size(px(t::TEXT_SMALL))
-        .text_color(c(tk.text_secondary))
-        .child(div().max_w(px(220.)).truncate().child(SharedString::from(text.to_owned())))
-        .child(div().text_color(c(tk.text_faint)).hover(move |s| s.text_color(hover)).child("✕"))
-}

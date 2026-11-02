@@ -7,7 +7,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{AnyView, App, Div, ElementId, FontWeight, InteractiveElement as _, ParentElement, SharedString, Stateful, StatefulInteractiveElement as _, Styled, Window, div, px, relative};
 use gpui_component::tooltip::Tooltip;
 
-use crate::theme::{amber, amber_glow, c, ca, inset_ring, line, mono, sans, teal, tk};
+use crate::theme::{amber, amber_glow, c, ca, inset_ring, line, mono, sans, tk};
 
 /// `PROJECT`: 10.5px semibold sans, subtly tracked capitals, the label colour.
 pub fn section_label(text: &str, cx: &App) -> Div {
@@ -93,18 +93,14 @@ pub fn diamond(cx: &App) -> Div {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
     Amber,
-    Teal,
-    Danger,
     Neutral,
 }
 
-/// `◆ UNTRUSTED`, `● TRUSTED`, `ASK`: a 3px-radius badge in a tint of its tone.
+/// `Approval`, `Needs you`: a 3px-radius badge in a tint of its tone.
 pub fn badge(text: &str, tone: Tone, cx: &App) -> Div {
     let tk = tk(cx);
     let (ink, fill, edge) = match tone {
         Tone::Amber => (c(tk.amber), amber(cx, t::AMBER_FILL_MID), amber(cx, t::AMBER_BORDER)),
-        Tone::Teal => (c(tk.teal), teal(cx, t::TEAL_FILL), teal(cx, t::TEAL_BORDER)),
-        Tone::Danger => (c(tk.danger), ca(tk.danger, t::DANGER_FILL), ca(tk.danger, t::DANGER_BORDER)),
         Tone::Neutral => (c(tk.text_secondary), line(cx, t::FILL_FAINT), line(cx, t::LINE_CONTROL)),
     };
     div()

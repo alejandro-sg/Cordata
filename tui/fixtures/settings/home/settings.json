@@ -1,11 +1,5 @@
 {
-  "model": "user-model",
-  "temperature": "focused",
-  "permissions": {
-    "allow": ["shell(git status)"],
-    "deny": ["file_read(~/.ssh/*)"]
-  },
-  "tui": { "thinking": "expanded", "showLaya": true },
-  "laya": { "mode": "shadow" },
-  "vault": { "enabled": true }
+  "tui": { "thinking": "expanded" },
+  "vault": { "enabled": true },
+  "orchestrator": { "maxUsd": 5 }
 }

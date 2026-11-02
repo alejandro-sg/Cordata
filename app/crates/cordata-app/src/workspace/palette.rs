@@ -2,36 +2,28 @@
 //! ↑/↓ move, ↵ runs, esc closes. The `/` menu in the composer stays for the harness's slash commands.
 
 use cordata_theme::tokens as t;
-use cordata_view::shown;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{AnyElement, Context, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement, SharedString, StatefulInteractiveElement as _, Styled, Window, div, px, relative};
 use gpui_component::input::Input;
 
 use super::{DockTab, Overlay, Workspace};
-use crate::session::Target;
 use crate::theme::{c, line, mono, tk};
 use crate::ui;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     NewConversation,
-    ResumeLast,
     ToggleSidebar,
     TogglePanel,
     OpenTerminal,
     Tab(DockTab),
-    TrustProject,
-    RevokeTrust,
     SwitchProject,
     OpenFolder,
     Settings,
-    CycleMode,
     StopRun,
     Attach,
     Worktree,
     Review(bool),
-    SettingsAt(super::settings_modal::Section),
-    Open(Target),
 }
 
 #[derive(Debug, Clone)]
@@ -67,45 +59,25 @@ pub fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
 }
 
 impl Workspace {
-    fn palette_items(&self, cx: &gpui::App) -> Vec<Item> {
-        let trusted = self.settings_view.trusted;
-        let mut items = vec![
+    fn palette_items(&self, _cx: &gpui::App) -> Vec<Item> {
+        let items = vec![
             Item { group: "chat", label: "New conversation".into(), shortcut: "⌘N", action: Action::NewConversation },
-            Item { group: "chat", label: "Resume last conversation".into(), shortcut: "", action: Action::ResumeLast },
-            Item { group: "chat", label: "Cycle permission mode".into(), shortcut: "⇧Tab", action: Action::CycleMode },
             Item { group: "chat", label: "Stop the run".into(), shortcut: "esc esc", action: Action::StopRun },
             Item { group: "panel", label: "Toggle side panel".into(), shortcut: "⌘\\", action: Action::TogglePanel },
             Item { group: "panel", label: "Show or hide project sidebar".into(), shortcut: "⌘B", action: Action::ToggleSidebar },
             Item { group: "panel", label: "Open terminal".into(), shortcut: "⌃`", action: Action::OpenTerminal },
-            Item { group: "panel", label: "Mission control".into(), shortcut: "⌘⌥1", action: Action::Tab(DockTab::Mission) },
             Item { group: "panel", label: "Files".into(), shortcut: "⌘P", action: Action::Tab(DockTab::Files) },
             Item { group: "panel", label: "Editor".into(), shortcut: "⌘⌥3", action: Action::Tab(DockTab::Editor) },
             Item { group: "panel", label: "Review changes".into(), shortcut: "⌘⌥4", action: Action::Tab(DockTab::Review) },
-            Item { group: "panel", label: "Browser agent".into(), shortcut: "⌘⌥6", action: Action::Tab(DockTab::Browser) },
-            Item { group: "panel", label: "Models & voice".into(), shortcut: "⌘⌥7", action: Action::Tab(DockTab::Models) },
-            Item { group: "chat", label: "History: go back, fork, undo files".into(), shortcut: "", action: Action::Tab(DockTab::History) },
             Item { group: "chat", label: "Attach files…".into(), shortcut: "", action: Action::Attach },
             Item { group: "chat", label: "New conversation in a worktree…".into(), shortcut: "", action: Action::Worktree },
             Item { group: "proj", label: "Review uncommitted changes".into(), shortcut: "", action: Action::Review(false) },
             Item { group: "proj", label: "Review this branch".into(), shortcut: "", action: Action::Review(true) },
             Item { group: "proj", label: "Commit, push, pull request…".into(), shortcut: "", action: Action::Tab(DockTab::Review) },
-            if trusted {
-                Item { group: "proj", label: "Revoke trust for this project".into(), shortcut: "", action: Action::RevokeTrust }
-            } else {
-                Item { group: "proj", label: "Trust this project…".into(), shortcut: "", action: Action::TrustProject }
-            },
             Item { group: "proj", label: "Switch project…".into(), shortcut: "⌘O", action: Action::SwitchProject },
             Item { group: "proj", label: "Open folder…".into(), shortcut: "", action: Action::OpenFolder },
             Item { group: "app", label: "Settings".into(), shortcut: "⌘,", action: Action::Settings },
-            Item { group: "app", label: "Customize: instructions, commands, skills…".into(), shortcut: "", action: Action::SettingsAt(super::settings_modal::Section::Customize) },
         ];
-        items.extend(
-            self.listing
-                .iter()
-                .filter(|row| !self.sessions.iter().any(|s| super::matches_target(s.read(cx), &row.target)))
-                .take(30)
-                .map(|row| Item { group: "chat", label: shown(&row.title), shortcut: "", action: Action::Open(row.target.clone()) }),
-        );
         items
     }
 
@@ -123,11 +95,6 @@ impl Workspace {
         self.close_overlay(Overlay::Palette, window, cx);
         match action {
             Action::NewConversation => self.new_session(&super::NewSession, window, cx),
-            Action::ResumeLast => {
-                if let Some(row) = self.listing.iter().find(|row| !self.sessions.iter().any(|s| super::matches_target(s.read(cx), &row.target))).cloned() {
-                    self.open(row.target, window, cx);
-                }
-            }
             Action::ToggleSidebar => self.toggle_sidebar(&super::ToggleSidebar, window, cx),
             Action::TogglePanel => self.toggle_panel(&super::TogglePanel, window, cx),
             Action::OpenTerminal => self.toggle_terminal(&super::ToggleTerminal, window, cx),
@@ -135,21 +102,13 @@ impl Workspace {
                 self.set_panel(true, cx);
                 self.switch_dock(tab, cx);
             }
-            Action::TrustProject => self.ask_trust(window, cx),
-            Action::RevokeTrust => self.revoke_trust(None, cx),
             Action::SwitchProject => self.open_overlay(Overlay::Picker, window, cx),
             Action::OpenFolder => self.choose_folder(window, cx),
             Action::Settings => self.open_overlay(Overlay::Settings, window, cx),
-            Action::CycleMode => self.cycle_mode(&super::CycleMode, window, cx),
             Action::StopRun => self.session.update(cx, |s, cx| s.cancel(cx)),
             Action::Attach => self.choose_attachments(window, cx),
             Action::Worktree => self.begin_worktree(window, cx),
-            Action::SettingsAt(section) => {
-                self.settings_section = section;
-                self.open_overlay(Overlay::Settings, window, cx);
-            }
             Action::Review(branch) => self.request_review(branch, window, cx),
-            Action::Open(target) => self.open(target, window, cx),
         }
     }
 

@@ -5,7 +5,7 @@ mod ui;
 
 // The state half moved to cordata-view (shared with the native app); kept at its old paths so `crate::app::App` and
 // friends still name it everywhere here.
-use cordata_view::{app, commands, config_ui, extras, input, menu, settings, shell};
+use cordata_view::{app, commands, extras, menu, settings, shell};
 
 use std::io;
 use std::panic;
@@ -34,15 +34,6 @@ use crate::ui::transcript;
 #[derive(Parser)]
 #[command(version)]
 struct Args {
-    /// Resume an existing session id (session/load). The backend replays text
-    /// only, and always comes back in build mode.
-    #[arg(long, value_name = "SESSION_ID")]
-    resume: Option<String>,
-
-    /// Resume the newest saved session for this folder (session/list).
-    #[arg(short = 'c', long = "continue", conflicts_with = "resume")]
-    continue_latest: bool,
-
     /// Project directory the agent works in [default: current directory].
     #[arg(long)]
     cwd: Option<PathBuf>,
@@ -54,10 +45,6 @@ struct Args {
     /// Initial prompt to send once connected (like Claude Code / agy "prompt").
     #[arg(value_name = "PROMPT")]
     prompt: Option<String>,
-
-    /// Start in full-screen split-pane workspace mode.
-    #[arg(long)]
-    panes: bool,
 }
 
 /// One session the user can switch to: its backend process and its UI state.
@@ -84,13 +71,11 @@ struct Workspace {
 }
 
 impl Workspace {
-    fn spawn(&mut self, resume: Option<String>, continue_latest: bool, initial_prompt: Option<String>) -> usize {
+    fn spawn(&mut self, initial_prompt: Option<String>) -> usize {
         let (handle, mut rx) = SessionHandle::spawn(SessionOptions {
             cwd: self.cwd.clone(),
             transport: self.transport.clone(),
-            resume,
             debug_log: self.debug_log.clone(),
-            continue_latest,
         });
         let number = self.next_number;
         self.next_number += 1;
@@ -147,13 +132,13 @@ impl Workspace {
     /// A divider written into scrollback when the shown session changes.
     fn banner(&self) -> Line<'static> {
         let slot = &self.slots[self.active];
-        let title = slot.app.title.clone().unwrap_or_else(|| {
+        let title = {
             slot.app
                 .session
                 .as_ref()
                 .map(|s| s.session_id.chars().take(8).collect())
                 .unwrap_or_else(|| "connecting…".to_owned())
-        });
+        };
         Line::styled(
             format!(
                 "━━ session {} of {} · {title} ━━",
@@ -186,33 +171,6 @@ impl Workspace {
         changed
     }
 
-    fn list(&mut self) {
-        let rows: Vec<String> = self
-            .slots
-            .iter()
-            .enumerate()
-            .map(|(index, slot)| {
-                let id = slot
-                    .app
-                    .session
-                    .as_ref()
-                    .map(|s| s.session_id.chars().take(8).collect::<String>())
-                    .unwrap_or_else(|| "…".into());
-                format!(
-                    "  {}{} {id}  {:?}  {}",
-                    if index == self.active { "▸" } else { " " },
-                    slot.number,
-                    slot.app.tab_state(),
-                    slot.app.title.clone().unwrap_or_default()
-                )
-            })
-            .collect();
-        let text = format!(
-            "open sessions (Ctrl+←/→ or Alt+N to switch, Ctrl+N for another):\n{}",
-            rows.join("\n")
-        );
-        self.app().messages.push(Message::Info(text));
-    }
 }
 
 #[tokio::main]
@@ -240,10 +198,7 @@ async fn main() -> Result<()> {
         events: tx,
         local: local_tx,
     };
-    workspace.spawn(args.resume, args.continue_latest, args.prompt);
-    if args.panes || workspace.app().settings.get("ui.panes").and_then(serde_json::Value::as_bool).unwrap_or(false) {
-        workspace.app().open_overlay(crate::overlay::Kind::Panes);
-    }
+    workspace.spawn(args.prompt);
 
     install_panic_hook();
     let guard = TerminalGuard::enter()?;
@@ -251,11 +206,6 @@ async fn main() -> Result<()> {
     let result = run(&mut workspace, &mut screen, rx, local_rx).await;
     let _ = screen.clear_live();
     drop(guard);
-    for slot in &workspace.slots {
-        if let Some(info) = &slot.app.session {
-            println!("resume this session:  cordata --resume {}", info.session_id);
-        }
-    }
     for slot in &mut workspace.slots {
         if let Some(handle) = slot.handle.take() {
             handle.shutdown().await;
@@ -363,12 +313,11 @@ fn draw_overlay(app: &mut App, last: &mut Option<Frame>) -> io::Result<()> {
         return Ok(());
     };
     let buffer = overlay.render(app, width, height);
-    let cursor = overlay.cursor();
     app.overlay = Some(boxed);
     let rows = term::buffer_to_ansi_rows(&buffer);
     let frame = Frame {
         rows,
-        cursor,
+        cursor: None,
     };
     if last.as_ref() == Some(&frame) {
         return Ok(());
@@ -457,9 +406,6 @@ async fn run(
             }
         }
 
-        if let Some(effect) = workspace.app().take_auto_resume() {
-            effects.push(effect);
-        }
         if let Some(effect) = workspace.app().take_initial_prompt() {
             effects.push(effect);
         }
@@ -481,7 +427,7 @@ async fn run(
                     Ok(())
                 }
                 Effect::NewSession => {
-                    workspace.active = workspace.spawn(None, false, None);
+                    workspace.active = workspace.spawn(None);
                     banner = Some(workspace.banner());
                     last = None;
                     Ok(())
@@ -504,22 +450,6 @@ async fn run(
                     workspace.active = workspace.active.min(workspace.slots.len() - 1);
                     banner = Some(workspace.banner());
                     last = None;
-                    Ok(())
-                }
-                Effect::ListSessions => {
-                    workspace.list();
-                    let cwd = workspace.cwd.display().to_string();
-                    match workspace.handle() {
-                        Some(handle) => handle.ext(
-                            "session/list",
-                            serde_json::json!({ "cwd": cwd }),
-                            "sessions",
-                        ),
-                        None => Ok(()),
-                    }
-                }
-                Effect::ListConversations | Effect::OpenConversation(_) => {
-                    workspace.app().messages.push(Message::Info("conversations were shared through the daemon, which is gone".into()));
                     Ok(())
                 }
                 Effect::Shell { command, share, as_diff } => {
@@ -547,15 +477,6 @@ async fn run(
                 }
                 Effect::SendPrompt(text) => with_handle(workspace, |h| h.send_prompt(text)),
                 Effect::Cancel => with_handle(workspace, SessionHandle::cancel),
-                Effect::SetMode(mode) => with_handle(workspace, |h| h.set_mode(mode)),
-                Effect::SetConfig { id, value } => {
-                    with_handle(workspace, |h| h.set_config_option(id, value))
-                }
-                Effect::Ext {
-                    method,
-                    params,
-                    tag,
-                } => with_handle(workspace, |h| h.ext(method, params, tag)),
             };
             if let Err(error) = outcome {
                 workspace

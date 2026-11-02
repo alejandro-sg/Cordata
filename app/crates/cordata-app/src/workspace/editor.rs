@@ -10,7 +10,7 @@
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use cordata_theme::Role;
 use cordata_view::tree::{Row, Tree};
@@ -21,19 +21,15 @@ use gpui::{
     Window, div, px, relative, uniform_list,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::highlighter::{Diagnostic, DiagnosticSeverity};
 use gpui_component::input::{Editor, EditorState, Input, InputEvent, InputState, Position};
 
 use super::{DockTab, Workspace};
 use crate::hud;
 use crate::theme::{color, tint};
 
-/// Prefix of the tags of `_cordata/lsp/diagnostics` requests (one tag per request, so answers never cross).
-pub const LSP_TAG: &str = "gui-lsp:";
 /// Larger files open in Zed.
 const MAX_OPEN_BYTES: u64 = 2 * 1024 * 1024;
 /// Quiet time after a keystroke before the buffer is checked.
-const CHECK_AFTER: Duration = Duration::from_millis(700);
 const ROW_HEIGHT: f32 = 22.;
 
 pub struct Buffer {
@@ -49,7 +45,6 @@ pub struct Buffer {
     /// Bumped on every edit; a check's answer is applied only to the text it was asked about.
     edits: u64,
     pub errors: usize,
-    pub warnings: usize,
     _subscription: Subscription,
 }
 
@@ -62,9 +57,6 @@ pub struct Files {
     pub notice: Option<String>,
     /// The language server answering for the active file, or why none is.
     pub servers: Option<String>,
-    /// Tag → (path, edits) of each check in flight.
-    pending: std::collections::HashMap<String, (PathBuf, u64)>,
-    next_check: u64,
     /// × on a buffer with unsaved edits: the second click discards them.
     closing: Option<usize>,
 }
@@ -150,20 +142,6 @@ fn zed_cli() -> Option<PathBuf> {
         candidates.extend(std::env::split_paths(&path).map(|dir| dir.join("zed")));
     }
     candidates.into_iter().find(|p| p.is_file())
-}
-
-fn severity(code: u64) -> DiagnosticSeverity {
-    match code {
-        1 => DiagnosticSeverity::Error,
-        2 => DiagnosticSeverity::Warning,
-        3 => DiagnosticSeverity::Info,
-        _ => DiagnosticSeverity::Hint,
-    }
-}
-
-fn position(value: &serde_json::Value) -> Position {
-    let at = |key: &str| value.get(key).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-    Position::new(at("line"), at("character"))
 }
 
 impl Workspace {
@@ -265,7 +243,6 @@ impl Workspace {
         if let Some(line) = line {
             state.update(cx, |state, cx| state.set_cursor_position(Position::new(line, 0), window, cx));
         }
-        self.apply_completions(&state, cx);
         let subscription = cx.subscribe_in(&state, window, Self::on_buffer_event);
         self.files.buffers.push(Buffer {
             rel: rel.to_owned(),
@@ -276,7 +253,6 @@ impl Workspace {
             conflict: false,
             edits: 0,
             errors: 0,
-            warnings: 0,
             _subscription: subscription,
         });
         self.files.active = self.files.buffers.len() - 1;
@@ -285,17 +261,7 @@ impl Workspace {
             tree.reveal(rel);
         }
         state.update(cx, |state, cx| state.focus(window, cx));
-        self.check_buffer(&path, None, cx);
         cx.notify();
-    }
-
-    /// An edit made without a change event (a programmatic replace): the buffer is unsaved, and the disk poll must
-    /// not reload over it.
-    pub(super) fn mark_edited(&mut self, state: &Entity<EditorState>) {
-        if let Some(buffer) = self.files.buffers.iter_mut().find(|b| &b.state == state) {
-            buffer.dirty = true;
-            buffer.edits += 1;
-        }
     }
 
     fn on_buffer_event(&mut self, state: &Entity<EditorState>, event: &InputEvent, _window: &mut Window, cx: &mut Context<Self>) {
@@ -305,92 +271,6 @@ impl Workspace {
         let Some(buffer) = self.files.buffers.iter_mut().find(|b| &b.state == state) else { return };
         buffer.dirty = true;
         buffer.edits += 1;
-        let (path, edits) = (buffer.path.clone(), buffer.edits);
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(CHECK_AFTER).await;
-            let _ = this.update(cx, |this, cx| this.check_buffer(&path, Some(edits), cx));
-        })
-        .detach();
-        cx.notify();
-    }
-
-    /// Ask the language server about `path`'s buffer — its unsaved text when it has edits. `edits`: only if the buffer
-    /// has not changed since (a debounced check).
-    fn check_buffer(&mut self, path: &Path, edits: Option<u64>, cx: &mut Context<Self>) {
-        let Some(buffer) = self.files.buffers.iter().find(|b| b.path == path) else { return };
-        if edits.is_some_and(|e| e != buffer.edits) {
-            return;
-        }
-        let mut params = serde_json::json!({ "path": buffer.path.to_string_lossy() });
-        if buffer.dirty {
-            params["text"] = serde_json::Value::String(buffer.state.read(cx).value().to_string());
-        }
-        self.files.next_check += 1;
-        let tag = format!("{LSP_TAG}{}", self.files.next_check);
-        if self.session.read(cx).request("_cordata/lsp/diagnostics", params, &tag) {
-            self.files.pending.insert(tag, (buffer.path.clone(), buffer.edits));
-        }
-    }
-
-    /// An answer to [`Self::check_buffer`].
-    pub(super) fn on_lsp(&mut self, tag: &str, cx: &mut Context<Self>) {
-        let result = self.session.update(cx, |session, _| session.data.remove(tag));
-        let Some((path, edits)) = self.files.pending.remove(tag) else { return };
-        let value = match result {
-            Some(Ok(value)) => value,
-            Some(Err(error)) => {
-                self.files.servers = Some(format!("language server: {}", shown(&error)));
-                cx.notify();
-                return;
-            }
-            None => return,
-        };
-        let active = self.files.active().is_some_and(|b| b.path == path);
-        if value.get("ok").and_then(|v| v.as_bool()) != Some(true) {
-            if active {
-                self.files.servers = Some(match value.get("needs").and_then(|v| v.as_str()) {
-                    Some("trust") => "no squiggles: language servers start only in a trusted folder".to_owned(),
-                    _ => shown(value.get("reason").and_then(|v| v.as_str()).unwrap_or("no diagnostics")),
-                });
-            }
-            cx.notify();
-            return;
-        }
-        let Some(buffer) = self.files.buffers.iter_mut().find(|b| b.path == path) else { return };
-        if buffer.edits != edits {
-            return; // typed since: a newer check is on its way
-        }
-        let rows = value.get("diagnostics").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-        let (mut errors, mut warnings) = (0, 0);
-        buffer.state.update(cx, |state, cx| {
-            let text = state.text().clone();
-            if let Some(set) = state.diagnostics_mut() {
-                set.reset(&text);
-                for row in &rows {
-                    let level = row.get("severity").and_then(|v| v.as_u64()).unwrap_or(1);
-                    match level {
-                        1 => errors += 1,
-                        2 => warnings += 1,
-                        _ => {}
-                    }
-                    let start = position(row.get("start").unwrap_or(&serde_json::Value::Null));
-                    let end = position(row.get("end").unwrap_or(&serde_json::Value::Null));
-                    let mut diagnostic = Diagnostic::new(start..end, shown(row.get("message").and_then(|v| v.as_str()).unwrap_or(""))).with_severity(severity(level));
-                    if let Some(source) = row.get("source").and_then(|v| v.as_str()) {
-                        diagnostic = diagnostic.with_source(source.to_owned());
-                    }
-                    set.push(diagnostic);
-                }
-            }
-            cx.notify();
-        });
-        (buffer.errors, buffer.warnings) = (errors, warnings);
-        if active {
-            self.files.servers = Some(match value.get("server").and_then(|v| v.as_str()) {
-                Some(server) => format!("{server} · {errors} error{} · {warnings} warning{}", if errors == 1 { "" } else { "s" }, if warnings == 1 { "" } else { "s" }),
-                None => "no language server for this file".to_owned(),
-            });
-        }
         cx.notify();
     }
 
@@ -403,9 +283,8 @@ impl Workspace {
                 buffer.dirty = false;
                 buffer.conflict = false;
                 self.files.notice = Some(format!("saved {}", buffer.rel));
-                let path = buffer.path.clone();
-                self.check_buffer(&path, None, cx);
-            }
+                let _path = buffer.path.clone();
+                    }
             Err(error) => self.files.notice = Some(format!("{}: {error}", buffer.rel)),
         }
         cx.notify();
@@ -426,8 +305,7 @@ impl Workspace {
         buffer.mtime = std::fs::metadata(&buffer.path).and_then(|m| m.modified()).ok();
         buffer.dirty = false;
         buffer.conflict = false;
-        let path = buffer.path.clone();
-        self.check_buffer(&path, None, cx);
+        let _path = buffer.path.clone();
         cx.notify();
     }
 
@@ -464,7 +342,6 @@ impl Workspace {
         }
         self.files.closing = None;
         self.files.buffers.remove(index);
-        self.files.pending.retain(|_, (path, _)| self.files.buffers.iter().any(|b| &b.path == path));
         if self.files.active >= self.files.buffers.len() {
             self.files.active = self.files.buffers.len().saturating_sub(1);
         }
@@ -651,7 +528,6 @@ impl Workspace {
                 )
             })
             .when_some(self.files.notice.clone(), |el, notice| el.child(div().text_xs().text_color(color(cx, Role::Attention)).child(SharedString::from(shown(&notice)))))
-            .children(self.inline_bar(cx))
             .child(
                 div()
                     .id("editor")
@@ -681,7 +557,6 @@ impl Workspace {
             conflict: false,
             edits: 0,
             errors: 0,
-            warnings: 0,
             _subscription: Subscription::new(|| {}),
         });
         self.files.active = self.files.buffers.len() - 1;

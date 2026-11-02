@@ -1,4 +1,4 @@
-//! The dispatch policy, ported from `backend/orchestrator/dispatch.py`: which worker (and model, tier, effort) takes
+//! The dispatch policy: which worker (and model, tier, effort) takes
 //! each role, cheapest competent first.
 //!
 //! ```text
@@ -67,9 +67,9 @@ pub fn ctx(role: &str, task_class: &str, point: &str) -> String {
     format!("orch|{role}|{task_class}|{point}")
 }
 
-/// The task class a goal belongs to: a keyword reading, with `/large` for long multi-part goals. `laya_complexity`
-/// (Laya's reading, when loaded) only adds the size suffix, so the class stays stable across model updates.
-pub fn classify(goal: &str, laya_complexity: Option<f64>) -> String {
+/// The task class a goal belongs to: a keyword reading, with `/large` for long multi-part goals. `complexity`
+/// (a model's reading, when one is loaded) only adds the size suffix, so the class stays stable across model updates.
+pub fn classify(goal: &str, complexity: Option<f64>) -> String {
     const CLASSES: [(&str, &str); 5] = [
         ("docs", r"\b(readme|docs?|documentation|docstring|comment|changelog|typo)\b"),
         ("test", r"\b(tests?|coverage|unit test|spec)\b"),
@@ -80,7 +80,7 @@ pub fn classify(goal: &str, laya_complexity: Option<f64>) -> String {
     let text = goal.to_lowercase();
     let kind = CLASSES.iter().find(|(_, p)| Regex::new(p).is_ok_and(|re| re.is_match(&text))).map_or("general", |(name, _)| name);
     let joiners = Regex::new(r"\b(and then|also|plus)\b").expect("static").find_iter(&text).count();
-    let large = text.chars().count() > 600 || text.matches("\n- ").count() >= 4 || joiners >= 3 || laya_complexity.is_some_and(|c| c >= 0.7);
+    let large = text.chars().count() > 600 || text.matches("\n- ").count() >= 4 || joiners >= 3 || complexity.is_some_and(|c| c >= 0.7);
     if large { format!("{kind}/large") } else { kind.to_owned() }
 }
 
@@ -235,6 +235,7 @@ pub struct LearnedDispatcher<'a> {
     pub rng: std::cell::RefCell<Box<dyn FnMut() -> f64>>,
     pub available: Box<dyn Fn(&Spec) -> bool>,
     /// Extra utility a subclass adds to a candidate (the Auto Mode router). Zero by default.
+    #[allow(clippy::type_complexity)]
     pub adjust: Box<dyn Fn(&Spec, &str, &str) -> f64>,
     pub decisions: Vec<Decision>,
     /// Write outcomes to the table's file and queue ledger events (off for offline training).

@@ -1,4 +1,4 @@
-//! The quota ledger, ported from `backend/orchestrator/quota_ledger.py`: how much of each provider pool is left,
+//! The quota ledger: how much of each provider pool is left,
 //! metered locally and corrected by the provider's own readings. Same `~/.cordata/state.db`, same tables, same
 //! arithmetic — the Python backend and this crate read and write one ledger, which `tests/python_parity.rs` checks.
 //!
@@ -466,6 +466,7 @@ impl Ledger {
     }
 
     /// One worker result → one usage row in the pool it belongs to (and the provider's window readings).
+    #[allow(clippy::too_many_arguments)]
     pub fn record_result(
         &self,
         session_id: &str,
@@ -573,13 +574,12 @@ impl Ledger {
             let left = (weekly_limit * pool.hard_threshold_pct - weekly).max(0.0);
             to_hard = Some(to_hard.map_or(left, |h: f64| h.min(left)));
         }
-        if let (Some(p), Some(l)) = (provider, limit) {
-            if p > metered {
+        if let (Some(p), Some(l)) = (provider, limit)
+            && p > metered {
                 // The provider says more is used than we metered (other sessions, the web app, another machine).
                 to_hard = Some(to_hard.unwrap_or(f64::INFINITY).min(((pool.hard_threshold_pct - p) * l).max(0.0)));
                 to_soft = Some(((pool.soft_threshold_pct - p) * l).max(0.0));
             }
-        }
         if level == "exhausted" {
             to_hard = Some(0.0);
         }

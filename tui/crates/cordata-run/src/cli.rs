@@ -1,4 +1,4 @@
-//! The commands: `run`, `status`, `show`, `resume` (`backend/orchestrator/__main__.py`).
+//! The commands: `run`, `status`, `show`, `resume`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

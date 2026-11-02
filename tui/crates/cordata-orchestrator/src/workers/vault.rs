@@ -1,4 +1,4 @@
-//! Egress for the coding CLIs (`backend/vault_proxy.py`, the part workers use): through the Agent Vault proxy, or not at
+//! Egress for the coding CLIs: through the Agent Vault proxy, or not at
 //! all. A CLI never gets a direct route out and never a provider key. Fail closed.
 
 use std::collections::HashMap;
@@ -11,7 +11,7 @@ pub const DEFAULT_ADDR: &str = "http://127.0.0.1:14322";
 const LOCAL_NO_PROXY: &str = "127.0.0.1,localhost,::1";
 const HEALTH_TIMEOUT: Duration = Duration::from_millis(500);
 
-pub const REFUSED_DIRECT: &str = "Refused: coding CLIs never run with direct network access. Turn on vault.enabled and start the Agent Vault proxy.";
+pub const REFUSED_DIRECT: &str = "Refused: no Agent Vault proxy is configured. Pass --allow-direct to run the coding CLIs with direct network access, or set vault.enabled and start the proxy.";
 
 /// `vault.*` settings, however they were loaded (see `cordata-doctor`'s layered loader).
 pub trait Prefs {

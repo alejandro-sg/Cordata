@@ -1,4 +1,4 @@
-//! The seam to the checkpoint store (`backend/checkpoints.py`): snapshot the project before a step, restore it when
+//! The seam to the checkpoint store: snapshot the project before a step, restore it when
 //! the step must be undone, diff against it to carry partial work in a handoff.
 //!
 //! [`GitCheckpoints`] is the production store (the shadow git repository of `cordata-checkpoints`, shared with the

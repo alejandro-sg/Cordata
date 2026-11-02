@@ -210,16 +210,6 @@ pub fn mode_role(mode: &str) -> Role {
     }
 }
 
-/// The colour of a Laya risk band (`low` · `medium` · `high`), as a role.
-pub fn risk_role(band: &str) -> Role {
-    match band {
-        "high" => Role::Danger,
-        "medium" | "elevated" => Role::Attention,
-        "low" => Role::Ok,
-        _ => Role::TextSecondary,
-    }
-}
-
 /// The type the app ships, by name (bundled, OFL; docs/app.md §4b). Front ends without them fall back to their own.
 pub mod fonts {
     /// Monospace: code, the HUD, tracked caps.
@@ -300,12 +290,11 @@ mod tests {
     }
 
     #[test]
-    fn modes_and_risks_map_to_roles() {
+    fn modes_map_to_roles() {
         assert_eq!(mode_role("plan"), Role::Ok);
         assert_eq!(mode_role("build"), Role::Accent);
         assert_eq!(mode_role("edit"), Role::Attention);
         assert_eq!(mode_role("auto"), Role::Danger);
-        assert_eq!(risk_role("high"), Role::Danger);
         assert_eq!(NIGHT.get(Role::Accent).css(), "#FF9E3D");
         assert_eq!(Rgb::hex(0xFF9E3D).to_u32(), 0xFF9E3D);
     }

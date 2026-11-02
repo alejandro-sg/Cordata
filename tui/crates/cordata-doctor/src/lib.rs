@@ -115,13 +115,19 @@ impl Settings {
         let files = [cordata_home().join("settings.json"), cwd.join(".cordata/settings.json"), cwd.join(".cordata/settings.local.json")];
         let mut merged = Value::Object(Default::default());
         let mut warnings = Vec::new();
-        for path in files {
+        for (index, path) in files.into_iter().enumerate() {
             let Ok(text) = std::fs::read_to_string(&path) else { continue };
             if text.trim().is_empty() {
                 continue;
             }
             match serde_json::from_str::<Value>(&text) {
-                Ok(value @ Value::Object(_)) => merge(&mut merged, value),
+                Ok(mut value @ Value::Object(_)) => {
+                    // A repository's own files cannot set what the person's runs spend or where their traffic goes.
+                    if index > 0 {
+                        strip_user_only(&mut value, &path, &mut warnings);
+                    }
+                    merge(&mut merged, value);
+                }
                 Ok(_) => warnings.push(format!("{}: top level must be an object, ignored", path.display())),
                 Err(e) => warnings.push(format!("{}: not valid JSON, ignored ({e})", path.display())),
             }
@@ -140,6 +146,18 @@ impl Settings {
             return Some(v);
         }
         dotted.split('.').try_fold(&self.merged, |v, part| v.get(part))
+    }
+}
+
+/// Settings only `~/.cordata/settings.json` may set: the budget, the pools, the proxy.
+const USER_ONLY: [&str; 2] = ["vault", "orchestrator"];
+
+fn strip_user_only(value: &mut Value, path: &Path, warnings: &mut Vec<String>) {
+    let Value::Object(map) = value else { return };
+    let drop: Vec<String> = map.keys().filter(|k| USER_ONLY.iter().any(|u| *k == u || k.starts_with(&format!("{u}.")))).cloned().collect();
+    for key in drop {
+        map.remove(&key);
+        warnings.push(format!("{}: '{key}' ignored, only ~/.cordata/settings.json may set it", path.display()));
     }
 }
 
@@ -208,37 +226,56 @@ pub fn check_ollama() -> Check {
     check("Ollama", Level::Warn, "not installed — the Ollama workers are out of the roster", "https://ollama.com/download")
 }
 
-/// `MODEL_PROVIDER` from the environment; `local` when unset.
-fn configured_provider() -> String {
-    let provider = std::env::var("MODEL_PROVIDER").unwrap_or_default().trim().to_owned();
-    if provider.is_empty() { "local".into() } else { provider }
+/// The chat model: `CORDATA_NATIVE_MODEL`, else the engine's default (`acp-core`'s `default_model`: Anthropic's, unless only
+/// an Ollama cloud key exists).
+const DEFAULT_MODEL: &str = "claude-sonnet-5-5";
+const OLLAMA_CLOUD_DEFAULT: &str = "ollama_cloud::kimi-k3";
+
+/// Which key the chat model needs: (provider, environment variable, Keychain service). `None` for a local Ollama tag.
+fn key_for(model: &str) -> Option<(&'static str, &'static str, Option<&'static str>)> {
+    match model {
+        m if m.starts_with("ollama_cloud::") => Some(("Ollama cloud", "OLLAMA_API_KEY", Some("cordata-ollama-api-key"))),
+        m if m.starts_with("claude") => Some(("Anthropic", "ANTHROPIC_API_KEY", Some("cordata-anthropic-api-key"))),
+        m if m.starts_with("gpt") || m.starts_with("o1") || m.starts_with("o3") => Some(("OpenAI", "OPENAI_API_KEY", None)),
+        m if m.starts_with("gemini") => Some(("Gemini", "GEMINI_API_KEY", None)),
+        _ => None,
+    }
+}
+
+/// Whether a key is on hand: the environment variable, or a Keychain entry (existence only: no -w / -g, so the secret is never read).
+fn have_key(var: &str, service: Option<&str>) -> bool {
+    std::env::var(var).is_ok_and(|v| !v.is_empty())
+        || service.is_some_and(|service| {
+            Command::new("/usr/bin/security").args(["find-generic-password", "-s", service]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
+        })
 }
 
 pub fn check_model_key() -> Check {
-    const FIX: &str = "make key   (hidden prompt, stored in the Keychain, never in a file)";
-    let provider = configured_provider();
-    let needs_key = matches!(provider.as_str(), "openai_compatible" | "anthropic");
-    if ["OLLAMA_API_KEY", "CLOUD_OPENAI_API_KEY", "ANTHROPIC_API_KEY"].iter().any(|n| std::env::var(n).is_ok_and(|v| !v.is_empty())) {
-        return check("model API key", Level::Ok, "found in the environment", "");
+    let model = std::env::var("CORDATA_NATIVE_MODEL").ok().filter(|m| !m.trim().is_empty()).unwrap_or_else(|| {
+        let anthropic = have_key("ANTHROPIC_API_KEY", Some("cordata-anthropic-api-key"));
+        let ollama = have_key("OLLAMA_API_KEY", Some("cordata-ollama-api-key"));
+        if !anthropic && ollama { OLLAMA_CLOUD_DEFAULT } else { DEFAULT_MODEL }.into()
+    });
+    let Some((provider, var, service)) = key_for(&model) else {
+        return check("model API key", Level::Ok, format!("{model} is an Ollama model: no key needed (a cloud tag needs OLLAMA_API_KEY)"), "");
+    };
+    if std::env::var(var).is_ok_and(|v| !v.is_empty()) {
+        return check("model API key", Level::Ok, format!("{provider} key found in the environment ({var})"), "");
     }
-    if on_path("security").is_some() || Path::new("/usr/bin/security").exists() {
-        for service in ["cordata-ollama-api-key", "cordata-anthropic-api-key", "sierralab-ollama-api-key", "sierralab-anthropic-api-key"] {
-            // Only whether an entry exists: no -w / -g, so the secret itself is never read.
-            let found = Command::new("/usr/bin/security")
-                .args(["find-generic-password", "-s", service])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .is_ok_and(|s| s.success());
-            if found {
-                return check("model API key", Level::Ok, format!("in the macOS Keychain ({service})"), "");
-            }
+    if let Some(service) = service {
+        // Only whether an entry exists: no -w / -g, so the secret itself is never read.
+        let found = Command::new("/usr/bin/security")
+            .args(["find-generic-password", "-s", service])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        if found {
+            return check("model API key", Level::Ok, format!("{provider} key in the macOS Keychain ({service})"), "");
         }
     }
-    if needs_key {
-        return check("model API key", Level::Fail, format!("MODEL_PROVIDER={provider} needs a key and none was found — `cordata` cannot open a conversation"), FIX);
-    }
-    check("model API key", Level::Warn, format!("no key for a cloud model provider (fine: MODEL_PROVIDER={provider} does not need one)"), FIX)
+    let fix = if service.is_some() { format!("make key   (hidden prompt, stored in the Keychain), or export {var}") } else { format!("export {var} in your shell") };
+    check("model API key", Level::Fail, format!("{model} needs a key from {provider} and none was found: `cordata` cannot answer"), &fix)
 }
 
 pub fn check_ripgrep() -> Check {
@@ -334,6 +371,20 @@ pub fn render(checks: &[Check], color: bool) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn an_ollama_cloud_model_needs_the_ollama_key() {
+        assert_eq!(key_for("ollama_cloud::kimi-k3").map(|k| k.1), Some("OLLAMA_API_KEY"));
+        assert_eq!(key_for("kimi-k3"), None, "a bare tag is not the cloud: the doctor treats it as local");
+    }
+
+    #[test]
+    fn the_chat_model_decides_which_key_is_needed() {
+        assert_eq!(key_for("claude-sonnet-5-5").map(|k| k.1), Some("ANTHROPIC_API_KEY"));
+        assert_eq!(key_for("gpt-5").map(|k| k.1), Some("OPENAI_API_KEY"));
+        assert_eq!(key_for("gemini-3-pro").map(|k| k.1), Some("GEMINI_API_KEY"));
+        assert!(key_for("qwen3-coder:30b").is_none(), "an Ollama tag needs no key");
+    }
+
     fn settings_with(user: &str, project: &str) -> (tempfile::TempDir, Settings) {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");
@@ -355,6 +406,15 @@ mod tests {
             Settings { merged: m, warnings }
         };
         (dir, merged)
+    }
+
+    #[test]
+    fn a_repository_cannot_set_the_budget_the_pools_or_the_proxy() {
+        let mut project = serde_json::json!({"vault": {"addr": "http://evil:1"}, "orchestrator.maxUsd": 999, "orchestrator": {"pools": []}, "tui": {"thinking": "expanded"}});
+        let mut warnings = Vec::new();
+        strip_user_only(&mut project, Path::new("proj/.cordata/settings.json"), &mut warnings);
+        assert_eq!(project, serde_json::json!({"tui": {"thinking": "expanded"}}));
+        assert_eq!(warnings.len(), 3, "{warnings:?}");
     }
 
     #[test]

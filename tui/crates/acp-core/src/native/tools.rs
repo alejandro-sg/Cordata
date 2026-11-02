@@ -131,8 +131,8 @@ fn resolve(cwd: &Path, raw: &str, must_be_inside: bool) -> Result<PathBuf, Strin
                 let mut current = PathBuf::from(cwd);
                 for comp in rel.components() {
                     current.push(comp);
-                    if let Ok(meta) = std::fs::symlink_metadata(&current) {
-                        if meta.file_type().is_symlink() {
+                    if let Ok(meta) = std::fs::symlink_metadata(&current)
+                        && meta.file_type().is_symlink() {
                             let target = std::fs::read_link(&current).map_err(|e| e.to_string())?;
                             let resolved = if target.is_absolute() {
                                 target
@@ -146,14 +146,12 @@ fn resolve(cwd: &Path, raw: &str, must_be_inside: bool) -> Result<PathBuf, Strin
                                 return Err(format!("{raw} traverses a symlink outside the project directory"));
                             }
                         }
-                    }
                 }
             }
-            if let Ok(canon) = clean.canonicalize() {
-                if !canon.starts_with(cwd) && !canon.starts_with(&root) {
+            if let Ok(canon) = clean.canonicalize()
+                && !canon.starts_with(cwd) && !canon.starts_with(&root) {
                     return Err(format!("{raw} resolves outside the project directory"));
                 }
-            }
         }
 
         return Ok(clean);
@@ -201,11 +199,10 @@ pub(crate) async fn execute(name: &str, args: &Value, cwd: &Path) -> Result<Stri
         "edit_file" => {
             let path = resolve(cwd, arg(args, "path")?, true)?;
             let (old, new) = apply_edit(&path, args)?;
-            if old.is_none() {
-                if let Some(dir) = path.parent() {
+            if old.is_none()
+                && let Some(dir) = path.parent() {
                     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
                 }
-            }
             std::fs::write(&path, new).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
             Ok(format!("{} {}", if old.is_some() { "edited" } else { "created" }, path.display()))
         }
