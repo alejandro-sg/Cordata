@@ -260,7 +260,7 @@ impl Workspace {
                     .flex_col()
                     .items_center()
                     .gap(px(16.))
-                    .child(crate::hud::bracket_title("Cordata", cx))
+                    .child(crate::hud::brand_title(cx))
                     .child(
                         div()
                             .flex()

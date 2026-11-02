@@ -54,7 +54,7 @@ impl Workspace {
                     .justify_between()
                     .px(px(t::GUTTER))
                     .pb(px(12.))
-                    .child(hud::bracket_title("Cordata", cx))
+                    .child(hud::brand_title(cx))
                     .child(ui::badge(&format!("v{}", env!("CARGO_PKG_VERSION")), Tone::Neutral, cx)),
             )
             .child(div().px(px(12.)).child(self.project_card(cx)))

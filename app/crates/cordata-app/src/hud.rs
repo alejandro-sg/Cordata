@@ -3,25 +3,55 @@
 
 use cordata_theme::tokens::{self as t, HAZE_AMBER, HAZE_TEAL, Tracking, tracked_text};
 use gpui::prelude::FluentBuilder as _;
-use gpui::{AnyElement, App, Div, IntoElement, ParentElement, SharedString, Styled, div, linear_color_stop, linear_gradient, px, rgb};
+use gpui::{
+    AnyElement, App, Bounds, Div, IntoElement, ParentElement, PathBuilder, SharedString, Styled, canvas, div, fill, linear_color_stop, linear_gradient, point, px, rgb,
+    size as size_of,
+};
 
-use crate::theme::{c, line, mono, sans, tk};
+use crate::theme::{c, line, sans, tk};
 use crate::ui;
 
-/// `⌜CORDATA⌝`: 12px proportional sans with crisp thin-space tracking, amber; the brackets in dim amber.
-pub fn bracket_title(text: &str, cx: &App) -> Div {
+/// The mark: a ring cut vertically, with an amber cursor cell in its mouth. Drawn on the 64-unit grid of
+/// `app/assets/brand/cordata-mark.svg` (outer radius 28, stroke 9, cut at x = 45; cell 10 × 24 at 49, 20), in the
+/// theme's ink and amber so it holds on `light` paper too. A square element: `size` is its side.
+pub fn mark(size: f32, cx: &App) -> impl IntoElement {
     let tk = tk(cx);
+    let (ink, cell) = (c(tk.text_primary), c(tk.amber));
+    canvas(
+        |_, _, _| (),
+        move |bounds, (), window, _| {
+            let k = f32::from(bounds.size.width).min(f32::from(bounds.size.height)) / 64.;
+            let at = |x: f32, y: f32| point(bounds.origin.x + px(x * k), bounds.origin.y + px(y * k));
+            let radius = |r: f32| point(px(r * k), px(r * k));
+            let mut ring = PathBuilder::fill();
+            ring.move_to(at(45., 7.201));
+            ring.arc_to(radius(28.), px(0.), true, false, at(45., 56.799));
+            ring.line_to(at(45., 45.856));
+            ring.arc_to(radius(19.), px(0.), true, true, at(45., 18.144));
+            ring.close();
+            if let Ok(path) = ring.build() {
+                window.paint_path(path, ink);
+            }
+            let cell_bounds = Bounds { origin: at(49., 20.), size: size_of(px(10. * k), px(24. * k)) };
+            window.paint_quad(fill(cell_bounds, cell));
+        },
+    )
+    .size(px(size))
+    .flex_none()
+}
+
+/// The sidebar and empty-state title: the mark, then `CORDATA` in 12px proportional sans with crisp thin-space tracking.
+pub fn brand_title(cx: &App) -> Div {
     div()
         .flex()
         .items_center()
-        .gap(px(2.))
+        .gap(px(7.))
         .whitespace_nowrap()
         .font_family(sans(cx))
         .text_size(px(t::TEXT_LOGO))
         .font_weight(gpui::FontWeight::BOLD)
-        .child(div().font_family(mono(cx)).text_color(c(tk.amber_dim)).child("⌜"))
-        .child(div().text_color(c(tk.amber)).child(SharedString::from(tracked_text(text, Tracking::Label, true))))
-        .child(div().font_family(mono(cx)).text_color(c(tk.amber_dim)).child("⌝"))
+        .child(mark(16., cx))
+        .child(div().text_color(c(tk(cx).text_primary)).child(SharedString::from(tracked_text("Cordata", Tracking::Label, true))))
 }
 
 /// A thin rule with a label in it, between turns: `── 14:02 · turn 3 ──`.
