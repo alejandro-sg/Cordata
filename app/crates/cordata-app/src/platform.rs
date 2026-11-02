@@ -50,10 +50,56 @@ pub fn play_sound(name: &str) {
 #[cfg(not(target_os = "macos"))]
 pub fn play_sound(_name: &str) {}
 
-/// A system notification. Only fixed text from the app is ever passed (never model or tool output), and it goes
-/// through argv to AppleScript's `on run`, never spliced into the script, so nothing in it is code.
+/// A system notification. Only fixed text from the app is ever passed (never model or tool output).
+///
+/// From the packaged `Cordata.app` it goes through `UNUserNotificationCenter`, so the banner carries Cordata's name and
+/// icon; the first one asks for permission. A notification with the same identifier replaces the last one, so banners
+/// never stack. Outside a bundle (`cargo run`) the framework refuses to start, so it falls back to `osascript`, whose
+/// banners macOS labels "Script Editor"; there the text goes through argv to AppleScript's `on run`, never spliced into
+/// the script, so nothing in it is code.
 #[cfg(target_os = "macos")]
 pub fn notify(title: &'static str, body: &'static str) {
+    if std::env::current_exe().is_ok_and(|exe| is_bundled(&exe)) {
+        notify_native(title, body);
+    } else {
+        notify_osascript(title, body);
+    }
+}
+
+/// Whether the executable lives in an app bundle (`Foo.app/Contents/MacOS/foo`).
+#[cfg(target_os = "macos")]
+fn is_bundled(exe: &std::path::Path) -> bool {
+    let Some(macos) = exe.parent() else { return false };
+    macos.ends_with("Contents/MacOS") && macos.parent().and_then(std::path::Path::parent).is_some_and(|app| app.extension().is_some_and(|ext| ext == "app"))
+}
+
+#[cfg(target_os = "macos")]
+fn notify_native(title: &str, body: &str) {
+    use block2::RcBlock;
+    use objc2::runtime::Bool;
+    use objc2_foundation::{NSError, NSString};
+    use objc2_user_notifications::{UNAuthorizationOptions, UNMutableNotificationContent, UNNotificationRequest, UNUserNotificationCenter};
+
+    let center = UNUserNotificationCenter::currentNotificationCenter();
+    let content = UNMutableNotificationContent::new();
+    content.setTitle(&NSString::from_str(title));
+    content.setBody(&NSString::from_str(body));
+    content.setThreadIdentifier(&NSString::from_str("approval"));
+    let request = UNNotificationRequest::requestWithIdentifier_content_trigger(&NSString::from_str("cordata.approval"), &content, None);
+    // Asking is idempotent: it prompts once, then reports the person's answer. A "no" leaves the Dock bounce.
+    let add = {
+        let center = center.clone();
+        RcBlock::new(move |granted: Bool, _error: *mut NSError| {
+            if granted.as_bool() {
+                center.addNotificationRequest_withCompletionHandler(&request, None);
+            }
+        })
+    };
+    center.requestAuthorizationWithOptions_completionHandler(UNAuthorizationOptions::Alert, &add);
+}
+
+#[cfg(target_os = "macos")]
+fn notify_osascript(title: &'static str, body: &'static str) {
     let _ = std::process::Command::new("/usr/bin/osascript")
         .args(["-e", "on run argv", "-e", "display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run", title, body])
         .stdin(std::process::Stdio::null())
@@ -462,5 +508,18 @@ mod tests {
         assert!(Combo::parse("hyper-space").unwrap_err().contains("not a modifier"));
         assert!(Combo::parse("ctrl-f13").unwrap_err().contains("not a key"));
         assert!(Combo::parse("").is_err());
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod bundle_tests {
+    use super::is_bundled;
+    use std::path::Path;
+
+    #[test]
+    fn only_an_app_bundle_binary_is_bundled() {
+        assert!(is_bundled(Path::new("/Applications/Cordata.app/Contents/MacOS/cordata-app")));
+        assert!(!is_bundled(Path::new("/Users/me/Development/Cordata/app/target/debug/cordata-app")));
+        assert!(!is_bundled(Path::new("/Users/me/Foo.app/Contents/Resources/cordata-app")));
     }
 }

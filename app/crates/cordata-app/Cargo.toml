@@ -39,6 +39,10 @@ gpui-component = { workspace = true, features = ["test-support"] }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSAccessibility", "NSAppearance", "NSApplication", "NSGlassEffectView", "NSGraphics", "NSResponder", "NSSound", "NSView", "NSWindow", "NSWorkspace", "objc2-core-foundation"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry", "NSString"] }
+# Native notifications under the app's own name and icon (macOS shows `osascript` banners as "Script Editor"). Already in the
+# lockfile through GPUI; block2 carries the completion handlers.
+objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "bitflags", "UNUserNotificationCenter", "UNNotificationContent", "UNNotificationRequest", "UNNotificationTrigger"] }
+block2 = "0.6"
 raw-window-handle = "0.6"
 # The API key lives in the login Keychain only (the backend reads the same item at start).
 security-framework = "3"
