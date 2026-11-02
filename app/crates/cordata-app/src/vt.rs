@@ -221,6 +221,15 @@ impl Palette {
         }
     }
 
+    /// The 16 ANSI colours darkened for a light ground, so yellow and cyan text stay readable on paper.
+    pub fn for_light(mut self) -> Self {
+        self.ansi = [
+            0x2C2F33, 0xB3261E, 0x2E7D32, 0x8A6100, 0x2B5FA8, 0x8E3FA0, 0x0E7C86, 0x6B7178, //
+            0x5A6068, 0xC9372C, 0x3B8F3F, 0x9C6D00, 0x3A6FC0, 0xA14DB5, 0x168F99, 0x2C2F33,
+        ];
+        self
+    }
+
     /// 0–15 the palette, 16–231 the 6×6×6 cube, 232–255 the grey ramp (xterm's).
     pub fn indexed(&self, index: u8) -> u32 {
         match index {

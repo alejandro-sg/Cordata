@@ -4,7 +4,7 @@
 
 use cordata_theme::tokens::{self as t, Tracking, tracked_text};
 use gpui::prelude::FluentBuilder as _;
-use gpui::{AnyView, App, Div, ElementId, FontWeight, InteractiveElement as _, ParentElement, SharedString, Stateful, StatefulInteractiveElement as _, Styled, Window, div, px, relative};
+use gpui::{AnyView, App, Div, ElementId, FontWeight, InteractiveElement as _, ParentElement, SharedString, Stateful, StatefulInteractiveElement as _, Styled, Window, div, px};
 use gpui_component::tooltip::Tooltip;
 
 use crate::theme::{amber, amber_glow, c, ca, inset_ring, line, mono, sans, tk};
@@ -78,16 +78,11 @@ pub fn dot(kind: Dot, cx: &App) -> Div {
     match kind {
         Dot::Hollow => base.border_1().border_color(c(tk.text_muted)),
         Dot::Live => base.bg(c(tk.amber)).shadow(amber_glow(cx)),
-        Dot::Amber => base.bg(c(tk.amber)),
+        Dot::Amber => base.bg(c(tk.attention)),
         Dot::Ok => base.bg(c(tk.teal)),
         Dot::Danger => base.bg(c(tk.danger)),
         Dot::Muted => base.bg(c(tk.text_faint)),
     }
-}
-
-/// The assistant / approval marker: a diamond in amber (GPUI does not rotate boxes, so it is the glyph).
-pub fn diamond(cx: &App) -> Div {
-    div().flex_shrink_0().text_size(px(t::TEXT_LABEL)).line_height(relative(1.)).text_color(c(tk(cx).amber)).child("◆")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,27 +91,20 @@ pub enum Tone {
     Neutral,
 }
 
-/// `Approval`, `Needs you`: a 3px-radius badge in a tint of its tone.
+/// `approval`, `queued`: a word, not a box. `Amber` is the "needs you" tone (the attention colour on a faint tint);
+/// `Neutral` is just quieter text.
 pub fn badge(text: &str, tone: Tone, cx: &App) -> Div {
     let tk = tk(cx);
-    let (ink, fill, edge) = match tone {
-        Tone::Amber => (c(tk.amber), amber(cx, t::AMBER_FILL_MID), amber(cx, t::AMBER_BORDER)),
-        Tone::Neutral => (c(tk.text_secondary), line(cx, t::FILL_FAINT), line(cx, t::LINE_CONTROL)),
-    };
-    div()
-        .flex_shrink_0()
-        .whitespace_nowrap()
-        .px(px(5.))
-        .py(px(1.))
-        .rounded(px(t::RADIUS_BADGE))
-        .border_1()
-        .border_color(edge)
-        .bg(fill)
-        .font_family(mono(cx))
-        .text_size(px(t::TEXT_TAG))
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(ink)
-        .child(SharedString::from(text.to_ascii_uppercase()))
+    let base = div().flex_shrink_0().whitespace_nowrap().px(px(5.)).py(px(1.)).rounded(px(t::RADIUS_BADGE)).text_size(px(t::TEXT_META));
+    match tone {
+        Tone::Amber => {
+            let mut fill = c(tk.attention);
+            fill.a = 0.12;
+            base.bg(fill).font_weight(FontWeight::MEDIUM).text_color(c(tk.attention))
+        }
+        Tone::Neutral => base.text_color(c(tk.text_muted)),
+    }
+    .child(SharedString::from(text.to_lowercase()))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,6 +185,25 @@ pub fn icon_button(id: impl Into<ElementId>, glyph: &'static str, cx: &App) -> S
         .hover(move |s| s.bg(hover).text_color(ink))
         .role(gpui::Role::Button)
         .child(glyph)
+}
+
+/// A 24px icon action: one Lucide icon (the set embedded in `main.rs`), muted until hovered. Every action in the
+/// chrome uses these, so they share one stroke weight, size and baseline.
+pub fn icon_action(id: impl Into<ElementId>, icon: gpui_kit_assets::IconName, cx: &App) -> Stateful<Div> {
+    let (hover, ink) = (line(cx, t::HOVER_STRONG), c(tk(cx).text_primary));
+    div()
+        .id(id)
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
+        .size(px(24.))
+        .rounded(px(t::RADIUS_CONTROL))
+        .cursor_pointer()
+        .text_color(c(tk(cx).text_muted))
+        .hover(move |s| s.bg(hover).text_color(ink))
+        .role(gpui::Role::Button)
+        .child(gpui_component::Icon::new(icon).size(px(15.)))
 }
 
 /// A header chip (`⎇ main`, `opus-4 · 200k ⌄`): mono, hairline outline.

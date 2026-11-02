@@ -24,7 +24,6 @@ use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Editor, EditorState, Input, InputEvent, InputState, Position};
 
 use super::{DockTab, Workspace};
-use crate::hud;
 use crate::theme::{color, tint};
 
 /// Larger files open in Zed.
@@ -564,8 +563,9 @@ impl Workspace {
 }
 
 /// A frame for one of the dock's panes.
-pub(super) fn pane(title: &str, body: AnyElement, cx: &mut Context<Workspace>) -> AnyElement {
-    div().flex().flex_col().size_full().min_h_0().min_w_0().gap(px(6.)).child(hud::label(title, cx)).child(div().flex_1().min_h_0().min_w_0().flex().flex_col().child(body)).into_any_element()
+/// A dock pane: just its body (the tab above already names it).
+pub(super) fn pane(_title: &str, body: AnyElement, _cx: &mut Context<Workspace>) -> AnyElement {
+    div().flex().flex_col().size_full().min_h_0().min_w_0().child(div().flex_1().min_h_0().min_w_0().flex().flex_col().child(body)).into_any_element()
 }
 
 #[cfg(test)]

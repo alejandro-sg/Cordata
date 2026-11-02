@@ -112,7 +112,8 @@ fn hsla(value: u32) -> gpui::Hsla {
 
 fn palette(cx: &gpui::App) -> Palette {
     let p = crate::theme::palette(cx);
-    Palette::new(p.get(Role::Text).to_u32(), p.get(Role::Ground).to_u32(), p.get(Role::Accent).to_u32())
+    let palette = Palette::new(p.get(Role::Text).to_u32(), p.get(Role::Ground).to_u32(), p.get(Role::Accent).to_u32());
+    if crate::theme::tk(cx).is_dark { palette } else { palette.for_light() }
 }
 
 fn metrics(cx: &gpui::App) -> Metrics {
@@ -341,13 +342,8 @@ impl Workspace {
             .flex()
             .items_center()
             .justify_between()
-            .px(px(10.))
-            .py(px(6.))
+            .px(px(4.))
             .gap(px(8.))
-            .rounded(px(cordata_theme::tokens::RADIUS_CARD))
-            .bg(crate::theme::line(cx, cordata_theme::tokens::FILL_FAINT))
-            .border_1()
-            .border_color(crate::theme::line(cx, cordata_theme::tokens::LINE_DEFAULT))
             .child(
                 div()
                     .flex_1()
@@ -394,32 +390,6 @@ impl Workspace {
                     .ghost()
                     .on_click(cx.listener(|this, _, window, cx| this.restart_terminal(window, cx))),
             );
-
-        let quick_commands = ["git status", "git diff", "cargo check", "cargo test"];
-        let quick_bar = div().flex().items_center().gap(px(4.)).flex_wrap().children(quick_commands.into_iter().map(|cmd| {
-            let line = format!("{cmd}\r");
-            div()
-                .id(SharedString::from(format!("quick-cmd-{cmd}")))
-                .px(px(8.))
-                .py(px(3.))
-                .rounded(px(cordata_theme::tokens::RADIUS_CONTROL))
-                .bg(crate::theme::line(cx, cordata_theme::tokens::FILL_FAINT))
-                .border_1()
-                .border_color(crate::theme::line(cx, cordata_theme::tokens::LINE_CONTROL))
-                .cursor_pointer()
-                .text_xs()
-                .font_family(crate::theme::mono(cx))
-                .text_color(color(cx, Role::TextSecondary))
-                .hover(|el| el.text_color(color(cx, Role::Accent)).border_color(color(cx, Role::Accent)))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.ensure_terminal(cx);
-                    if let Some(session) = &this.terminal.session {
-                        session.write(line.clone().into_bytes());
-                    }
-                    { let focus = this.terminal.focus.clone(); window.focus(&focus, cx); }
-                }))
-                .child(cmd)
-        }));
 
         let focused = term.focus.is_focused(window);
         let screen = term.session.as_ref().map(|s| s.screen(&palette));
@@ -479,8 +449,6 @@ impl Workspace {
             .text_size(m.size)
             .line_height(m.line_h)
             .rounded(px(cordata_theme::tokens::RADIUS_CARD))
-            .border_1()
-            .border_color(if focused { color(cx, Role::Accent) } else { crate::theme::line(cx, cordata_theme::tokens::LINE_DEFAULT) })
             .cursor_text()
             .child(div().relative().size_full().overflow_hidden().child(sizer).children(rows))
             .when_some(term.error.clone(), |el, error| el.child(div().text_color(color(cx, Role::Danger)).child(SharedString::from(error))))
@@ -498,7 +466,6 @@ impl Workspace {
             .flex_col()
             .gap(px(8.))
             .child(status_strip)
-            .child(quick_bar)
             .child(grid)
             .into_any_element()
     }

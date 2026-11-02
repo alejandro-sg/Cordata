@@ -1039,6 +1039,7 @@ dependencies = [
  "cordata-view",
  "gpui-component",
  "gpui-fps",
+ "gpui-kit-assets",
  "gpui-pre",
  "gpui-pre-platform",
  "libc",

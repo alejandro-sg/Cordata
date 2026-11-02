@@ -198,7 +198,7 @@ mod tests {
 
     #[test]
     fn semantic_colours_become_the_palette_and_everything_else_passes_through() {
-        assert_eq!(remap_for(Level::TrueColor, Color::Cyan), Color::Rgb(255, 158, 61));
+        assert_eq!(remap_for(Level::TrueColor, Color::Cyan), Color::Rgb(61, 201, 164));
         assert_eq!(remap_for(Level::TrueColor, Color::Rgb(1, 2, 3)), Color::Rgb(1, 2, 3));
         assert_eq!(remap_for(Level::TrueColor, Color::Black), Color::Black);
         assert_eq!(remap_for(Level::TrueColor, Color::Reset), Color::Reset);

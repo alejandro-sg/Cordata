@@ -139,29 +139,30 @@ pub struct Palette {
 
 /// The palette.
 pub const NIGHT: Palette = Palette {
-    accent: Rgb::hex(0xFF9E3D),
-    agent: Rgb::hex(0x48D6E0),
-    attention: Rgb::hex(0xFFD682),
-    ok: Rgb::hex(0x76DEBA),
-    danger: Rgb::hex(0xFF604A),
-    info: Rgb::hex(0x74A0D6),
-    text: Rgb::hex(0xEEF1F5),
-    text_secondary: Rgb::hex(0xAAB4BE),
-    text_dim: Rgb::hex(0x7D8A99),
-    ground: Rgb::hex(0x07090C),
-    surface: Rgb::hex(0x0D1117),
-    raised: Rgb::hex(0x151B23),
-    hairline: Rgb::hex(0x232B36),
-    selection: Rgb::hex(0x3A2A14),
+    // "Ink" (the app's dark theme): viridian is Cordata's one signal, ochre only means "needs you".
+    accent: Rgb::hex(0x3DC9A4),
+    agent: Rgb::hex(0xA096E6),
+    attention: Rgb::hex(0xE2A640),
+    ok: Rgb::hex(0x7CCB9A),
+    danger: Rgb::hex(0xE5584E),
+    info: Rgb::hex(0x7F9BB8),
+    text: Rgb::hex(0xE8EAED),
+    text_secondary: Rgb::hex(0xA2A8B0),
+    text_dim: Rgb::hex(0x7A8088),
+    ground: Rgb::hex(0x0C0E11),
+    surface: Rgb::hex(0x0E1013),
+    raised: Rgb::hex(0x13161A),
+    hairline: Rgb::hex(0x2B3038),
+    selection: Rgb::hex(0x123A32),
 };
 
 /// The palette for macOS "Increase Contrast": brighter ink, a blacker ground, visible hairlines.
 pub const NIGHT_HIGH_CONTRAST: Palette = Palette {
-    accent: Rgb::hex(0xFFB066),
-    agent: Rgb::hex(0x7DE8F0),
-    attention: Rgb::hex(0xFFE3A6),
-    ok: Rgb::hex(0x9BEFD0),
-    danger: Rgb::hex(0xFF8A78),
+    accent: Rgb::hex(0x5FE0BC),
+    agent: Rgb::hex(0xBDB5F0),
+    attention: Rgb::hex(0xF2BE5E),
+    ok: Rgb::hex(0x9EE3B6),
+    danger: Rgb::hex(0xFF7D73),
     info: Rgb::hex(0xA3C4EC),
     text: Rgb::hex(0xFFFFFF),
     text_secondary: Rgb::hex(0xD5DCE3),
@@ -170,7 +171,7 @@ pub const NIGHT_HIGH_CONTRAST: Palette = Palette {
     surface: Rgb::hex(0x06080B),
     raised: Rgb::hex(0x0E1218),
     hairline: Rgb::hex(0x5A6878),
-    selection: Rgb::hex(0x5A3F1C),
+    selection: Rgb::hex(0x1B5146),
 };
 
 impl Palette {
@@ -283,10 +284,23 @@ mod tests {
 
     #[test]
     fn the_accent_and_the_agent_colour_are_told_apart() {
-        // Amber vs teal is the palette's one distinction that carries meaning (ours vs delegated/untrusted).
-        let (a, t) = (NIGHT.accent, NIGHT.agent);
-        let hue_gap = |x: Rgb, y: Rgb| (i32::from(x.0) - i32::from(y.0)).abs() + (i32::from(x.2) - i32::from(y.2)).abs();
-        assert!(hue_gap(a, t) > 300, "amber and teal are far apart in red and blue");
+        // Viridian vs lavender is the palette's one distinction that carries meaning (ours vs delegated/untrusted):
+        // their hues sit well apart, in every theme.
+        let hue = |c: Rgb| {
+            let (r, g, b) = (f64::from(c.0) / 255., f64::from(c.1) / 255., f64::from(c.2) / 255.);
+            let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+            let d = max - min;
+            let h = if d == 0. { 0. } else if max == r { 60. * (((g - b) / d) % 6.) } else if max == g { 60. * ((b - r) / d + 2.) } else { 60. * ((r - g) / d + 4.) };
+            (h + 360.) % 360.
+        };
+        let gap = |x: Rgb, y: Rgb| {
+            let d = (hue(x) - hue(y)).abs();
+            d.min(360. - d)
+        };
+        for palette in [NIGHT, NIGHT_HIGH_CONTRAST, crate::tokens::DAY.palette()] {
+            assert!(gap(palette.accent, palette.agent) >= 60., "accent and agent too close: {:.0}°", gap(palette.accent, palette.agent));
+            assert!(gap(palette.accent, palette.attention) >= 60., "accent and attention too close");
+        }
     }
 
     #[test]
@@ -295,7 +309,7 @@ mod tests {
         assert_eq!(mode_role("build"), Role::Accent);
         assert_eq!(mode_role("edit"), Role::Attention);
         assert_eq!(mode_role("auto"), Role::Danger);
-        assert_eq!(NIGHT.get(Role::Accent).css(), "#FF9E3D");
+        assert_eq!(NIGHT.get(Role::Accent).css(), "#3DC9A4");
         assert_eq!(Rgb::hex(0xFF9E3D).to_u32(), 0xFF9E3D);
     }
 

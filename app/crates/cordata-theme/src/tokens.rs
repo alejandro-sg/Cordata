@@ -1,10 +1,14 @@
-//! The native app's design tokens (the "Cordata Harness" reference design): every colour, size, radius, type size and
-//! tracking a view may use. Views never write a literal — they ask for a token here, through `cordata-app`'s
-//! `theme` module. Four themes share one shape: three dark ones (`2049`, `graphite`, `dim`) with the same accents, and
-//! `light` (`DAY`) — warm paper, charcoal ink, the accents darkened until they hold WCAG AA on paper (AAA with Increase
-//! Contrast). `system` in the settings picks `DAY` or `2049` from the macOS appearance (cordata-app's `theme`).
+//! The native app's design tokens: every colour, size, radius, type size and tracking a view may use. Views never
+//! write a literal — they ask for a token here, through `cordata-app`'s `theme` module.
 //!
-//! Lines are white at an alpha (the `LINE_*` constants), tints are an accent at an alpha (`AMBER_*`, `TEAL_*`): both
+//! The look is a quiet instrument. One ground per theme (columns are told apart by hairlines, not shades), one signal
+//! colour (viridian: focus, the live line, your `›`), ochre for exactly one meaning — something needs you — and a
+//! lavender second voice for what is delegated or untrusted. No cards, shadows or haze in the chrome: hierarchy is
+//! type and tone. Four themes share one shape: `2049` ("Ink", blue-black), `graphite` and `dim` (its neutral and
+//! lifted variants) and `light` (`DAY`, "Paper": cool off-white, every accent held to WCAG AA on it, AAA with Increase
+//! Contrast). The field names (`amber`, `teal`) are the slots' historical names, not their colours.
+//!
+//! Lines are the ink at an alpha (the `LINE_*` constants), tints are an accent at an alpha (`AMBER_*`, `TEAL_*`): both
 //! are drawn translucent over whatever ground they sit on, so one value works on every surface.
 
 use crate::{Palette, Rgb};
@@ -51,6 +55,8 @@ pub struct Tokens {
     pub amber_on_fill: Rgb,
     /// Healthy / done / trusted / connected.
     pub teal: Rgb,
+    /// Something needs the person: an approval, a blocked agent. Used for nothing else.
+    pub attention: Rgb,
     /// Destructive actions.
     pub danger: Rgb,
     /// The steel of HUD line-work (gauges, links in older panes). Not in the reference; kept for the panes it predates.
@@ -63,29 +69,32 @@ pub struct Tokens {
     pub shadow: Rgb,
 }
 
+/// "Ink": blue-black ground, cool greys, one signal colour (viridian) and ochre kept for what needs you. The settings
+/// key stays `2049` so saved preferences keep working.
 pub const T2049: Tokens = Tokens {
     name: "2049",
-    bg_window: Rgb::hex(0x050607),
-    bg_main: Rgb::hex(0x07080A),
-    bg_panel: Rgb::hex(0x0A0B0D),
-    bg_nav_deep: Rgb::hex(0x08090B),
-    bg_input: Rgb::hex(0x0D0E11),
-    text_primary: Rgb::hex(0xECE7DE),
-    text_body: Rgb::hex(0xD9D3C8),
-    text_secondary: Rgb::hex(0xA9A49B),
-    text_muted: Rgb::hex(0x8A8780),
-    text_muted_2: Rgb::hex(0x7A766F),
-    text_label: Rgb::hex(0x6B6862),
-    text_faint: Rgb::hex(0x5F5C56),
-    text_faint_2: Rgb::hex(0x4F4C47),
-    amber: Rgb::hex(0xE8A254),
-    amber_hover: Rgb::hex(0xF0B46E),
-    amber_soft: Rgb::hex(0xF3C38A),
-    amber_dim: Rgb::hex(0x9C7445),
-    amber_dim_2: Rgb::hex(0x7A5A36),
-    amber_on_fill: Rgb::hex(0x1A1208),
-    teal: Rgb::hex(0x5FB3B3),
-    danger: Rgb::hex(0xE56050),
+    bg_window: Rgb::hex(0x0C0E11),
+    bg_main: Rgb::hex(0x0E1013),
+    bg_panel: Rgb::hex(0x0C0E11),
+    bg_nav_deep: Rgb::hex(0x0A0C0E),
+    bg_input: Rgb::hex(0x13161A),
+    text_primary: Rgb::hex(0xE8EAED),
+    text_body: Rgb::hex(0xD3D6DB),
+    text_secondary: Rgb::hex(0xA2A8B0),
+    text_muted: Rgb::hex(0x878D95),
+    text_muted_2: Rgb::hex(0x7A8088),
+    text_label: Rgb::hex(0x6E747C),
+    text_faint: Rgb::hex(0x626870),
+    text_faint_2: Rgb::hex(0x50565D),
+    amber: Rgb::hex(0x3DC9A4),
+    amber_hover: Rgb::hex(0x56D4B3),
+    amber_soft: Rgb::hex(0x86DCC4),
+    amber_dim: Rgb::hex(0x2C8F75),
+    amber_dim_2: Rgb::hex(0x206B58),
+    amber_on_fill: Rgb::hex(0x04120D),
+    teal: Rgb::hex(0xA096E6),
+    attention: Rgb::hex(0xE2A640),
+    danger: Rgb::hex(0xE5584E),
     info: Rgb::hex(0x7F9BB8),
     ink: Rgb::hex(0xFFFFFF),
     is_dark: true,
@@ -135,31 +144,33 @@ pub const DIM: Tokens = Tokens {
 /// Increase Contrast reaches AAA (7:1) — the tests below compute both.
 pub const DAY: Tokens = Tokens {
     name: "light",
-    bg_window: Rgb::hex(0xECE8E1),
-    bg_main: Rgb::hex(0xF7F6F2),
-    bg_panel: Rgb::hex(0xEFECE6),
-    bg_nav_deep: Rgb::hex(0xE6E2DA),
+    // "Paper": cool off-white (no cream), one ground for every column; hairlines separate them.
+    bg_window: Rgb::hex(0xF4F5F3),
+    bg_main: Rgb::hex(0xFAFAF9),
+    bg_panel: Rgb::hex(0xF4F5F3),
+    bg_nav_deep: Rgb::hex(0xEDEEEC),
     bg_input: Rgb::hex(0xFFFFFF),
-    text_primary: Rgb::hex(0x16181D),
-    text_body: Rgb::hex(0x262930),
-    text_secondary: Rgb::hex(0x474A52),
-    text_muted: Rgb::hex(0x585B62),
-    text_muted_2: Rgb::hex(0x63666C),
-    text_label: Rgb::hex(0x6A6C72),
-    text_faint: Rgb::hex(0x76787D),
-    text_faint_2: Rgb::hex(0x8A8C90),
-    amber: Rgb::hex(0x7F470B),
-    amber_hover: Rgb::hex(0x8F520F),
-    amber_soft: Rgb::hex(0x6E3D08),
-    amber_dim: Rgb::hex(0xA87A4A),
-    amber_dim_2: Rgb::hex(0xC29A70),
+    text_primary: Rgb::hex(0x111418),
+    text_body: Rgb::hex(0x22262D),
+    text_secondary: Rgb::hex(0x454B54),
+    text_muted: Rgb::hex(0x565C65),
+    text_muted_2: Rgb::hex(0x5F656D),
+    text_label: Rgb::hex(0x666C74),
+    text_faint: Rgb::hex(0x70767E),
+    text_faint_2: Rgb::hex(0x868B92),
+    amber: Rgb::hex(0x0A6553),
+    amber_hover: Rgb::hex(0x0C735F),
+    amber_soft: Rgb::hex(0x085444),
+    amber_dim: Rgb::hex(0x4F8C7E),
+    amber_dim_2: Rgb::hex(0x86B3A8),
     amber_on_fill: Rgb::hex(0xFFFFFF),
-    teal: Rgb::hex(0x0D6B73),
+    teal: Rgb::hex(0x5B4BA8),
+    attention: Rgb::hex(0x8A5100),
     danger: Rgb::hex(0xA8231B),
     info: Rgb::hex(0x3B5878),
-    ink: Rgb::hex(0x16181D),
+    ink: Rgb::hex(0x111418),
     is_dark: false,
-    shadow: Rgb::hex(0x2A2620),
+    shadow: Rgb::hex(0x1A1E24),
 };
 
 pub const THEMES: [&Tokens; 4] = [&T2049, &GRAPHITE, &DIM, &DAY];
@@ -202,7 +213,7 @@ impl Tokens {
         Palette {
             accent: self.amber,
             agent: self.teal,
-            attention: self.amber,
+            attention: self.attention,
             ok: self.teal,
             danger: self.danger,
             info: self.info,
@@ -261,7 +272,7 @@ pub const HAZE_TEAL: (u32, f32) = (0x468C96, 0.07);
 
 pub const HEADER_H: f32 = 52.;
 pub const STATUS_H: f32 = 28.;
-pub const SIDEBAR_W: f32 = 256.;
+pub const SIDEBAR_W: f32 = 232.;
 pub const PANEL_MIN_W: f32 = 300.;
 pub const PANEL_MAX_W: f32 = 380.;
 /// The side panel's share of the window, clamped to `PANEL_MIN_W..=PANEL_MAX_W`.
@@ -291,6 +302,8 @@ pub const DIAMOND: f32 = 6.;
 pub const GLOW_BLUR: f32 = 8.;
 pub const COMPOSER_RING: f32 = 4.;
 pub const GUTTER: f32 = 16.;
+/// How far a mark (`›`, `→`) hangs left of the text edge: its 12px column and a 10px gap.
+pub const HANG: f32 = 22.;
 pub const ROW_PAD_Y: f32 = 14.;
 
 /// Window size rules.
@@ -434,8 +447,12 @@ mod tests {
 
     #[test]
     fn the_reference_values_are_the_2049_theme() {
-        assert_eq!(T2049.amber.css(), "#E8A254");
-        assert_eq!(T2049.bg_main.css(), "#07080A");
+        assert_eq!(T2049.amber.css(), "#3DC9A4", "the signal is viridian");
+        assert_eq!(T2049.bg_main.css(), "#0E1013");
+        for t in THEMES {
+            assert_ne!(t.attention, t.amber, "{}: needing you never looks like the accent", t.name);
+            assert!(t.attention.contrast(t.bg_main) >= 4.5, "{} attention", t.name);
+        }
         assert_eq!(Tokens::named("graphite").name, "graphite");
         assert_eq!(Tokens::named("nonsense").name, "2049");
     }

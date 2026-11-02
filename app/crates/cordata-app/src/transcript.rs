@@ -12,7 +12,7 @@ use gpui::{AnyElement, App, FontWeight, InteractiveElement as _, IntoElement, Pa
 use gpui_component::text::{TextView, TextViewStyle};
 
 use crate::hud;
-use crate::theme::{amber, c, ca, line, mono, teal, tk};
+use crate::theme::{amber, c, ca, line, mono, tk};
 use crate::ui::{self};
 
 /// Rows of a tool's result shown when it is opened, before "… N more lines".
@@ -43,7 +43,10 @@ pub fn block(message: &Message, ix: usize, edge: GroupEdge, expanded: bool, show
         Message::Agent(text) => assistant(text, ix, cx),
         Message::Thought(text) => thought(text, show_thoughts, cx),
         Message::Tool(card) => tool(card, edge, expanded, cx),
-        Message::Info(text) => notice(text, tk(cx).text_muted, cx),
+        // Housekeeping (instructions read, `/cost`, a command's note): small and faint, never in the way.
+        // A `!command`'s output is something you asked to read: a code block. The rest is a faint note.
+        Message::Info(text) if text.starts_with("$ ") => div().py(px(6.)).child(ui::code_block(SharedString::from(cut_lines(&shown(text))), cx)).into_any_element(),
+        Message::Info(text) => notice(text, tk(cx).text_faint, cx),
         Message::Error(text) => error_banner(text, cx),
         Message::Divider(label) => div().py(px(8.)).child(hud::divider(&shown(label), cx)).into_any_element(),
         Message::Diff(text) => div().py(px(6.)).child(unified_diff_block(text, cx)).into_any_element(),
@@ -53,6 +56,24 @@ pub fn block(message: &Message, ix: usize, edge: GroupEdge, expanded: bool, show
 }
 
 /// Whether a message is part of a conversation (the empty state shows while there are none).
+/// Whether the transcript has something to show instead of the empty state: anything since the person first did
+/// something (a reply, a `!command`'s output, `/cost`), or a conversation resumed from disk.
+pub fn has_content(view: &cordata_view::app::App) -> bool {
+    view.opening.is_some_and(|n| view.messages.len() > n) || view.messages.iter().any(is_conversation)
+}
+
+/// The notes a session opens with (settings warnings, instructions read), for the empty state.
+pub fn opening_notes(view: &cordata_view::app::App) -> Vec<String> {
+    let end = view.opening.unwrap_or(view.messages.len()).min(view.messages.len());
+    view.messages[..end]
+        .iter()
+        .filter_map(|m| match m {
+            Message::Info(text) => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 pub fn is_conversation(message: &Message) -> bool {
     matches!(message, Message::User(_) | Message::Agent(_) | Message::Tool(_) | Message::Thought(_) | Message::Diff(_))
 }
@@ -104,88 +125,64 @@ fn user(text: &str, cx: &App) -> AnyElement {
                 .flex()
                 .items_center()
                 .gap(px(5.))
-                .px(px(7.))
-                .py(px(2.))
-                .rounded(px(t::RADIUS_BADGE))
-                .bg(amber(cx, t::AMBER_FILL))
-                .border_1()
-                .border_color(amber(cx, t::AMBER_BORDER))
                 .font_family(mono(cx))
                 .text_size(px(t::TEXT_META))
-                .text_color(c(tk.amber_soft))
+                .text_color(c(tk.text_muted))
                 .child("▤")
                 .child(SharedString::from(name))
                 .into_any_element()
         })
         .collect();
 
+    // Your prompt as a line of the log, under the same `›` the composer has — not a chat bubble.
     div()
         .w_full()
         .flex()
-        .justify_end()
-        .py(px(10.))
+        .items_start()
+        .gap(px(10.))
+        .ml(px(-t::HANG))
+        .pt(px(18.))
+        .pb(px(8.))
+        .child(crate::workspace::prompt_mark(c(tk.amber), cx))
         .child(
             div()
-                .max_w(relative(0.82))
+                .flex_1()
+                .min_w_0()
                 .flex()
                 .flex_col()
                 .gap(px(6.))
-                .px(px(14.))
-                .py(px(10.))
-                .rounded(px(t::RADIUS_POPOVER))
-                .bg(line(cx, t::HOVER))
-                .border_1()
-                .border_color(line(cx, t::LINE_CONTROL))
-                .when(!pills.is_empty(), |card| card.child(div().flex().flex_wrap().gap(px(6.)).children(pills)))
-                .when(!body.is_empty(), |card| {
-                    card.child(
+                .when(!body.is_empty(), |col| {
+                    col.child(
                         div()
                             .text_size(px(t::TEXT_BODY))
                             .line_height(relative(t::LINE_HEIGHT_BODY))
+                            .font_weight(FontWeight::MEDIUM)
                             .text_color(c(tk.text_primary))
                             .child(SharedString::from(body)),
                     )
-                }),
+                })
+                .when(!pills.is_empty(), |col| col.child(div().flex().flex_wrap().gap(px(10.)).children(pills))),
         )
         .into_any_element()
 }
 
+/// The agent's reply: plain prose at the reading width. No name above it — your lines carry the `›`, so whatever has
+/// none is the agent's.
 fn assistant(text: &str, ix: usize, cx: &App) -> AnyElement {
     let tk = tk(cx);
     div()
-        .py(px(10.))
-        .flex()
-        .flex_col()
-        .gap(px(8.))
+        .py(px(8.))
+        .text_size(px(t::TEXT_BODY))
+        .line_height(relative(t::LINE_HEIGHT_BODY))
+        .text_color(c(tk.text_body))
         .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .child(ui::diamond(cx))
-                .child(
-                    div()
-                        .font_family(mono(cx))
-                        .text_size(px(t::TEXT_LABEL))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(c(tk.amber))
-                        .child(SharedString::from(t::tracked_text("cordata", t::Tracking::Label, true))),
-                ),
-        )
-        .child(
-            div()
-                .text_size(px(t::TEXT_BODY))
-                .line_height(relative(t::LINE_HEIGHT_BODY))
-                .text_color(c(tk.text_body))
-                .child(
-                    TextView::markdown(("agent", ix), SharedString::from(shown(text)))
-                        .selectable(true)
-                        .style(TextViewStyle::default().inline_code(gpui::HighlightStyle {
-                            color: Some(c(tk.amber_soft)),
-                            background_color: Some(amber(cx, t::AMBER_FILL_MID)),
-                            ..Default::default()
-                        })),
-                ),
+            TextView::markdown(("agent", ix), SharedString::from(shown(text)))
+                .selectable(true)
+                .style(TextViewStyle::default().inline_code(gpui::HighlightStyle {
+                    color: Some(c(tk.text_primary)),
+                    background_color: Some(line(cx, t::HOVER_STRONG)),
+                    ..Default::default()
+                })),
         )
         .into_any_element()
 }
@@ -199,13 +196,11 @@ fn thought(text: &str, expanded: bool, cx: &App) -> AnyElement {
     div()
         .py(px(4.))
         .child(
+            // Reasoning is aside: one faint line (no box) that opens on a click.
             div()
                 .flex()
                 .flex_col()
-                .rounded(px(t::RADIUS_CARD))
-                .bg(line(cx, t::FILL_FAINT))
-                .border_1()
-                .border_color(line(cx, t::LINE_SUBTLE))
+                .rounded(px(t::RADIUS_ROW))
                 .hover(move |s| s.bg(hover))
                 .child(
                     div()
@@ -215,8 +210,8 @@ fn thought(text: &str, expanded: bool, cx: &App) -> AnyElement {
                         .h(px(28.))
                         .px(px(10.))
                         .text_size(px(t::TEXT_SMALL))
-                        .child(div().text_color(c(tk.amber_soft)).child("∴"))
-                        .child(div().font_family(mono(cx)).text_size(px(t::TEXT_META)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_secondary)).child("Thought process"))
+                        .child(div().text_color(c(tk.text_faint)).child("∴"))
+                        .child(div().text_size(px(t::TEXT_META)).text_color(c(tk.text_muted)).child("thinking"))
                         .when(!expanded && !first.is_empty(), |row| {
                             row.child(div().text_color(c(tk.text_faint)).child("·"))
                                 .child(div().flex_1().min_w_0().truncate().italic().text_color(c(tk.text_muted)).child(SharedString::from(cut(&first))))
@@ -239,8 +234,8 @@ fn thought(text: &str, expanded: bool, cx: &App) -> AnyElement {
                             .mx(px(10.))
                             .mb(px(8.))
                             .pl(px(10.))
-                            .border_l_2()
-                            .border_color(amber(cx, t::AMBER_BORDER))
+                            .border_l_1()
+                            .border_color(line(cx, t::LINE_CONTROL))
                             .text_size(px(t::TEXT_UI))
                             .line_height(relative(1.5))
                             .text_color(c(tk.text_secondary))
@@ -252,7 +247,7 @@ fn thought(text: &str, expanded: bool, cx: &App) -> AnyElement {
 }
 
 fn notice(text: &str, ink: cordata_theme::Rgb, _cx: &App) -> AnyElement {
-    div().py(px(4.)).text_size(px(t::TEXT_UI)).text_color(c(ink)).child(SharedString::from(shown(text))).into_any_element()
+    div().py(px(3.)).text_size(px(t::TEXT_SMALL)).text_color(c(ink)).child(SharedString::from(shown(text))).into_any_element()
 }
 
 fn error_banner(text: &str, cx: &App) -> AnyElement {
@@ -291,6 +286,17 @@ pub fn verb(name: &str) -> &'static str {
 }
 
 /// Human-friendly Title Case action label shown in tool call rows.
+/// The verb for a call that has not finished: it is about to run, not done running.
+pub fn verb_pending(name: &str) -> &'static str {
+    match verb(name) {
+        "read" => "Read",
+        "edit" => "Edit",
+        "run" => "Run",
+        "search" => "Search",
+        _ => "Call",
+    }
+}
+
 pub fn verb_display(name: &str) -> &'static str {
     match verb(name) {
         "read" => "Read",
@@ -369,10 +375,11 @@ fn render_diff_rows(rows: Vec<(DiffLineKind, String)>, more: usize, header: Opti
     let tk = tk(cx);
     let elements = rows.into_iter().map(|(kind, text)| {
         let (bg, ink) = match kind {
-            DiffLineKind::Header => (Some(amber(cx, t::AMBER_FILL)), tk.amber),
-            DiffLineKind::Add => (Some(teal(cx, 0.10)), tk.teal),
-            DiffLineKind::Del => (Some(ca(tk.danger, 0.10)), tk.danger),
-            DiffLineKind::Context => (None, tk.text_secondary),
+            // The +/− prefixes carry the meaning; colour only tints them.
+            DiffLineKind::Header => (None, tk.text_faint),
+            DiffLineKind::Add => (Some(amber(cx, 0.07)), tk.text_body),
+            DiffLineKind::Del => (Some(ca(tk.danger, 0.06)), tk.text_muted),
+            DiffLineKind::Context => (None, tk.text_muted),
         };
         div()
             .w_full()
@@ -464,12 +471,12 @@ fn meta_of(card: &ToolCard) -> String {
 fn tool(card: &ToolCard, edge: GroupEdge, expanded: bool, cx: &App) -> AnyElement {
     let tk = tk(cx);
     let (mark, ink) = match card.status {
-        ToolStatus::Completed => ("✓", tk.teal),
+        // Done is the ordinary case: said quietly. Running and failing are the ones worth colour.
+        ToolStatus::Completed => ("✓", tk.text_faint),
         ToolStatus::Failed => ("✕", tk.danger),
         ToolStatus::InProgress => ("◆", tk.amber),
         ToolStatus::Pending => ("◆", tk.amber_dim),
     };
-    let radius = px(t::RADIUS_CARD);
     let row_hover = line(cx, t::HOVER);
 
     let right_meta: AnyElement = if !card.diffs.is_empty() {
@@ -480,7 +487,7 @@ fn tool(card: &ToolCard, edge: GroupEdge, expanded: bool, cx: &App) -> AnyElemen
             .items_center()
             .gap(px(6.))
             .when(card.diffs.len() > 1, |r| r.child(div().text_color(c(tk.text_faint)).child(SharedString::from(format!("{} files", card.diffs.len())))))
-            .when(add > 0 || del == 0, |r| r.child(div().text_color(c(tk.teal)).child(SharedString::from(format!("+{add}")))))
+            .when(add > 0 || del == 0, |r| r.child(div().text_color(c(tk.amber)).child(SharedString::from(format!("+{add}")))))
             .when(del > 0, |r| r.child(div().text_color(c(tk.danger)).child(SharedString::from(format!("−{del}")))))
             .into_any_element()
     } else {
@@ -522,13 +529,9 @@ fn tool(card: &ToolCard, edge: GroupEdge, expanded: bool, cx: &App) -> AnyElemen
     div()
         .when(edge.first, |d| d.mt(px(6.)))
         .when(edge.last, |d| d.mb(px(6.)))
+        // A run of tool calls hangs off one margin rule, like a log's gutter: no box around it.
         .border_l_1()
-        .border_r_1()
-        .border_color(line(cx, t::LINE_DEFAULT))
-        .when(edge.first, |d| d.border_t_1().rounded_tl(radius).rounded_tr(radius))
-        .when(edge.last, |d| d.border_b_1().rounded_bl(radius).rounded_br(radius))
-        .when(!edge.first, |d| d.border_t_1().border_color(line(cx, t::LINE_SUBTLE)))
-        .bg(line(cx, t::FILL_FAINT))
+        .border_color(line(cx, t::LINE_CONTROL))
         .child(
             div()
                 .flex()
@@ -540,7 +543,7 @@ fn tool(card: &ToolCard, edge: GroupEdge, expanded: bool, cx: &App) -> AnyElemen
                 .font_family(mono(cx))
                 .text_size(px(t::TEXT_SMALL))
                 .child(div().w(px(12.)).flex_shrink_0().text_color(c(ink)).child(mark))
-                .child(div().w(px(62.)).flex_shrink_0().font_weight(FontWeight::MEDIUM).text_color(c(tk.text_secondary)).child(verb_display(&card.name)))
+                .child(div().w(px(62.)).flex_shrink_0().font_weight(FontWeight::MEDIUM).text_color(c(tk.text_secondary)).child(if matches!(card.status, ToolStatus::Pending | ToolStatus::InProgress) { verb_pending(&card.name) } else { verb_display(&card.name) }))
                 .child(div().flex_1().min_w_0().truncate().text_color(c(tk.text_body)).child(SharedString::from(cut(&shown(&target(card))))))
                 .child(right_meta)
                 .child(div().flex_shrink_0().text_color(c(tk.text_faint)).child(if expanded { "⌃" } else { "⌄" })),

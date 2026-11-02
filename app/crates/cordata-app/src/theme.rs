@@ -90,10 +90,6 @@ pub fn amber(cx: &App, alpha: f32) -> Hsla {
     ca(tk(cx).amber, alpha)
 }
 
-pub fn teal(cx: &App, alpha: f32) -> Hsla {
-    ca(tk(cx).teal, alpha)
-}
-
 /// The glow on a live amber dot.
 pub fn amber_glow(cx: &App) -> Vec<BoxShadow> {
     vec![BoxShadow { color: amber(cx, tokens::AMBER_GLOW), offset: point(px(0.), px(0.)), blur_radius: px(tokens::GLOW_BLUR), spread_radius: px(0.), inset: false }]

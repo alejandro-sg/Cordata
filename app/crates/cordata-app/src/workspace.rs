@@ -30,6 +30,7 @@ use crate::ui::{self, Dot, Kind};
 
 mod attachments;
 mod conversation;
+pub(crate) use conversation::prompt_mark;
 mod editor;
 mod git_ops;
 mod palette;
@@ -39,7 +40,6 @@ mod settings_modal;
 mod settings_view;
 mod side_panel;
 mod sidebar;
-mod status_bar;
 mod terminal;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -250,7 +250,7 @@ impl Workspace {
             Self::serve_control(window, cx);
         }
         let prefs = cx.try_global::<Prefs>().cloned().unwrap_or_default();
-        let composer = cx.new(|cx| TextareaState::new(window, cx).auto_grow(2, 10).submit_on_enter(prefs.send_with != "cmd-enter").placeholder("Ask anything, @mention files, or type / for commands…"));
+        let composer = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, 10).submit_on_enter(prefs.send_with != "cmd-enter").placeholder("Ask anything, @mention files, or type / for commands…"));
         let display = cx.try_global::<Display>().copied().unwrap_or_default();
         let first = cx.new(|cx| Session::start(&connection, cwd.clone(), initial_prompt, cx));
         let file_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter files…"));
@@ -306,9 +306,9 @@ impl Workspace {
             }),
         ];
         composer.update(cx, |state, cx| state.focus(window, cx));
-        let width = window.viewport_size().width.as_f32();
         let sidebar_open = prefs.sidebar_open.unwrap_or(true);
-        let panel_open = prefs.panel_open.unwrap_or(width >= t::PANEL_AUTO_COLLAPSE_W);
+        // Closed until the person opens it (⌘\): the conversation is the window's default, not three columns.
+        let panel_open = prefs.panel_open.unwrap_or(false);
         let mut this = Self {
             connection,
             cwd,
@@ -1235,13 +1235,6 @@ impl Workspace {
         }
     }
 
-    pub(super) fn hub_health(&self, cx: &App) -> (Dot, String) {
-        let (dot, text) = self.connection_status(cx);
-        match dot {
-            Dot::Ok => (Dot::Ok, "Local engine".into()),
-            _ => (dot, text),
-        }
-    }
 
     // -------------------------------------------------------------------------------------------- composer helpers
 
@@ -1264,15 +1257,6 @@ impl Workspace {
         }
     }
 
-    pub(super) fn insert_trigger(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let text = self.composer.read(cx).value().to_string();
-        let next = if text.is_empty() || text.ends_with(char::is_whitespace) { format!("{text}{key}") } else { format!("{text} {key}") };
-        self.composer.update(cx, |s, cx| {
-            s.set_value(next.clone(), window, cx);
-            s.focus(window, cx);
-        });
-        self.session.update(cx, |session, cx| session.mirror_input(&next, cx));
-    }
 
     pub(super) fn send_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.composer.read(cx).value().trim_end_matches('\n').to_string();
@@ -1555,7 +1539,8 @@ impl Render for Workspace {
         let session = self.session.clone();
         let expanded = self.expanded.clone();
         let thoughts = session.read(cx).view.thoughts_expanded;
-        let has_conversation = session.read(cx).view.messages.iter().any(transcript::is_conversation);
+        // Anything past the session banner (a reply, a `!command`'s output, `/cost`) is worth the transcript.
+        let has_conversation = transcript::has_content(&session.read(cx).view);
         let this = cx.entity().downgrade();
         let transcript_list = list(self.transcript.clone(), move |ix, _window, cx| {
             let view = &session.read(cx).view;
@@ -1607,7 +1592,6 @@ impl Render for Workspace {
         let sidebar = self.sidebar_open.then(|| self.sidebar(cx));
         let header = self.header(column_w, cx);
         let composer = self.composer(cx);
-        let status_bar = self.status_bar(cx);
         let panel = self.panel_open.then(|| self.side_panel(window_w, window, cx));
         let overlays = self.overlay_layer(window, cx);
         let haze = self.prefs.haze && self.display.atmosphere();
@@ -1698,7 +1682,6 @@ impl Render for Workspace {
                     )
                     .children(panel),
             )
-            .child(status_bar)
             .children(overlays)
             .child(div().absolute().bottom(px(36.)).right(px(panel_w + 12.)).when(std::env::var_os("CORDATA_FPS").is_some(), |this| this.child(gpui_fps::fps_monitor(window, cx))))
     }
@@ -2233,6 +2216,8 @@ mod window_tests {
     fn cmd_w_closes_editor_tab_first(cx: &mut TestAppContext) {
         let (view, cx) = workspace(cx);
         view.update(cx, |this, _| {
+            // The dock starts closed; ⌘W closes a buffer only when the editor is in view.
+            this.panel_open = true;
             this.dock_tab = super::DockTab::Editor;
         });
         let dir = tempfile_dir();

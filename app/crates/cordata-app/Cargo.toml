@@ -34,6 +34,8 @@ tokio.workspace = true
 libc = "0.2"
 # Agent detection rules (detect.toml).
 regex = "1"
+# The Lucide icons the chrome uses, embedded (only those listed in main.rs); the version gpui-component ships with.
+gpui-kit-assets = "=0.7.3"
 # The dock terminal's emulator and PTY (the one Zed's GPUI terminal uses): pure Rust, Apache-2.0.
 alacritty_terminal = { version = "=0.26.0", default-features = false }
 

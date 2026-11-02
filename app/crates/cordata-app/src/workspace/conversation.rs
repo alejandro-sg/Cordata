@@ -1,19 +1,23 @@
-//! The conversation column: the 52px header (sidebar toggle when collapsed, title, status, branch and model chips,
-//! inspector toggle), the welcome hero with starter cards & folder trust banner, the approval card, post-reply
-//! actions, the `/` and `@` menu, mode & model popovers, and the unified composer.
+//! The conversation column: the header (title, a word only when something is wrong, the dock toggle) whose bottom
+//! edge is the live line; the empty state (the project and three starters, as text); the approval (an attention rule,
+//! the question, the answers); the after-reply links; the `/` and `@` menu; and the composer — a command line under
+//! a hairline, with the `›` hanging in the margin so your words share one edge with the transcript's.
 
 use acp_core::{ApprovalDecision, PermissionInfo};
 use cordata_theme::tokens as t;
 use cordata_view::app::{ConnState, Message};
 use cordata_view::shown;
+use std::time::Duration;
+
 use gpui::prelude::FluentBuilder as _;
+use gpui::{Animation, AnimationExt as _, ease_in_out};
 use gpui::{AnyElement, App, BoxShadow, ClickEvent, Context, FontWeight, InteractiveElement as _, IntoElement, MouseButton, ParentElement, SharedString, StatefulInteractiveElement as _, Styled, StyledImage as _, Window, div, point, px, relative};
 use gpui_component::input::Textarea;
 
 use super::{DockTab, Overlay, TogglePanel, ToggleSidebar, Workspace, tilde};
 use crate::theme::{amber, c, inset_ring, line, mono, soft_shadow, tk};
 use crate::transcript;
-use crate::ui::{self, Dot, Kind, Tone};
+use crate::ui::{self, Kind, Tone};
 
 /// What the header says about the shown session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,38 +39,85 @@ pub fn status_of(view: &cordata_view::app::App) -> Status {
     }
 }
 
+/// The prompt mark `›`, set in the margin before your words — in the composer and on each of your lines in the
+/// transcript. A 12px column, centred on the first line of body text.
+pub fn prompt_mark(ink: gpui::Hsla, cx: &App) -> AnyElement {
+    div()
+        .w(px(12.))
+        .flex_shrink_0()
+        .h(relative(1.))
+        .text_size(px(t::TEXT_BODY + 3.))
+        .line_height(px(t::TEXT_BODY * t::LINE_HEIGHT_BODY))
+        .font_family(mono(cx))
+        .text_color(ink)
+        .child("›")
+        .into_any_element()
+}
+
+/// The header's bottom edge, Cordata's one moving part: a hairline at rest, a short signal segment sweeping across it
+/// while the agent works, the attention colour from end to end when it needs you, the danger colour when the engine
+/// stopped. Everything else on screen stays still.
+pub fn live_line(status: Status, cx: &App) -> AnyElement {
+    let tk = tk(cx);
+    let base = div().absolute().left(px(0.)).right(px(0.)).bottom(px(0.)).h(px(1.));
+    match status {
+        Status::Waiting => base.bg(c(tk.attention)).into_any_element(),
+        Status::Closed => base.bg(c(tk.danger)).into_any_element(),
+        Status::Running => {
+            let mut glow = c(tk.amber);
+            glow.a = 0.9;
+            base.bg(line(cx, t::LINE_SUBTLE))
+                .overflow_hidden()
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(0.))
+                        .h(px(1.))
+                        .w(relative(0.22))
+                        .bg(glow)
+                        .with_animation("live-line", Animation::new(Duration::from_millis(1600)).repeat().with_easing(ease_in_out), |el, delta| {
+                            // From just off the left edge to just off the right.
+                            el.left(relative(-0.22 + 1.22 * delta))
+                        }),
+                )
+                .into_any_element()
+        }
+        Status::Idle | Status::Connecting => base.bg(line(cx, t::LINE_SUBTLE)).into_any_element(),
+    }
+}
+
 impl Workspace {
     pub(super) fn header(&self, column_w: f32, cx: &mut Context<Self>) -> AnyElement {
         let tk = tk(cx);
         let view = &self.session.read(cx).view;
         let title = view.title();
-        let (dot, word, ink) = match status_of(view) {
-            Status::Connecting => (Dot::Hollow, "Connecting…", tk.text_muted),
-            Status::Idle => (Dot::Ok, "Ready", tk.teal),
-            Status::Running => (Dot::Live, "Working…", tk.amber),
-            Status::Waiting => (Dot::Live, "Needs approval", tk.amber),
-            Status::Closed => (Dot::Amber, "Engine stopped", tk.amber),
+        let status = status_of(view);
+        // Said only when it is not the ordinary case; the live line below says the rest.
+        let word = match status {
+            Status::Connecting => Some(("connecting", tk.text_faint)),
+            Status::Waiting => Some(("needs you", tk.attention)),
+            Status::Closed => Some(("engine stopped", tk.danger)),
+            Status::Idle | Status::Running => None,
         };
-        let _model_text = view.session.as_ref().map(|s| short_model(&s.model).to_string()).filter(|m| !m.is_empty());
-        let branch = view.branch.clone().or_else(|| self.git.branch.clone()).filter(|_| column_w >= t::HEADER_HIDE_BRANCH_W);
+        let _ = column_w;
         let panel_on = self.panel_open;
         let sidebar_on = self.sidebar_open;
         div()
             .id("conversation-header")
+            .relative()
             .flex()
             .flex_shrink_0()
             .items_center()
             .gap(px(10.))
             .h(px(t::HEADER_H))
             // Reserve space for macOS traffic lights when the left sidebar is hidden.
-            .pl(px(if sidebar_on { 20. } else { 78. }))
-            .pr(px(16.))
+            .pl(px(if sidebar_on { 24. } else { 78. }))
+            .pr(px(12.))
             .overflow_hidden()
-            .border_b_1()
-            .border_color(line(cx, t::LINE_DEFAULT))
+            .child(live_line(status, cx))
             .when(!sidebar_on, |row| {
                 row.child(
-                    ui::icon_button("show-sidebar", "◧", cx)
+                    ui::icon_action("show-sidebar", gpui_kit_assets::IconName::PanelLeft, cx)
                         .aria_label("Show sidebar (⌘B)")
                         .tooltip(ui::tip("Show sidebar  ⌘B"))
                         .on_click(cx.listener(|this, _, window, cx| this.toggle_sidebar(&ToggleSidebar, window, cx))),
@@ -79,54 +130,31 @@ impl Workspace {
                         .on_click(cx.listener(|this, _, window, cx| this.open_overlay(Overlay::Picker, window, cx))),
                 )
             })
-            .child(div().min_w(px(60.)).flex_shrink_1().truncate().text_size(px(t::TEXT_TITLE)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(SharedString::from(shown(&title))))
-            .child(
-                div()
-                    .flex()
-                    .flex_shrink_0()
-                    .items_center()
-                    .gap(px(6.))
-                    .px(px(8.))
-                    .py(px(2.))
-                    .rounded(px(t::RADIUS_BADGE))
-                    .bg(line(cx, t::FILL_FAINT))
-                    .child(ui::dot(dot, cx).size(px(t::DOT_SMALL)))
-                    .child(div().whitespace_nowrap().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(ink)).child(word)),
-            )
+            // A fresh thread has no name yet: the header stays empty rather than repeating the rail's "New thread".
+            .when(title != "New thread", |row| row.child(div().min_w(px(60.)).flex_shrink_1().truncate().text_size(px(t::TEXT_TITLE)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(SharedString::from(shown(&title)))))
+            .when_some(word, |row, (word, ink)| row.child(div().flex_shrink_0().whitespace_nowrap().text_size(px(t::TEXT_META)).text_color(c(ink)).child(word)))
             // The empty middle drags the window.
             .child(div().flex_1().h_full().min_w(px(8.)).on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move()))
-            .when_some(branch, |row, branch| {
-                row.child(
-                    ui::chip("branch-chip", SharedString::from(format!("⎇ {branch}")), cx)
-                        .role(gpui::Role::Button)
-                        .aria_label(SharedString::from(format!("Branch {branch} — view changes")))
-                        .tooltip(ui::tip("Open Changes & Git inspector  ⌘⌥4"))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.set_panel(true, cx);
-                            this.switch_dock(DockTab::Review, cx);
-                        })),
-                )
-            })
             .children(self.pr_chip(cx))
             .child(
-                ui::chip("panel-toggle", "⊟ Inspector", cx)
-                    .role(gpui::Role::Button)
+                ui::icon_action("panel-toggle", gpui_kit_assets::IconName::PanelRight, cx)
                     .aria_label("Toggle side panel (⌘\\)")
                     .aria_toggled(panel_on.into())
-                    .tooltip(ui::tip("Toggle side panel  ⌘\\"))
-                    .when(panel_on, |chip| chip.bg(amber(cx, t::AMBER_FILL)).border_color(amber(cx, t::AMBER_BORDER)).text_color(c(tk.text_primary)))
+                    .tooltip(ui::tip("Files, changes and terminal  ⌘\\"))
+                    .when(panel_on, |b| b.text_color(c(tk.text_primary)))
                     .on_click(cx.listener(|this, _, window, cx| this.toggle_panel(&TogglePanel, window, cx))),
             )
             .into_any_element()
     }
 
-    /// The column when there is nothing said yet: brand mark, greeting, context pills, folder trust banner,
-    /// 2×2 clickable starter cards, resume thread card, and shortcut hints.
+    /// The column when there is nothing said yet: the project's name and three things to start from, as plain text
+    /// on the left of the reading column. No logo, no cards, no keycaps; errors, if any, under them.
     pub(super) fn empty_state(&self, cx: &mut Context<Self>) -> AnyElement {
         let tk = tk(cx);
         let project = self.project_name();
         let dirty_count = self.review.file_count();
-        let branch = self.session.read(cx).view.branch.clone().or_else(|| self.git.branch.clone());
+        // The notes the session started with (settings warnings, instructions read): small, under the starters.
+        let notes = transcript::opening_notes(&self.session.read(cx).view);
         let notices: Vec<AnyElement> = self
             .session
             .read(cx)
@@ -137,13 +165,9 @@ impl Workspace {
                 Message::Error(e) => Some(
                     div()
                         .w_full()
-                        .max_w(px(620.))
-                        .px(px(12.))
-                        .py(px(8.))
-                        .rounded(px(t::RADIUS_CARD))
-                        .border_1()
+                        .pl(px(12.))
+                        .border_l_2()
                         .border_color(c(tk.danger))
-                        .bg(line(cx, t::FILL_FAINT))
                         .text_size(px(t::TEXT_SMALL))
                         .text_color(c(tk.danger))
                         .child(SharedString::from(shown(e)))
@@ -153,94 +177,42 @@ impl Workspace {
             })
             .collect();
 
-        let starter_card = |id: &'static str, icon: &'static str, title: &'static str, subtitle: String, cx: &mut Context<Self>| {
-            let hover_bg = line(cx, t::HOVER_STRONG);
-            let hover_border = amber(cx, t::AMBER_BORDER);
+        let starter = |id: &'static str, text: SharedString| {
+            let (hover_ink, arrow) = (c(tk.text_primary), c(tk.amber));
             div()
                 .id(id)
                 .role(gpui::Role::Button)
-                .flex_1()
-                .min_w(px(240.))
-                .flex()
-                .items_start()
-                .gap(px(10.))
-                .p(px(12.))
-                .rounded(px(t::RADIUS_CARD))
-                .bg(line(cx, t::FILL_FAINT))
-                .border_1()
-                .border_color(line(cx, t::LINE_CONTROL))
-                .cursor_pointer()
-                .hover(move |s| s.bg(hover_bg).border_color(hover_border))
-                .child(
-                    div()
-                        .size(px(26.))
-                        .flex_shrink_0()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(t::RADIUS_CONTROL))
-                        .bg(amber(cx, t::AMBER_FILL))
-                        .font_family(mono(cx))
-                        .text_size(px(t::TEXT_SMALL))
-                        .text_color(c(tk.amber))
-                        .child(icon),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.))
-                        .child(div().text_size(px(t::TEXT_UI)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(title))
-                        .child(div().text_size(px(t::TEXT_SMALL)).line_height(relative(1.35)).text_color(c(tk.text_muted)).child(SharedString::from(subtitle))),
-                )
-        };
-
-        let review_sub = if dirty_count > 0 {
-            format!("Audit {dirty_count} uncommitted file{} for bugs & edge cases", if dirty_count == 1 { "" } else { "s" })
-        } else {
-            "Audit recent git changes for bugs, regressions & missing tests".into()
-        };
-
-        let card_explore = starter_card("starter-explore", "⌕", "Explore codebase", "Map architecture, key modules, and main entry points".into(), cx)
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.apply_starter("Map out the architecture, key modules, and main entry points of this repository.", false, window, cx);
-            }))
-            .into_any_element();
-
-        let card_review = starter_card("starter-review", "⎇", "Review changes", review_sub, cx)
-            .on_click(cx.listener(move |this, _, window, cx| {
-                if dirty_count > 0 {
-                    this.request_review(false, window, cx);
-                } else {
-                    this.apply_starter("Review the most recent changes in this repository for bugs, edge cases, and test coverage gaps.", false, window, cx);
-                }
-            }))
-            .into_any_element();
-
-        let card_plan = starter_card("starter-plan", "◎", "Define contract", "Describe task(s), guardrails & what Done looks like".into(), cx)
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.apply_starter("Let's structure this work:\n1. Describe the task(s)\n2. Describe the Guardrails that surround the task(s)\n3. Describe what Done looks like\n\nTarget: ", false, window, cx);
-            }))
-            .into_any_element();
-
-        let card_fix = starter_card("starter-fix", "⚡", "Run checks & fix issues", "Run tests or linters, diagnose failures, and patch".into(), cx)
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.apply_starter("Run the project's test suite and build checks, diagnose any failures, and propose clean fixes.", false, window, cx);
-            }))
-            .into_any_element();
-
-        let hint = |key: &'static str, word: &'static str, cx: &App| {
-            div()
+                .group(id)
                 .flex()
                 .items_center()
-                .flex_shrink_0()
-                .whitespace_nowrap()
-                .gap(px(5.))
-                .child(ui::keycap(key, cx))
-                .child(div().text_size(px(t::TEXT_META)).text_color(c(tk.text_muted)).child(word))
+                .gap(px(10.))
+                .py(px(5.))
+                .cursor_pointer()
+                .text_size(px(t::TEXT_BODY))
+                .text_color(c(tk.text_secondary))
+                .hover(move |s| s.text_color(hover_ink))
+                .ml(px(-t::HANG))
+                .child(div().w(px(12.)).flex_shrink_0().text_color(c(tk.text_faint)).group_hover(id, move |s| s.text_color(arrow)).child("→"))
+                .child(text)
         };
+        let review_text = if dirty_count > 0 {
+            SharedString::from(format!("Review the {dirty_count} uncommitted file{}", if dirty_count == 1 { "" } else { "s" }))
+        } else {
+            SharedString::from("Review the latest changes")
+        };
+        let explore = starter("starter-explore", "Map how this project fits together".into()).on_click(cx.listener(|this, _, window, cx| {
+            this.apply_starter("Map out the architecture, key modules, and main entry points of this repository.", false, window, cx);
+        }));
+        let review = starter("starter-review", review_text).on_click(cx.listener(move |this, _, window, cx| {
+            if dirty_count > 0 {
+                this.request_review(false, window, cx);
+            } else {
+                this.apply_starter("Review the most recent changes in this repository for bugs, edge cases, and test coverage gaps.", false, window, cx);
+            }
+        }));
+        let fix = starter("starter-fix", "Run the checks and fix what fails".into()).on_click(cx.listener(|this, _, window, cx| {
+            this.apply_starter("Run the project's test suite and build checks, diagnose any failures, and propose clean fixes.", false, window, cx);
+        }));
 
         div()
             .id("empty-state-scroll")
@@ -249,82 +221,37 @@ impl Workspace {
             .flex()
             .flex_col()
             .items_center()
-            .justify_center()
+            .justify_end()
             .px(px(24.))
-            .py(px(20.))
+            .pb(px(28.))
             .child(
                 div()
                     .w_full()
-                    .max_w(px(620.))
+                    .max_w(px(t::CONTENT_MAX_W))
                     .flex()
                     .flex_col()
-                    .items_center()
-                    .gap(px(16.))
-                    .child(crate::hud::brand_title(cx))
+                    .gap(px(14.))
                     .child(
                         div()
-                            .flex()
-                            .flex_wrap()
-                            .justify_center()
-                            .gap_x(px(6.))
-                            .text_center()
                             .text_size(px(t::TEXT_EMPTY))
-                            .line_height(relative(1.3))
-                            .text_color(c(tk.text_body))
-                            .child("What should we build in")
-                            .child(div().font_weight(FontWeight::SEMIBOLD).text_color(c(tk.text_primary)).child(SharedString::from(format!("{project}?")))),
+                            .font_weight(FontWeight::LIGHT)
+                            .text_color(c(tk.text_primary))
+                            .child(SharedString::from(project)),
                     )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .items_center()
-                            .justify_center()
-                            .gap(px(8.))
-                            .child(
-                                ui::chip("empty-change-project", SharedString::from(format!("{}  ⌄", tilde(&self.cwd))), cx)
-                                    .role(gpui::Role::Button)
-                                    .aria_label("Change project (⌘O)")
-                                    .tooltip(ui::tip("Switch workspace folder  ⌘O"))
-                                    .on_click(cx.listener(|this, _, window, cx| this.open_overlay(Overlay::Picker, window, cx))),
-                            )
-                            .when_some(branch, |row, b| {
-                                row.child(
-                                    ui::chip("empty-branch", SharedString::from(format!("⎇ {b}")), cx)
-                                        .role(gpui::Role::Button)
-                                        .tooltip(ui::tip("Inspect git status & changes  ⌘⌥4"))
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.set_panel(true, cx);
-                                            this.switch_dock(DockTab::Review, cx);
-                                        })),
-                                )
-                            }),
-                    )
-                    .child(
-                        div()
-                            .w_full()
-                            .flex()
-                            .flex_col()
-                            .gap(px(10.))
-                            .child(div().w_full().flex().flex_wrap().gap(px(10.)).child(card_explore).child(card_review))
-                            .child(div().w_full().flex().flex_wrap().gap(px(10.)).child(card_plan).child(card_fix)),
-                    )
-                    .child(
-                        div()
-                            .pt(px(2.))
-                            .flex()
-                            .flex_wrap()
-                            .justify_center()
-                            .gap_x(px(14.))
-                            .gap_y(px(6.))
-                            .child(hint("/", "commands", cx))
-                            .child(hint("@", "mention file", cx))
-                            .child(hint("⇧Tab", "mode", cx))
-                            .child(hint("⌘K", "palette", cx))
-                            .child(hint("⌘B", "sidebar", cx))
-                            .child(hint("⌘\\", "inspector", cx)),
-                    )
-                    .children(notices),
+                    .child(div().flex().flex_col().child(explore).child(review).child(fix))
+                    .children(notices)
+                    .when(!notes.is_empty(), |col| {
+                        col.child(
+                            div()
+                                .pt(px(6.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .text_size(px(t::TEXT_META))
+                                .text_color(c(tk.text_faint))
+                                .children(notes.into_iter().map(|n| div().truncate().child(SharedString::from(shown(&n))))),
+                        )
+                    }),
             )
             .into_any_element()
     }
@@ -344,113 +271,109 @@ impl Workspace {
         let summary = input.and_then(cordata_view::view::summarize_input).unwrap_or_default();
         let place = tilde(&self.session.read(cx).cwd);
         let tool = info.tool_name.as_str();
-        let (label, sentence, block, buttons): (&str, String, Option<String>, Vec<AnyElement>) = {
+        let (_, sentence, block, buttons): (&str, String, Option<String>, Vec<AnyElement>) = {
             {
                 let sentence = match (&command, info.kind) {
                     (Some(_), _) => format!("Run shell command in {place}"),
                     (None, acp_core::ToolKind::Edit) => format!("Modify files in {place}"),
                     _ => format!("Allow {tool}?"),
                 };
+                // The engine words the offer ("Always allow run_command this session"): the button says "Always",
+                // the tooltip says the rest.
                 let always = info.always_label.as_ref().map(|label| {
-                    let short = always_prefix(label);
-                    ui::button("always", SharedString::from(format!("Always allow `{}`", shown(&short))), Kind::AmberOutline, cx)
-                        .max_w(px(300.))
-                        .overflow_hidden()
+                    ui::button("always", "Always", Kind::Ghost, cx)
+                        .tooltip(ui::tip(SharedString::from(shown(label))))
                         .on_click(answer(ApprovalDecision::AllowAlways))
                         .into_any_element()
                 });
                 let mut buttons = vec![
-                    ui::button("allow", "Allow once", Kind::Primary, cx)
+                    ui::button("allow", "Allow", Kind::Primary, cx)
                         .child(div().text_color(c(tk.amber_dim_2)).font_family(mono(cx)).text_size(px(t::TEXT_META)).child("↵"))
                         .on_click(answer(ApprovalDecision::Allow))
                         .into_any_element(),
                 ];
                 buttons.extend(always);
                 buttons.push(
-                    ui::button("say-why", "Reply / Steer", Kind::Outline, cx)
-                        .tooltip(ui::tip("Redirect the agent in your own words (W)"))
-                        .child(div().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.text_muted)).child("W"))
+                    ui::button("say-why", "Reply", Kind::Ghost, cx)
+                        .tooltip(ui::tip("Answer in your own words instead  W"))
                         .on_click(cx.listener(|this, _, window, cx| this.begin_saying(window, cx)))
                         .into_any_element(),
                 );
                 buttons.push(div().flex_1().into_any_element());
                 buttons.push(
                     ui::button("reject", "Deny", Kind::Ghost, cx)
-                        .child(div().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.text_faint)).child("esc"))
+                        .tooltip(ui::tip("Deny  esc"))
                         .on_click(answer(ApprovalDecision::Reject))
                         .into_any_element(),
                 );
-                ("approval needed", sentence, command.clone().map(|cmd| format!("$ {cmd}")).or_else(|| (!summary.is_empty()).then(|| summary.clone())), buttons)
+                ("", sentence, command.clone().map(|cmd| format!("$ {cmd}")).or_else(|| (!summary.is_empty()).then(|| summary.clone())), buttons)
             }
         };
+        // Not a box: a 2px attention rule down the left, the question, the command, the answers.
         div()
             .id("approval")
             .role(gpui::Role::AlertDialog)
             .aria_label("Approval needed")
             .w_full()
-            .mb(px(10.))
-            .p(px(14.))
+            .mb(px(12.))
+            .pl(px(14.))
+            .py(px(4.))
             .flex()
             .flex_col()
             .gap(px(10.))
-            .rounded(px(t::RADIUS_POPOVER))
-            .border_1()
-            .border_color(amber(cx, t::AMBER_BORDER_STRONG))
-            .bg(amber(cx, t::AMBER_FILL))
-            .shadow(soft_shadow(cx))
+            .border_l_2()
+            .border_color(c(tk.attention))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .justify_between()
-                    .gap(px(6.))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .child(ui::diamond(cx))
-                            .child(
-                                div()
-                                    .font_family(mono(cx))
-                                    .text_size(px(t::TEXT_LABEL))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(c(tk.amber))
-                                    .child(SharedString::from(t::tracked_text(label, t::Tracking::Label, true))),
-                            ),
-                    )
-                    .when(self.saying, |row| row.child(ui::badge("Type response below · ↵ sends", Tone::Amber, cx))),
+                    .gap(px(8.))
+                    .child(div().text_size(px(t::TEXT_BODY)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(SharedString::from(shown(&sentence))))
+                    .when(self.saying, |row| row.child(ui::badge("type below · ↵ sends", Tone::Amber, cx))),
             )
-            .child(div().text_size(px(t::TEXT_BODY)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(SharedString::from(shown(&sentence))))
             .when_some(block, |card, text| card.child(ui::code_block(SharedString::from(shown(&text)), cx).text_color(c(tk.text_body))))
-            .child(div().flex().flex_wrap().items_center().gap(px(8.)).children(buttons))
+            .child(div().flex().flex_wrap().items_center().gap(px(6.)).children(buttons))
             .into_any_element()
     }
 
     /// After a reply: review the changed files, copy the answer, undo the turn's changes.
     pub(super) fn post_reply_actions(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let tk = tk(cx);
         let view = &self.session.read(cx).view;
         if view.turn_active || !view.pending.is_empty() || !matches!(view.messages.last(), Some(Message::Agent(_))) {
             return None;
         }
-        let changed = self.review.file_count();
+        // "Review" only when this turn changed files: the tree's older changes are the rail's ±N, not this reply's.
+        let edited = view
+            .messages
+            .iter()
+            .rev()
+            .take_while(|m| !matches!(m, Message::User(_)))
+            .any(|m| matches!(m, Message::Tool(card) if !card.diffs.is_empty()));
+        let link = |id: &'static str, text: &'static str| {
+            let hover = c(tk.text_primary);
+            div()
+                .id(id)
+                .role(gpui::Role::Button)
+                .cursor_pointer()
+                .text_size(px(t::TEXT_SMALL))
+                .text_color(c(tk.text_faint))
+                .hover(move |s| s.text_color(hover))
+                .child(text)
+        };
         Some(
             div()
                 .flex()
                 .items_center()
-                .gap(px(8.))
+                .gap(px(16.))
                 .pb(px(10.))
-                .when(changed > 0, |row| {
-                    row.child(
-                        ui::button("review-files", SharedString::from(format!("⎇ Review {changed} changed file{}", if changed == 1 { "" } else { "s" })), Kind::AmberOutline, cx)
-                            .h(px(26.))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.set_panel(true, cx);
-                                this.switch_dock(DockTab::Review, cx);
-                            })),
-                    )
+                .when(edited, |row| {
+                    row.child(link("review-files", "review changes").tooltip(ui::tip("Changes, hunk by hunk  ⌘⌥4")).on_click(cx.listener(|this, _, _, cx| {
+                        this.set_panel(true, cx);
+                        this.switch_dock(DockTab::Review, cx);
+                    })))
                 })
-                .child(ui::button("copy-reply", "Copy reply", Kind::Outline, cx).h(px(26.)).on_click(cx.listener(|this, _, _, cx| this.copy_last_reply(cx))))
+                .child(link("copy-reply", "copy").tooltip(ui::tip("Copy the reply as Markdown")).on_click(cx.listener(|this, _, _, cx| this.copy_last_reply(cx))))
                 .into_any_element(),
         )
     }
@@ -507,31 +430,6 @@ impl Workspace {
             ring.push(BoxShadow { color: amber(cx, 0.05), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(t::COMPOSER_RING), inset: false });
         }
         ring.extend(soft_shadow(cx));
-
-        let trigger = |id: &'static str, key: &'static str, word: &'static str, cx: &mut Context<Self>| {
-            let (hover_bg, hover_ink) = (line(cx, t::HOVER_STRONG), c(tk.text_primary));
-            div()
-                .id(id)
-                .role(gpui::Role::Button)
-                .aria_label(SharedString::from(format!("Insert {key} ({word})")))
-                .tooltip(ui::tip(SharedString::from(format!("Insert {key} for {word}"))))
-                .flex()
-                .flex_shrink_0()
-                .items_center()
-                .whitespace_nowrap()
-                .gap(px(4.))
-                .h(px(26.))
-                .px(px(7.))
-                .rounded(px(t::RADIUS_CONTROL))
-                .cursor_pointer()
-                .font_family(mono(cx))
-                .text_size(px(t::TEXT_META))
-                .text_color(c(tk.text_muted))
-                .hover(move |s| s.bg(hover_bg).text_color(hover_ink))
-                .on_click(cx.listener(move |this, _, window, cx| this.insert_trigger(key, window, cx)))
-                .child(div().font_weight(FontWeight::MEDIUM).text_color(c(tk.text_secondary)).child(key))
-                .child(word)
-        };
 
         let chips: Vec<AnyElement> = self
             .staged
@@ -630,36 +528,42 @@ impl Workspace {
             .collect();
 
         let note = self.attach_note.clone();
-        let send_tip = if self.prefs.send_with == "cmd-enter" { "Send message  ⌘↵" } else { "Send message  ↵" };
-        let send = if busy && !self.saying {
-            ui::button("stop-turn", "■ Stop", Kind::AmberOutline, cx)
-                .h(px(t::SEND_BUTTON))
-                .aria_label("Stop (esc esc)")
-                .tooltip(ui::tip("Stop the current run  esc esc"))
-                .on_click(cx.listener(|this, _, _, cx| this.session.update(cx, |s, cx| s.cancel(cx))))
-                .into_any_element()
-        } else {
+        let send_key = if self.prefs.send_with == "cmd-enter" { "⌘↵" } else { "↵" };
+        let model = view.session.as_ref().map(|s| short_model(&s.model)).filter(|m| !m.is_empty());
+        let esc = self.esc_hint();
+        let action: Option<AnyElement> = if busy && !self.saying {
+            Some(
+                ui::button("stop-turn", "Stop", Kind::Ghost, cx)
+                    .h(px(24.))
+                    .px(px(8.))
+                    .text_size(px(t::TEXT_SMALL))
+                    .aria_label("Stop (esc esc)")
+                    .tooltip(ui::tip("Stop the run  esc esc"))
+                    .on_click(cx.listener(|this, _, _, cx| this.session.update(cx, |s, cx| s.cancel(cx))))
+                    .into_any_element(),
+            )
+        } else if ready {
             let hover = c(tk.amber_hover);
-            div()
-                .id("send")
-                .role(gpui::Role::Button)
-                .aria_label(if self.prefs.send_with == "cmd-enter" { "Send (⌘↵)" } else { "Send (↵)" })
-                .tooltip(ui::tip(send_tip))
-                .flex()
-                .flex_shrink_0()
-                .items_center()
-                .justify_center()
-                .size(px(t::SEND_BUTTON))
-                .rounded(px(t::RADIUS_CARD))
-                .bg(c(tk.amber))
-                .text_color(c(tk.amber_on_fill))
-                .font_weight(FontWeight::BOLD)
-                .when(ready, move |btn| btn.cursor_pointer().hover(move |s| s.bg(hover)))
-                .when(!ready, |btn| btn.opacity(0.42))
-                .on_click(cx.listener(|this, _, window, cx| this.send_composer(window, cx)))
-                .child("↑")
-                .into_any_element()
+            Some(
+                div()
+                    .id("send")
+                    .role(gpui::Role::Button)
+                    .aria_label(SharedString::from(format!("Send ({send_key})")))
+                    .flex_shrink_0()
+                    .cursor_pointer()
+                    .text_size(px(t::TEXT_SMALL))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(c(tk.amber))
+                    .hover(move |s| s.text_color(hover))
+                    .on_click(cx.listener(|this, _, window, cx| this.send_composer(window, cx)))
+                    .child(SharedString::from(format!("send {send_key}")))
+                    .into_any_element(),
+            )
+        } else {
+            None
         };
+        // The prompt mark: the signal colour once there is something to send or the agent is busy.
+        let mark = if active_border { c(tk.amber) } else { c(tk.text_faint) };
 
         div()
             .id("composer")
@@ -669,45 +573,54 @@ impl Workspace {
             .w_full()
             .flex()
             .flex_col()
-            .rounded(px(t::RADIUS_POPOVER))
-            .bg(c(tk.bg_input))
-            .border_1()
-            .border_color(if active_border { amber(cx, t::AMBER_BORDER_STRONG) } else { line(cx, t::LINE_CONTROL_STRONG) })
-            .shadow(ring)
-            .when(!queued.is_empty(), |col| col.child(div().flex().flex_col().pt(px(4.)).border_b_1().border_color(line(cx, t::LINE_SUBTLE)).children(queued)))
-            .when(!chips.is_empty(), |col| col.child(div().flex().flex_wrap().gap(px(6.)).px(px(12.)).pt(px(10.)).children(chips)))
-            .when_some(note, |col, note| col.child(div().px(px(14.)).pt(px(8.)).text_size(px(t::TEXT_SMALL)).text_color(c(tk.amber)).child(SharedString::from(note))))
-            .child(div().px(px(14.)).pt(px(10.)).pb(px(2.)).text_size(px(t::TEXT_BODY)).child(Textarea::new(&self.composer).appearance(false).aria_label("Message")))
+            .border_t_1()
+            .border_color(line(cx, t::LINE_DEFAULT))
+            .when(!queued.is_empty(), |col| col.child(div().flex().flex_col().pt(px(6.)).children(queued)))
+            .when(!chips.is_empty(), |col| col.child(div().flex().flex_wrap().gap(px(6.)).pt(px(10.)).children(chips)))
+            .when_some(note, |col, note| col.child(div().pt(px(8.)).text_size(px(t::TEXT_SMALL)).text_color(c(tk.attention)).child(SharedString::from(note))))
+            .child(
+                // The mark hangs in the margin (12px + 10px gap), so what you type starts on the column's text edge.
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(10.))
+                    .ml(px(-t::HANG))
+                    .pt(px(12.))
+                    .child(prompt_mark(mark, cx))
+                    // The Textarea pads its text 10px: pull it back so typing starts on the text edge, under your lines above.
+                    .child(div().flex_1().min_w_0().ml(px(-10.)).text_size(px(t::TEXT_BODY)).child(Textarea::new(&self.composer).appearance(false).aria_label("Message"))),
+            )
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(4.))
-                    .px(px(10.))
-                    .pb(px(8.))
-                    .pt(px(4.))
+                    .gap(px(6.))
+                    // Icons sit in 24px boxes: pull the first back so its glyph lines up with the text edge.
+                    .ml(px(-5.))
+                    .h(px(28.))
+                    .text_size(px(t::TEXT_META))
+                    .text_color(c(tk.text_faint))
                     .child(
-                        ui::button("attach", "+ Attach", Kind::Ghost, cx)
-                            .h(px(26.))
-                            .rounded_full()
+                        ui::icon_action("attach", gpui_kit_assets::IconName::Paperclip, cx)
+                            .size(px(22.))
                             .aria_label("Attach files or images (Shift+Command+A, or paste / drop them)")
-                            .tooltip(ui::tip("Attach files or images  ⇧⌘A — or paste / drag & drop"))
+                            .tooltip(ui::tip("Attach files or images  ⇧⌘A — or paste / drop them"))
                             .on_click(cx.listener(|this, _, window, cx| this.choose_attachments(window, cx))),
                     )
                     .child(
-                        ui::icon_button("dictate", "◉", cx)
+                        ui::icon_action("dictate", gpui_kit_assets::IconName::Mic, cx)
+                            .size(px(22.))
                             .aria_label("Dictate (system dictation)")
-                            .tooltip(ui::tip("Voice dictation"))
+                            .tooltip(ui::tip("Dictate"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.composer.update(cx, |s, cx| s.focus(window, cx));
                                 cx.defer(|_| crate::platform::start_dictation());
                             })),
                     )
-                    .child(trigger("insert-slash", "/", "commands", cx))
-                    .child(trigger("insert-at", "@", "files", cx))
-                    .child(trigger("insert-bang", "!", "shell", cx))
-                    .child(div().flex_1())
-                    .child(send),
+                    .child(div().flex_1().min_w_0().truncate().children(view.hint.clone().map(|hint| SharedString::from(shown(&hint)))))
+                    .when_some(esc, |row, hint| row.child(div().flex_shrink_0().text_color(c(tk.attention)).child(hint)))
+                    .when_some(model, |row, model| row.child(div().font_family(mono(cx)).child(SharedString::from(model))))
+                    .children(action),
             )
             .into_any_element()
     }
@@ -732,6 +645,8 @@ impl Workspace {
 /// `opus-4` from `claude-opus-4-20250514`; names that are already short stay.
 fn short_model(name: &str) -> String {
     let name = name.trim();
+    // `ollama_cloud::kimi-k3` is `kimi-k3`: the provider is not the person's concern here.
+    let name = name.rsplit_once("::").map_or(name, |(_, model)| model);
     let name = name.strip_prefix("claude-").unwrap_or(name);
     // Drop a trailing date stamp (`-20250514`).
     let name = match name.rsplit_once('-') {
@@ -739,15 +654,6 @@ fn short_model(name: &str) -> String {
         _ => name,
     };
     name.chars().take(28).collect()
-}
-
-/// `shell(pnpm test)` → `pnpm test`: what "Always allow" adds, as the person reads it.
-pub fn always_prefix(label: &str) -> String {
-    let label = label.trim();
-    match label.split_once('(') {
-        Some((_, rest)) if rest.ends_with(')') => rest[..rest.len() - 1].trim().trim_end_matches(":*").trim_end_matches('*').trim().to_owned(),
-        _ => label.to_owned(),
-    }
 }
 
 #[cfg(test)]
@@ -758,8 +664,6 @@ mod tests {
     fn models_read_short() {
         assert_eq!(short_model("claude-opus-4-20250514"), "opus-4");
         assert_eq!(short_model("kimi-k2.7-code"), "kimi-k2.7-code");
-        assert_eq!(always_prefix("shell(pnpm test)"), "pnpm test");
-        assert_eq!(always_prefix("shell(git status:*)"), "git status");
-        assert_eq!(always_prefix("read"), "read");
+        assert_eq!(short_model("ollama_cloud::kimi-k3"), "kimi-k3");
     }
 }

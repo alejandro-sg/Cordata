@@ -6,7 +6,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement, MouseButton, ParentElement, SharedString, StatefulInteractiveElement as _, Styled, Window, div, px};
 
 use super::{DockTab, Workspace, editor};
-use crate::theme::{amber, c, inset_bottom, line, mono, tk};
+use crate::theme::{c, inset_bottom, line, mono, tk};
 use crate::ui::{self};
 
 /// The tabs in the strip, given the window width; the rest are in the ⋯ menu.
@@ -72,7 +72,7 @@ impl Workspace {
                 .when(!selected, move |el| el.hover(move |s| s.text_color(hover)))
                 .on_click(cx.listener(move |this, _, _, cx| this.switch_dock(tab, cx)))
                 .child(name)
-                .when_some(badge, |el, badge| el.child(div().px(px(5.)).py(px(1.)).rounded(px(t::RADIUS_BADGE)).bg(amber(cx, t::AMBER_FILL_STRONG)).font_family(mono(cx)).text_color(c(tk.amber)).text_size(px(t::TEXT_TAG)).child(SharedString::from(badge))))
+                .when_some(badge, |el, badge| el.child(div().font_family(mono(cx)).text_color(c(tk.text_faint)).text_size(px(t::TEXT_META)).child(SharedString::from(badge))))
         };
         let strip_el: Vec<AnyElement> = strip.iter().map(|&t| tab(t, cx).into_any_element()).collect();
         let more_label = if in_overflow { format!("{} ⌄", self.tab_name(self.dock_tab).0) } else { "⋯".to_owned() };

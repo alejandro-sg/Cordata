@@ -54,7 +54,7 @@ impl Default for Prefs {
             sidebar_open: None,
             panel_open: None,
             theme: "system".into(),
-            haze: true,
+            haze: false,
             density: "comfortable".into(),
             code_font_size: 13.0,
             send_with: "enter".into(),

@@ -219,6 +219,9 @@ pub struct App {
     pub attention: bool,
     /// A turn ended that the person has not looked at yet (the tab shows `Done` until `mark_seen`).
     pub unseen: bool,
+    /// How many messages there were when the person first did something (a prompt, a command, `!shell`): what came
+    /// before is the session's opening notes, not conversation. `None` until then.
+    pub opening: Option<usize>,
     /// What the last attention was for, worded for a desktop notification.
     pub attention_reason: Option<String>,
     /// The full-screen overlay in front of the conversation (command deck, HUD, diff review), if one is open.
@@ -276,6 +279,7 @@ impl App {
             last_turn_secs: 0.0,
             attention: false,
             unseen: false,
+            opening: None,
             attention_reason: None,
             overlay: None,
             overlay_factory: crate::overlay::none,
@@ -794,6 +798,7 @@ impl App {
     /// One line the person entered, from the box or from the queue: a `!command`, a slash command (built in or a
     /// file), or a prompt. While the agent is working, only what would start a turn waits; the rest happens now.
     pub fn run_line(&mut self, text: String) -> Option<Effect> {
+        self.opening.get_or_insert(self.messages.len());
         if let Some(command) = text.strip_prefix('!').map(str::trim).filter(|c| !c.is_empty()) {
             return Some(Effect::Shell { command: command.to_owned(), share: true, as_diff: false });
         }
@@ -1188,6 +1193,18 @@ mod tests {
         app.on_event(AppEvent::TurnFailed("boom".into()));
         assert_eq!(app.tab_state(), TabState::Done);
         assert!(app.attention && app.attention_reason.as_deref() == Some("the turn failed"));
+    }
+
+    #[test]
+    fn the_opening_is_what_came_before_the_person_did_anything() {
+        let mut app = connected();
+        app.messages.push(Message::Info("settings: something".into()));
+        assert_eq!(app.opening, None);
+        app.run_line("/cost".into());
+        assert_eq!(app.opening, Some(1), "the settings note is opening; what /cost printed is not");
+        assert!(app.messages.len() > 1);
+        app.run_line("/help".into());
+        assert_eq!(app.opening, Some(1), "set once");
     }
 
     #[test]
