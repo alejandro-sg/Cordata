@@ -84,6 +84,12 @@ fn repository_root(project: &Path, home: &str) -> Option<PathBuf> {
 /// Inside the writable roots, still read-only: npx runs what it caches in `_npx`.
 const READ_ONLY_HOME: &[&str] = &[".npm/_npx"];
 
+/// What git runs later, outside any sandbox: hooks, and the config that names programs (`core.fsmonitor`,
+/// `core.hooksPath`, filter drivers, aliases) or attributes that select them. Commits still write objects, refs and the
+/// index.
+pub(crate) const GIT_EXEC_DENY: &str =
+    r#"(deny file-write* (regex #"/\.git/(config|hooks(/|$)|info/attributes$|modules/.+/(config|hooks(/|$)))"))"#;
+
 /// Local daemons that would carry a request out on a command's behalf.
 const DENY_SOCKETS: &[&str] = &["/private/var/run/docker.sock"];
 const DENY_HOME_SOCKETS: &[&str] = &[".docker/run/docker.sock", ".colima/default/docker.sock", ".orbstack/run/docker.sock"];
@@ -101,6 +107,7 @@ pub(crate) fn profile(home: &str, confinement: &Confinement<'_>) -> String {
         "(deny file-write*)".to_owned(),
         format!("(allow file-write* {})", roots.iter().map(|r| format!("(subpath {})", quote(r))).collect::<Vec<_>>().join(" ")),
         format!("(deny file-write* {})", READ_ONLY_HOME.iter().map(|r| format!("(subpath {})", quote(&format!("{home}/{r}")))).collect::<Vec<_>>().join(" ")),
+        GIT_EXEC_DENY.to_owned(),
         r#"(deny file-read* file-write* (regex #"(^|/)\.env($|\.[^/]*$)"))"#.to_owned(),
         r#"(allow file-read* (regex #"(^|/)\.env\.(example|sample|template|dist)$"))"#.to_owned(),
     ];
@@ -150,24 +157,76 @@ pub(crate) async fn run(cmd: &str, confinement: &Confinement<'_>, timeout: Durat
             .into());
     }
     let home = std::env::var("HOME").unwrap_or_default();
-    let child = Command::new(SANDBOX_EXEC)
+    let mut child = Command::new(SANDBOX_EXEC)
         .args(["-p", &profile(&home, confinement), "/bin/zsh", "-c", cmd])
         .env_clear()
         .envs(scrubbed_env())
         .current_dir(confinement.project)
         .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        // Its own process group, so what the shell started in the background dies with it.
+        .process_group(0)
         .kill_on_drop(true)
-        .output();
-    match tokio::time::timeout(timeout, child).await {
-        Err(_) => Err(format!("timed out after {}s", timeout.as_secs())),
-        Ok(Err(e)) => Err(format!("could not start the command: {e}")),
-        Ok(Ok(out)) => {
-            let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
-            text.push_str(&String::from_utf8_lossy(&out.stderr));
-            let code = out.status.code().map_or("signal".to_owned(), |c| c.to_string());
-            if out.status.success() { Ok(text) } else { Err(format!("exit {code}\n{text}")) }
-        }
+        .spawn()
+        .map_err(|e| format!("could not start the command: {e}"))?;
+    // A cancelled turn drops this future: the guard kills the whole group then too.
+    let group = KillGroup(child.id());
+    let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
+    let capture = tokio::spawn(async move { tokio::join!(read_capped(stdout), read_capped(stderr)) });
+    let status = tokio::time::timeout(timeout, child.wait()).await;
+    // The shell is done (or out of time): background jobs go too, so the pipes close and the capture ends.
+    kill_group(group.0);
+    let ((out, out_dropped), (err, err_dropped)) = match tokio::time::timeout(PIPE_GRACE, capture).await {
+        Ok(Ok(both)) => both,
+        // Something left the group (`setsid`) and holds the pipes open; give up on the output rather than hang.
+        _ => ((Vec::new(), 0), (b"(output lost: a process outside the command's group kept it open)\n".to_vec(), 0)),
+    };
+    let mut text = String::from_utf8_lossy(&out).into_owned();
+    text.push_str(&String::from_utf8_lossy(&err));
+    let dropped = out_dropped + err_dropped;
+    if dropped > 0 {
+        text.push_str(&format!("\n…[{dropped} more bytes of output discarded]"));
     }
+    match status {
+        Err(_) => Err(format!("timed out after {}s\n{text}", timeout.as_secs())),
+        Ok(Err(e)) => Err(format!("could not wait for the command: {e}")),
+        Ok(Ok(status)) if status.success() => Ok(text),
+        Ok(Ok(status)) => Err(format!("exit {}\n{text}", status.code().map_or("signal".to_owned(), |c| c.to_string()))),
+    }
+}
+
+/// Bytes kept per stream; the rest is read and counted so the command never blocks on a full pipe.
+const MAX_CAPTURE: usize = 4 << 20;
+/// How long the output may stay open after the command's group is gone.
+const PIPE_GRACE: Duration = Duration::from_secs(2);
+
+struct KillGroup(Option<u32>);
+
+impl Drop for KillGroup {
+    fn drop(&mut self) {
+        kill_group(self.0);
+    }
+}
+
+fn kill_group(pid: Option<u32>) {
+    if let Some(pid) = pid.filter(|p| *p > 0) {
+        // SAFETY: killpg only sends a signal; a group that is already gone fails with ESRCH, which is ignored.
+        unsafe { libc::killpg(pid as i32, libc::SIGKILL) };
+    }
+}
+
+async fn read_capped(pipe: Option<impl tokio::io::AsyncRead + Unpin>) -> (Vec<u8>, u64) {
+    use tokio::io::AsyncReadExt as _;
+    let (mut kept, mut dropped) = (Vec::new(), 0u64);
+    let Some(mut pipe) = pipe else { return (kept, dropped) };
+    let mut buf = [0u8; 8192];
+    while let Ok(n @ 1..) = pipe.read(&mut buf).await {
+        let take = n.min(MAX_CAPTURE.saturating_sub(kept.len()));
+        kept.extend_from_slice(&buf[..take]);
+        dropped += (n - take) as u64;
+    }
+    (kept, dropped)
 }
 
 #[cfg(test)]
@@ -248,6 +307,56 @@ mod tests {
         assert!(!p.contains(&format!("(subpath {})", quote(&home))), "{p}");
         assert!(p.contains(&format!("(deny file-write* (subpath {}))", quote(&format!("{home}/.npm/_npx")))));
         assert!(p.contains("docker.sock"));
+    }
+
+    #[tokio::test]
+    async fn git_config_and_hooks_are_read_only_but_commits_work() {
+        if !available() || std::process::Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let project = tempfile::tempdir().unwrap();
+        let init = std::process::Command::new("git").args(["init", "-q"]).current_dir(project.path()).status().unwrap();
+        assert!(init.success());
+        let c = offline(project.path());
+        let err = run("git config core.fsmonitor 'echo pwned'", &c, Duration::from_secs(10)).await.unwrap_err();
+        assert!(err.starts_with("exit "), "{err}");
+        assert!(run("echo x > .git/hooks/pre-commit", &c, Duration::from_secs(10)).await.is_err());
+        assert!(!project.path().join(".git/hooks/pre-commit").exists());
+        let commit = "echo a > a.txt && git add a.txt && git -c user.name=t -c user.email=t@t commit -qm a && git log --oneline";
+        assert!(run(commit, &c, Duration::from_secs(10)).await.unwrap().contains(" a"));
+    }
+
+    #[tokio::test]
+    async fn a_background_job_neither_holds_the_result_nor_outlives_it() {
+        if !available() {
+            return;
+        }
+        let project = tempfile::tempdir().unwrap();
+        let started = std::time::Instant::now();
+        let out = run("echo started; (sleep 3; touch late) &", &offline(project.path()), Duration::from_secs(20)).await.unwrap();
+        assert_eq!(out, "started\n");
+        assert!(started.elapsed() < Duration::from_secs(3), "returned when the shell did, not when the job did");
+        tokio::time::sleep(Duration::from_millis(3500)).await;
+        assert!(!project.path().join("late").exists(), "the background job was killed with the command");
+    }
+
+    #[tokio::test]
+    async fn endless_output_is_capped_and_ends_at_the_timeout() {
+        if !available() {
+            return;
+        }
+        let tmp = std::env::temp_dir();
+        let err = run("yes", &offline(&tmp), Duration::from_secs(2)).await.unwrap_err();
+        assert!(err.starts_with("timed out") && err.contains("bytes of output discarded"));
+        assert!(err.len() < MAX_CAPTURE + 4096);
+    }
+
+    #[test]
+    fn the_profile_keeps_git_config_and_hooks_read_only() {
+        let p = profile("/Users/x", &offline(Path::new("/p")));
+        assert!(p.contains(GIT_EXEC_DENY));
+        let allow = p.find("(allow file-write* (subpath").unwrap();
+        assert!(p.find(GIT_EXEC_DENY).unwrap() > allow, "the deny follows the allow, so it wins");
     }
 
     #[tokio::test]

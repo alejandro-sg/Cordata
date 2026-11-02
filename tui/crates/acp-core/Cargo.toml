@@ -11,6 +11,7 @@ cordata-guard = { path = "../cordata-guard", version = "0.1.0" }
 futures.workspace = true
 genai.workspace = true
 ignore.workspace = true
+libc.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true

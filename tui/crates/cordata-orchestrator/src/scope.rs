@@ -239,6 +239,8 @@ pub fn base_profile(home: &str) -> Vec<String> {
         "(allow default)".to_owned(),
         r#"(deny file-read* file-write* (regex #"(^|/)\.env($|\.[^/]*$)"))"#.to_owned(),
         r#"(allow file-read* (regex #"(^|/)\.env\.(example|sample|template|dist)$"))"#.to_owned(),
+        // Hooks and config that git later runs outside any sandbox (`core.fsmonitor`, `core.hooksPath`, filters).
+        r#"(deny file-write* (regex #"/\.git/(config|hooks(/|$)|info/attributes$|modules/.+/(config|hooks(/|$)))"))"#.to_owned(),
     ];
     lines.extend(DENY_HOME.iter().map(|rel| format!("(deny file-read* file-write* (subpath {}))", sb_string(&format!("{home}/{rel}")))));
     lines

@@ -244,7 +244,7 @@ mod tests {
             user(&format!("use {key} for the call")),
             Msg::Assistant {
                 text: "ok".into(),
-                calls: vec![Call { id: "c1".into(), name: "run_command".into(), args: json!({"cmd": format!("curl -H 'x-api-key: {key}'"), "env": ["API_TOKEN=\"q7Zr9KmP3xW5vB8nL2cT\""]}) }],
+                calls: vec![Call { id: "c1".into(), name: "run_command".into(), args: json!({"cmd": format!("curl -H 'x-api-key: {key}'"), "env": ["API_TOKEN=\"q7Zr9KmP3xW5vB8nL2cT\""]}), thought_signatures: None }],
             },
             Msg::ToolResult { id: "c1".into(), output: format!("token = {key}") },
         ];

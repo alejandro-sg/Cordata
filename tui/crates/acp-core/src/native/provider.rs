@@ -4,7 +4,7 @@
 use futures::future::BoxFuture;
 use futures::stream::{self, BoxStream};
 use futures::StreamExt;
-use genai::chat::{ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, ContentPart, MessageContent, Tool, ToolCall, ToolResponse};
+use genai::chat::{CacheControl, ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, ContentPart, MessageContent, Tool, ToolCall, ToolResponse};
 use genai::resolver::{AuthData, AuthResolver};
 use genai::{Client, ModelIden};
 use serde_json::Value;
@@ -18,6 +18,10 @@ pub(crate) struct Call {
     pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) args: Value,
+    /// The provider's opaque reasoning signatures, sent back with the call: Gemini refuses a tool round whose calls
+    /// lost them. Only valid for the model that made them, so they are not saved with the session.
+    #[serde(skip)]
+    pub(crate) thought_signatures: Option<Vec<String>>,
 }
 
 /// One streamed piece of a reply.
@@ -77,12 +81,26 @@ fn to_message(msg: &Msg) -> ChatMessage {
                 parts.push(ContentPart::Text(text.clone()));
             }
             parts.extend(calls.iter().map(|c| {
-                ContentPart::ToolCall(ToolCall { call_id: c.id.clone(), fn_name: c.name.clone(), fn_arguments: c.args.clone(), thought_signatures: None })
+                ContentPart::ToolCall(ToolCall { call_id: c.id.clone(), fn_name: c.name.clone(), fn_arguments: c.args.clone(), thought_signatures: c.thought_signatures.clone() })
             }));
             ChatMessage::assistant(MessageContent::from_parts(parts))
         }
         Msg::ToolResult { id, output } => ChatMessage::from(ToolResponse::new(id.as_str(), output.as_str())),
     }
+}
+
+/// The request's messages with two prompt-cache breakpoints, for the providers that need them marked (Anthropic):
+/// after the system prompt, which caches tools and system for the session, and on the newest message, which caches
+/// the conversation so far for the next round. Providers that cache on their own ignore the marks.
+fn cached_messages(system: &str, history: &[Msg]) -> Vec<ChatMessage> {
+    let mut messages = vec![ChatMessage::system(system).with_options(CacheControl::Ephemeral)];
+    messages.extend(history.iter().map(to_message));
+    if !history.is_empty()
+        && let Some(last) = messages.pop()
+    {
+        messages.push(last.with_options(CacheControl::Ephemeral));
+    }
+    messages
 }
 
 impl Provider for GenaiProvider {
@@ -99,7 +117,7 @@ impl Provider for GenaiProvider {
         Box::pin(async move {
             let genai_tools: Vec<Tool> =
                 tools.iter().map(|t| Tool::new(t.name).with_description(t.description).with_schema(t.schema.clone())).collect();
-            let request = ChatRequest::new(history.iter().map(to_message).collect()).with_system(system).with_tools(genai_tools);
+            let request = ChatRequest::new(cached_messages(system, &history)).with_tools(genai_tools);
             let options = ChatOptions::default().with_capture_tool_calls(true);
             let response = self.client.exec_chat_stream(&self.model, request, Some(&options)).await.map_err(|e| e.to_string())?;
             let stream = response.stream.flat_map(|event| {
@@ -112,7 +130,7 @@ impl Provider for GenaiProvider {
                         .map(|content| content.into_tool_calls())
                         .unwrap_or_default()
                         .into_iter()
-                        .map(|c| Ok(Delta::Call(Call { id: c.call_id, name: c.fn_name, args: c.fn_arguments })))
+                        .map(|c| Ok(Delta::Call(Call { id: c.call_id, name: c.fn_name, args: c.fn_arguments, thought_signatures: c.thought_signatures })))
                         .collect(),
                     Ok(_) => Vec::new(),
                     Err(e) => vec![Err(e.to_string())],
@@ -121,5 +139,39 @@ impl Provider for GenaiProvider {
             });
             Ok(stream.boxed())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use genai::chat::ChatRole;
+    use serde_json::json;
+
+    use super::*;
+
+    fn cache(message: &ChatMessage) -> Option<CacheControl> {
+        message.options.as_ref().and_then(|o| o.cache_control.clone())
+    }
+
+    #[test]
+    fn the_system_prompt_and_the_newest_message_are_cache_breakpoints() {
+        let history = vec![Msg::User { text: "hi".into() }, Msg::Assistant { text: "yo".into(), calls: Vec::new() }, Msg::User { text: "more".into() }];
+        let messages = cached_messages("sys", &history);
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[0].role, ChatRole::System);
+        assert!(matches!(cache(&messages[0]), Some(CacheControl::Ephemeral)));
+        assert!(cache(&messages[1]).is_none() && cache(&messages[2]).is_none());
+        assert!(matches!(cache(&messages[3]), Some(CacheControl::Ephemeral)));
+        assert_eq!(cached_messages("sys", &[]).len(), 1);
+    }
+
+    #[test]
+    fn thought_signatures_go_back_with_their_call_but_are_not_saved() {
+        let call = Call { id: "c1".into(), name: "read_file".into(), args: json!({"path": "a"}), thought_signatures: Some(vec!["sig".into()]) };
+        let message = to_message(&Msg::Assistant { text: String::new(), calls: vec![call.clone()] });
+        let sent = message.content.tool_calls();
+        assert_eq!(sent[0].thought_signatures.as_deref(), Some(&["sig".to_owned()][..]));
+        let saved: Call = serde_json::from_str(&serde_json::to_string(&call).unwrap()).unwrap();
+        assert_eq!(saved.thought_signatures, None);
     }
 }

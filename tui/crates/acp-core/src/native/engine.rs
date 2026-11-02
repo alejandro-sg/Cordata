@@ -578,7 +578,7 @@ mod tests {
     }
 
     fn call(id: &str, name: &str, args: serde_json::Value) -> Result<Delta, String> {
-        Ok(Delta::Call(Call { id: id.into(), name: name.into(), args }))
+        Ok(Delta::Call(Call { id: id.into(), name: name.into(), args, thought_signatures: None }))
     }
 
     /// No rules, nothing saved, no economizer state.
