@@ -4,11 +4,7 @@
 use std::collections::VecDeque;
 use std::time::Instant;
 
-use acp_core::{
-    AppEvent, ApprovalDecision, ConfigOptionInfo, FileDiff, HarnessEvent, HealInfo,
-    ModeInfo, PermissionInfo, SessionInfo, StopReason,
-    TaskState, ToolCallInfo, ToolKind, ToolStatus,
-};
+use acp_core::{AppEvent, ApprovalDecision, FileDiff, PermissionInfo, SessionInfo, StopReason, ToolCallInfo, ToolKind, ToolStatus};
 use crate::key::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use serde_json::Value;
 use tokio::sync::oneshot;
@@ -41,8 +37,6 @@ pub struct ToolCard {
 pub enum Message {
     /// The key/command reference, printed on demand (`?`, `/help`).
     Help,
-    /// A phase of the self-healing loop worth a block in the transcript.
-    Heal(HealInfo),
     /// Session banner printed once when the backend connects.
     Welcome(SessionInfo),
     User(String),
@@ -82,32 +76,14 @@ impl PendingPermission {
 pub enum Effect {
     SendPrompt(String),
     Cancel,
-    SetMode(String),
-    SetConfig {
-        id: String,
-        value: String,
-    },
     /// Wipe the visible screen and scrollback (`/clear`).
     ClearScreen,
-    /// An extension request to the backend; the reply comes back as
-    /// `AppEvent::ExtResult` with the same tag.
-    Ext {
-        method: String,
-        params: Value,
-        tag: String,
-    },
-    /// Start another session (a new backend process) in the same project.
+    /// Start another session (a new engine) in the same project.
     NewSession,
     /// Show another session: `Next`, `Prev` or a 1-based slot number.
     SwitchSession(SwitchTarget),
-    /// End the shown session (its backend shuts down).
+    /// End the shown session (its engine shuts down).
     CloseSession,
-    /// List the open sessions and the project's saved ones.
-    ListSessions,
-    /// List the hub's conversations.
-    ListConversations,
-    /// Continue a hub conversation (by handle) in a new slot.
-    OpenConversation(String),
     /// A command run in the project folder, reported back as a `LocalEvent`. `share` hands its output to the agent
     /// with the next prompt (`!command`); `as_diff` shows it as a coloured diff (`/diff`).
     Shell {
@@ -160,8 +136,6 @@ pub enum TabState {
 }
 
 pub struct App {
-    /// An interrupted turn this client should resume on its own, once idle (see `take_auto_resume`).
-    pub auto_resume: Option<String>,
     pub messages: Vec<Message>,
     pub input: Input,
     pub pending: VecDeque<PendingPermission>,
@@ -170,14 +144,6 @@ pub struct App {
     /// Merged settings as last read.
     pub settings: Settings,
     pub session: Option<SessionInfo>,
-    pub modes: Vec<ModeInfo>,
-    pub mode: String,
-    /// Mode last requested but not yet confirmed by the server. Cycling
-    /// starts from this so rapid Tab presses advance instead of re-sending
-    /// the same target; the status bar keeps showing the *confirmed* mode.
-    pub pending_mode: Option<String>,
-    pub config_options: Vec<ConfigOptionInfo>,
-    pub title: Option<String>,
     pub conn: ConnState,
     pub turn_active: bool,
     pub cancelling: bool,
@@ -201,8 +167,6 @@ pub struct App {
     pub turn_started: Option<Instant>,
     pub turn_tools: usize,
     pub spinner: usize,
-    /// Background work (plugins, language servers, self-heal, MCP progress).
-    pub tasks: Vec<crate::view::TaskView>,
     /// The approval panel shows the whole diff instead of its first rows (`d`).
     pub diff_expanded: bool,
     /// Every open session, for the footer (empty / one entry: no tab strip).
@@ -220,14 +184,6 @@ pub struct App {
     pub queue: VecDeque<String>,
     /// What `!commands` printed since the last prompt: handed to the agent with the next one.
     pub shell_context: Vec<String>,
-    /// How full the conversation is, as the backend last said.
-    pub context: Option<crate::extras::ContextGauge>,
-    pub warned_context: bool,
-    /// The agent's own checklist (`todo_write`), drawn above the prompt.
-    pub checklist: Vec<crate::extras::TodoItem>,
-    pub checklist_done_at: Option<Instant>,
-    /// The goal being pursued, if any.
-    pub goal: Option<crate::extras::GoalView>,
     /// Tokens in and out over this client's session, and the turns that spent them.
     pub session_tokens: (u64, u64),
     pub turns_done: u64,
@@ -238,14 +194,10 @@ pub struct App {
     last_turn_secs: f64,
     /// Something wants the person (an approval, a long turn finished): the terminal is rung once, then this clears.
     pub attention: bool,
-    /// When the mode last changed, so the footer's pill can flash for a moment (see `footer::pill_flash`).
-    pub mode_changed_at: Option<Instant>,
     /// The full-screen overlay in front of the conversation (command deck, HUD, diff review), if one is open.
     pub overlay: Option<crate::overlay::Overlay>,
     /// Builds an overlay when one is asked for: the front end's (`overlay::none` for one that draws these its own way).
     pub overlay_factory: crate::overlay::Factory,
-    /// The orchestrator's current (or last) run, folded from its events, for the HUD.
-    pub run: Option<crate::run_board::RunBoard>,
     /// The person's own words for the approval card in front of them (`w`): a reason for refusing, what a plan should
     /// change, or an answer to a question the offered options did not cover.
     pub note: Option<Input>,
@@ -261,18 +213,12 @@ impl App {
     pub fn new() -> Self {
         Self {
             initial_prompt: None,
-            auto_resume: None,
             messages: Vec::new(),
             input: Input::default(),
             pending: VecDeque::new(),
             store: None,
             settings: Settings::default(),
             session: None,
-            modes: Vec::new(),
-            mode: String::new(),
-            pending_mode: None,
-            config_options: Vec::new(),
-            title: None,
             conn: ConnState::Connecting,
             turn_active: false,
             cancelling: false,
@@ -288,7 +234,6 @@ impl App {
             turn_started: None,
             turn_tools: 0,
             spinner: 0,
-            tasks: Vec::new(),
             diff_expanded: false,
             tabs: Vec::new(),
             menu: None,
@@ -297,22 +242,15 @@ impl App {
             custom: Vec::new(),
             queue: VecDeque::new(),
             shell_context: Vec::new(),
-            context: None,
-            warned_context: false,
-            checklist: Vec::new(),
-            checklist_done_at: None,
-            goal: None,
             session_tokens: (0, 0),
             turns_done: 0,
             branch: None,
             suggestion: None,
             last_turn_secs: 0.0,
             attention: false,
-            mode_changed_at: None,
             overlay: None,
             overlay_factory: crate::overlay::none,
             note: None,
-            run: None,
         }
     }
 
@@ -327,11 +265,19 @@ impl App {
         }
     }
 
+    /// What the thread is called in lists: the first thing asked, shortened.
+    pub fn title(&self) -> String {
+        self.messages
+            .iter()
+            .find_map(|m| match m {
+                Message::User(text) if !text.trim().is_empty() => Some(text.split_whitespace().collect::<Vec<_>>().join(" ")),
+                _ => None,
+            })
+            .map_or_else(|| "New thread".to_owned(), |text| text.chars().take(48).collect())
+    }
+
     pub fn tick(&mut self) {
         self.spinner = self.spinner.wrapping_add(1);
-        let now = Instant::now();
-        self.tasks.retain(|task| task.visible(now));
-        self.settle_checklist();
     }
 
     /// Can the person type? Also while the agent works: what is typed then waits in the queue.
@@ -348,7 +294,7 @@ impl App {
 
     /// The next queued prompt, once the agent is free. Taken one at a time: each is a turn of its own.
     pub fn take_queued(&mut self) -> Option<Effect> {
-        if !self.input_enabled() || self.queue.is_empty() || self.auto_resume.is_some() {
+        if !self.input_enabled() || self.queue.is_empty() {
             return None;
         }
         let line = self.queue.pop_front()?;
@@ -374,17 +320,6 @@ impl App {
         ));
     }
 
-    /// The turn to resume on its own, once the session is idle: set when the backend says a loaded session has
-    /// an interrupted turn and `selfHeal.autoResume` allows it. Taken at most once.
-    pub fn take_auto_resume(&mut self) -> Option<Effect> {
-        if self.auto_resume.is_none() || !self.input_enabled() {
-            return None;
-        }
-        let line = self.auto_resume.take()?;
-        self.messages.push(Message::Info(line));
-        Some(self.begin_turn(AUTO_RESUME_MARKER.into()))
-    }
-
     /// An initial prompt provided from CLI invocation, sent once the session connects and is idle. Taken at most once.
     pub fn take_initial_prompt(&mut self) -> Option<Effect> {
         if self.initial_prompt.is_none() || !self.input_enabled() {
@@ -407,7 +342,6 @@ impl App {
 
     /// Start a turn with `text` as the prompt.
     pub fn begin_turn(&mut self, text: String) -> Effect {
-        self.auto_resume = None;
         self.suggestion = None;
         self.turn_active = true;
         self.turn_started = Some(Instant::now());
@@ -421,19 +355,12 @@ impl App {
             .is_some_and(|pending| pending.info.tool_call_id == tool_call_id)
     }
 
-    pub fn config(&self, id: &str) -> Option<&ConfigOptionInfo> {
-        self.config_options.iter().find(|option| option.id == id)
-    }
-
     // ---------------------------------------------------------------- events
 
     pub fn on_event(&mut self, event: AppEvent) {
         match event {
             AppEvent::Connected(info) => {
                 self.conn = ConnState::Connected;
-                self.mode = info.current_mode.clone();
-                self.modes = info.modes.clone();
-                self.config_options = info.config_options.clone();
                 self.messages.push(Message::Welcome(info.clone()));
                 self.branch = crate::extras::git_branch(std::path::Path::new(&info.cwd));
                 for notice in self.settings_notices() {
@@ -441,14 +368,8 @@ impl App {
                 }
                 self.session = Some(info);
             }
-            AppEvent::UserText(text) => self.messages.push(Message::User(sanitize(&text))),
             AppEvent::AgentText(text) => self.append_agent(&text),
             AppEvent::AgentThought(text) => self.append_thought(&text),
-            AppEvent::ReplayComplete => {
-                self.messages.push(Message::Divider("resumed session".into()));
-            }
-            AppEvent::Harness(event) => self.on_harness(event),
-            AppEvent::ExtResult { tag, result } => self.on_ext_result(&tag, result),
             AppEvent::ToolCallStarted(info) => {
                 self.turn_tools += 1;
                 self.messages.push(Message::Tool(card_from(info)));
@@ -476,22 +397,6 @@ impl App {
                     card.untrusted |= patch.untrusted;
                 }
             }
-            AppEvent::TitleChanged(title) => self.title = Some(sanitize(&title)),
-            AppEvent::ModeChanged(mode) => {
-                if self.pending_mode.as_deref() == Some(mode.as_str()) {
-                    self.pending_mode = None;
-                }
-                // The one mode with no safety net: say so every time it is entered,
-                // so a stray Tab can't leave you there unnoticed.
-                if mode == "auto" && self.mode != "auto" {
-                    self.info("AUTO mode: tools run WITHOUT asking for approval — Tab (or /mode build) goes back");
-                }
-                if self.mode != mode {
-                    self.mode_changed_at = Some(Instant::now());
-                }
-                self.mode = mode;
-            }
-            AppEvent::ConfigOptionsChanged(options) => self.config_options = options,
             AppEvent::PermissionRequested { info, decision } => {
                 // The card's own input is whatever was streaming when the
                 // call started (often partial); the request carries the final one.
@@ -507,6 +412,9 @@ impl App {
                 });
             }
             AppEvent::TurnComplete(reason) => {
+                if !matches!(reason, StopReason::Cancelled) {
+                    self.turns_done += 1;
+                }
                 self.last_turn_secs = self.turn_started.map_or(0.0, |t| t.elapsed().as_secs_f64());
                 self.end_turn();
                 // A turn may have switched branches.
@@ -530,9 +438,6 @@ impl App {
                     .push(Message::Error(format!("turn failed: {}", sanitize(&error))));
             }
             AppEvent::Notice(note) => {
-                // A failed set_mode/set_config is the only notice source; the
-                // requested mode never took effect.
-                self.pending_mode = None;
                 self.messages.push(Message::Info(sanitize(&note)));
             }
             AppEvent::ConnectionError(error) => {
@@ -548,136 +453,6 @@ impl App {
                     self.messages.push(Message::Info("backend closed".into()));
                 }
             }
-        }
-    }
-
-    fn on_harness(&mut self, event: HarnessEvent) {
-        match event {
-            HarnessEvent::Task(info) => {
-                let finished = (info.state != TaskState::Running).then(Instant::now);
-                match self.tasks.iter_mut().find(|task| task.info.id == info.id) {
-                    Some(task) => {
-                        task.finished = task.finished.or(finished);
-                        task.info = info;
-                    }
-                    None => self.tasks.push(crate::view::TaskView {
-                        info,
-                        started: Instant::now(),
-                        finished,
-                    }),
-                }
-            }
-            HarnessEvent::Heal(info) if crate::view::is_shown(&info.phase) => {
-                self.messages.push(Message::Heal(info));
-            }
-            HarnessEvent::Heal(_) => {}
-            HarnessEvent::Resume(event) => {
-                self.auto_resume = event
-                    .get("auto")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false)
-                    .then(|| {
-                        let attempts = event.get("attempts").and_then(Value::as_u64).unwrap_or(0);
-                        let max = event.get("max").and_then(Value::as_u64).unwrap_or(2);
-                        format!("↻ resuming the interrupted turn automatically (attempt {}/{max})", attempts + 1)
-                    });
-            }
-            HarnessEvent::Mode(event) => {
-                if let Some(line) = crate::commands::format_mode_event(&event) {
-                    self.messages.push(Message::Info(sanitize(&line)));
-                }
-            }
-            HarnessEvent::Goal(event) => self.on_goal(&event),
-            HarnessEvent::Context(event) => self.on_context(&event),
-            HarnessEvent::TaskList(event) => self.on_checklist(&event),
-            HarnessEvent::Turn(event) => {
-                if event.get("stop").and_then(Value::as_str) != Some("cancelled") {
-                    self.turns_done += 1;
-                }
-                self.session_tokens.0 += event.get("tokensIn").and_then(Value::as_u64).unwrap_or(0);
-                self.session_tokens.1 += event.get("tokensOut").and_then(Value::as_u64).unwrap_or(0);
-                if let Some(line) = crate::commands::format_turn_receipt(&event) {
-                    self.messages.push(Message::Info(sanitize(&line)));
-                }
-            }
-            HarnessEvent::Orchestrator(event) => {
-                self.run.get_or_insert_with(Default::default).apply(&event);
-                if let Some(line) = crate::commands::format_orchestrator_event(&event) {
-                    self.messages.push(Message::Info(sanitize(&line)));
-                }
-            }
-            HarnessEvent::Checkpoint(event) => {
-                if let Some(line) = crate::commands::format_checkpoint_event(&event) {
-                    self.messages.push(Message::Info(sanitize(&line)));
-                }
-            }
-            HarnessEvent::Plugin(row) => {
-                // Start-up noise stays in the progress bars; problems are worth a line.
-                let status = row
-                    .get("status")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                if matches!(status, "failed" | "blocked") {
-                    let name = row.get("name").and_then(Value::as_str).unwrap_or("?");
-                    let error = row.get("error").and_then(Value::as_str).unwrap_or_default();
-                    self.messages.push(Message::Info(sanitize(&format!(
-                        "plugin {name}: {status} — {error}"
-                    ))));
-                }
-            }
-            HarnessEvent::Lsp(event) => {
-                let server = event.get("server").and_then(Value::as_str).unwrap_or("?");
-                if event.get("event").and_then(Value::as_str) == Some("failed") {
-                    let error = event
-                        .get("error")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default();
-                    self.messages.push(Message::Error(sanitize(&format!(
-                        "language server for {server} failed: {error}"
-                    ))));
-                }
-            }
-        }
-    }
-
-    fn on_ext_result(&mut self, tag: &str, result: Result<Value, String>) {
-        let value = match result {
-            Ok(value) => value,
-            Err(error) => {
-                self.messages
-                    .push(Message::Error(sanitize(&format!("/{tag}: {error}"))));
-                return;
-            }
-        };
-        // The agent forgot some turns: the transcript on screen forgets them too, so what is shown is what it remembers.
-        if tag == "back" && value.get("ok").and_then(Value::as_bool) == Some(true) {
-            let forgotten = value
-                .get("forgot")
-                .and_then(Value::as_array)
-                .map_or(0, Vec::len);
-            self.drop_turns(forgotten);
-        }
-        if (tag == "context" || tag == "compact") && let Some(gauge) = value.get("after").or(Some(&value)).and_then(crate::extras::ContextGauge::from_json) {
-            self.context = Some(gauge);
-        }
-        let text = crate::commands::format_ext(tag, &value);
-        self.messages.push(Message::Info(sanitize(&text)));
-    }
-
-    /// Remove the last `turns` turns from the transcript: from the `turns`-th most recent user message to the end.
-    fn drop_turns(&mut self, turns: usize) {
-        if turns == 0 {
-            return;
-        }
-        let starts: Vec<usize> = self
-            .messages
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| matches!(m, Message::User(_)))
-            .map(|(i, _)| i)
-            .collect();
-        if let Some(&cut) = starts.iter().rev().nth(turns - 1) {
-            self.messages.truncate(cut);
         }
     }
 
@@ -781,11 +556,7 @@ impl App {
             if ctrl && key.code == KeyCode::Char('k') {
                 return self.open_overlay(crate::overlay::Kind::Palette);
             }
-            match key.code {
-                KeyCode::F(3) => return self.toggle_panes(),
-                KeyCode::F(4) => return self.open_overlay(crate::overlay::Kind::Review),
-                _ => {}
-            }
+            if let KeyCode::F(4) = key.code { return self.open_overlay(crate::overlay::Kind::Review) }
         }
 
         // Session tabs work from anywhere — even with an approval open, so a
@@ -905,16 +676,6 @@ impl App {
         }
         self.refresh_menu();
         None
-    }
-
-    /// Toggle the Blade Runner 2049 interactive split-pane workspace (F3 / /panes).
-    pub fn toggle_panes(&mut self) -> Option<Effect> {
-        if self.overlay.as_ref().map(|overlay| overlay.kind()) == Some(crate::overlay::Kind::Panes) {
-            self.overlay = None;
-            None
-        } else {
-            self.open_overlay(crate::overlay::Kind::Panes)
-        }
     }
 
     /// Open an overlay (closing any other). The review needs the diff, which the event loop fetches.
@@ -1152,13 +913,10 @@ impl App {
             Command::Status => {
                 self.run_status();
             }
-            Command::Cost => return self.run_cost(),
             Command::Diff => return self.run_diff(),
             Command::Copy => return self.run_copy(),
             Command::Export(arg) => self.run_export(arg),
             Command::Palette => return self.open_overlay(crate::overlay::Kind::Palette),
-            Command::Hud => return self.toggle_panes(),
-            Command::Panes => return self.toggle_panes(),
             Command::Review => return self.open_overlay(crate::overlay::Kind::Review),
             Command::New => return Some(Effect::NewSession),
             Command::Switch(arg) => {
@@ -1185,44 +943,23 @@ impl App {
         if self.note.is_some() {
             return self.on_key_note(key);
         }
-        // The plan card (`present_plan`) has its own answers (build, edit, auto, keep planning); a question
-        // (`ask_user`) is answered by its option's number.
-        let is_plan = self.pending.front().is_some_and(|pending| pending.info.tool_name == "present_plan");
-        let ask_choices = self.pending.front().filter(|pending| pending.info.tool_name == "ask_user").map(|pending| crate::view::ask_choices(&pending.info));
-        let is_ask = ask_choices.is_some();
-        let offered = |id: &str| self.pending.front().is_some_and(|pending| pending.info.option(id).is_some());
         let decision = match key.code {
             KeyCode::Char('d' | 'D') => {
                 self.diff_expanded = !self.diff_expanded;
                 return None;
             }
-            // The person's own words: a reason for refusing, a change to the plan, or an answer of their own.
+            // The person's own words: a reason for refusing.
             KeyCode::Char('w' | 'W') => {
                 self.note = Some(Input::default());
                 return None;
             }
-            KeyCode::Char('b' | 'B') | KeyCode::Enter if is_plan => {
-                if offered("approve_build") { ApprovalDecision::Choose("approve_build".into()) } else { ApprovalDecision::Allow }
-            }
-            KeyCode::Char('e' | 'E') if is_plan && offered("approve_edit") => ApprovalDecision::Choose("approve_edit".into()),
-            KeyCode::Char('a' | 'A') if is_plan => {
-                if offered("approve_auto") { ApprovalDecision::Choose("approve_auto".into()) } else { ApprovalDecision::AllowAlways }
-            }
-            KeyCode::Char('k' | 'K') if is_plan => ApprovalDecision::Reject,
-            KeyCode::Char(digit @ '1'..='9') if is_ask => {
-                let index = digit as usize - '1' as usize;
-                ApprovalDecision::Choose(ask_choices.as_ref().and_then(|choices| choices.get(index))?.id.clone())
-            }
-            KeyCode::Char('s' | 'S') if is_ask => ApprovalDecision::Reject,
-            // The HITL station's own keys, alongside the prompt's: Y approves and
-            // executes, N rejects and discards.
+            // `a`/`y` allow once, `s` allows the tool for the session, `r`/`n`/Esc reject.
             KeyCode::Char('a' | 'A' | 'y' | 'Y') => ApprovalDecision::Allow,
             KeyCode::Char('s' | 'S') if offers_always => ApprovalDecision::AllowAlways,
             KeyCode::Char('r' | 'R' | 'n' | 'N') | KeyCode::Esc => ApprovalDecision::Reject,
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                // Documented, not a bug: session/cancel is only checked
-                // between streamed events and the server is parked on this
-                // very request, so cancelling now would do nothing.
+                // Documented, not a bug: a cancel is only checked between streamed events, and the engine is parked on
+                // this very request, so cancelling now would do nothing.
                 self.hint = Some(
                     "answer the permission request first — Ctrl+C can't cancel while it's open"
                         .into(),
@@ -1235,20 +972,15 @@ impl App {
         None
     }
 
-    /// Answer the approval at the front of the queue — from a key above, or from a front end's button. An "always" that
-    /// saved a rule says so in the transcript (a plan card's "auto" is a mode, not a rule).
+    /// Answer the approval at the front of the queue — from a key above, or from a front end's button. An "always"
+    /// says so in the transcript.
     pub fn answer(&mut self, decision: ApprovalDecision) {
         self.diff_expanded = false;
         if let Some(mut pending) = self.pending.pop_front() {
-            let is_plan = pending.info.tool_name == "present_plan";
             if decision == ApprovalDecision::AllowAlways
-                && !is_plan
                 && let Some(label) = &pending.info.always_label
             {
-                self.messages.push(Message::Info(format!(
-                    "{} — saved for this project (/permissions to review)",
-                    sanitize(label)
-                )));
+                self.messages.push(Message::Info(sanitize(label)));
             }
             pending.answer(decision);
         }
@@ -1307,11 +1039,6 @@ impl App {
 
 }
 
-/// What `/resume-turn` sends: the backend resumes the session's checkpoint.
-pub const RESUME_TURN_MARKER: &str = "[resume interrupted turn]";
-/// What the TUI sends when it resumes on its own (`selfHeal.autoResume`): the backend counts these and
-/// stops after two from the same checkpoint.
-pub const AUTO_RESUME_MARKER: &str = "[auto-resume interrupted turn]";
 
 fn card_from(info: ToolCallInfo) -> ToolCard {
     ToolCard {
@@ -1361,7 +1088,7 @@ pub fn sanitize(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use acp_core::{ConfigChoice, ToolCallPatch};
+    use acp_core::ToolCallPatch;
 
     use super::*;
 
@@ -1373,68 +1100,9 @@ mod tests {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
     }
 
-    #[test]
-    fn an_interrupted_turn_resumes_once_when_the_backend_allows_it() {
-        let mut app = connected();
-        let notice = |auto: bool, attempts: u64| {
-            AppEvent::Harness(HarnessEvent::Resume(serde_json::json!({
-                "auto": auto, "attempts": attempts, "max": 2, "where": "after_model, cycle 0"
-            })))
-        };
-        app.on_event(notice(false, 2));
-        assert!(app.take_auto_resume().is_none(), "the backend said no: nothing is sent");
-
-        app.on_event(notice(true, 0));
-        let Some(Effect::SendPrompt(text)) = app.take_auto_resume() else {
-            panic!("an idle session with an interrupted turn resumes");
-        };
-        assert_eq!(text, AUTO_RESUME_MARKER);
-        assert!(app.turn_active, "it is a turn like any other");
-        assert!(
-            app.messages.iter().any(|m| matches!(m, Message::Info(t) if t.contains("attempt 1/2"))),
-            "the person is told, with the count"
-        );
-        assert!(app.take_auto_resume().is_none(), "and it is taken once");
-
-        let mut busy = connected();
-        busy.on_event(notice(true, 1));
-        busy.turn_active = true;
-        assert!(busy.take_auto_resume().is_none(), "never on top of a turn in progress");
-        busy.turn_active = false;
-        let Some(Effect::SendPrompt(_)) = busy.take_auto_resume() else {
-            panic!("it waits until the session is idle");
-        };
-    }
-
     fn connected() -> App {
         let mut app = App::new();
-        app.on_event(AppEvent::Connected(SessionInfo {
-            session_id: "s1".into(),
-            cwd: "/tmp".into(),
-            transport: "stdio".into(),
-            resumed: false,
-            current_mode: "build".into(),
-            modes: ["plan", "build", "auto"]
-                .into_iter()
-                .map(|id| ModeInfo {
-                    id: id.into(),
-                    name: id.into(),
-                    description: None,
-                })
-                .collect(),
-            config_options: vec![ConfigOptionInfo {
-                id: "model".into(),
-                name: "Model".into(),
-                current_value: "a".into(),
-                choices: ["a", "b"]
-                    .into_iter()
-                    .map(|v| ConfigChoice {
-                        value: v.into(),
-                        name: v.into(),
-                    })
-                    .collect(),
-            }],
-        }));
+        app.on_event(AppEvent::Connected(SessionInfo { session_id: "s1".into(), cwd: "/tmp".into(), model: "m1".into(), transport: "native · m1".into() }));
         // The banner is covered by its own test; most tests want an empty transcript.
         app.messages.clear();
         app
@@ -1443,15 +1111,7 @@ mod tests {
     #[test]
     fn connecting_adds_the_session_banner_to_the_transcript() {
         let mut app = App::new();
-        app.on_event(AppEvent::Connected(SessionInfo {
-            session_id: "s1".into(),
-            cwd: "/tmp".into(),
-            transport: "stdio".into(),
-            resumed: false,
-            current_mode: "build".into(),
-            modes: vec![],
-            config_options: vec![],
-        }));
+        app.on_event(AppEvent::Connected(SessionInfo { session_id: "s1".into(), cwd: "/tmp".into(), model: "m1".into(), transport: "native · m1".into() }));
         assert!(
             matches!(app.messages.as_slice(), [Message::Welcome(info)] if info.session_id == "s1")
         );
@@ -1958,17 +1618,13 @@ mod tests {
         app.input.clear();
         type_text(&mut app, "/c");
         let labels: Vec<_> = app.menu.as_ref().unwrap().items.iter().map(|i| i.label.clone()).collect();
-        assert!(labels.contains(&"/cost".to_owned()) && labels.contains(&"/copy".to_owned()), "{labels:?}");
+        assert!(labels.contains(&"/clear".to_owned()) && labels.contains(&"/copy".to_owned()), "{labels:?}");
         // Down moves the highlight instead of walking prompt history.
         app.on_key(key(KeyCode::Down));
         assert_eq!(app.menu.as_ref().unwrap().selected, 1);
-        // Esc closes the menu and keeps the text; the mode does not change under a half-typed command.
-        let mode = app.mode.clone();
+        // Esc closes the menu and keeps the text.
         app.on_key(key(KeyCode::Esc));
         assert!(app.menu.is_none() && app.input.text() == "/c");
-        app.on_key(key(KeyCode::Tab));
-        assert_eq!(app.mode, mode);
-        assert_eq!(app.pending_mode, None);
     }
 
 }

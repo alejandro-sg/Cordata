@@ -1,15 +1,11 @@
 pub mod diff;
-mod checklist;
 pub mod footer;
-pub mod heal;
 mod help;
 pub mod hud;
 pub(crate) mod input;
 mod markdown;
 pub(crate) mod menu;
 pub(crate) mod panels;
-pub mod progress;
-pub(crate) mod team;
 pub mod text;
 mod tool_card;
 pub mod transcript;
@@ -54,12 +50,7 @@ pub fn welcome_lines(info: &SessionInfo, width: u16) -> Vec<Line<'static>> {
         place.push(Span::styled(format!("  ⎇ {branch}"), Style::new().fg(Color::Gray)));
     }
 
-    let model = info
-        .config_options
-        .iter()
-        .find(|option| option.id == "model")
-        .map(|option| option.current_name().to_owned())
-        .filter(|name| !name.is_empty());
+    let model = Some(info.model.clone()).filter(|name| !name.is_empty());
     let keys = ["/  commands", "@  files", "!  shell", "Ctrl+K  palette", "?  help"].join("   ");
 
     let mut lines = vec![Line::from(title), Line::from(place)];
@@ -84,21 +75,14 @@ pub fn render_live(app: &App, width: u16, max_rows: u16) -> LiveFrame {
         Some(panel) => panels::height(panel, max_rows.saturating_sub(footer_height + 1)),
         None => input::height_for(app, width).min(max_rows.saturating_sub(footer_height).max(3)),
     };
-    let tasks = progress::lines(&app.tasks, width, app.spinner);
     // Pinned just above the prompt box, so they are never the rows that get cut when the terminal is short.
-    let mut pinned = checklist::lines(app, width);
-    pinned.extend(input::queue_lines(app, width));
+    let mut pinned = input::queue_lines(app, width);
     if panel.is_none() {
         pinned.extend(menu::lines(app, width));
     }
     let available = max_rows.saturating_sub(bottom_height + footer_height + pinned.len() as u16) as usize;
 
     let mut content = transcript::live_lines(app, width);
-    if !tasks.is_empty() {
-        // Background work sits just above the prompt; the transcript tail yields first.
-        content.push(Line::raw(""));
-        content.extend(tasks);
-    }
     if content.len() > available {
         // Only the newest rows fit; the rest is still reachable once it settles into scrollback.
         content.drain(..content.len() - available);
@@ -124,10 +108,7 @@ pub fn render_live(app: &App, width: u16, max_rows: u16) -> LiveFrame {
 
 #[cfg(test)]
 mod tests {
-    use acp_core::{
-        AppEvent, ConfigChoice, ConfigOptionInfo, ModeInfo, PermissionInfo, SessionInfo,
-        ToolCallInfo, ToolKind, ToolStatus,
-    };
+    use acp_core::{AppEvent, PermissionInfo, SessionInfo, ToolCallInfo, ToolKind, ToolStatus};
 
     use super::*;
     use crate::app::Message;
@@ -175,35 +156,15 @@ mod tests {
 
     fn connected() -> App {
         let mut app = crate::overlay::new_app();
-        app.on_event(AppEvent::Connected(SessionInfo {
-            session_id: "abcdef12-3456".into(),
-            cwd: "/proj".into(),
-            transport: "stdio".into(),
-            resumed: false,
-            current_mode: "build".into(),
-            modes: vec![ModeInfo {
-                id: "build".into(),
-                name: "Build".into(),
-                description: None,
-            }],
-            config_options: vec![ConfigOptionInfo {
-                id: "model".into(),
-                name: "Model".into(),
-                current_value: "m1".into(),
-                choices: vec![ConfigChoice {
-                    value: "m1".into(),
-                    name: "m1".into(),
-                }],
-            }],
-        }));
+        app.on_event(AppEvent::Connected(SessionInfo { session_id: "abcdef12-3456".into(), cwd: "/proj".into(), model: "m1".into(), transport: "native".into() }));
         app
     }
 
     #[test]
-    fn the_banner_and_footer_show_session_mode_and_model() {
+    fn the_banner_and_footer_show_session_and_model() {
         let mut app = connected();
         let screen = screen(&mut app, 100, 20);
-        for needle in ["abcdef12", "/proj", "BUILD", "m1", "? help"] {
+        for needle in ["abcdef12", "/proj", "m1", "? help"] {
             assert!(screen.contains(needle), "missing {needle:?} in\n{screen}");
         }
     }
@@ -211,7 +172,7 @@ mod tests {
     #[test]
     fn chat_shows_user_agent_and_tool_card() {
         let mut app = connected();
-        app.on_event(AppEvent::UserText("hi there".into()));
+        app.messages.push(Message::User("hi there".into()));
         app.on_event(AppEvent::ToolCallStarted(ToolCallInfo {
             id: "t".into(),
             name: "shell".into(),
@@ -238,217 +199,6 @@ mod tests {
 
     /// `CORDATA_DUMP_DIR=… cargo test dump_inline -- --ignored`: the inline views as ANSI, for looking at.
     #[test]
-    #[ignore]
-    fn dump_inline() {
-        let Some(dir) = std::env::var_os("CORDATA_DUMP_DIR") else { return };
-        let dir = std::path::PathBuf::from(dir);
-        let mut app = connected();
-        let info = app.session.clone().unwrap();
-        let mut rows = lines_to_ansi(&welcome_lines(&info, 110), 110);
-        rows.push(String::new());
-        app.on_event(AppEvent::UserText("make a plan to add an MCP client under backend/agent".into()));
-        app.on_event(AppEvent::AgentText("I'll look at how the project talks to MCP servers first.".into()));
-        app.on_event(AppEvent::ToolCallStarted(ToolCallInfo {
-            id: "t1".into(),
-            name: "code_search".into(),
-            kind: ToolKind::Search,
-            status: ToolStatus::Completed,
-            raw_input: Some(serde_json::json!({"path": "backend", "query": "mcp"})),
-            content: "backend/mcp_servers.json:1".into(),
-            untrusted_source: false,
-            untrusted: false,
-            diffs: vec![],
-        }));
-        app.on_event(AppEvent::ToolCallStarted(ToolCallInfo {
-            id: "t2".into(),
-            name: "apply_patch".into(),
-            kind: ToolKind::Edit,
-            status: ToolStatus::Failed,
-            raw_input: Some(serde_json::json!({"patch": "*** Begin Patch"})),
-            content: "DENIED: [preflight] apply_patch was not applied".into(),
-            untrusted_source: false,
-            untrusted: false,
-            diffs: vec![],
-        }));
-        let commits = transcript::take_commits(&mut app, 110);
-        rows.extend(lines_to_ansi(&commits, 110));
-        app.turn_active = true;
-        app.turn_started = Some(std::time::Instant::now());
-        app.spinner = 9;
-        app.turn_tools = 3;
-        rows.extend(buffer_to_ansi_rows(&render_live(&app, 110, 20).buffer));
-        rows.push(String::new());
-        app.turn_active = false;
-        app.on_event(AppEvent::Harness(acp_core::HarnessEvent::Context(serde_json::json!({"used": 61000, "window": 100000, "pct": 0.61}))));
-        app.on_event(AppEvent::ModeChanged("plan".into()));
-        let _rx = plan_request(&mut app, "# Goal: add an MCP client\n\n1. **backend/agent/mcp_client.py** — new module wrapping the MCP session\n2. **backend/agent_common.py** — register its tools\n3. **backend/_mcp_client_smoke_test.py** — scripted server, asserts discovery and one call\n\nVerify: `backend/.venv/bin/python backend/_mcp_client_smoke_test.py`\nRisks: the strands MCP client already exists — reuse it instead of a second one");
-        rows.extend(buffer_to_ansi_rows(&render_live(&app, 110, 40).buffer));
-        std::fs::write(dir.join("inline.ansi"), rows.join("\n")).unwrap();
-    }
-
-    fn choice(id: &str, name: &str, kind: acp_core::ChoiceKind) -> acp_core::PermissionChoice {
-        acp_core::PermissionChoice { id: id.into(), name: name.into(), kind }
-    }
-
-    fn plan_request(app: &mut App, plan: &str) -> tokio::sync::oneshot::Receiver<acp_core::ApprovalDecision> {
-        use acp_core::ChoiceKind::{AllowOnce, RejectOnce};
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        app.on_event(AppEvent::PermissionRequested {
-            info: PermissionInfo {
-                tool_call_id: "plan".into(),
-                tool_name: "present_plan".into(),
-                title: "Run present_plan".into(),
-                kind: ToolKind::SwitchMode,
-                raw_input: Some(serde_json::json!({ "plan": plan })),
-                untrusted_source: false,
-                always_label: None,
-                options: vec![
-                    choice("approve_build", "Approve — build", AllowOnce),
-                    choice("approve_edit", "Approve — edit", AllowOnce),
-                    choice("approve_auto", "Approve — auto", AllowOnce),
-                    choice("keep_planning", "Keep planning", RejectOnce),
-                ],
-            },
-            decision: tx,
-        });
-        rx
-    }
-
-    fn question(app: &mut App) -> tokio::sync::oneshot::Receiver<acp_core::ApprovalDecision> {
-        use acp_core::ChoiceKind::{AllowOnce, RejectAlways, RejectOnce};
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        app.on_event(AppEvent::PermissionRequested {
-            info: PermissionInfo {
-                tool_call_id: "q".into(),
-                tool_name: "ask_user".into(),
-                title: "Run ask_user".into(),
-                kind: ToolKind::Other,
-                raw_input: Some(serde_json::json!({"question": "Which loader should replace the old one?", "options": ["pydantic-settings", "dynaconf", "keep ours"]})),
-                untrusted_source: false,
-                always_label: None,
-                options: vec![
-                    choice("opt1", "pydantic-settings", RejectAlways),
-                    choice("opt2", "dynaconf", RejectAlways),
-                    choice("opt3", "keep ours", RejectAlways),
-                    choice("skip", "Decide for me", AllowOnce),
-                    choice("decline", "Skip the question", RejectOnce),
-                ],
-            },
-            decision: tx,
-        });
-        rx
-    }
-
-    #[test]
-    fn a_plan_is_shown_as_a_plan_with_its_answers_and_each_key_means_one() {
-        use acp_core::ApprovalDecision::{Choose, Reject, Say};
-        use cordata_view::key::{KeyCode, KeyEvent, KeyModifiers};
-        let press = |app: &mut App, code| app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
-
-        let mut app = connected();
-        let mut rx = plan_request(&mut app, "# Goal: move settings to pydantic\n1. add models.py\n2. update the loader\nVerify: pytest");
-        let shown = screen(&mut app, 110, 30);
-        for needle in ["PLAN READY", "nothing has been changed yet", "Goal: move settings to pydantic", "add models.py", " build ", " edit ", " auto ", "keep planning", "say what to change"] {
-            assert!(shown.contains(needle), "missing {needle:?} in\n{shown}");
-        }
-        assert!(!shown.contains("Permission required"), "it is not the generic approval card");
-        press(&mut app, KeyCode::Char('b'));
-        assert_eq!(rx.try_recv().unwrap(), Choose("approve_build".into()), "b approves into build");
-
-        let mut rx = plan_request(&mut app, "plan");
-        press(&mut app, KeyCode::Char('e'));
-        assert_eq!(rx.try_recv().unwrap(), Choose("approve_edit".into()), "e approves into edit");
-
-        let mut rx = plan_request(&mut app, "plan");
-        press(&mut app, KeyCode::Char('a'));
-        assert_eq!(rx.try_recv().unwrap(), Choose("approve_auto".into()), "a approves into auto (and says nothing about saving a rule)");
-        assert!(!app.messages.iter().any(|m| matches!(m, Message::Info(text) if text.contains("saved for this project"))));
-
-        let mut rx = plan_request(&mut app, "plan");
-        press(&mut app, KeyCode::Char('k'));
-        assert_eq!(rx.try_recv().unwrap(), Reject, "k keeps planning");
-        let mut rx = plan_request(&mut app, "plan");
-        press(&mut app, KeyCode::Esc);
-        assert_eq!(rx.try_recv().unwrap(), Reject, "Esc keeps planning");
-        let mut rx = plan_request(&mut app, "plan");
-        press(&mut app, KeyCode::Enter);
-        assert_eq!(rx.try_recv().unwrap(), Choose("approve_build".into()), "Enter is the plain approval");
-
-        // `w`: keep planning, in the person's own words.
-        let mut rx = plan_request(&mut app, "plan");
-        press(&mut app, KeyCode::Char('w'));
-        let typing = screen(&mut app, 110, 30);
-        assert!(typing.contains("say") && typing.contains("Enter sends it"), "the note box opens under the plan:\n{typing}");
-        for c in "split step 2".chars() {
-            press(&mut app, KeyCode::Char(c));
-        }
-        press(&mut app, KeyCode::Enter);
-        assert_eq!(rx.try_recv().unwrap(), Say("split step 2".into()), "the words are the answer");
-        assert!(app.pending.is_empty() && app.note.is_none());
-
-        // Esc inside the box goes back to the choices without answering; an empty note answers nothing.
-        let mut rx = plan_request(&mut app, "plan");
-        press(&mut app, KeyCode::Char('w'));
-        press(&mut app, KeyCode::Esc);
-        assert!(app.note.is_none() && app.pending.len() == 1 && rx.try_recv().is_err(), "Esc closes the box and the card stays");
-        press(&mut app, KeyCode::Char('w'));
-        press(&mut app, KeyCode::Enter);
-        assert!(app.pending.len() == 1 && rx.try_recv().is_err(), "an empty note answers nothing");
-    }
-
-    #[test]
-    fn an_older_backend_without_edit_mode_gets_no_edit_key() {
-        let mut app = connected();
-        let (tx, _rx) = tokio::sync::oneshot::channel();
-        app.on_event(AppEvent::PermissionRequested {
-            info: PermissionInfo {
-                tool_call_id: "plan".into(),
-                tool_name: "present_plan".into(),
-                title: "Run present_plan".into(),
-                kind: ToolKind::SwitchMode,
-                raw_input: Some(serde_json::json!({ "plan": "p" })),
-                untrusted_source: false,
-                always_label: Some("auto".into()),
-                options: vec![],
-            },
-            decision: tx,
-        });
-        let shown = screen(&mut app, 110, 30);
-        assert!(shown.contains(" b  build") && !shown.contains(" e  edit"), "{shown}");
-    }
-
-    #[test]
-    fn a_question_is_drawn_with_numbered_options_and_a_number_answers_it() {
-        use acp_core::ApprovalDecision::{Choose, Reject, Say};
-        use cordata_view::key::{KeyCode, KeyEvent, KeyModifiers};
-        let press = |app: &mut App, code| app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
-
-        let mut app = connected();
-        let mut rx = question(&mut app);
-        let shown = screen(&mut app, 110, 30);
-        for needle in ["QUESTION", "Which loader should replace the old one?", " 1 ", "pydantic-settings", " 2 ", "dynaconf", " 3 ", "keep ours", "type your own", "decide for me"] {
-            assert!(shown.contains(needle), "missing {needle:?} in\n{shown}");
-        }
-        assert!(!shown.contains("Decide for me"), "the skip option is not numbered");
-        press(&mut app, KeyCode::Char('2'));
-        assert_eq!(rx.try_recv().unwrap(), Choose("opt2".into()), "a number picks that option");
-
-        let mut rx = question(&mut app);
-        press(&mut app, KeyCode::Char('7'));
-        assert!(rx.try_recv().is_err() && app.pending.len() == 1, "a number past the options does nothing");
-        press(&mut app, KeyCode::Char('s'));
-        assert_eq!(rx.try_recv().unwrap(), Reject, "s leaves it to the agent");
-
-        let mut rx = question(&mut app);
-        press(&mut app, KeyCode::Char('w'));
-        for c in "whatever is in pyproject".chars() {
-            press(&mut app, KeyCode::Char(c));
-        }
-        press(&mut app, KeyCode::Enter);
-        assert_eq!(rx.try_recv().unwrap(), Say("whatever is in pyproject".into()), "typed words are the answer");
-    }
-
-    #[test]
     fn any_approval_can_be_refused_with_a_reason() {
         use acp_core::ApprovalDecision::Say;
         use cordata_view::key::{KeyCode, KeyEvent, KeyModifiers};
@@ -460,115 +210,6 @@ mod tests {
             app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
         }
         assert_eq!(rx.try_recv().unwrap(), Say("no".into()));
-    }
-
-    #[test]
-    fn a_long_plan_is_cut_and_d_shows_all_of_it() {
-        let mut app = connected();
-        let plan = (1..=60).map(|n| format!("{n}. step number {n}")).collect::<Vec<_>>().join("\n");
-        let _rx = plan_request(&mut app, &plan);
-        let short = screen(&mut app, 100, 80);
-        assert!(short.contains("more rows — d shows the whole plan") && !short.contains("step number 60"), "{short}");
-        app.on_key(cordata_view::key::KeyEvent::new(cordata_view::key::KeyCode::Char('d'), cordata_view::key::KeyModifiers::NONE));
-        let whole = screen(&mut app, 100, 120);
-        assert!(whole.contains("step number 60"), "{whole}");
-    }
-
-    #[test]
-    fn the_harness_changing_the_mode_says_why_and_the_pill_follows() {
-        let mut app = connected();
-        app.on_event(AppEvent::ModeChanged("plan".into()));
-        app.on_event(AppEvent::Harness(acp_core::HarnessEvent::Mode(
-            serde_json::json!({"mode": "plan", "from": "build", "kind": "adaptive", "reason": "you asked for a plan"}),
-        )));
-        let shown = screen(&mut app, 100, 20);
-        assert!(shown.contains("build → plan · you asked for a plan"), "{shown}");
-        assert!(shown.contains("PLAN") && !shown.contains("BUILD "), "the footer pill follows the mode:\n{shown}");
-        assert!(app.mode_changed_at.is_some(), "…and flashes");
-    }
-
-    fn tool_started(id: &str, name: &str) -> AppEvent {
-        AppEvent::ToolCallStarted(ToolCallInfo {
-            id: id.into(),
-            name: name.into(),
-            kind: ToolKind::Other,
-            status: ToolStatus::Pending,
-            raw_input: Some(
-                serde_json::json!({"task": "write two sentences", "agents": [{"name": "cat_agent", "system_prompt": "SECRET-LONG-PROMPT"}]}),
-            ),
-            content: String::new(),
-            untrusted_source: false,
-            untrusted: false,
-            diffs: vec![],
-        })
-    }
-
-    fn progress(id: &str, text: &str) -> AppEvent {
-        AppEvent::ToolCallUpdated(acp_core::ToolCallPatch {
-            id: id.into(),
-            status: Some(ToolStatus::InProgress),
-            content: Some(text.into()),
-            untrusted: false,
-            ..Default::default()
-        })
-    }
-
-    #[test]
-    fn a_running_team_shows_one_row_per_agent_with_live_thinking() {
-        let mut app = connected();
-        app.on_event(AppEvent::TurnComplete(acp_core::StopReason::EndTurn));
-        app.turn_active = true;
-        app.on_event(tool_started("t", "local_graph"));
-        app.on_event(progress("t", "started: cat_agent\nstarted: dog_agent\nfinished: dog_agent - dogs are loyal\nthinking: cat_agent - one short sentence about cats"));
-        let screen = screen(&mut app, 100, 40);
-        for needle in [
-            "local_graph · team (2 agents)",
-            "task: write two sentences",
-            "cat_agent",
-            "thinking: one short sentence about cats",
-            "✓ dog_agent",
-            "dogs are loyal",
-        ] {
-            assert!(screen.contains(needle), "missing {needle:?} in\n{screen}");
-        }
-        assert!(
-            !screen.contains("SECRET-LONG-PROMPT"),
-            "specialists' system prompts are not dumped into the card"
-        );
-    }
-
-    #[test]
-    fn a_finished_team_keeps_its_agent_rows_and_shows_the_result_unwrapped() {
-        let mut app = connected();
-        app.on_event(tool_started("t", "local_graph"));
-        app.on_event(progress("t", "started: a\nfinished: a - cats purr"));
-        let wrapped = format!(
-            "The following tool output may contain text written by someone other than the user.\n{}\nSource: sub-agent team output (local_graph)\nteam says: cats and dogs\n{}",
-            acp_core::permission::UNTRUSTED_OPEN,
-            acp_core::permission::UNTRUSTED_CLOSE
-        );
-        app.on_event(AppEvent::ToolCallUpdated(acp_core::ToolCallPatch {
-            id: "t".into(),
-            status: Some(ToolStatus::Completed),
-            content: Some(wrapped),
-            untrusted: true,
-            ..Default::default()
-        }));
-        let screen = screen(&mut app, 100, 40);
-        for needle in [
-            "✓ a",
-            "cats purr",
-            "result",
-            "source: sub-agent team output (local_graph)",
-            "team says: cats and dogs",
-            "UNTRUSTED CONTENT",
-        ] {
-            assert!(screen.contains(needle), "missing {needle:?} in\n{screen}");
-        }
-        assert!(
-            !screen.contains("may contain text written by someone"),
-            "the guard boilerplate is not shown"
-        );
     }
 
     #[test]
@@ -600,7 +241,7 @@ mod tests {
         // Expanding applies to reasoning that settles afterwards.
         app.on_event(AppEvent::TurnComplete(acp_core::StopReason::EndTurn));
         app.thoughts_expanded = true;
-        app.on_event(AppEvent::UserText("again".into()));
+        app.messages.push(Message::User("again".into()));
         app.turn_active = true;
         let second = (1..=40)
             .map(|i| format!("alpha{i}"))
@@ -636,15 +277,15 @@ mod tests {
     #[test]
     fn the_slash_menu_and_the_queue_sit_above_the_prompt() {
         let mut app = connected();
-        app.input.set_text("/co");
+        app.input.set_text("/c");
         app.refresh_menu();
         let shown = screen(&mut app, 90, 24);
-        for needle in ["▸ /cost", "/copy", "↑↓ choose · tab complete · enter run", "❯ /co"] {
+        for needle in ["▸ /close", "/copy", "↑↓ choose · tab complete · enter run", "❯ /c"] {
             assert!(shown.contains(needle), "missing {needle:?} in\n{shown}");
         }
         let rows: Vec<&str> = shown.lines().collect();
-        let menu = rows.iter().position(|r| r.contains("▸ /cost")).unwrap();
-        let prompt = rows.iter().position(|r| r.contains("❯ /co")).unwrap();
+        let menu = rows.iter().position(|r| r.contains("▸ /close")).unwrap();
+        let prompt = rows.iter().position(|r| r.contains("❯ /c")).unwrap();
         assert!(menu < prompt, "the menu is above the box:\n{shown}");
         eprintln!("{shown}");
 
@@ -655,72 +296,6 @@ mod tests {
         let shown = screen(&mut busy, 90, 24);
         assert!(shown.contains("⏵ next  then run the tests") && shown.contains("working — enter queues"), "{shown}");
         eprintln!("{shown}");
-    }
-
-    #[test]
-    fn the_footer_carries_the_context_gauge_the_goal_and_the_branch() {
-        let mut app = connected();
-        app.branch = Some("feat/x".into());
-        app.on_context(&serde_json::json!({"used": 45_000, "window": 128_000, "pct": 0.35}));
-        app.on_goal(&serde_json::json!({"event": "continue", "condition": "tests pass", "how": "check", "turn": 2, "max": 8, "reason": "failing"}));
-        let wide = screen(&mut app, 120, 24);
-        let footer = wide.lines().last().unwrap().to_owned();
-        for needle in ["BUILD", "◎ goal 2/8", "ctx ▰▰▱▱▱▱ 35%", "m1", "/proj ⎇ feat/x", "? help"] {
-            assert!(footer.contains(needle), "missing {needle:?} in footer {footer:?}");
-        }
-        // On a narrow terminal the least important parts go first and the goal is the last to go.
-        let narrow = screen(&mut app, 46, 24);
-        let footer = narrow.lines().last().unwrap().to_owned();
-        assert!(footer.contains("BUILD") && footer.contains("◎ goal 2/8"), "{footer:?}");
-        assert!(!footer.contains("feat/x"), "{footer:?}");
-        assert!(footer.chars().count() <= 46, "{footer:?}");
-
-        // Hot context turns the gauge red-ish and says what to do, once.
-        let mut hot = connected();
-        hot.on_context(&serde_json::json!({"used": 120_000, "window": 128_000, "pct": 0.94}));
-        let shown = screen(&mut hot, 100, 24);
-        assert!(shown.contains("94%") && shown.contains("new session"), "{shown}");
-    }
-
-    #[test]
-    fn the_agents_checklist_sits_above_the_prompt_and_its_tool_card_stays_out_of_the_transcript() {
-        let mut app = connected();
-        app.on_event(AppEvent::UserText("do the thing".into()));
-        app.turn_active = true;
-        app.on_event(AppEvent::ToolCallStarted(ToolCallInfo {
-            id: "t".into(),
-            name: "todo_write".into(),
-            kind: ToolKind::Other,
-            status: ToolStatus::Completed,
-            raw_input: Some(serde_json::json!({"todos": []})),
-            content: "Checklist saved (1/3 done).".into(),
-            untrusted_source: false,
-            untrusted: false,
-            diffs: vec![],
-        }));
-        app.on_checklist(&serde_json::json!({"items": [
-            {"content": "read the failing test", "status": "completed"},
-            {"content": "fix the off-by-one", "status": "in_progress"},
-            {"content": "run the suite", "status": "pending"},
-        ]}));
-        let shown = screen(&mut app, 80, 24);
-        for needle in ["▣ plan", "1/3", "✓ read the failing test", "fix the off-by-one", "○ run the suite"] {
-            assert!(shown.contains(needle), "missing {needle:?} in\n{shown}");
-        }
-        assert!(!shown.contains("Checklist saved") && !shown.contains("todo_write"), "the card is not shown:\n{shown}");
-        let rows: Vec<&str> = shown.lines().collect();
-        let plan = rows.iter().position(|r| r.contains("▣ plan")).unwrap();
-        let prompt = rows.iter().rposition(|r| r.contains('❯')).unwrap();
-        assert!(plan < prompt, "the plan is above the prompt:\n{shown}");
-
-        // A long list keeps the step in progress visible by folding finished steps away.
-        let items: Vec<_> = (1..=12)
-            .map(|i| serde_json::json!({"content": format!("step {i}"), "status": if i <= 8 { "completed" } else if i == 9 { "in_progress" } else { "pending" }}))
-            .collect();
-        app.on_checklist(&serde_json::json!({ "items": items }));
-        let shown = screen(&mut app, 80, 30);
-        assert!(shown.contains("✓ ") && shown.contains("done") && shown.contains("step 9") && shown.contains("step 12"), "{shown}");
-        assert!(!shown.contains("step 1\n") && !shown.contains(" step 2"), "early finished steps are folded:\n{shown}");
     }
 
     #[test]
@@ -841,7 +416,7 @@ mod tests {
     fn a_long_reply_is_ordinary_scrollback_with_one_prompt_box_left_on_screen() {
         let mut app = connected();
         let mut term = Screen::new(60, 12);
-        app.on_event(AppEvent::UserText("write a lot".into()));
+        app.messages.push(Message::User("write a lot".into()));
         app.turn_active = true;
         let reply: String = (1..=100).map(|i| format!("line {i}\n")).collect();
         // Stream it in a few chunks, as the model would.
@@ -870,7 +445,7 @@ mod tests {
     #[test]
     fn clear_resets_the_commit_cursor() {
         let mut app = connected();
-        app.on_event(AppEvent::UserText("one".into()));
+        app.messages.push(Message::User("one".into()));
         let mut term = Screen::new(60, 20);
         term.show(&mut app);
         assert!(app.committed > 0);
@@ -929,7 +504,7 @@ mod tests {
     #[test]
     fn the_approval_panel_shows_the_diff_before_the_edit_runs() {
         let mut app = connected();
-        app.on_event(AppEvent::UserText("rename it".into()));
+        app.messages.push(Message::User("rename it".into()));
         edit_card(&mut app, "e1");
         let _rx = ask(&mut app, "e1");
         let shown = screen(&mut app, 90, 30);
@@ -984,115 +559,6 @@ mod tests {
             cordata_view::key::KeyCode::Char('d'),
         ));
         assert!(app.diff_expanded, "d toggles the whole diff");
-    }
-
-    #[test]
-    fn background_tasks_render_as_progress_bars_above_the_prompt() {
-        let mut app = connected();
-        app.on_event(AppEvent::Harness(acp_core::HarnessEvent::Task(
-            acp_core::TaskInfo {
-                id: "t1".into(),
-                title: "rust: indexing".into(),
-                done: 30.0,
-                total: Some(120.0),
-                message: "crates/acp-core".into(),
-                state: acp_core::TaskState::Running,
-                source: "lsp".into(),
-            },
-        )));
-        app.on_event(AppEvent::Harness(acp_core::HarnessEvent::Task(
-            acp_core::TaskInfo {
-                id: "t2".into(),
-                title: "self-heal: verifying in sandbox (1/3)".into(),
-                done: 0.0,
-                total: None,
-                message: String::new(),
-                state: acp_core::TaskState::Running,
-                source: "heal".into(),
-            },
-        )));
-        let shown = screen(&mut app, 100, 20);
-        assert!(
-            shown.contains("rust: indexing") && shown.contains(" 25%") && shown.contains("█████"),
-            "{shown}"
-        );
-        assert!(
-            shown.contains("self-heal: verifying in sandbox (1/3)"),
-            "{shown}"
-        );
-        let lines: Vec<&str> = shown.lines().collect();
-        let bar = lines
-            .iter()
-            .position(|l| l.contains("rust: indexing"))
-            .unwrap();
-        let prompt = lines.iter().rposition(|l| l.contains('❯')).unwrap();
-        assert!(bar < prompt, "bars sit above the prompt box");
-        // finishing it leaves a ✓ that lingers, never in scrollback
-        app.on_event(AppEvent::Harness(acp_core::HarnessEvent::Task(
-            acp_core::TaskInfo {
-                id: "t1".into(),
-                title: "rust: indexing".into(),
-                done: 120.0,
-                total: Some(120.0),
-                message: String::new(),
-                state: acp_core::TaskState::Completed,
-                source: "lsp".into(),
-            },
-        )));
-        assert!(screen(&mut app, 100, 20).contains("✓ rust: indexing"));
-        assert!(
-            app.messages
-                .iter()
-                .all(|m| !matches!(m, Message::Info(t) if t.contains("indexing")))
-        );
-    }
-
-    #[test]
-    fn self_heal_phases_land_in_the_transcript_with_the_patch_coloured() {
-        let mut app = connected();
-        let heal = |phase: &str| {
-            AppEvent::Harness(acp_core::HarnessEvent::Heal(acp_core::HealInfo {
-                phase: phase.into(),
-                attempt: Some(1),
-                max: Some(3),
-                command: Some("cargo test".into()),
-                root_cause: Some("add() subtracts".into()),
-                patch: Some(
-                    "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-a - b\n+a + b\n".into(),
-                ),
-                verify: Some("cargo test".into()),
-                ..Default::default()
-            }))
-        };
-        for phase in [
-            "detected",
-            "diagnosing",
-            "proposed",
-            "verifying",
-            "verified",
-            "healed",
-        ] {
-            app.on_event(heal(phase));
-        }
-        let shown = screen(&mut app, 100, 30);
-        for needle in [
-            "⟲ self-heal · `cargo test` failed",
-            "attempt 1/3 · root cause: add() subtracts",
-            "+a + b",
-            "verified in a sandbox copy",
-            "✓ self-heal · `cargo test` passes now",
-        ] {
-            assert!(shown.contains(needle), "missing {needle:?}:\n{shown}");
-        }
-        let blocks = app
-            .messages
-            .iter()
-            .filter(|m| matches!(m, Message::Heal(_)))
-            .count();
-        assert_eq!(
-            blocks, 4,
-            "diagnosing/verifying are progress bars, not blocks"
-        );
     }
 
     #[test]

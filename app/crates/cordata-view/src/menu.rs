@@ -241,10 +241,10 @@ mod tests {
         app.refresh_menu();
         let all = app.menu.as_ref().expect("menu").items.len();
         assert!(all > 10, "{all}");
-        app.input.set_text("/co");
+        app.input.set_text("/c");
         app.refresh_menu();
         let labels: Vec<_> = app.menu.as_ref().unwrap().items.iter().map(|i| i.label.as_str()).collect();
-        assert_eq!(labels[..2], ["/cost", "/copy"], "{labels:?}");
+        assert_eq!(labels[..2], ["/close", "/copy"], "{labels:?}");
     }
 
     #[test]
@@ -356,10 +356,7 @@ mod tests {
             session_id: "s".into(),
             cwd: dir.path().to_string_lossy().into_owned(),
             transport: "stdio".into(),
-            resumed: false,
-            current_mode: "build".into(),
-            modes: vec![],
-            config_options: vec![],
+            model: "m1".into(),
         });
         app.refresh_menu();
         let menu = app.menu.as_ref().expect("file menu");
@@ -379,10 +376,7 @@ mod tests {
             session_id: "s".into(),
             cwd: dir.path().to_string_lossy().into_owned(),
             transport: "stdio".into(),
-            resumed: false,
-            current_mode: "build".into(),
-            modes: vec![],
-            config_options: vec![],
+            model: "m1".into(),
         });
         app.refresh_menu();
         assert_eq!(app.menu.as_ref().unwrap().current().unwrap().label, "src/");

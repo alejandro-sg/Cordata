@@ -98,7 +98,6 @@ async fn interruptible<F: Future>(fut: F, commands: &mut Commands, events: &Even
                 Some(Command::Prompt(..)) => {
                     let _ = events.send(AppEvent::Notice("a turn is still running; wait or cancel it first".into()));
                 }
-                Some(_) => {}
             },
             out = &mut fut => return Ok(out),
         }
@@ -170,10 +169,7 @@ pub(crate) async fn drive(
         session_id: format!("native-{}", std::process::id()),
         cwd: options.cwd.display().to_string(),
         transport: format!("native · {}", provider.model()),
-        resumed: false,
-        current_mode: String::new(),
-        modes: Vec::new(),
-        config_options: Vec::new(),
+        model: provider.model().to_owned(),
     }));
 
     let economizer = Economizer::new(provider.model(), state_dir);
@@ -188,12 +184,6 @@ pub(crate) async fn drive(
                 }
             }
             Command::Cancel => {}
-            Command::SetMode(_) | Command::SetConfigOption { .. } => {
-                let _ = events.send(AppEvent::Notice("modes and config options are not available in native sessions yet".into()));
-            }
-            Command::Ext { tag, .. } => {
-                let _ = events.send(AppEvent::ExtResult { tag, result: Err("not supported by native sessions".into()) });
-            }
             Command::Shutdown => break,
         }
     }

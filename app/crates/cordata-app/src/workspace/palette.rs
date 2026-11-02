@@ -2,20 +2,17 @@
 //! ↑/↓ move, ↵ runs, esc closes. The `/` menu in the composer stays for the harness's slash commands.
 
 use cordata_theme::tokens as t;
-use cordata_view::shown;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{AnyElement, Context, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement, SharedString, StatefulInteractiveElement as _, Styled, Window, div, px, relative};
 use gpui_component::input::Input;
 
 use super::{DockTab, Overlay, Workspace};
-use crate::session::Target;
 use crate::theme::{c, line, mono, tk};
 use crate::ui;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     NewConversation,
-    ResumeLast,
     ToggleSidebar,
     TogglePanel,
     OpenTerminal,
@@ -27,7 +24,6 @@ pub enum Action {
     Attach,
     Worktree,
     Review(bool),
-    Open(Target),
 }
 
 #[derive(Debug, Clone)]
@@ -63,10 +59,9 @@ pub fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
 }
 
 impl Workspace {
-    fn palette_items(&self, cx: &gpui::App) -> Vec<Item> {
-        let mut items = vec![
+    fn palette_items(&self, _cx: &gpui::App) -> Vec<Item> {
+        let items = vec![
             Item { group: "chat", label: "New conversation".into(), shortcut: "⌘N", action: Action::NewConversation },
-            Item { group: "chat", label: "Resume last conversation".into(), shortcut: "", action: Action::ResumeLast },
             Item { group: "chat", label: "Stop the run".into(), shortcut: "esc esc", action: Action::StopRun },
             Item { group: "panel", label: "Toggle side panel".into(), shortcut: "⌘\\", action: Action::TogglePanel },
             Item { group: "panel", label: "Show or hide project sidebar".into(), shortcut: "⌘B", action: Action::ToggleSidebar },
@@ -83,13 +78,6 @@ impl Workspace {
             Item { group: "proj", label: "Open folder…".into(), shortcut: "", action: Action::OpenFolder },
             Item { group: "app", label: "Settings".into(), shortcut: "⌘,", action: Action::Settings },
         ];
-        items.extend(
-            self.listing
-                .iter()
-                .filter(|row| !self.sessions.iter().any(|s| super::matches_target(s.read(cx), &row.target)))
-                .take(30)
-                .map(|row| Item { group: "chat", label: shown(&row.title), shortcut: "", action: Action::Open(row.target.clone()) }),
-        );
         items
     }
 
@@ -107,11 +95,6 @@ impl Workspace {
         self.close_overlay(Overlay::Palette, window, cx);
         match action {
             Action::NewConversation => self.new_session(&super::NewSession, window, cx),
-            Action::ResumeLast => {
-                if let Some(row) = self.listing.iter().find(|row| !self.sessions.iter().any(|s| super::matches_target(s.read(cx), &row.target))).cloned() {
-                    self.open(row.target, window, cx);
-                }
-            }
             Action::ToggleSidebar => self.toggle_sidebar(&super::ToggleSidebar, window, cx),
             Action::TogglePanel => self.toggle_panel(&super::TogglePanel, window, cx),
             Action::OpenTerminal => self.toggle_terminal(&super::ToggleTerminal, window, cx),
@@ -126,7 +109,6 @@ impl Workspace {
             Action::Attach => self.choose_attachments(window, cx),
             Action::Worktree => self.begin_worktree(window, cx),
             Action::Review(branch) => self.request_review(branch, window, cx),
-            Action::Open(target) => self.open(target, window, cx),
         }
     }
 

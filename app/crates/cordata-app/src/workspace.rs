@@ -1,10 +1,9 @@
-//! The window (the "Cordata Harness" reference design): the sidebar on the left (project, open conversations, the
-//! project's other conversations), the conversation in the centre (header, transcript, the approval card, the
-//! composer), the side panel on the right (Mission Control, files, editor, review, terminal, …), the status bar
+//! The window: the sidebar on the left (project, open conversations), the conversation in the centre (header, transcript, the approval card, the
+//! composer), the side panel on the right (files, editor, review, terminal), the status bar
 //! across the bottom, and the overlays above it all (the command palette, the project picker, settings).
 //!
-//! Several sessions can be open at once, one shown; each is its own ACP connection. Keys: ⌘K palette, ⌘O project,
-//! ⌘N new, ⌘1–9 switch, ⌘\ side panel, ⌃` terminal, ⌘, settings, ⇧Tab mode, esc deny / close, esc esc stop.
+//! Several sessions can be open at once, one shown; each is its own engine. Keys: ⌘K palette, ⌘O project,
+//! ⌘N new, ⌘1–9 switch, ⌘\ side panel, ⌃` terminal, ⌘, settings, esc deny / close, esc esc stop.
 //! The rendering lives in the submodules; this file holds the state and the behaviour.
 
 use std::collections::{HashMap, HashSet};
@@ -24,7 +23,7 @@ use gpui_component::input::{InputEvent, InputState, TextareaState};
 use crate::hud;
 use crate::platform::Display;
 use crate::prefs::{self, Prefs};
-use crate::session::{Connection, Row, Session, SessionEvent, Target, WindowRequest};
+use crate::session::{Connection, Session, SessionEvent, WindowRequest};
 use crate::theme::{c, ca, line, tk};
 use crate::transcript::{self, GroupEdge};
 use crate::ui::{self, Dot, Kind};
@@ -67,7 +66,6 @@ pub enum Overlay {
 /// What the small naming dialog names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Naming {
-    Conversation(String),
     Worktree,
 }
 
@@ -125,8 +123,6 @@ actions!(
 
 /// How many of the newest blocks are re-measured when anything changes (a streaming reply, a tool card updating).
 const REMEASURE_TAIL: usize = 8;
-/// How often the sidebar re-reads the project's conversations.
-const LISTING_EVERY: Duration = Duration::from_secs(15);
 /// Two presses of esc this close together stop the run.
 const DOUBLE_ESC: Duration = Duration::from_millis(700);
 /// A dropped connection is opened again on its own this many times (with growing waits) before it waits for Retry.
@@ -148,8 +144,6 @@ pub struct Workspace {
     /// Tool rows opened to their output.
     expanded: HashSet<String>,
     /// The project's conversations (the hub's, or the saved stdio sessions).
-    listing: Vec<Row>,
-    listing_error: Option<String>,
     /// `w` on an approval card: the next Enter sends the composer's text as the answer (the reason, or one's own words).
     saying: bool,
     /// `--run GOAL`: started once the session connects.
@@ -199,7 +193,7 @@ pub struct Workspace {
     staged: Vec<attachments::Staged>,
     /// Why the last attachment or send was refused, shown above the composer.
     attach_note: Option<String>,
-    /// What the naming dialog is for: renaming a conversation (its hub handle), or a new worktree.
+    /// What the naming dialog is for: naming a new worktree.
     renaming: Option<Naming>,
     /// Git and GitHub state for the Review tab and the header.
     git: git_ops::Git,
@@ -242,10 +236,6 @@ pub fn tilde(path: &Path) -> String {
     }
 }
 
-pub fn now_secs() -> f64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or_default()
-}
-
 /// The harness's state folder.
 pub fn cordata_home() -> PathBuf {
     std::env::var_os("CORDATA_HOME").map(PathBuf::from).unwrap_or_else(|| std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join(".cordata"))
@@ -257,7 +247,7 @@ impl Workspace {
         let prefs = cx.try_global::<Prefs>().cloned().unwrap_or_default();
         let composer = cx.new(|cx| TextareaState::new(window, cx).auto_grow(2, 10).submit_on_enter(prefs.send_with != "cmd-enter").placeholder("Ask anything, @mention files, or type / for commands…"));
         let display = cx.try_global::<Display>().copied().unwrap_or_default();
-        let first = cx.new(|cx| Session::start(&connection, Target::Default, cwd.clone(), initial_prompt, cx));
+        let first = cx.new(|cx| Session::start(&connection, cwd.clone(), initial_prompt, cx));
         let file_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter files…"));
         let palette_input = cx.new(|cx| InputState::new(window, cx).placeholder("Type a command or search conversations…"));
         let picker_input = cx.new(|cx| InputState::new(window, cx).placeholder("Search projects or paste a path…"));
@@ -317,8 +307,6 @@ impl Workspace {
             transcript: ListState::new(0, ListAlignment::Bottom, px(1200.)),
             seen: (first.entity_id(), 0, 0),
             expanded: HashSet::new(),
-            listing: Vec::new(),
-            listing_error: None,
             saying: false,
             display,
             dock_tab: DockTab::default(),
@@ -366,7 +354,6 @@ impl Workspace {
         this.prefs.touch_recent(&cwd, prefs::now());
         this.prefs.save();
         this.adopt(first, window, cx);
-        this.schedule_listing(cx);
         this.schedule_git(cx);
         this.watch_hotkey(window, cx);
         this.load_tree(cx);
@@ -462,9 +449,7 @@ impl Workspace {
                 // The Dock icon bounces when the window is not in front (an approval, a finished turn).
                 SessionEvent::NeedsAttention => {
                     window.request_attention();
-                    this.refresh_listing(cx);
                 }
-                SessionEvent::Listed => this.take_stdio_listing(cx),
                 SessionEvent::Window(request) => this.on_window_request(request.clone(), window, cx),
             }),
         ];
@@ -484,20 +469,11 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(super) fn open(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
-        // Already open: show it rather than attach a second client (the daemon allows one driver per conversation).
-        if let Some(existing) = self.sessions.iter().find(|s| matches_target(s.read(cx), &target)).cloned() {
-            self.show(existing, cx);
-            return;
-        }
+    pub(super) fn open_new(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (connection, cwd) = (self.connection.clone(), self.cwd.clone());
-        let session = cx.new(|cx| Session::start(&connection, target, cwd, None, cx));
+        let session = cx.new(|cx| Session::start(&connection, cwd, None, cx));
         self.adopt(session, window, cx);
         self.focus_composer(&FocusComposer, window, cx);
-    }
-
-    fn new_target(&self) -> Target {
-        Target::Default
     }
 
     fn close_active(&mut self, cx: &mut Context<Self>) {
@@ -536,51 +512,20 @@ impl Workspace {
 
     fn on_window_request(&mut self, request: WindowRequest, window: &mut Window, cx: &mut Context<Self>) {
         match request {
-            WindowRequest::New => self.open(self.new_target(), window, cx),
+            WindowRequest::New => self.open_new(window, cx),
             WindowRequest::Close => self.close_active(cx),
             WindowRequest::Switch(target) => self.switch(target, cx),
-            WindowRequest::Open(target) => self.open(target, window, cx),
         }
     }
 
-    /// A dropped connection, opened again on the same conversation (by id over stdio, by handle on the hub).
+    /// A dropped connection: a fresh session in its place (the conversation lived in the dead engine).
     pub(super) fn reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let old = self.session.read(cx);
-        let target = match (old.session_id(), &old.target) {
-            (Some(id), _) => Target::Resume(id),
-            (None, target) => target.clone(),
-        };
         let id = self.session.entity_id();
         let (connection, cwd) = (self.connection.clone(), self.cwd.clone());
-        let fresh = cx.new(|cx| Session::start(&connection, target, cwd, None, cx));
+        let fresh = cx.new(|cx| Session::start(&connection, cwd, None, cx));
         self.sessions.retain(|s| s.entity_id() != id);
         self.subscriptions.retain(|(sid, _)| *sid != id);
         self.adopt(fresh, window, cx);
-    }
-
-    // -------------------------------------------------------------------------------------------- the listing
-
-    fn schedule_listing(&mut self, cx: &mut Context<Self>) {
-        cx.spawn(async move |this, cx| {
-            loop {
-                if this.update(cx, |this, cx| this.refresh_listing(cx)).is_err() {
-                    break;
-                }
-                cx.background_executor().timer(LISTING_EVERY).await;
-            }
-        })
-        .detach();
-    }
-
-    pub(super) fn refresh_listing(&mut self, cx: &mut Context<Self>) {
-        self.session.read(cx).request_listing();
-    }
-
-    fn take_stdio_listing(&mut self, cx: &mut Context<Self>) {
-        if let Some(rows) = self.session.read(cx).listing.clone() {
-            self.listing = rows;
-            cx.notify();
-        }
     }
 
     // -------------------------------------------------------------------------------------------- selftest
@@ -678,7 +623,7 @@ impl Workspace {
     }
 
     pub(super) fn new_session(&mut self, _: &NewSession, window: &mut Window, cx: &mut Context<Self>) {
-        self.open(self.new_target(), window, cx);
+        self.open_new(window, cx);
     }
 
     fn close_session(&mut self, _: &CloseSession, _: &mut Window, cx: &mut Context<Self>) {
@@ -805,20 +750,18 @@ impl Workspace {
             cx.stop_propagation();
             return;
         }
-        let (has_menu, pending, plan, empty) = {
+        let (has_menu, pending, empty) = {
             let view = &self.session.read(cx).view;
             let pending = view.pending.front();
-            (view.menu.is_some(), pending.is_some(), pending.is_some_and(|p| p.info.tool_name == "present_plan"), self.composer.read(cx).value().is_empty())
+            (view.menu.is_some(), pending.is_some(), self.composer.read(cx).value().is_empty())
         };
         let plain = !event.keystroke.modifiers.modified();
         // An approval card takes single keys while the composer is empty, as the terminal's does: a/y allow, r/n
-        // reject, s allow and save the rule, w reject (or answer) in your own words; on a plan b/e build or edit.
+        // reject, s allow the tool for the session, w reject in your own words.
         if pending && empty && plain && !self.saying {
             let decision = match event.keystroke.key.as_str() {
-                "a" | "y" if !plan => Some(ApprovalDecision::Allow),
-                "s" if !plan => Some(ApprovalDecision::AllowAlways),
-                "b" if plan => Some(ApprovalDecision::Choose("approve_build".into())),
-                "e" if plan => Some(ApprovalDecision::Choose("approve_edit".into())),
+                "a" | "y" => Some(ApprovalDecision::Allow),
+                "s" => Some(ApprovalDecision::AllowAlways),
                 "r" | "n" | "k" => Some(ApprovalDecision::Reject),
                 "w" => {
                     self.saying = true;
@@ -835,7 +778,7 @@ impl Workspace {
             }
         }
         // ↵ on an empty composer answers the card: allow once.
-        if pending && empty && !self.saying && !plan && event.keystroke.key == "enter" && !event.keystroke.modifiers.modified() {
+        if pending && empty && !self.saying && event.keystroke.key == "enter" && !event.keystroke.modifiers.modified() {
             self.session.update(cx, |session, cx| session.answer(ApprovalDecision::Allow, cx));
             cx.stop_propagation();
             return;
@@ -1143,17 +1086,13 @@ impl Workspace {
         self.cwd = path.clone();
         self.prefs.touch_recent(&path, prefs::now());
         self.prefs.save();
-        self.listing.clear();
-        self.listing_error = None;
         self.files = editor::Files::default();
         self.review = review::Review::default();
         self.git.pr = None;
         self.git.note = None;
-        let target = self.new_target();
         let (connection, cwd) = (self.connection.clone(), self.cwd.clone());
-        let session = cx.new(|cx| Session::start(&connection, target, cwd, None, cx));
+        let session = cx.new(|cx| Session::start(&connection, cwd, None, cx));
         self.adopt(session, window, cx);
-        self.refresh_listing(cx);
         self.load_tree(cx);
         self.load_review(cx);
         self.refresh_git(true, cx);
@@ -1313,13 +1252,6 @@ impl Workspace {
 
     // -------------------------------------------------------------------------------------------- rename, archive, search
 
-    pub(super) fn begin_rename(&mut self, handle: String, title: String, window: &mut Window, cx: &mut Context<Self>) {
-        self.row_menu = None;
-        self.renaming = Some(Naming::Conversation(handle));
-        self.rename_input.update(cx, |s, cx| s.set_value(title, window, cx));
-        self.open_overlay(Overlay::Rename, window, cx);
-    }
-
     pub(super) fn begin_worktree(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.renaming = Some(Naming::Worktree);
         self.rename_input.update(cx, |s, cx| s.set_value("", window, cx));
@@ -1330,19 +1262,9 @@ impl Workspace {
         let title = self.rename_input.read(cx).value().trim().to_owned();
         let Some(naming) = self.renaming.take() else { return };
         self.close_overlay(Overlay::Rename, window, cx);
-        let handle = match naming {
-            Naming::Worktree => {
-                self.new_worktree_conversation(&title, window, cx);
-                return;
-            }
-            Naming::Conversation(handle) => handle,
-        };
-        let _ = (handle, title, cx);
-    }
-
-    pub(super) fn archive(&mut self, _handle: String, cx: &mut Context<Self>) {
-        self.row_menu = None;
-        cx.notify();
+        match naming {
+            Naming::Worktree => self.new_worktree_conversation(&title, window, cx),
+        }
     }
 
     /// The palette's query is remembered so a stale answer is never shown.
@@ -1380,7 +1302,7 @@ impl Workspace {
                     .border_1()
                     .border_color(line(cx, t::LINE_CONTROL_STRONG))
                     .shadow(crate::theme::modal_shadow(cx))
-                    .child(div().text_size(px(t::TEXT_SETTINGS_TITLE)).text_color(c(tk.text_primary)).child(if self.renaming == Some(Naming::Worktree) { "New conversation in a worktree" } else { "Rename conversation" }))
+                    .child(div().text_size(px(t::TEXT_SETTINGS_TITLE)).text_color(c(tk.text_primary)).child("New conversation in a worktree"))
                     .when(self.renaming == Some(Naming::Worktree), |d| d.child(div().text_size(px(t::TEXT_SMALL)).text_color(c(tk.text_muted)).child("A name for the task: it becomes branch cordata/<name> in a folder beside this repository.")))
                     .child(div().h(px(32.)).flex().items_center().px(px(10.)).rounded(px(t::RADIUS_CARD)).bg(c(tk.bg_window)).border_1().border_color(line(cx, t::LINE_CONTROL_STRONG)).text_size(px(t::TEXT_UI)).child(gpui_component::input::Input::new(&self.rename_input).appearance(false)))
                     .child(
@@ -1392,7 +1314,7 @@ impl Workspace {
                                 this.renaming = None;
                                 this.close_overlay(Overlay::Rename, window, cx);
                             })))
-                            .child(ui::button("rename-save", if self.renaming == Some(Naming::Worktree) { "Create  ↵" } else { "Rename  ↵" }, Kind::Primary, cx).on_click(cx.listener(|this, _, window, cx| this.finish_rename(window, cx)))),
+                            .child(ui::button("rename-save", "Create  ↵", Kind::Primary, cx).on_click(cx.listener(|this, _, window, cx| this.finish_rename(window, cx)))),
                     ),
             )
             .into_any_element()
@@ -1660,25 +1582,6 @@ impl Render for Workspace {
     }
 }
 
-/// Is this open session the conversation a sidebar row names?
-pub(super) fn matches_target(session: &Session, target: &Target) -> bool {
-    match target {
-        Target::Default => false,
-        Target::Conversation(handle) => matches!(&session.target, Target::Conversation(h) if h == handle),
-        Target::Resume(id) => session.session_id().as_deref() == Some(id.as_str()) || matches!(&session.target, Target::Resume(r) if r == id),
-    }
-}
-
-pub(super) fn door_glyph(origin: &str) -> &'static str {
-    match origin {
-        "discord" => "◆ ",
-        "menubar" => "◇ ",
-        "web" => "○ ",
-        _ => "",
-    }
-}
-
-/// `3m`, `2h`, `4d`.
 pub(super) fn age(seconds: f64) -> String {
     let s = seconds.max(0.0) as u64;
     match s {
@@ -1807,7 +1710,7 @@ pub fn install_menus(cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use super::{age, door_glyph};
+    use super::age;
 
     #[test]
     fn ages_read_at_a_glance() {
@@ -1815,7 +1718,6 @@ mod tests {
         assert_eq!(age(150.0), "2m");
         assert_eq!(age(7200.0), "2h");
         assert_eq!(age(3.0 * 86_400.0), "3d");
-        assert_eq!(door_glyph("discord"), "◆ ");
     }
 }
 

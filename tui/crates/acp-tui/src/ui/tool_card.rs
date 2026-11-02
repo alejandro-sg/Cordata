@@ -5,9 +5,7 @@
 use acp_core::{ToolStatus, unwrap_untrusted};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use serde_json::Value;
 
-use super::team::{self, NodeState, TeamRow};
 use super::text::{display_width, pad_to, truncate, wrap};
 use crate::app::ToolCard;
 
@@ -41,155 +39,10 @@ pub fn status_glyph(status: ToolStatus, spinner: usize) -> (&'static str, Color)
 }
 
 fn input_summary(card: &ToolCard) -> Option<String> {
-    summarize_input(card.raw_input.as_ref()?, team::is_team_tool(&card.name))
+    summarize_input(card.raw_input.as_ref()?, false)
 }
 
 use cordata_view::view::summarize_input;
-
-/// "completed in 1.7s" from a team tool's result JSON, if it is one.
-fn team_result_summary(body: &str) -> Option<String> {
-    let parsed: Value = serde_json::from_str(body).ok()?;
-    let status = parsed
-        .get("status")?
-        .as_str()?
-        .trim_start_matches("Status.")
-        .to_lowercase();
-    let seconds = parsed
-        .get("execution_time_ms")
-        .and_then(Value::as_f64)
-        .map(|ms| format!(" in {:.1}s", ms / 1000.0));
-    Some(format!(
-        "{status}{}  (Ctrl+E shows the full result)",
-        seconds.unwrap_or_default()
-    ))
-}
-
-/// One agent (or hand-off) of a team card, as bordered body line(s).
-/// "↳ code_search · file_read · shell" under an agent's row: the tools it has called, newest kept when it is long.
-fn tools_line(
-    node: &team::NodeRow,
-    lead: usize,
-    avail: usize,
-    boxed: &impl Fn(Vec<Span<'static>>) -> Line<'static>,
-) -> Line<'static> {
-    let shown: Vec<&str> = node.tools.iter().rev().take(6).rev().map(String::as_str).collect();
-    let more = node.tools.len().saturating_sub(shown.len());
-    let text = if more > 0 {
-        format!("↳ +{more} · {}", shown.join(" · "))
-    } else {
-        format!("↳ {}", shown.join(" · "))
-    };
-    boxed(vec![
-        Span::raw(" ".repeat(lead)),
-        Span::styled(truncate(&text, avail), Style::new().fg(Color::Cyan)),
-    ])
-}
-
-fn team_row_lines(
-    row: &TeamRow,
-    inner: usize,
-    expanded: bool,
-    spinner: usize,
-    border: Style,
-    v: char,
-) -> Vec<Line<'static>> {
-    let boxed = |spans: Vec<Span<'static>>| {
-        let used: usize = spans.iter().map(|s| display_width(&s.content)).sum();
-        let mut all = vec![Span::styled(format!("{v} "), border)];
-        all.extend(spans);
-        all.push(Span::styled(
-            " ".repeat(inner.saturating_sub(used)),
-            Style::new(),
-        ));
-        all.push(Span::styled(format!(" {v}"), border));
-        Line::from(all)
-    };
-    let dim = Style::new().fg(Color::Gray);
-    match row {
-        TeamRow::Node(node) => {
-            let (glyph, color) = match node.state {
-                NodeState::Running => (SPINNER[spinner % SPINNER.len()], Color::Yellow),
-                NodeState::Done => ("✓", Color::Green),
-            };
-            let name = truncate(&node.name, 18);
-            let lead = 2 + display_width(&name) + 2;
-            let avail = inner.saturating_sub(lead).max(8);
-            let name_span = Span::styled(name, Style::new().add_modifier(Modifier::BOLD));
-            let glyph_span = Span::styled(format!("{glyph} "), Style::new().fg(color));
-            match node.state {
-                NodeState::Running => {
-                    let (text, style) = if node.thinking.is_empty() {
-                        ("working…".to_owned(), dim.add_modifier(Modifier::ITALIC))
-                    } else {
-                        (
-                            format!(
-                                "thinking: {}",
-                                truncate(&node.thinking, avail.saturating_sub(10))
-                            ),
-                            dim.add_modifier(Modifier::ITALIC),
-                        )
-                    };
-                    let mut out = vec![boxed(vec![
-                        glyph_span,
-                        name_span,
-                        Span::raw("  "),
-                        Span::styled(truncate(&text, avail), style),
-                    ])];
-                    if !node.tools.is_empty() {
-                        out.push(tools_line(node, lead, avail, &boxed));
-                    }
-                    out
-                }
-                NodeState::Done if expanded && display_width(&node.summary) > avail => {
-                    let mut out = Vec::new();
-                    for (index, piece) in wrap(&node.summary, avail).into_iter().enumerate() {
-                        if index == 0 {
-                            out.push(boxed(vec![
-                                glyph_span.clone(),
-                                name_span.clone(),
-                                Span::raw("  "),
-                                Span::styled(piece, dim),
-                            ]));
-                        } else {
-                            out.push(boxed(vec![
-                                Span::raw(" ".repeat(lead)),
-                                Span::styled(piece, dim),
-                            ]));
-                        }
-                    }
-                    out
-                }
-                NodeState::Done => {
-                    let summary = if node.summary.is_empty() && !node.tools.is_empty() {
-                        format!("done after {} tool call{}", node.tools.len(), if node.tools.len() == 1 { "" } else { "s" })
-                    } else {
-                        node.summary.replace('\n', " ")
-                    };
-                    let mut out = vec![boxed(vec![
-                        glyph_span,
-                        name_span,
-                        Span::raw("  "),
-                        Span::styled(truncate(&summary, avail), dim),
-                    ])];
-                    if expanded && !node.tools.is_empty() {
-                        out.push(tools_line(node, lead, avail, &boxed));
-                    }
-                    out
-                }
-            }
-        }
-        TeamRow::Handoff { from, to, message } => {
-            let route = format!("{from} → {to}");
-            let avail = inner.saturating_sub(2 + display_width(&route) + 2).max(8);
-            vec![boxed(vec![
-                Span::styled("→ ", Style::new().fg(Color::Cyan)),
-                Span::styled(route, Style::new().fg(Color::Cyan)),
-                Span::raw("  "),
-                Span::styled(truncate(message, avail), dim),
-            ])]
-        }
-    }
-}
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn render(
@@ -229,34 +82,11 @@ pub fn render_in(
     };
 
     let (glyph, glyph_color) = status_glyph(card.status, spinner);
-    let is_team = team::is_team_tool(&card.name);
-    let team_rows = if is_team {
-        let mut rows = team::parse(&card.progress);
-        if card.status != ToolStatus::InProgress && card.status != ToolStatus::Pending {
-            team::settle(&mut rows);
-        }
-        rows
-    } else {
-        Vec::new()
-    };
-    let agent_count = team_rows
-        .iter()
-        .filter(|row| matches!(row, TeamRow::Node(_)))
-        .count();
-    let title = if is_team {
-        let agents = if agent_count > 0 {
-            format!(" ({agent_count} agents)")
-        } else {
-            String::new()
-        };
-        format!(" {glyph} {} · team{agents} ", truncate(&card.name, 30))
-    } else {
-        format!(
-            " {glyph} {} · {} ",
-            truncate(&card.name, 30),
-            card.kind.label()
-        )
-    };
+    let title = format!(
+        " {glyph} {} · {} ",
+        truncate(&card.name, 30),
+        card.kind.label()
+    );
     let (flag, flag_color) = if card.untrusted {
         (" ⚠ UNTRUSTED CONTENT ".to_owned(), Color::Magenta)
     } else if card.untrusted_source {
@@ -347,20 +177,6 @@ pub fn render_in(
         }
     }
 
-    // Sub-agent team: one row per agent — running (with a live tail of what it
-    // is thinking), done (with its summary), and the hand-offs between them.
-    if is_team {
-        if team_rows.is_empty() && card.status == ToolStatus::InProgress {
-            lines.push(body_line(
-                "starting the team…",
-                dim.add_modifier(Modifier::ITALIC),
-            ));
-        }
-        for row in &team_rows {
-            lines.extend(team_row_lines(row, inner, expanded, spinner, border, v));
-        }
-    }
-
     if !card.content.trim().is_empty() {
         // The guard wrapper is the same boilerplate on every untrusted result;
         // show what matters about it (where it came from, whether the
@@ -375,9 +191,6 @@ pub fn render_in(
         } else {
             Style::new()
         };
-        if is_team && !team_rows.is_empty() {
-            lines.push(body_line("result", dim.add_modifier(Modifier::BOLD)));
-        }
         if let Some(source) = source {
             let label = truncate(&format!("source: {source}"), inner);
             lines.push(body_line(&label, style.add_modifier(Modifier::ITALIC)));
@@ -388,15 +201,6 @@ pub fn render_in(
                 Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
             ));
         }
-        // A team's result JSON repeats every agent's output, which the rows above
-        // already show; collapsed, reduce it to the status line (Ctrl+E has the rest).
-        let body = match (is_team && !expanded)
-            .then(|| team_result_summary(&body))
-            .flatten()
-        {
-            Some(summary) => summary,
-            None => body,
-        };
         let rows = wrap(body.trim_end(), inner);
         let shown = if expanded {
             rows.len()
@@ -464,34 +268,6 @@ mod tests {
         assert!(collapsed.iter().any(|l| l.contains("+6 more lines")));
         let expanded = plain(&render(&card(&long, false), 40, true, false, 0));
         assert!(expanded.iter().any(|l| l.contains("line9")));
-    }
-
-    #[test]
-    fn streamed_team_input_is_summarised_as_its_task_or_a_placeholder() {
-        let complete = Value::String(
-            r#"{"agents":[{"name":"a","system_prompt":"LONG"}],"task":"do it"}"#.into(),
-        );
-        assert_eq!(summarize_input(&complete, true).unwrap(), "task: do it");
-        let partial = Value::String(r#"{"agents":[{"name":"a","system_pro"#.into());
-        assert_eq!(
-            summarize_input(&partial, true).unwrap(),
-            "(preparing the team…)"
-        );
-        assert_eq!(
-            summarize_input(&Value::String("echo hi".into()), false).unwrap(),
-            "echo hi"
-        );
-    }
-
-    #[test]
-    fn team_results_collapse_to_a_status_line() {
-        let body =
-            r#"{"status": "Status.COMPLETED", "execution_time_ms": 1721, "results": {"a": "x"}}"#;
-        assert_eq!(
-            team_result_summary(body).unwrap(),
-            "completed in 1.7s  (Ctrl+E shows the full result)"
-        );
-        assert_eq!(team_result_summary("not json"), None);
     }
 
     #[test]

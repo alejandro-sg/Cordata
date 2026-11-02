@@ -9,7 +9,6 @@ mod hud;
 mod keychain;
 mod platform;
 mod prefs;
-mod pricing;
 mod session;
 mod theme;
 mod transcript;
@@ -28,17 +27,15 @@ use crate::workspace::Workspace;
 
 struct Args {
     cwd: PathBuf,
-    conversation: String,
     /// `--prompt TEXT`: sent once the session connects (scripted runs, `cordata ask`).
     prompt: Option<String>,
-    /// `--run GOAL`: start an orchestrator run once connected, and follow it in Mission Control.
     selftest: bool,
     /// A folder was named (`--cwd`, a path argument, `open -a Cordata dir`).
     cwd_given: bool,
 }
 
 fn parse_args() -> Args {
-    let mut args = Args { cwd: default_cwd(), conversation: "latest".into(), prompt: None, selftest: false, cwd_given: false };
+    let mut args = Args { cwd: default_cwd(), prompt: None, selftest: false, cwd_given: false };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -48,7 +45,6 @@ fn parse_args() -> Args {
                     args.cwd_given = true;
                 }
             }
-            "--conversation" => args.conversation = it.next().unwrap_or_else(|| "latest".into()),
             "--prompt" => args.prompt = it.next(),
             "--selftest" => args.selftest = true,
             other if other.starts_with("cordata://") => parse_cordata_url(other, &mut args),
@@ -73,12 +69,7 @@ fn parse_args() -> Args {
 
 fn parse_cordata_url(url: &str, args: &mut Args) {
     let stripped = url.trim_start_matches("cordata://");
-    if let Some(rest) = stripped.strip_prefix("session/") {
-        let id = rest.split(['?', '&', '/']).next().unwrap_or(rest);
-        if !id.is_empty() {
-            args.conversation = id.to_owned();
-        }
-    } else if let Some(query) = stripped.strip_prefix("ask?") {
+    if let Some(query) = stripped.strip_prefix("ask?") {
         for param in query.split('&') {
             if let Some((k, v)) = param.split_once('=')
                 && k == "prompt"
@@ -200,15 +191,11 @@ mod tests {
     fn parses_cordata_deep_links() {
         let mut args = Args {
             cwd: PathBuf::from("/"),
-            conversation: "latest".into(),
            
             prompt: None,
             selftest: false,
             cwd_given: false,
         };
-
-        parse_cordata_url("cordata://session/sess-abc-123", &mut args);
-        assert_eq!(args.conversation, "sess-abc-123");
 
         parse_cordata_url("cordata://ask?prompt=review%20this%20code", &mut args);
         assert_eq!(args.prompt.as_deref(), Some("review this code"));

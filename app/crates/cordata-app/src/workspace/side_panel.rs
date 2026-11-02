@@ -1,5 +1,5 @@
 //! The side panel: a 52px tab strip (mission · files · editor · review · terminal, the rest under ⋯) and the tab's
-//! content. Mission Control is drawn here; the other tabs are the panes in this folder.
+//! content; each tab is a pane in this folder.
 
 use cordata_theme::tokens as t;
 use gpui::prelude::FluentBuilder as _;

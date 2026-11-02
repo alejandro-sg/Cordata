@@ -430,16 +430,11 @@ impl Workspace {
             keys.insert(0, (self.prefs.quick_ask_key.clone(), combo.label.clone()));
         }
         let key = self.select(Select::QuickAskKey, &self.prefs.quick_ask_key.clone(), keys, cx);
-        let cost = self.toggle("show-cost", self.prefs.show_cost, "Show session cost", |this, on, cx| {
-            this.prefs.show_cost = on;
-            this.save_prefs(cx);
-        }, cx);
         let quick_ask = div().flex().items_center().gap(px(8.)).child(key).child(hotkey).into_any_element();
         vec![
             setting_row("Open on launch", "What the window shows when Cordata starts.", launch, cx),
             setting_row("Quick ask", "From any app: bring Cordata forward with the composer ready. Any other combination can go in prefs.toml as quick_ask_key (e.g. \"cmd-alt-j\").", quick_ask, cx),
             setting_row("Send message with", "The other key adds a new line.", send, cx),
-            setting_row("Show session cost", "An estimate in the status bar: Claude models at Anthropic's list price; local models show none. Add or change a price under [prices] in prefs.toml (dollars per million tokens, [in, out]).", cost, cx),
             sub_heading("notifications", cx),
             setting_row("Notify when approval is needed", "A system notification when a command waits for you and the window is in the back.", notify, cx),
             setting_row("Sound on completion", "A short sound when a turn finishes.", sound, cx),

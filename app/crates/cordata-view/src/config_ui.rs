@@ -156,7 +156,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use acp_core::{AppEvent, ConfigChoice, ConfigOptionInfo, ModeInfo, SessionInfo};
+    use acp_core::{AppEvent, SessionInfo};
     use crate::key::{KeyCode, KeyEvent, KeyModifiers};
     use crate::settings::Scope;
 
@@ -179,45 +179,7 @@ mod tests {
         std::fs::create_dir_all(&store.user_dir).unwrap();
         std::fs::create_dir_all(&store.cwd).unwrap();
         let mut app = App::new();
-        app.on_event(AppEvent::Connected(SessionInfo {
-            session_id: "s1".into(),
-            cwd: store.cwd.display().to_string(),
-            transport: "stdio".into(),
-            resumed: false,
-            current_mode: "build".into(),
-            modes: ["plan", "build", "auto"]
-                .into_iter()
-                .map(|id| ModeInfo {
-                    id: id.into(),
-                    name: id.into(),
-                    description: None,
-                })
-                .collect(),
-            config_options: vec![
-                ConfigOptionInfo {
-                    id: "model".into(),
-                    name: "Model".into(),
-                    current_value: "m1".into(),
-                    choices: ["m1", "m2"]
-                        .map(|v| ConfigChoice {
-                            value: v.into(),
-                            name: v.into(),
-                        })
-                        .to_vec(),
-                },
-                ConfigOptionInfo {
-                    id: "temperature".into(),
-                    name: "Temperature".into(),
-                    current_value: "balanced".into(),
-                    choices: ["focused", "balanced", "creative"]
-                        .map(|v| ConfigChoice {
-                            value: v.into(),
-                            name: v.into(),
-                        })
-                        .to_vec(),
-                },
-            ],
-        }));
+        app.on_event(AppEvent::Connected(SessionInfo { session_id: "s1".into(), cwd: store.cwd.display().to_string(), model: "m1".into(), transport: "native · m1".into() }));
         app.messages.clear();
         app.attach_store(store.clone());
         Rig {

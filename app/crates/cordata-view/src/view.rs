@@ -1,10 +1,6 @@
 //! Small pieces of presentation *logic* every front end needs and none should re-derive: which kind of block a message
-//! is, whether a finished task is still worth showing, which self-heal phases get a block, which options of an
-//! `ask_user` card are its numbered choices. No drawing here.
+//! is. No drawing here.
 
-use std::time::{Duration, Instant};
-
-use acp_core::TaskInfo;
 use serde_json::Value;
 
 use crate::app::Message;
@@ -22,7 +18,6 @@ pub enum Kind {
     Error,
     Help,
     Welcome,
-    Heal,
 }
 
 impl Message {
@@ -37,40 +32,9 @@ impl Message {
             Message::Diff(_) => Kind::Diff,
             Message::Error(_) => Kind::Error,
             Message::Help => Kind::Help,
-            Message::Heal(_) => Kind::Heal,
             Message::Welcome(_) => Kind::Welcome,
         }
     }
-}
-
-/// How long a finished background task stays on screen, so a fast one is still seen.
-pub const LINGER: Duration = Duration::from_millis(2500);
-
-/// A background task (plugin start-up, an indexing language server, a self-heal step, a model loading) and when it
-/// started and finished.
-#[derive(Debug, Clone)]
-pub struct TaskView {
-    pub info: TaskInfo,
-    pub started: Instant,
-    pub finished: Option<Instant>,
-}
-
-impl TaskView {
-    pub fn visible(&self, now: Instant) -> bool {
-        self.finished.is_none_or(|at| now.duration_since(at) < LINGER)
-    }
-}
-
-/// Self-heal phases that are worth a transcript block (the others are progress bars).
-pub fn is_shown(phase: &str) -> bool {
-    !matches!(phase, "diagnosing" | "verifying")
-}
-
-/// The choices of an `ask_user` question, in the order the agent gave them. The backend marks them `reject_always` so that a
-/// front door which only knows ACP's four kinds (the Discord bot, the GUI's modal) can never turn a click into an answer;
-/// "decide for me" and "skip" carry the other kinds and are not numbered.
-pub fn ask_choices(info: &acp_core::PermissionInfo) -> Vec<acp_core::PermissionChoice> {
-    info.options.iter().filter(|option| option.kind == acp_core::ChoiceKind::RejectAlways).cloned().collect()
 }
 
 /// One line saying what a tool call does: `$ command` for a shell, the code for a REPL, the task for a sub-agent team,

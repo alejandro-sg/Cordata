@@ -14,13 +14,10 @@ use ratatui::text::Span;
 use super::{Kind, Outcome, chrome, contains, dim, put, rule};
 use crate::app::{App, Effect, SwitchTarget};
 use crate::commands;
-use crate::ui::footer::mode_color;
 use crate::ui::text::{display_width, truncate};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Action {
-    Mode(String),
-    Config { id: String, value: String },
     /// A line to run as if typed (`/diff`).
     Run(String),
     /// A line to leave in the prompt box for the person to finish (`/goal `).
@@ -122,11 +119,6 @@ impl Palette {
             return Outcome::stay();
         };
         match entry.action {
-            Action::Mode(id) => {
-                app.pending_mode = Some(id.clone());
-                Outcome::close(Some(Effect::SetMode(id)))
-            }
-            Action::Config { id, value } => Outcome::close(Some(Effect::SetConfig { id, value })),
             Action::Run(line) => Outcome::close(app.run_line(line)),
             Action::Insert(text) => {
                 if app.can_type() {
@@ -296,7 +288,7 @@ impl Palette {
                     let used: usize = spans.iter().map(|s| display_width(&s.content)).sum();
                     if used + 3 <= width {
                         spans.push(Span::raw(" ".repeat(width - used - 3)));
-                        spans.push(Span::styled(current, Style::new().fg(mode_color("plan"))));
+                        spans.push(Span::styled(current, Style::new().fg(Color::Green)));
                     }
                     put(buffer, list.x, y, spans, list.width);
                     self.hits.push((Rect::new(list.x, y, list.width, 1), offset));
@@ -346,20 +338,6 @@ fn entries(app: &App) -> Vec<Entry> {
         out.push(Entry { group, label: label.to_owned(), detail: detail.to_owned(), current, action });
     };
 
-    for mode in &app.modes {
-        let detail = mode.description.clone().unwrap_or_default();
-        add("MODE", &mode.id, &detail, mode.id == app.mode, Action::Mode(mode.id.clone()));
-    }
-    for (id, group) in [("model", "MODEL"), ("temperature", "TEMPERATURE")] {
-        if let Some(option) = app.config(id) {
-            for choice in &option.choices {
-                let detail = if choice.name == choice.value { String::new() } else { choice.value.clone() };
-                add(group, &choice.name, &detail, choice.value == option.current_value, Action::Config { id: id.to_owned(), value: choice.value.clone() });
-            }
-        }
-    }
-    add("VIEW", "panes", "Blade Runner 2049 workspace — conversation, agents, handoffs, telemetry (F3)", false, Action::Open(Kind::Panes));
-    add("VIEW", "hud", "session dashboard — context, usage, tasks, agents, activity", false, Action::Open(Kind::Hud));
     add("VIEW", "diffview", "the working tree's changes: files, hunks, mouse (F4)", false, Action::Open(Kind::Review));
     if app.tabs.len() > 1 {
         for tab in &app.tabs {
@@ -392,17 +370,12 @@ mod tests {
     }
 
     #[test]
-    fn it_lists_modes_models_views_and_commands_grouped_with_what_is_current_marked() {
+    fn it_lists_views_and_commands_grouped() {
         let app = app();
-        let buffer = Overlay::Palette(open(&app)).render(&app, 100, 90);
-        let shown = text(&buffer);
-        for needle in ["COMMAND DECK", "╴// MODE", "plan", "Discuss and plan only", "╴// MODEL", "kimi-k2.7-code", "glm-5.3-flash", "╴// VIEW", "hud", "diffview", "╴// COMMAND", "/diff"] {
+        let shown = text(&Overlay::Palette(open(&app)).render(&app, 100, 90));
+        for needle in ["COMMAND DECK", "╴// VIEW", "diffview", "╴// COMMAND", "/diff"] {
             assert!(shown.contains(needle), "missing {needle:?} in\n{shown}");
         }
-        let (_, build_row) = find(&buffer, "Tools run after your approval").expect("build row");
-        assert!(shown.lines().nth(build_row as usize).unwrap().contains('◉'), "the mode in force is marked");
-        let (_, model_row) = find(&buffer, "glm-5.3-flash").unwrap();
-        assert!(!shown.lines().nth(model_row as usize).unwrap().contains('◉'), "…and the other model is not");
     }
 
     #[test]
@@ -423,29 +396,22 @@ mod tests {
     }
 
     #[test]
-    fn enter_runs_a_mode_a_model_a_command_or_opens_a_view() {
+    fn enter_runs_a_command_or_opens_a_view() {
         let mut app = app();
         let mut palette = open(&app);
-        for k in typed("plan") {
+        for k in typed("diffview") {
             palette.on_key(&mut app, k);
         }
         let outcome = palette.on_key(&mut app, key(KeyCode::Enter));
-        assert!(outcome.close && outcome.effect == Some(Effect::SetMode("plan".into())), "a mode");
-        assert_eq!(app.pending_mode.as_deref(), Some("plan"), "the footer shows the change as pending");
+        assert!(outcome.close && outcome.open == Some(Kind::Review), "a view");
 
         let mut palette = open(&app);
-        for k in typed("glm") {
+        for k in typed("/tools") {
             palette.on_key(&mut app, k);
         }
         let outcome = palette.on_key(&mut app, key(KeyCode::Enter));
-        assert_eq!(outcome.effect, Some(Effect::SetConfig { id: "model".into(), value: "glm-5.3-flash".into() }), "a model");
-
-        let mut palette = open(&app);
-        for k in typed("hud") {
-            palette.on_key(&mut app, k);
-        }
-        let outcome = palette.on_key(&mut app, key(KeyCode::Enter));
-        assert!(outcome.close && outcome.open == Some(Kind::Hud), "a view");
+        assert!(outcome.close, "a command runs and the deck closes");
+        assert!(app.expand_tools, "/tools ran");
     }
 
     #[test]
@@ -453,7 +419,7 @@ mod tests {
         let mut app = app();
         let mut overlay = Overlay::Palette(open(&app));
         let buffer = overlay.render(&app, 100, 40);
-        let (column, row) = find(&buffer, "glm-5.3-flash").unwrap();
+        let (column, row) = find(&buffer, "/tools").unwrap();
 
         let hover = overlay.on_mouse(&mut app, mouse(MouseEventKind::Moved, column, row));
         assert!(!hover.close, "hovering never runs anything");
@@ -461,7 +427,7 @@ mod tests {
         assert!(after.lines().nth(row as usize).unwrap().contains('▸'), "the hovered row is the selected one:\n{after}");
 
         let outcome = overlay.on_mouse(&mut app, click(column, row));
-        assert_eq!(outcome.effect, Some(Effect::SetConfig { id: "model".into(), value: "glm-5.3-flash".into() }), "a click runs the row");
+        assert!(outcome.close && app.expand_tools, "a click runs the row");
 
         let mut overlay = Overlay::Palette(open(&app));
         let before = text(&overlay.render(&app, 100, 40));
@@ -486,7 +452,7 @@ mod tests {
             overlay.on_key(&mut app, key(KeyCode::Up));
         }
         let top = text(&overlay.render(&app, 100, 14));
-        assert!(top.contains("╴// MODE"), "…and back at the top the first group header shows again:\n{top}");
+        assert!(top.contains("╴// VIEW"), "…and back at the top the first group header shows again:\n{top}");
     }
 
     #[test]

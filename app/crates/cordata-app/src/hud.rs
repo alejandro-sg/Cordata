@@ -3,7 +3,7 @@
 
 use cordata_theme::tokens::{self as t, HAZE_AMBER, HAZE_TEAL, Tracking, tracked_text};
 use gpui::prelude::FluentBuilder as _;
-use gpui::{AnyElement, App, Div, IntoElement, ParentElement, SharedString, Styled, div, linear_color_stop, linear_gradient, px, relative, rgb};
+use gpui::{AnyElement, App, Div, IntoElement, ParentElement, SharedString, Styled, div, linear_color_stop, linear_gradient, px, rgb};
 
 use crate::theme::{c, line, mono, sans, tk};
 use crate::ui;
@@ -22,33 +22,6 @@ pub fn bracket_title(text: &str, cx: &App) -> Div {
         .child(div().font_family(mono(cx)).text_color(c(tk.amber_dim)).child("⌜"))
         .child(div().text_color(c(tk.amber)).child(SharedString::from(tracked_text(text, Tracking::Label, true))))
         .child(div().font_family(mono(cx)).text_color(c(tk.amber_dim)).child("⌝"))
-}
-
-/// The context gauge: label, an 80×3 bar (amber fill = share used), the value.
-pub fn gauge(label: &str, fraction: Option<f64>, value: &str, cx: &App) -> Div {
-    let tk = tk(cx);
-    let fill = match fraction {
-        Some(f) if f >= 0.9 => tk.danger,
-        _ => tk.amber,
-    };
-    div()
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .whitespace_nowrap()
-        .font_family(mono(cx))
-        .text_size(px(t::TEXT_STATUS))
-        .child(div().text_color(c(tk.text_label)).child(SharedString::from(label.to_ascii_uppercase())))
-        .child(
-            div()
-                .relative()
-                .w(px(t::CONTEXT_BAR_W))
-                .h(px(t::CONTEXT_BAR_H))
-                .rounded_full()
-                .bg(line(cx, t::LINE_CONTROL_STRONG))
-                .child(div().absolute().top_0().bottom_0().left_0().rounded_full().w(relative(fraction.unwrap_or(0.0).clamp(0.0, 1.0) as f32)).bg(c(fill))),
-        )
-        .child(div().text_color(c(tk.text_secondary)).child(SharedString::from(value.to_owned())))
 }
 
 /// A thin rule with a label in it, between turns: `── 14:02 · turn 3 ──`.

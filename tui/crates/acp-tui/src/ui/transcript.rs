@@ -20,7 +20,7 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::{heal, help, markdown, text::wrap, tool_card};
+use super::{help, markdown, text::wrap, tool_card};
 use crate::app::{App, Message};
 use acp_core::ToolStatus;
 
@@ -32,7 +32,6 @@ fn blank_between(previous: Option<Kind>, next: Kind) -> bool {
         (previous, next),
         (None, _)
             | (Some(Kind::Tool), Kind::Tool)
-            | (Some(Kind::Heal), Kind::Heal)
     )
 }
 
@@ -127,8 +126,6 @@ fn message_lines(app: &App, index: usize, width: u16) -> Vec<Line<'static>> {
         ),
         Message::Agent(text) => markdown::render(text, w),
         Message::Thought(text) => thought_lines(text, w, app.thoughts_expanded, streaming),
-        // The checklist panel above the prompt is how this tool is shown.
-        Message::Tool(card) if card.name == "todo_write" => Vec::new(),
         Message::Tool(card) => tool_card::render_in(
             card,
             width,
@@ -164,7 +161,6 @@ fn message_lines(app: &App, index: usize, width: u16) -> Vec<Line<'static>> {
             Style::new().fg(Color::Red),
         ),
         Message::Help => help::lines(width),
-        Message::Heal(info) => heal::lines(info, width, app.expand_tools),
         Message::Welcome(info) => crate::ui::welcome_lines(info, width),
     }
 }
@@ -256,21 +252,3 @@ pub fn live_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     out
 }
 
-/// All conversation messages formatted for display in the workspace (history + live).
-pub fn all_conversation_lines(app: &App, width: u16) -> Vec<Line<'static>> {
-    let mut out = Vec::new();
-    let mut previous = None;
-    for index in 0..app.messages.len() {
-        let kind = app.messages[index].kind();
-        let lines = message_lines(app, index, width);
-        if lines.is_empty() {
-            continue;
-        }
-        if blank_between(previous, kind) {
-            out.push(Line::raw(""));
-        }
-        out.extend(lines);
-        previous = Some(kind);
-    }
-    out
-}

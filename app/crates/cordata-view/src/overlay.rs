@@ -1,4 +1,4 @@
-//! Full-screen overlays (the command deck, the HUD, the diff review, the split panes) as the shared state sees them.
+//! Full-screen overlays (the command deck and the diff review) as the shared state sees them.
 //!
 //! The state that decides *when* an overlay opens, which keys it takes and what it asks for afterwards is shared; how
 //! one looks and behaves inside is the front end's. The terminal implements [`View`] for its ratatui overlays
@@ -14,9 +14,7 @@ use crate::key::{KeyEvent, MouseEvent};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Palette,
-    Hud,
     Review,
-    Panes,
 }
 
 /// What an overlay asks the app to do after an input.

@@ -39,7 +39,7 @@ impl Workspace {
     pub(super) fn header(&self, column_w: f32, cx: &mut Context<Self>) -> AnyElement {
         let tk = tk(cx);
         let view = &self.session.read(cx).view;
-        let title = view.title.clone().filter(|t| !t.trim().is_empty()).unwrap_or_else(|| "New thread".into());
+        let title = view.title();
         let (dot, word, ink) = match status_of(view) {
             Status::Connecting => (Dot::Hollow, "Connecting…", tk.text_muted),
             Status::Idle => (Dot::Ok, "Ready", tk.teal),
@@ -47,15 +47,7 @@ impl Workspace {
             Status::Waiting => (Dot::Live, "Needs approval", tk.amber),
             Status::Closed => (Dot::Amber, "Reconnecting…", tk.amber),
         };
-        let model = view.config("model").map(|option| option.current_name().to_owned());
-        let window_k = view.context.as_ref().and_then(|g| g.window).map(|w| format!("{}k", w / 1000));
-        let _model_text = model.map(|m| {
-            let m = short_model(&m);
-            match (&window_k, column_w >= t::HEADER_SHORT_MODEL_W) {
-                (Some(k), true) => format!("{m} · {k}"),
-                _ => m.to_string(),
-            }
-        });
+        let _model_text = view.session.as_ref().map(|s| short_model(&s.model).to_string()).filter(|m| !m.is_empty());
         let branch = view.branch.clone().or_else(|| self.git.branch.clone()).filter(|_| column_w >= t::HEADER_HIDE_BRANCH_W);
         let panel_on = self.panel_open;
         let sidebar_on = self.sidebar_open;
@@ -135,7 +127,6 @@ impl Workspace {
         let project = self.project_name();
         let dirty_count = self.review.file_count();
         let branch = self.session.read(cx).view.branch.clone().or_else(|| self.git.branch.clone());
-        let resume = self.listing.iter().find(|row| !self.sessions.iter().any(|s| super::matches_target(s.read(cx), &row.target))).cloned();
         let notices: Vec<AnyElement> = self
             .session
             .read(cx)
@@ -318,32 +309,6 @@ impl Workspace {
                             .child(div().w_full().flex().flex_wrap().gap(px(10.)).child(card_explore).child(card_review))
                             .child(div().w_full().flex().flex_wrap().gap(px(10.)).child(card_plan).child(card_fix)),
                     )
-                    .when_some(resume, |col, row| {
-                        let target = row.target.clone();
-                        let hover = line(cx, t::HOVER_STRONG);
-                        col.child(
-                            div()
-                                .id("resume-last")
-                                .role(gpui::Role::Button)
-                                .aria_label("Resume the last conversation")
-                                .w_full()
-                                .flex()
-                                .items_center()
-                                .gap(px(10.))
-                                .h(px(36.))
-                                .px(px(14.))
-                                .rounded(px(t::RADIUS_CARD))
-                                .bg(line(cx, t::FILL_FAINT))
-                                .border_1()
-                                .border_color(line(cx, t::LINE_CONTROL))
-                                .cursor_pointer()
-                                .hover(move |s| s.bg(hover))
-                                .on_click(cx.listener(move |this, _, window, cx| this.open(target.clone(), window, cx)))
-                                .child(ui::badge("Resume", Tone::Neutral, cx))
-                                .child(div().flex_1().min_w_0().truncate().text_size(px(t::TEXT_UI)).text_color(c(tk.text_primary)).child(SharedString::from(shown(&row.title))))
-                                .child(ui::meta(SharedString::from(format!("{} ago →", super::age(super::now_secs() - row.when))), cx)),
-                        )
-                    })
                     .child(
                         div()
                             .pt(px(2.))
@@ -375,50 +340,12 @@ impl Workspace {
             }
         };
         let input = info.raw_input.as_ref();
-        let command = input.and_then(|i| i.get("command")).and_then(|v| v.as_str()).map(str::to_owned);
+        let command = input.and_then(|i| i.get("cmd")).and_then(|v| v.as_str()).map(str::to_owned);
         let summary = input.and_then(|i| cordata_view::view::summarize_input(i, false)).unwrap_or_default();
         let place = tilde(&self.session.read(cx).cwd);
-        let (label, sentence, block, buttons): (&str, String, Option<String>, Vec<AnyElement>) = match info.tool_name.as_str() {
-            "present_plan" => (
-                "contract ready",
-                "Execution contract is ready (tasks, guardrails, definition of done). Choose how to proceed:".into(),
-                None,
-                [("approve_build", "Build (ask first)", Kind::Primary), ("approve_edit", "Auto-edit", Kind::AmberOutline), ("approve_auto", "Run autonomously", Kind::Outline)]
-                    .into_iter()
-                    .filter(|(id, ..)| info.option(id).is_some())
-                    .map(|(id, label, kind)| ui::button(SharedString::from(id), label, kind, cx).on_click(answer(ApprovalDecision::Choose(id.into()))).into_any_element())
-                    .chain([
-                        ui::button("reply-plan", "Refine contract  W", Kind::Ghost, cx)
-                            .tooltip(ui::tip("Type feedback to revise tasks, guardrails, or definition of done"))
-                            .on_click(cx.listener(|this, _, window, cx| this.begin_saying(window, cx)))
-                            .into_any_element(),
-                        div().flex_1().into_any_element(),
-                        ui::button("keep-planning", "Keep planning  esc", Kind::Ghost, cx).on_click(answer(ApprovalDecision::Reject)).into_any_element(),
-                    ])
-                    .collect(),
-            ),
-            "ask_user" => (
-                "question",
-                input.and_then(|i| i.get("question")).and_then(|q| q.as_str()).unwrap_or("The agent has a question").to_owned(),
-                None,
-                cordata_view::view::ask_choices(info)
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, choice)| {
-                        ui::button(SharedString::from(format!("choice-{index}")), SharedString::from(format!("{}  {}", index + 1, shown(&choice.name))), Kind::Outline, cx)
-                            .on_click(answer(ApprovalDecision::Choose(choice.id.clone())))
-                            .into_any_element()
-                    })
-                    .chain([
-                        ui::button("reply-own-words", "Own words  W", Kind::Ghost, cx)
-                            .on_click(cx.listener(|this, _, window, cx| this.begin_saying(window, cx)))
-                            .into_any_element(),
-                        div().flex_1().into_any_element(),
-                        ui::button("skip", "Skip  esc", Kind::Ghost, cx).on_click(answer(ApprovalDecision::Reject)).into_any_element(),
-                    ])
-                    .collect(),
-            ),
-            tool => {
+        let tool = info.tool_name.as_str();
+        let (label, sentence, block, buttons): (&str, String, Option<String>, Vec<AnyElement>) = {
+            {
                 let sentence = match (&command, info.kind) {
                     (Some(_), _) => format!("Run shell command in {place}"),
                     (None, acp_core::ToolKind::Edit) => format!("Modify files in {place}"),

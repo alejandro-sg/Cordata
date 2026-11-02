@@ -23,7 +23,7 @@ terminal client (`Settings → Account`, service `cordata-*-api-key`). Window pr
 
 ## What it has
 
-Conversation rail and transcript, approval cards with the exact command or diff, composer with `/` and `@` menus,
+Conversation rail (the open threads) and transcript, approval cards with the exact command or diff, composer with `/` and `@` menus,
 command palette (⌘K), project picker (⌘O), settings (⌘,: launch, appearance, shortcuts, your API key), and a side panel
 with Files, Editor, Review (per-hunk keep/revert, git and pull requests) and Terminal. Both clients share one
 conversation reducer. Like the terminal client, the chat has no modes, undo, goal loops or saved sessions; every edit and

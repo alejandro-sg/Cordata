@@ -32,9 +32,7 @@ live: the unfinished reply, running tool cards, the prompt box (or an approval b
 
 - **Tool calls** are bordered cards with a collapsed result (Ctrl+E expands). Edits and commands always ask first.
 - **Reasoning** shows as a live tail while the model thinks, then `· reasoned (N words)`. Ctrl+R expands it.
-- **Orchestrator runs** get one live row per worker.
-- **Untrusted content** (web pages, MCP tools, sub-agent output) gets a magenta double border and its source. Agent text
-  is stripped of terminal escape sequences before drawing.
+- Agent text is stripped of terminal escape sequences before drawing.
 
 ### The prompt box
 
@@ -52,8 +50,7 @@ live: the unfinished reply, running tool cards, the prompt box (or an approval b
 | Enter · Ctrl+J / Alt+Enter | send · newline |
 | `a` / `r` | allow / reject a pending tool call; `s` allows and saves the rule; `w` rejects and says why |
 | Esc / Ctrl+C | cancel the turn (inert while the approval box is open: answer it first) |
-| Ctrl+K | command deck: every model, view and command, searchable |
-| F3 | session HUD: the model, what it is doing, recent activity |
+| Ctrl+K | command deck: views, sessions and every command, searchable |
 | F4 | diff review: files, hunks, line numbers |
 | `?` or F1 | all keys and commands |
 | Ctrl+Q | quit |

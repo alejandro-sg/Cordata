@@ -10,7 +10,6 @@ use ratatui::widgets::{
     Block, BorderType, List, ListItem, ListState, Paragraph, StatefulWidget, Widget,
 };
 
-use super::footer::mode_color;
 use super::text::{truncate, wrap};
 use crate::app::{App, sanitize};
 
@@ -60,60 +59,6 @@ fn fit_lines(
     lines
 }
 
-/// Plan rows shown before `d` shows the rest.
-const MAX_PLAN_ROWS: usize = 22;
-
-/// The plan card: the agent's `present_plan` call, drawn as the plan it carries and three answers. What the session
-/// becomes is decided here, by the person — approve into build (changes still ask), approve into auto (routine calls
-/// run), or keep planning.
-fn plan_panel(app: &App, width: u16) -> Option<Panel> {
-    let info = &app.pending.front()?.info;
-    let inner_width = (width as usize).saturating_sub(4);
-    let plan = info.raw_input.as_ref().and_then(|input| input.get("plan")).and_then(|plan| plan.as_str()).unwrap_or("(the agent sent an empty plan)");
-    let rows = super::markdown::render(&sanitize(plan), inner_width.saturating_sub(1));
-    let cap = if app.diff_expanded { 400 } else { MAX_PLAN_ROWS };
-    let hidden = rows.len().saturating_sub(cap);
-    let mut lines: Vec<Line<'static>> = rows
-        .into_iter()
-        .take(cap)
-        .collect();
-    if hidden > 0 {
-        lines.push(Line::styled(format!("  … {hidden} more rows — d shows the whole plan"), Style::new().fg(Color::Gray)));
-    } else if app.diff_expanded {
-        lines.push(Line::styled("  — d shortens it again", Style::new().fg(Color::Gray)));
-    }
-    lines.push(Line::raw(""));
-    let key = |text: &'static str, color: Color| Span::styled(text, Style::new().fg(Color::Black).bg(color).add_modifier(Modifier::BOLD));
-    let pinned_from = lines.len();
-    if let Some(note) = note_lines(app, inner_width) {
-        lines.extend(note);
-    } else {
-        let mut keys = vec![key(" b ", mode_color("build")), Span::raw(" build   ")];
-        // An older backend offers no edit mode: then there is nothing to press.
-        if info.option("approve_edit").is_some() {
-            keys.extend([key(" e ", mode_color("edit")), Span::raw(" edit   ")]);
-        }
-        keys.extend([key(" a ", mode_color("auto")), Span::raw(" auto   "), key(" k ", mode_color("plan")), Span::raw(" keep planning (Esc)   "), key(" w ", Color::Gray), Span::raw(" say what to change")]);
-        lines.push(Line::from(keys));
-        lines.push(Line::styled(
-            truncate("build asks before each change · edit runs file edits, asks for commands · auto runs routine calls without asking", inner_width),
-            Style::new().fg(Color::DarkGray),
-        ));
-    }
-    if app.pending.len() > 1 {
-        lines.push(Line::styled(format!("{} more request(s) queued", app.pending.len() - 1), Style::new().fg(Color::Gray)));
-    }
-    Some(Panel {
-        title: " ⌜ PLAN READY ⌝ — nothing has been changed yet ".into(),
-        border: mode_color("plan"),
-        lines,
-        selected: None,
-        pinned_from: Some(pinned_from),
-        footer: Vec::new(),
-    })
-}
-
-pub use cordata_view::view::ask_choices;
 
 /// The note box under a card while the person is typing their own words (`w`), or `None` when it is closed.
 fn note_lines(app: &App, inner_width: usize) -> Option<Vec<Line<'static>>> {
@@ -130,52 +75,9 @@ fn note_lines(app: &App, inner_width: usize) -> Option<Vec<Line<'static>>> {
     ])
 }
 
-/// A question from the agent (`ask_user`): its options numbered, one key each.
-fn ask_panel(app: &App, width: u16) -> Option<Panel> {
-    let info = &app.pending.front()?.info;
-    let inner_width = (width as usize).saturating_sub(4);
-    let question = info.raw_input.as_ref().and_then(|input| input.get("question")).and_then(|q| q.as_str()).unwrap_or("The agent has a question.");
-    let mut lines: Vec<Line<'static>> = wrap(&sanitize(question), inner_width).into_iter().map(|row| Line::styled(row, Style::new().add_modifier(Modifier::BOLD))).collect();
-    lines.push(Line::raw(""));
-    let choices = ask_choices(info);
-    for (index, choice) in choices.iter().enumerate() {
-        lines.push(Line::from(vec![
-            Span::styled(format!(" {} ", index + 1), Style::new().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Span::raw("  "),
-            Span::raw(truncate(&sanitize(&choice.name), inner_width.saturating_sub(6))),
-        ]));
-    }
-    lines.push(Line::raw(""));
-    let pinned_from = lines.len();
-    if let Some(note) = note_lines(app, inner_width) {
-        lines.extend(note);
-    } else {
-        let key = |text: &'static str, color: Color| Span::styled(text, Style::new().fg(Color::Black).bg(color).add_modifier(Modifier::BOLD));
-        let range = if choices.len() > 1 { format!(" 1–{} ", choices.len()) } else { " 1 ".to_owned() };
-        lines.push(Line::from(vec![
-            Span::styled(range, Style::new().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Span::raw(" choose   "),
-            key(" w ", Color::Gray),
-            Span::raw(" type your own   "),
-            key(" s ", mode_color("plan")),
-            Span::raw(" decide for me (Esc)"),
-        ]));
-    }
-    if app.pending.len() > 1 {
-        lines.push(Line::styled(format!("{} more request(s) queued", app.pending.len() - 1), Style::new().fg(Color::Gray)));
-    }
-    Some(Panel { title: " ⌜ QUESTION ⌝ — the agent needs a decision ".into(), border: Color::Cyan, lines, selected: None, pinned_from: Some(pinned_from), footer: Vec::new() })
-}
-
 fn permission_panel(app: &App, width: u16) -> Option<Panel> {
     let pending = app.pending.front()?;
     let info = &pending.info;
-    if info.tool_name == "present_plan" {
-        return plan_panel(app, width);
-    }
-    if info.tool_name == "ask_user" {
-        return ask_panel(app, width);
-    }
     let inner_width = (width as usize).saturating_sub(4);
     let label = Style::new().fg(Color::Gray);
 
@@ -187,8 +89,6 @@ fn permission_panel(app: &App, width: u16) -> Option<Panel> {
             Style::new().add_modifier(Modifier::BOLD),
         ),
         Span::styled(format!("  ({})", info.kind.label()), label),
-        Span::styled("   mode ", label),
-        Span::styled(app.mode.clone(), Style::new().fg(mode_color(&app.mode))),
     ]));
     if info.untrusted_source {
         lines.push(Line::styled(

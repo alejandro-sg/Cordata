@@ -7,52 +7,12 @@ use cordata_view::shown;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement, MouseButton, ParentElement, SharedString, StatefulInteractiveElement as _, Styled, div, px};
 
-use super::{DockTab, Overlay, Workspace, age, matches_target, tilde};
+use super::{DockTab, Overlay, Workspace, tilde};
 use crate::hud;
 use crate::theme::{amber, c, inset_ring, line, mono, tk};
 use crate::ui::{self, Dot, Kind, Tone};
 
 impl Workspace {
-    /// The ⋯ on a sidebar row (hub conversations only): Rename, Archive. Shown on hover, or while its menu is open.
-    fn row_actions(&self, group: SharedString, handle: Option<String>, title: String, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let _ = (&group, &handle, &title, &cx);
-        return None;
-        #[allow(unreachable_code)]
-        let handle = handle?;
-        let open = self.row_menu.as_deref() == Some(handle.as_str());
-        let toggle = handle.clone();
-        let button = ui::icon_button(SharedString::from(format!("row-more-{handle}")), "⋯", cx)
-            .size(px(20.))
-            .aria_label("Conversation actions")
-            .tooltip(ui::tip("Rename or archive"))
-            .when(!open, |b| b.opacity(0.).group_hover(group, |s| s.opacity(1.)))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.row_menu = if this.row_menu.as_deref() == Some(toggle.as_str()) { None } else { Some(toggle.clone()) };
-                cx.notify();
-            }));
-        let menu = open.then(|| {
-            let (rename, archive) = (handle.clone(), handle.clone());
-            gpui::deferred(
-                gpui::anchored().snap_to_window_with_margin(px(8.)).child(
-                    ui::popover(cx)
-                        .id("row-menu")
-                        .role(gpui::Role::Menu)
-                        .mt(px(22.))
-                        .w(px(160.))
-                        .p(px(4.))
-                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                            this.row_menu = None;
-                            cx.notify();
-                        }))
-                        .child(ui::row("row-rename", false, cx).text_size(px(t::TEXT_UI)).child("Rename…").on_click(cx.listener(move |this, _, window, cx| this.begin_rename(rename.clone(), title.clone(), window, cx))))
-                        .child(ui::row("row-archive", false, cx).text_size(px(t::TEXT_UI)).child("Archive").on_click(cx.listener(move |this, _, _, cx| this.archive(archive.clone(), cx)))),
-                ),
-            )
-            .with_priority(2)
-        });
-        Some(div().flex().flex_col().child(button).children(menu).into_any_element())
-    }
-
     pub(super) fn sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
         let tk = tk(cx);
         div()
@@ -109,7 +69,7 @@ impl Workspace {
                     .child(self.search_field(cx)),
             )
             .child(self.open_list(cx))
-            .child(self.recent_list(cx))
+            .child(div().flex_1())
             .child(self.sidebar_footer(cx))
             .into_any_element()
     }
@@ -269,9 +229,8 @@ impl Workspace {
                     (_, true) => Dot::Live,
                     _ => Dot::Ok,
                 };
-                let title = view.title.clone().unwrap_or_else(|| "New thread".into());
+                let title = view.title();
                 let group = SharedString::from(format!("open-row-{index}"));
-                let actions = self.row_actions(group.clone(), s.hub_handle(), title.clone(), cx);
                 let target = entity.clone();
                 let hover = line(cx, t::HOVER);
                 let close_group = group.clone();
@@ -303,7 +262,6 @@ impl Workspace {
                     )
                     .when(waiting, |row| row.child(ui::badge("Approval", Tone::Amber, cx)))
                     .when(index < 9 && !waiting, |row| row.child(ui::meta(SharedString::from(format!("⌘{}", index + 1)), cx).text_size(px(t::TEXT_LABEL))))
-                    .children(actions)
                     .when(can_close, |row| {
                         row.child(
                             ui::icon_button(("close-session", index), "×", cx)
@@ -338,69 +296,6 @@ impl Workspace {
                     .child(ui::meta(SharedString::from(format!("{}", self.sessions.len())), cx).text_size(px(t::TEXT_LABEL))),
             )
             .children(rows)
-            .into_any_element()
-    }
-
-    fn recent_list(&self, cx: &mut Context<Self>) -> AnyElement {
-        let tk = tk(cx);
-        let now = super::now_secs();
-        let shown_rows: Vec<crate::session::Row> = self.listing.iter().filter(|row| !self.sessions.iter().any(|s| matches_target(s.read(cx), &row.target))).take(20).cloned().collect();
-        let is_empty = shown_rows.is_empty() && self.listing_error.is_none();
-        let rows: Vec<AnyElement> = shown_rows
-            .iter()
-            .enumerate()
-            .map(|(index, row)| {
-                let target = row.target.clone();
-                let hover = line(cx, t::HOVER);
-                let group = SharedString::from(format!("recent-row-{index}"));
-                let handle = match &row.target {
-                    crate::session::Target::Conversation(h) => Some(h.clone()),
-                    _ => None,
-                };
-                let actions = self.row_actions(group.clone(), handle, row.title.clone(), cx);
-                div()
-                    .id(("recent", index))
-                    .group(group)
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .h(px(30.))
-                    .px(px(10.))
-                    .rounded(px(t::RADIUS_ROW))
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(hover))
-                    .on_click(cx.listener(move |this, _, window, cx| this.open(target.clone(), window, cx)))
-                    .child(ui::dot(if row.busy { Dot::Live } else if row.live { Dot::Ok } else { Dot::Muted }, cx).size(px(t::DOT_SMALL)))
-                    .child(div().flex_1().min_w_0().truncate().text_size(px(t::TEXT_UI)).text_color(c(tk.text_secondary)).child(SharedString::from(shown(&row.title))))
-                    .child(ui::meta(SharedString::from(format!("{}{}", super::door_glyph(&row.origin), age(now - row.when))), cx))
-                    .children(actions)
-                    .into_any_element()
-            })
-            .collect();
-        div()
-            .id("recent-list")
-            .flex()
-            .flex_col()
-            .gap(px(2.))
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .px(px(12.))
-            .pt(px(14.))
-            .pb(px(8.))
-            .child(div().px(px(4.)).pb(px(6.)).child(ui::section_label("history", cx)))
-            .children(rows)
-            .when(is_empty, |list| {
-                list.child(
-                    div()
-                        .px(px(8.))
-                        .py(px(6.))
-                        .text_size(px(t::TEXT_SMALL))
-                        .text_color(c(tk.text_faint))
-                        .child("Saved threads for this folder appear here."),
-                )
-            })
-            .when_some(self.listing_error.clone(), |list, error| list.child(div().px(px(4.)).text_size(px(t::TEXT_SMALL)).text_color(c(tk.danger)).child(SharedString::from(shown(&error)))))
             .into_any_element()
     }
 

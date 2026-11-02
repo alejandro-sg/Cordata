@@ -68,34 +68,6 @@ pub fn truncate(text: &str, max: usize) -> String {
     out
 }
 
-/// One line never wider than `width`: spans are kept until the budget runs out,
-/// the last one cut with an ellipsis.
-pub fn fit_spans(
-    spans: Vec<ratatui::text::Span<'static>>,
-    width: usize,
-) -> ratatui::text::Line<'static> {
-    let total: usize = spans.iter().map(|s| display_width(&s.content)).sum();
-    if total <= width {
-        return ratatui::text::Line::from(spans);
-    }
-    let mut remaining = width.saturating_sub(1);
-    let mut out = Vec::new();
-    for span in spans {
-        let w = display_width(&span.content);
-        if w <= remaining {
-            remaining -= w;
-            out.push(span);
-        } else {
-            out.push(ratatui::text::Span::styled(
-                truncate(&span.content, remaining + 1),
-                span.style,
-            ));
-            break;
-        }
-    }
-    ratatui::text::Line::from(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

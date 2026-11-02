@@ -45,10 +45,6 @@ struct Args {
     /// Initial prompt to send once connected (like Claude Code / agy "prompt").
     #[arg(value_name = "PROMPT")]
     prompt: Option<String>,
-
-    /// Start in full-screen split-pane workspace mode.
-    #[arg(long)]
-    panes: bool,
 }
 
 /// One session the user can switch to: its backend process and its UI state.
@@ -136,13 +132,13 @@ impl Workspace {
     /// A divider written into scrollback when the shown session changes.
     fn banner(&self) -> Line<'static> {
         let slot = &self.slots[self.active];
-        let title = slot.app.title.clone().unwrap_or_else(|| {
+        let title = {
             slot.app
                 .session
                 .as_ref()
                 .map(|s| s.session_id.chars().take(8).collect())
                 .unwrap_or_else(|| "connecting…".to_owned())
-        });
+        };
         Line::styled(
             format!(
                 "━━ session {} of {} · {title} ━━",
@@ -175,33 +171,6 @@ impl Workspace {
         changed
     }
 
-    fn list(&mut self) {
-        let rows: Vec<String> = self
-            .slots
-            .iter()
-            .enumerate()
-            .map(|(index, slot)| {
-                let id = slot
-                    .app
-                    .session
-                    .as_ref()
-                    .map(|s| s.session_id.chars().take(8).collect::<String>())
-                    .unwrap_or_else(|| "…".into());
-                format!(
-                    "  {}{} {id}  {:?}  {}",
-                    if index == self.active { "▸" } else { " " },
-                    slot.number,
-                    slot.app.tab_state(),
-                    slot.app.title.clone().unwrap_or_default()
-                )
-            })
-            .collect();
-        let text = format!(
-            "open sessions (Ctrl+←/→ or Alt+N to switch, Ctrl+N for another):\n{}",
-            rows.join("\n")
-        );
-        self.app().messages.push(Message::Info(text));
-    }
 }
 
 #[tokio::main]
@@ -230,9 +199,6 @@ async fn main() -> Result<()> {
         local: local_tx,
     };
     workspace.spawn(args.prompt);
-    if args.panes || workspace.app().settings.get("ui.panes").and_then(serde_json::Value::as_bool).unwrap_or(false) {
-        workspace.app().open_overlay(crate::overlay::Kind::Panes);
-    }
 
     install_panic_hook();
     let guard = TerminalGuard::enter()?;
@@ -347,12 +313,11 @@ fn draw_overlay(app: &mut App, last: &mut Option<Frame>) -> io::Result<()> {
         return Ok(());
     };
     let buffer = overlay.render(app, width, height);
-    let cursor = overlay.cursor();
     app.overlay = Some(boxed);
     let rows = term::buffer_to_ansi_rows(&buffer);
     let frame = Frame {
         rows,
-        cursor,
+        cursor: None,
     };
     if last.as_ref() == Some(&frame) {
         return Ok(());
@@ -441,9 +406,6 @@ async fn run(
             }
         }
 
-        if let Some(effect) = workspace.app().take_auto_resume() {
-            effects.push(effect);
-        }
         if let Some(effect) = workspace.app().take_initial_prompt() {
             effects.push(effect);
         }
@@ -490,22 +452,6 @@ async fn run(
                     last = None;
                     Ok(())
                 }
-                Effect::ListSessions => {
-                    workspace.list();
-                    let cwd = workspace.cwd.display().to_string();
-                    match workspace.handle() {
-                        Some(handle) => handle.ext(
-                            "session/list",
-                            serde_json::json!({ "cwd": cwd }),
-                            "sessions",
-                        ),
-                        None => Ok(()),
-                    }
-                }
-                Effect::ListConversations | Effect::OpenConversation(_) => {
-                    workspace.app().messages.push(Message::Info("conversations were shared through the daemon, which is gone".into()));
-                    Ok(())
-                }
                 Effect::Shell { command, share, as_diff } => {
                     let slot = &workspace.slots[workspace.active];
                     let (number, cwd, tx) = (slot.number, slot.app.project_dir(), workspace.local.clone());
@@ -531,15 +477,6 @@ async fn run(
                 }
                 Effect::SendPrompt(text) => with_handle(workspace, |h| h.send_prompt(text)),
                 Effect::Cancel => with_handle(workspace, SessionHandle::cancel),
-                Effect::SetMode(mode) => with_handle(workspace, |h| h.set_mode(mode)),
-                Effect::SetConfig { id, value } => {
-                    with_handle(workspace, |h| h.set_config_option(id, value))
-                }
-                Effect::Ext {
-                    method,
-                    params,
-                    tag,
-                } => with_handle(workspace, |h| h.ext(method, params, tag)),
             };
             if let Err(error) = outcome {
                 workspace

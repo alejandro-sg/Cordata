@@ -5,7 +5,6 @@
 //! backend's settings files and are changed through `_cordata/settings/*` and `_cordata/trust/*`. Secrets are never
 //! here either — the API key is in the Keychain (`keychain.rs`).
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -36,12 +35,6 @@ pub struct Prefs {
     pub quick_ask_hotkey: bool,
     /// Which combination it is, `ctrl-alt-space` form (`platform::Combo::parse`).
     pub quick_ask_key: String,
-    /// The local Ollama model for ghost-text completions in the editor; empty is off.
-    /// Show the session's estimated cost in the status bar (Claude models at list price; `prices` adds others).
-    pub show_cost: bool,
-    /// Dollars per million tokens, `[input, output]`, keyed by (part of) a model name: overrides the built-in list
-    /// prices or prices a model that has none. Only ever set by hand in this file.
-    pub prices: BTreeMap<String, [f64; 2]>,
     /// Most recent first.
     pub recents: Vec<RecentProject>,
 }
@@ -68,8 +61,6 @@ impl Default for Prefs {
             sound_on_completion: false,
             quick_ask_hotkey: true,
             quick_ask_key: "ctrl-alt-space".into(),
-            show_cost: true,
-            prices: BTreeMap::new(),
             recents: Vec::new(),
         }
     }
@@ -147,7 +138,6 @@ impl Prefs {
         if crate::platform::Combo::parse(&self.quick_ask_key).is_err() {
             self.quick_ask_key = fallback.quick_ask_key;
         }
-        self.prices.retain(|_, [input, output]| input.is_finite() && output.is_finite() && *input >= 0.0 && *output >= 0.0);
         self.code_font_size = self.code_font_size.clamp(10.0, 20.0);
         self.recents.truncate(RECENTS_CAP);
     }
@@ -177,7 +167,6 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("cordata-prefs-{}", std::process::id()));
         let file = dir.join("prefs.toml");
         let mut prefs = Prefs { theme: "dim".into(), panel_open: Some(false), ..Prefs::default() };
-        prefs.prices.insert("glm-4.6".into(), [0.6, 2.2]);
         prefs.touch_recent(Path::new("/tmp/a"), 1);
         prefs.save_to(&file).unwrap();
         assert_eq!(Prefs::load_from(&file), prefs);
@@ -185,8 +174,6 @@ mod tests {
         let repaired = Prefs::load_from(&file);
         assert_eq!(repaired.theme, "system");
         assert_eq!(repaired.quick_ask_key, "ctrl-alt-space");
-        std::fs::write(&file, "[prices]\nok = [1.0, 2.0]\nnegative = [-1.0, 2.0]\n").unwrap();
-        assert_eq!(Prefs::load_from(&file).prices.keys().collect::<Vec<_>>(), ["ok"]);
         assert_eq!(repaired.code_font_size, 20.0);
         std::fs::write(&file, "not toml at all [").unwrap();
         assert_eq!(Prefs::load_from(&file), Prefs::default());

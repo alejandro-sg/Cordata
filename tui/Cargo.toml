@@ -9,10 +9,6 @@ license = "MIT"
 rust-version = "1.88"
 
 [workspace.dependencies]
-# Pinned exactly: the high-level client API (Client.builder().connect_with,
-# ActiveSession) is what acp-core is written against. Default features only —
-# acp_server.py speaks none of the unstable_* extensions.
-agent-client-protocol = "=2.2.0"
 anyhow = "1"
 clap = { version = "4.5", features = ["derive", "env"] }
 crossterm = { version = "0.29", features = ["event-stream"] }
