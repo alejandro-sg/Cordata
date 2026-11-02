@@ -65,7 +65,7 @@ pub fn summarize_input(value: &Value, is_team: bool) -> Option<String> {
             format!("task: {}", map.get("task").and_then(Value::as_str).unwrap_or_default())
         }
         Value::Object(map) => {
-            let command = map.get("command").and_then(Value::as_str);
+            let command = map.get("command").or_else(|| map.get("cmd")).and_then(Value::as_str);
             let code = map.get("code").and_then(Value::as_str);
             match (command, code) {
                 (Some(command), _) => format!("$ {command}"),
