@@ -186,24 +186,23 @@ pub fn seatbelt_rules<S: AsRef<str>>(root: &str, scope: &[S]) -> Vec<String> {
         if entry.is_empty() {
             continue;
         }
-        let rel_dir: String;
-        if has_glob(&entry) {
+        let rel_dir: String = if has_glob(&entry) {
             let prefix = literal_prefix(&entry);
             if prefix.is_empty() {
                 continue; // a glob at the root cannot be widened without opening the whole project
             }
             allows.push(format!("(subpath {})", sb_string(&format!("{real}/{prefix}"))));
-            rel_dir = prefix;
+            prefix
         } else if is_dir_entry(&entry, &real) {
             let dir = entry.trim_end_matches('/').to_owned();
             allows.push(format!("(subpath {})", sb_string(&format!("{real}/{dir}"))));
-            rel_dir = dir;
+            dir
         } else {
             let target = format!("{real}/{entry}");
             allows.push(format!("(literal {})", sb_string(&target)));
             allows.push(format!("(regex #\"^{}\\.[^/]*$\")", ere(&target)));
-            rel_dir = entry.rsplit_once('/').map_or(String::new(), |(d, _)| d.to_owned());
-        }
+            entry.rsplit_once('/').map_or(String::new(), |(d, _)| d.to_owned())
+        };
         let parts: Vec<&str> = rel_dir.split('/').filter(|p| !p.is_empty()).collect();
         for i in 1..=parts.len() {
             ancestors.insert(format!("{real}/{}", parts[..i].join("/")));

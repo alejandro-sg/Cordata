@@ -790,7 +790,7 @@ impl App {
         }
         let mut prompt = expanded.prompt;
         if !self.shell_context.is_empty() {
-            let context = self.shell_context.drain(..).collect::<Vec<_>>().join("\n\n");
+            let context = std::mem::take(&mut self.shell_context).join("\n\n");
             prompt = format!("{context}\n\n{prompt}");
         }
         Some(self.begin_turn(prompt))
