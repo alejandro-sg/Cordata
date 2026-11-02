@@ -20,6 +20,16 @@ jobs:
           cargo run -q -p cordata-guard --bin cordata-secrets
           cargo run -q -p cordata-guard --bin cordata-secrets -- --history
 
+  # cargo-deny's action is a container action, which GitHub runs on Linux only.
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Supply chain (licences, bans, sources, advisories)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: app/Cargo.toml
+
   # The Rust clients: the terminal (tui/) and the native app (app/), which share cordata-view and cordata-theme.
   # macOS runners: the app is Metal/AppKit (GPUI builds with the Command Line Tools' runtime shaders).
   rust:
@@ -46,9 +56,5 @@ jobs:
       - name: Clippy (app)
         working-directory: app
         run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: Supply chain (licences, bans, sources, advisories)
-        uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          manifest-path: app/Cargo.toml
       - name: gpui-pre is zed@93d7456
         run: app/scripts/verify-gpui-snapshot.sh
