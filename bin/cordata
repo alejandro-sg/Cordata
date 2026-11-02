@@ -44,6 +44,7 @@ Cordata — AI Coding Assistant & Autonomous Orchestrator
   cordata status                   Inspect worker headroom, recent runs and handoffs
   cordata show RUN_ID              Show one run's plan, history, and audit
   cordata resume RUN_ID            Continue a paused batch run
+  cordata floorplan [OPTIONS]      Architectural map & active-work visualizer (--html to open)
   cordata doctor                   Check the CLIs, providers and settings Cordata leans on
   cordata tui [OPTIONS]            The terminal client with its own options
 
@@ -56,6 +57,7 @@ fi
 
 case "${1:-}" in
   doctor) bin="$(built cordata-doctor)"; shift; exec "$bin" "$@" ;;
+  floorplan) bin="$(built cordata-floorplan)"; shift; exec "$bin" "$@" ;;
   run|status|show|resume) exec "$(built cordata-run)" "$@" ;;
   tui) shift; exec "$(built acp-tui)" "$@" ;;
   *) exec "$(built acp-tui)" "$@" ;;

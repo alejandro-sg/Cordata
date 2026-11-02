@@ -904,6 +904,7 @@ impl App {
             Command::Export(arg) => self.run_export(arg),
             Command::Palette => return self.open_overlay(crate::overlay::Kind::Palette),
             Command::Review => return self.open_overlay(crate::overlay::Kind::Review),
+            Command::Floorplan(arg) => return self.run_floorplan(arg),
             Command::New => return Some(Effect::NewSession),
             Command::Switch(arg) => {
                 return match arg.as_deref().map(str::parse::<usize>) {

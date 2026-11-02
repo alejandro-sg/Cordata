@@ -23,6 +23,8 @@ pub enum Command {
     Palette,
     /// The interactive diff review of the working tree (F4).
     Review,
+    /// Architectural floorplan & active-work visualizer.
+    Floorplan(Option<String>),
     /// Another session in this project (Ctrl+N).
     New,
     /// Show another session: a number, or the next one.
@@ -41,6 +43,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("/tools", "expand / collapse tool results"),
     ("/palette", "the command deck: every mode, model, view and command, searchable (Ctrl+K)"),
     ("/diffview", "review the working tree's changes: files, hunks, mouse (F4)"),
+    ("/floorplan [html]", "interactive architectural floorplan & active-work visualizer"),
     ("/new", "another session in this project (Ctrl+N) — a new shared conversation on the hub"),
     ("/switch [n]", "show session n (Ctrl+←/→, Alt+1…9)"),
     ("/close", "end the shown session"),
@@ -79,6 +82,7 @@ pub fn parse(input: &str) -> Option<Command> {
         "export" => Command::Export(arg),
         "palette" | "deck" => Command::Palette,
         "diffview" | "dv" => Command::Review,
+        "floorplan" | "fp" => Command::Floorplan(arg),
         "new" => Command::New,
         "switch" | "session" => Command::Switch(arg),
         "close" => Command::Close,

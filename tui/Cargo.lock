@@ -523,6 +523,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "cordata-floorplan"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "ignore",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+ "unicode-width",
+]
+
+[[package]]
 name = "cordata-guard"
 version = "0.1.0"
 dependencies = [

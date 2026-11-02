@@ -22,6 +22,7 @@ id_ed25519*
 .claude/settings.local.json
 .claude/worktrees/
 .cordata/settings.local.json
+.cordata/*.html
 CORDATA.local.md
 **/.DS_Store
 .dev/

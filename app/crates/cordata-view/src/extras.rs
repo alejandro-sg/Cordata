@@ -67,6 +67,20 @@ impl App {
         })
     }
 
+    /// `/floorplan`: visual architectural map & active-work visualizer.
+    pub fn run_floorplan(&mut self, arg: Option<String>) -> Option<Effect> {
+        let flag = match arg.as_deref() {
+            Some("term" | "cli" | "text") => "",
+            _ => " --html",
+        };
+        let cwd = self.project_dir();
+        Some(Effect::Shell {
+            command: format!("cordata floorplan --cwd \"{}\"{flag}", cwd.display()),
+            share: false,
+            as_diff: false,
+        })
+    }
+
     pub fn run_line_as_prompt(&mut self, line: &str) -> Option<Effect> {
         if self.turn_active {
             self.queue.push_back(line.to_owned());

@@ -49,11 +49,13 @@ pub fn summarize_input(value: &Value) -> Option<String> {
         },
         Value::Object(map) => {
             let field = |key: &str| map.get(key).and_then(Value::as_str);
-            match (field("cmd"), field("pattern"), field("path")) {
-                (Some(cmd), _, _) => format!("$ {cmd}"),
-                (_, Some(pattern), Some(path)) => format!("{pattern}  in {path}"),
-                (_, Some(pattern), None) => pattern.to_owned(),
-                (_, _, Some(path)) => path.to_owned(),
+            let cmd = field("cmd").or_else(|| field("command"));
+            match (cmd, field("pattern"), field("path"), field("code")) {
+                (Some(cmd), _, _, _) => format!("$ {cmd}"),
+                (_, Some(pattern), Some(path), _) => format!("{pattern}  in {path}"),
+                (_, Some(pattern), None, _) => pattern.to_owned(),
+                (_, _, Some(path), _) => path.to_owned(),
+                (_, _, _, Some(code)) => code.to_owned(),
                 _ => value.to_string(),
             }
         }
