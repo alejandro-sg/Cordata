@@ -76,7 +76,8 @@ impl Workspace {
         };
         let strip_el: Vec<AnyElement> = strip.iter().map(|&t| tab(t, cx).into_any_element()).collect();
         let more_label = if in_overflow { format!("{} ⌄", self.tab_name(self.dock_tab).0) } else { "⋯".to_owned() };
-        let overflow_menu = self.overflow_open.then(|| {
+        let has_overflow = !overflow.is_empty();
+        let overflow_menu = (self.overflow_open && has_overflow).then(|| {
             let rows: Vec<AnyElement> = overflow
                 .iter()
                 .enumerate()
@@ -149,7 +150,8 @@ impl Workspace {
                     .border_color(line(cx, t::LINE_DEFAULT))
                     .children(strip_el)
                     .child(div().flex_1().min_w(px(4.)).on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move()))
-                    .child(
+                    .when(has_overflow, |el| {
+                        el.child(
                         div()
                             .id("dock-more")
                             .role(gpui::Role::Button)
@@ -170,6 +172,7 @@ impl Workspace {
                             }))
                             .child(SharedString::from(more_label)),
                     )
+                    })
                     .child(
                         div()
                             .flex()
@@ -200,6 +203,12 @@ mod tests {
         assert!(strip_tabs(1300.).0.contains(&DockTab::Terminal));
         assert!(strip_tabs(1200.).1.contains(&DockTab::Terminal));
         assert!(!strip_tabs(1200.).0.contains(&DockTab::Terminal));
+    }
+
+    #[test]
+    fn a_wide_window_has_no_overflow_menu_to_open() {
+        assert!(strip_tabs(1300.).1.is_empty(), "the ⋯ button is hidden when nothing is in it");
+        assert!(!strip_tabs(1200.).1.is_empty());
     }
 
     #[test]

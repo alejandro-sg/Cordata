@@ -180,8 +180,10 @@ pub struct Workspace {
     esc_at: Option<Instant>,
     /// Whether each session was mid-turn when last seen (a finished turn plays the completion sound).
     turn_seen: HashMap<EntityId, bool>,
-    /// Sessions that already notified for their current pending approval (prevents notification flood).
+    /// Sessions that already saw their current pending approval (a held approval notifies once, not on every redraw).
     pending_seen: HashSet<EntityId>,
+    /// A notification went out since the window was last in front: a burst of approvals while away is one banner, not one each.
+    notified_away: bool,
     /// Images and files waiting to go with the next prompt.
     staged: Vec<attachments::Staged>,
     /// Why the last attachment or send was refused, shown above the composer.
@@ -253,6 +255,11 @@ impl Workspace {
         let terminal = terminal::Terminal::new(window, cx);
         let settings_view = settings_view::SettingsView::default();
         let subscriptions = vec![
+            cx.observe_window_activation(window, |this: &mut Self, window, _| {
+                if window.is_window_active() {
+                    this.notified_away = false;
+                }
+            }),
             cx.subscribe_in(&composer, window, Self::on_composer),
             cx.subscribe_in(&file_filter, window, Self::on_file_filter),
             cx.subscribe_in(&palette_input, window, |this: &mut Self, _, event: &InputEvent, _, cx| {
@@ -331,6 +338,7 @@ impl Workspace {
             esc_at: None,
             turn_seen: HashMap::new(),
             pending_seen: HashSet::new(),
+            notified_away: false,
             staged: Vec::new(),
             attach_note: None,
             renaming: None,
@@ -1347,7 +1355,9 @@ impl Workspace {
                 crate::platform::play_sound("Glass");
             }
         if pending {
-            if self.pending_seen.insert(id) && self.prefs.notify_approval && !window.is_window_active() {
+            let first = self.pending_seen.insert(id);
+            if should_notify(first, self.prefs.notify_approval, window.is_window_active(), self.notified_away) {
+                self.notified_away = true;
                 crate::platform::notify("Cordata needs you", "A command is waiting for your approval.");
             }
         } else {
@@ -1377,6 +1387,12 @@ impl Workspace {
         }
         Some(layer.into_any_element())
     }
+}
+
+/// Whether a pending approval earns a system notification: only the first sighting, only with the window out of front,
+/// and only once per absence (the Dock bounce covers the rest), so ten approvals in a minute are one banner.
+fn should_notify(first_sighting: bool, enabled: bool, window_active: bool, notified_away: bool) -> bool {
+    first_sighting && enabled && !window_active && !notified_away
 }
 
 impl Render for Workspace {
@@ -1673,7 +1689,16 @@ pub fn install_menus(cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use super::age;
+    use super::{age, should_notify};
+
+    #[test]
+    fn one_banner_per_absence() {
+        assert!(should_notify(true, true, false, false));
+        assert!(!should_notify(true, true, false, true), "a second approval while away is silent");
+        assert!(!should_notify(false, true, false, false), "a held approval is not a new one");
+        assert!(!should_notify(true, true, true, false), "no banner over a window in front");
+        assert!(!should_notify(true, false, false, false), "the setting wins");
+    }
 
     #[test]
     fn ages_read_at_a_glance() {
