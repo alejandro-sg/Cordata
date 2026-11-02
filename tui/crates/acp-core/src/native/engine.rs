@@ -22,6 +22,14 @@ use crate::permission::ApprovalDecision;
 use crate::session::{Attachment, Command, SessionOptions};
 
 const DEFAULT_MODEL: &str = "claude-sonnet-5-5";
+/// The default when there is an Ollama key but no Anthropic one. The `ollama_cloud::` prefix is required: genai sends a
+/// bare `kimi-…` (or `glm-…`, `deepseek-…`, `minimax-…`, `mimo-…`) tag to that vendor's own API, which needs its own key.
+const OLLAMA_CLOUD_DEFAULT: &str = "ollama_cloud::kimi-k3";
+
+/// The chat model when `CORDATA_NATIVE_MODEL` is unset: Anthropic's, unless only an Ollama cloud key is on hand.
+fn default_model(has_anthropic_key: bool, has_ollama_cloud_key: bool) -> &'static str {
+    if !has_anthropic_key && has_ollama_cloud_key { OLLAMA_CLOUD_DEFAULT } else { DEFAULT_MODEL }
+}
 /// Model round-trips per prompt before the turn is cut off.
 const MAX_ROUNDS: usize = 25;
 const SYSTEM_PROMPT: &str = "You are Cordata, a coding agent running in the user's terminal. \
@@ -65,9 +73,13 @@ fn project_instructions(cwd: &std::path::Path) -> Option<String> {
 type Events = mpsc::UnboundedSender<AppEvent>;
 type Commands = mpsc::UnboundedReceiver<Command>;
 
-/// `CORDATA_NATIVE_MODEL` picks the model (a genai name: `claude-…`, `gemini-…`, `gpt-…`, or any Ollama tag).
+/// `CORDATA_NATIVE_MODEL` picks the model (a genai name: `claude-…`, `gemini-…`, `gpt-…`, a local Ollama tag, or
+/// `ollama_cloud::<tag>` for Ollama's cloud); unset, it follows whichever provider key exists (`default_model`).
 pub(crate) async fn run(options: SessionOptions, commands: Commands, events: Events) {
-    let model = std::env::var("CORDATA_NATIVE_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.into());
+    let model = std::env::var("CORDATA_NATIVE_MODEL")
+        .ok()
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or_else(|| default_model(super::keys::resolve("anthropic").is_some(), super::keys::resolve("ollama_cloud").is_some()).into());
     match GenaiProvider::new(model) {
         Ok(provider) => {
             let off = std::env::var_os("CORDATA_ECONOMIZER").is_some_and(|v| v == "off");
@@ -397,11 +409,21 @@ fn with_attachments(mut text: String, attachments: &[Attachment]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::{DEFAULT_MODEL, OLLAMA_CLOUD_DEFAULT, default_model};
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
     use futures::future::BoxFuture;
     use futures::stream::{self, BoxStream};
+
+    #[test]
+    fn the_default_model_follows_the_key_that_exists() {
+        assert_eq!(default_model(true, true), DEFAULT_MODEL, "an Anthropic key keeps the Anthropic default");
+        assert_eq!(default_model(true, false), DEFAULT_MODEL);
+        assert_eq!(default_model(false, true), OLLAMA_CLOUD_DEFAULT, "only an Ollama key goes to Ollama cloud");
+        assert_eq!(default_model(false, false), DEFAULT_MODEL, "no key: the Anthropic error says what to run");
+        assert!(OLLAMA_CLOUD_DEFAULT.starts_with("ollama_cloud::"), "a bare kimi tag would be sent to Moonshot");
+    }
     use serde_json::json;
 
     use super::super::tools::ToolSpec;

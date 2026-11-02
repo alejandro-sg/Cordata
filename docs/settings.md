@@ -24,7 +24,7 @@ The terminal client and the app run the agent in their own process. The model an
 
 | variable | meaning |
 |---|---|
-| `CORDATA_NATIVE_MODEL` | model name, any `genai` name (`claude-…`, `gemini-…`, `gpt-…`, or an Ollama tag). Default `claude-sonnet-5-5` |
+| `CORDATA_NATIVE_MODEL` | model name, any `genai` name (`claude-…`, `gemini-…`, `gpt-…`, or a local Ollama tag); `ollama_cloud::<tag>` (e.g. `ollama_cloud::glm-5.3-flash`) for Ollama's cloud — without the prefix, `kimi-…`, `glm-…`, `deepseek-…`, `minimax-…` and `mimo-…` tags go to that vendor's own API. Unset: `claude-sonnet-5-5`, or `ollama_cloud::kimi-k3` when only an Ollama key exists |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OLLAMA_API_KEY` | provider key; wins over the Keychain |
 | Keychain `cordata-anthropic-api-key`, `cordata-ollama-api-key` | provider key (`make key` stores one: `PROVIDER=anthropic` by default, or `ollama`) |
 

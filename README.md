@@ -32,7 +32,7 @@ environment or the macOS Keychain, never from a file:
 | provider | needs |
 |---|---|
 | Anthropic (the default, `claude-sonnet-5-5`; change with `CORDATA_NATIVE_MODEL`) | `ANTHROPIC_API_KEY` exported in your shell, or the Keychain item `cordata-anthropic-api-key` |
-| Ollama's API directly | `make key PROVIDER=ollama` (stores the key in the Keychain) |
+| Ollama's cloud (the default when it is the only key; `CORDATA_NATIVE_MODEL=ollama_cloud::<tag>` picks another) | `make key PROVIDER=ollama` (stores the key in the Keychain) |
 | a local Ollama | the server running |
 
 `cordata run` uses the coding CLIs you already have, each signed in once by running `claude` or `agy` yourself. A

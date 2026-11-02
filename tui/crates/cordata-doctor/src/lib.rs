@@ -226,12 +226,15 @@ pub fn check_ollama() -> Check {
     check("Ollama", Level::Warn, "not installed — the Ollama workers are out of the roster", "https://ollama.com/download")
 }
 
-/// The chat model: `CORDATA_NATIVE_MODEL`, else the engine's default.
+/// The chat model: `CORDATA_NATIVE_MODEL`, else the engine's default (`acp-core`'s `default_model`: Anthropic's, unless only
+/// an Ollama cloud key exists).
 const DEFAULT_MODEL: &str = "claude-sonnet-5-5";
+const OLLAMA_CLOUD_DEFAULT: &str = "ollama_cloud::kimi-k3";
 
 /// Which key the chat model needs: (provider, environment variable, Keychain service). `None` for a local Ollama tag.
 fn key_for(model: &str) -> Option<(&'static str, &'static str, Option<&'static str>)> {
     match model {
+        m if m.starts_with("ollama_cloud::") => Some(("Ollama cloud", "OLLAMA_API_KEY", Some("cordata-ollama-api-key"))),
         m if m.starts_with("claude") => Some(("Anthropic", "ANTHROPIC_API_KEY", Some("cordata-anthropic-api-key"))),
         m if m.starts_with("gpt") || m.starts_with("o1") || m.starts_with("o3") => Some(("OpenAI", "OPENAI_API_KEY", None)),
         m if m.starts_with("gemini") => Some(("Gemini", "GEMINI_API_KEY", None)),
@@ -239,8 +242,20 @@ fn key_for(model: &str) -> Option<(&'static str, &'static str, Option<&'static s
     }
 }
 
+/// Whether a key is on hand: the environment variable, or a Keychain entry (existence only: no -w / -g, so the secret is never read).
+fn have_key(var: &str, service: Option<&str>) -> bool {
+    std::env::var(var).is_ok_and(|v| !v.is_empty())
+        || service.is_some_and(|service| {
+            Command::new("/usr/bin/security").args(["find-generic-password", "-s", service]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
+        })
+}
+
 pub fn check_model_key() -> Check {
-    let model = std::env::var("CORDATA_NATIVE_MODEL").ok().filter(|m| !m.trim().is_empty()).unwrap_or_else(|| DEFAULT_MODEL.into());
+    let model = std::env::var("CORDATA_NATIVE_MODEL").ok().filter(|m| !m.trim().is_empty()).unwrap_or_else(|| {
+        let anthropic = have_key("ANTHROPIC_API_KEY", Some("cordata-anthropic-api-key"));
+        let ollama = have_key("OLLAMA_API_KEY", Some("cordata-ollama-api-key"));
+        if !anthropic && ollama { OLLAMA_CLOUD_DEFAULT } else { DEFAULT_MODEL }.into()
+    });
     let Some((provider, var, service)) = key_for(&model) else {
         return check("model API key", Level::Ok, format!("{model} is an Ollama model: no key needed (a cloud tag needs OLLAMA_API_KEY)"), "");
     };
@@ -355,6 +370,12 @@ pub fn render(checks: &[Check], color: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_ollama_cloud_model_needs_the_ollama_key() {
+        assert_eq!(key_for("ollama_cloud::kimi-k3").map(|k| k.1), Some("OLLAMA_API_KEY"));
+        assert_eq!(key_for("kimi-k3"), None, "a bare tag is not the cloud: the doctor treats it as local");
+    }
 
     #[test]
     fn the_chat_model_decides_which_key_is_needed() {
