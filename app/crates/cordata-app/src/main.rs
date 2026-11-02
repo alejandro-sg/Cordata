@@ -88,7 +88,32 @@ fn default_cwd() -> PathBuf {
     }
 }
 
+fn bootstrap_path() {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let common = [
+        format!("{home}/.local/bin"),
+        format!("{home}/.cargo/bin"),
+        "/opt/homebrew/bin".to_string(),
+        "/opt/homebrew/sbin".to_string(),
+        "/usr/local/bin".to_string(),
+    ];
+    let current = std::env::var("PATH").unwrap_or_default();
+    let mut parts: Vec<String> = common
+        .into_iter()
+        .filter(|p| !p.is_empty() && std::path::Path::new(p).exists())
+        .collect();
+    for existing in current.split(':') {
+        if !existing.is_empty() && !parts.iter().any(|p| p == existing) {
+            parts.push(existing.to_string());
+        }
+    }
+    unsafe {
+        std::env::set_var("PATH", parts.join(":"));
+    }
+}
+
 fn main() {
+    bootstrap_path();
     let mut args = parse_args();
     let runtime = match Runtime::new() {
         Ok(runtime) => runtime,

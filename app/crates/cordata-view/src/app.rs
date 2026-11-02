@@ -420,8 +420,15 @@ impl App {
             AppEvent::TurnFailed(error) => {
                 self.end_turn();
                 self.return_queue_to_input();
-                self.messages
-                    .push(Message::Error(format!("turn failed: {}", sanitize(&error))));
+                let clean_err = if error.contains("ApiKeyEnvNotFound") || error.contains("NoAuthFound") {
+                    let provider = if error.contains("Anthropic") { "Anthropic" } else { "the configured" };
+                    format!(
+                        "turn failed: missing API key for {provider} model.\n→ Run `make key` in your terminal to save it to macOS Keychain, or export ANTHROPIC_API_KEY."
+                    )
+                } else {
+                    format!("turn failed: {}", sanitize(&error))
+                };
+                self.messages.push(Message::Error(clean_err));
             }
             AppEvent::Notice(note) => {
                 self.messages.push(Message::Info(sanitize(&note)));

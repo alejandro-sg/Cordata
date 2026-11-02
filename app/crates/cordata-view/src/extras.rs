@@ -74,8 +74,15 @@ impl App {
             _ => " --html",
         };
         let cwd = self.project_dir();
+        let home = std::env::var("HOME").unwrap_or_default();
+        let local_bin = format!("{home}/.local/bin/cordata");
+        let bin = if std::path::Path::new(&local_bin).exists() {
+            local_bin
+        } else {
+            "cordata".to_string()
+        };
         Some(Effect::Shell {
-            command: format!("cordata floorplan --cwd \"{}\"{flag}", cwd.display()),
+            command: format!("\"{bin}\" floorplan --cwd \"{}\"{flag}", cwd.display()),
             share: false,
             as_diff: false,
         })

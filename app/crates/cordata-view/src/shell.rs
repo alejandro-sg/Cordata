@@ -38,11 +38,38 @@ pub fn run_cancellable(command: &str, cwd: &Path, timeout: Duration, cancel: &At
     run_inner(command, cwd, timeout, KEEP_BYTES, Some(cancel))
 }
 
+fn augmented_path() -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let common = [
+        format!("{home}/.local/bin"),
+        format!("{home}/.cargo/bin"),
+        "/opt/homebrew/bin".to_string(),
+        "/opt/homebrew/sbin".to_string(),
+        "/usr/local/bin".to_string(),
+        "/usr/bin".to_string(),
+        "/bin".to_string(),
+        "/usr/sbin".to_string(),
+        "/sbin".to_string(),
+    ];
+    let current = std::env::var("PATH").unwrap_or_default();
+    let mut parts: Vec<String> = common
+        .into_iter()
+        .filter(|p| !p.is_empty() && Path::new(p).exists())
+        .collect();
+    for existing in current.split(':') {
+        if !existing.is_empty() && !parts.iter().any(|p| p == existing) {
+            parts.push(existing.to_string());
+        }
+    }
+    parts.join(":")
+}
+
 fn run_inner(command: &str, cwd: &Path, timeout: Duration, keep: usize, cancel: Option<&AtomicBool>) -> Outcome {
     let spawned = Command::new("sh")
         .arg("-c")
         .arg(format!("exec 2>&1\n{command}"))
         .current_dir(cwd)
+        .env("PATH", augmented_path())
         .env("TERM", "dumb")
         .env("PAGER", "cat")
         .env("GIT_PAGER", "cat")
