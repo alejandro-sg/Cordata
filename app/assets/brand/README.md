@@ -85,7 +85,7 @@ Motion says that something changed or is alive; it never decorates. All of it st
 | `cordata-mark-light.svg` | Paper |
 | `cordata-mark-mono.svg` | one colour, `currentColor`: favicons, print, embossing |
 | `cordata-mark-states.svg` | the five states above |
-| `cordata-icon.svg`, `cordata-icon-1024.png`, `Cordata.icns` | the macOS app icon (flat Ink ground, hairline edge); `package-app.sh` ships the `.icns` |
+| `cordata-icon.svg`, `cordata-icon-light.svg`, `cordata-icon-1024.png`, `Cordata.icns` | the macOS app icon in dark and light Apple liquid glass variants; `package-app.sh` ships the `.icns` |
 
 Rebuild the icon after editing `cordata-icon.svg`: render it to a transparent 1024 px PNG with headless Chrome
 (`--headless=new --default-background-color=00000000 --window-size=1024,1024 --screenshot`), `sips -z` each size into an

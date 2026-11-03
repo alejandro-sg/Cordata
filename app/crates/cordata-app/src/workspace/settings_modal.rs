@@ -19,11 +19,12 @@ pub enum Section {
     Appearance,
     Shortcuts,
     Account,
+    Mcp,
     Advanced,
 }
 
 impl Section {
-    pub const ALL: [Section; 5] = [Section::General, Section::Appearance, Section::Shortcuts, Section::Account, Section::Advanced];
+    pub const ALL: [Section; 6] = [Section::General, Section::Appearance, Section::Shortcuts, Section::Account, Section::Mcp, Section::Advanced];
 
     fn title(self) -> &'static str {
         match self {
@@ -31,6 +32,7 @@ impl Section {
             Section::Appearance => "Appearance",
             Section::Shortcuts => "Shortcuts",
             Section::Account => "Account",
+            Section::Mcp => "MCP & Marketplace",
             Section::Advanced => "Advanced",
         }
     }
@@ -42,6 +44,7 @@ impl Section {
             Section::Appearance => "theme dark light ink paper density font size",
             Section::Shortcuts => "keys keyboard bindings hotkeys",
             Section::Account => "api key anthropic sign out usage keychain",
+            Section::Mcp => "mcp tools servers model context protocol marketplace plugins rea github brave postgres sqlite fetch memory",
             Section::Advanced => "logs diagnostics reset clear history",
         }
     }
@@ -58,6 +61,7 @@ impl Section {
             Section::Appearance => "Theme and density.",
             Section::Shortcuts => "Every key the window answers to.",
             Section::Account => "Your key and usage.",
+            Section::Mcp => "Model Context Protocol tools, discovery and official marketplace.",
             Section::Advanced => "Logs, diagnostics and resets.",
         }
     }
@@ -174,6 +178,7 @@ impl Workspace {
                     .collect()
             }
             Section::Account => self.account_rows(cx),
+            Section::Mcp => self.mcp_rows(cx),
             Section::Advanced => self.advanced_rows(cx),
         };
         div()
@@ -196,7 +201,7 @@ impl Workspace {
                     .rounded(px(t::RADIUS_POPOVER))
                     .border_1()
                     .border_color(line(cx, t::LINE_CONTROL_STRONG))
-                    .bg(c(tk.bg_panel))
+                    .bg(crate::theme::glass_modal_bg(cx))
                     .shadow(crate::theme::modal_shadow(cx))
                     .child(
                         div()
@@ -205,7 +210,7 @@ impl Workspace {
                             .h_full()
                             .flex()
                             .flex_col()
-                            .bg(c(tk.bg_nav_deep))
+                            .bg(crate::theme::glass_panel_bg(cx))
                             .border_r_1()
                             .border_color(line(cx, t::LINE_DEFAULT))
                             .child(
@@ -213,7 +218,9 @@ impl Workspace {
                                     .h(px(t::SETTINGS_HEADER_H))
                                     .flex()
                                     .items_center()
+                                    .gap(px(8.))
                                     .px(px(16.))
+                                    .child(ui::cordata_logo(20., cx))
                                     .child(div().text_size(px(t::TEXT_TITLE)).font_weight(FontWeight::SEMIBOLD).text_color(c(tk.text_primary)).child("Settings")),
                             )
                             .child(
@@ -481,6 +488,98 @@ impl Workspace {
             setting_row("Usage this session", "Monthly usage is not tracked by the harness; these are this conversation's tokens.", mono_value(&format!("{in_t} in · {out_t} out"), cx), cx),
             setting_row("Sign out", "Removes the key from the Keychain.", ui::button("sign-out", "Sign out", Kind::Danger, cx).on_click(cx.listener(|this, _, window, cx| this.ask_confirm(Confirm::SignOut, window, cx))).into_any_element(), cx),
         ]
+    }
+
+    fn mcp_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let tk = tk(cx);
+        let servers = crate::mcp_catalog::discover_servers(&self.cwd);
+        let mut rows = Vec::new();
+
+        rows.push(sub_heading("configured servers", cx));
+        if servers.is_empty() {
+            rows.push(setting_row(
+                "No MCP servers active",
+                "Cordata discovers servers from .mcp.json, ~/.cordata/mcp.json, Claude Code, and Antigravity.",
+                status_control(Dot::Muted, "none detected", cx),
+                cx,
+            ));
+        } else {
+            for server in &servers {
+                let name = server.name.clone();
+                let source_label = server.source.label();
+                let desc = format!("via {source_label} · command: {} {}", server.command, server.args.join(" "));
+                rows.push(setting_row_owned(
+                    name,
+                    desc,
+                    false,
+                    status_control(Dot::Ok, "connected", cx),
+                    cx,
+                ));
+            }
+        }
+
+        rows.push(sub_heading("official marketplace", cx));
+        rows.push(div().text_size(px(t::TEXT_SMALL)).text_color(c(tk.text_muted)).pb(px(8.)).child("Install official MCP servers directly into your project's .mcp.json with one click.").into_any_element());
+
+        for (ix, item) in crate::mcp_catalog::MARKETPLACE_ITEMS.iter().enumerate() {
+            let is_installed = servers.iter().any(|s| s.name == item.id);
+            let item_id = item.id;
+            let item_cmd = item.command;
+            let item_args = item.default_args;
+            let label = format!("{}  {}", item.icon_glyph, item.name);
+
+            let action: AnyElement = if is_installed {
+                div()
+                    .px(px(8.))
+                    .py(px(4.))
+                    .rounded(px(t::RADIUS_CONTROL))
+                    .bg(crate::theme::amber(cx, t::AMBER_FILL_MID))
+                    .border_1()
+                    .border_color(crate::theme::amber(cx, t::AMBER_BORDER_STRONG))
+                    .text_color(c(tk.amber))
+                    .text_size(px(t::TEXT_SMALL))
+                    .child("Installed")
+                    .into_any_element()
+            } else {
+                ui::button(("mcp-install", ix), "Install", Kind::Tint, cx)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        match crate::mcp_catalog::install_server_to_project(&this.cwd, item_id, item_cmd, item_args) {
+                            Ok(()) => {
+                                this.settings_view.set_notice(format!("Installed {item_id} to .mcp.json"), false);
+                            }
+                            Err(e) => {
+                                this.settings_view.set_notice(format!("Failed to install {item_id}: {e}"), true);
+                            }
+                        }
+                        cx.notify();
+                    }))
+                    .into_any_element()
+            };
+
+            rows.push(setting_row_owned(
+                label,
+                format!("[{}] {}", item.category, item.description),
+                false,
+                action,
+                cx,
+            ));
+        }
+
+        let mcp_path = self.cwd.join(".mcp.json");
+        let reveal_btn = ui::button("reveal-mcp-json", "Open .mcp.json", Kind::Outline, cx)
+            .on_click(cx.listener(move |_, _, _, cx| {
+                cx.reveal_path(&mcp_path);
+            }))
+            .into_any_element();
+        rows.push(sub_heading("configuration files", cx));
+        rows.push(setting_row(
+            "Project MCP Configuration",
+            "Stored in .mcp.json in the project root. Shared with team and version control.",
+            reveal_btn,
+            cx,
+        ));
+
+        rows
     }
 
     fn advanced_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {

@@ -1,6 +1,7 @@
 //! The native tool registry: `read_file`, `edit_file`, `run_command`, `code_search`, `code_outline`.
 //! Pure functions of (arguments, cwd) so they test without a model.
 
+use std::borrow::Cow;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -19,23 +20,24 @@ const HEAD_CHARS: usize = 2_000;
 const MAX_MATCHES: usize = 200;
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 
+#[derive(Clone, Debug)]
 pub(crate) struct ToolSpec {
-    pub(crate) name: &'static str,
-    pub(crate) description: &'static str,
+    pub(crate) name: Cow<'static, str>,
+    pub(crate) description: Cow<'static, str>,
     pub(crate) schema: Value,
 }
 
 impl cordata_economizer::toolprune::Named for ToolSpec {
     fn tool_name(&self) -> &str {
-        self.name
+        &self.name
     }
 }
 
 pub(crate) fn specs() -> Vec<ToolSpec> {
     vec![
         ToolSpec {
-            name: "read_file",
-            description: "Read a text file. Files over 500 lines return an outline unless offset/limit are given.",
+            name: Cow::Borrowed("read_file"),
+            description: Cow::Borrowed("Read a text file. Files over 500 lines return an outline unless offset/limit are given."),
             schema: json!({"type":"object","properties":{
                 "path":{"type":"string"},
                 "offset":{"type":"integer","description":"1-based first line"},
@@ -43,34 +45,34 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
                 "required":["path"]}),
         },
         ToolSpec {
-            name: "edit_file",
-            description: "Replace `target` with `replacement` in a file. `target` must occur exactly once. \
-                          For a new file, use an empty `target`.",
+            name: Cow::Borrowed("edit_file"),
+            description: Cow::Borrowed("Replace `target` with `replacement` in a file. `target` must occur exactly once. \
+                          For a new file, use an empty `target`."),
             schema: json!({"type":"object","properties":{
                 "path":{"type":"string"},"target":{"type":"string"},"replacement":{"type":"string"}},
                 "required":["path","target","replacement"]}),
         },
         ToolSpec {
-            name: "run_command",
-            description: "Run a shell command in the project directory, sandboxed: it may write only the project, temporary \
+            name: Cow::Borrowed("run_command"),
+            description: Cow::Borrowed("Run a shell command in the project directory, sandboxed: it may write only the project, temporary \
                           folders and package caches, and it runs offline. Set `network` only when the command must reach \
                           the internet (installing a package, fetching a crate); the user is asked. Returns combined \
-                          stdout and stderr.",
+                          stdout and stderr."),
             schema: json!({"type":"object","properties":{
                 "cmd":{"type":"string"},"timeout":{"type":"integer","description":"seconds, default 120"},
                 "network":{"type":"boolean","description":"needs internet access, default false"}},
                 "required":["cmd"]}),
         },
         ToolSpec {
-            name: "code_search",
-            description: "Regex search over files (gitignore-aware). Returns path:line:text.",
+            name: Cow::Borrowed("code_search"),
+            description: Cow::Borrowed("Regex search over files (gitignore-aware). Returns path:line:text."),
             schema: json!({"type":"object","properties":{
                 "pattern":{"type":"string"},"path":{"type":"string","description":"directory or file, default ."}},
                 "required":["pattern"]}),
         },
         ToolSpec {
-            name: "code_outline",
-            description: "List the definitions (functions, types, headings) in a file with line numbers.",
+            name: Cow::Borrowed("code_outline"),
+            description: Cow::Borrowed("List the definitions (functions, types, headings) in a file with line numbers."),
             schema: json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}),
         },
     ]

@@ -141,7 +141,7 @@ impl Workspace {
             .flex_shrink_0()
             .flex()
             .flex_col()
-            .bg(c(tk.bg_panel))
+            .bg(crate::theme::glass_panel_bg(cx))
             .border_l_1()
             .border_color(line(cx, t::LINE_DEFAULT))
             .child(

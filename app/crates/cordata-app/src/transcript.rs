@@ -179,8 +179,9 @@ fn assistant(text: &str, ix: usize, cx: &App) -> AnyElement {
             TextView::markdown(("agent", ix), SharedString::from(shown(text)))
                 .selectable(true)
                 .style(TextViewStyle::default().inline_code(gpui::HighlightStyle {
-                    color: Some(c(tk.text_primary)),
-                    background_color: Some(line(cx, t::HOVER_STRONG)),
+                    color: Some(c(tk.amber_soft)),
+                    background_color: Some(ca(tk.amber, if tk.is_dark { 0.16 } else { 0.12 })),
+                    font_weight: Some(FontWeight::MEDIUM),
                     ..Default::default()
                 })),
         )

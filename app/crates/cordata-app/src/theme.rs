@@ -79,18 +79,56 @@ pub fn amber_glow(cx: &App) -> Vec<BoxShadow> {
     vec![BoxShadow { color: amber(cx, tokens::AMBER_GLOW), offset: point(px(0.), px(0.)), blur_radius: px(tokens::GLOW_BLUR), spread_radius: px(0.), inset: false }]
 }
 
-/// The modal shadow.
+/// The modal shadow with subtle Apple liquid glass specular highlight and ambient depth.
 pub fn modal_shadow(cx: &App) -> Vec<BoxShadow> {
     let t = tk(cx);
     // The shadow token, never the window ground: on paper that is near-white and the modal would cast a white halo.
     let alpha = if t.is_dark { tokens::MODAL_SHADOW } else { 0.22 };
-    vec![BoxShadow { color: ca(t.shadow, alpha), offset: point(px(0.), px(28.)), blur_radius: px(90.), spread_radius: px(0.), inset: false }]
+    let specular = if t.is_dark { ca(t.ink, 0.12) } else { ca(t.ink, 0.70) };
+    vec![
+        // Liquid glass top specular reflection
+        BoxShadow { color: specular, offset: point(px(0.), px(1.)), blur_radius: px(0.), spread_radius: px(0.), inset: true },
+        // Deep ambient drop shadow
+        BoxShadow { color: ca(t.shadow, alpha), offset: point(px(0.), px(28.)), blur_radius: px(90.), spread_radius: px(0.), inset: false },
+        // Soft contact shadow
+        BoxShadow { color: ca(t.shadow, alpha * 0.45), offset: point(px(0.), px(4.)), blur_radius: px(14.), spread_radius: px(0.), inset: false },
+    ]
 }
 
-/// A soft shadow under popovers and the composer.
+/// A soft shadow under popovers and the composer with liquid glass specular highlight.
 pub fn soft_shadow(cx: &App) -> Vec<BoxShadow> {
     let t = tk(cx);
-    vec![BoxShadow { color: ca(t.shadow, if t.is_dark { 0.5 } else { 0.12 }), offset: point(px(0.), px(8.)), blur_radius: px(24.), spread_radius: px(0.), inset: false }]
+    let specular = if t.is_dark { ca(t.ink, 0.08) } else { ca(t.ink, 0.55) };
+    vec![
+        // Liquid glass top specular reflection
+        BoxShadow { color: specular, offset: point(px(0.), px(1.)), blur_radius: px(0.), spread_radius: px(0.), inset: true },
+        // Soft ambient shadow
+        BoxShadow { color: ca(t.shadow, if t.is_dark { 0.45 } else { 0.12 }), offset: point(px(0.), px(8.)), blur_radius: px(24.), spread_radius: px(0.), inset: false },
+    ]
+}
+
+/// Liquid glass window background: subtle translucency so macOS vibrancy shines through softly.
+pub fn glass_window_bg(cx: &App) -> Hsla {
+    let t = tk(cx);
+    ca(t.bg_window, if t.is_dark { 0.85 } else { 0.88 })
+}
+
+/// Liquid glass main column background.
+pub fn glass_main_bg(cx: &App) -> Hsla {
+    let t = tk(cx);
+    ca(t.bg_main, if t.is_dark { 0.90 } else { 0.92 })
+}
+
+/// Liquid glass sidebar / side panel background (vibrant frosted look).
+pub fn glass_panel_bg(cx: &App) -> Hsla {
+    let t = tk(cx);
+    ca(t.bg_panel, if t.is_dark { 0.82 } else { 0.86 })
+}
+
+/// Liquid glass modal background: frosted glass acrylic layer.
+pub fn glass_modal_bg(cx: &App) -> Hsla {
+    let t = tk(cx);
+    ca(t.bg_input, if t.is_dark { 0.86 } else { 0.89 })
 }
 
 /// A 1px border drawn inside the box (the active row, an active settings item): no layout shift, no stripe.

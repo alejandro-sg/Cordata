@@ -1,10 +1,101 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" fill="none">
-  <title>Cordata</title>
-  <!-- One flat ink ground with a hairline edge, as the window is: no gradient, no haze. -->
-  <rect x="100" y="100" width="824" height="824" rx="185" fill="#0E1013"/>
-  <rect x="101.5" y="101.5" width="821" height="821" rx="183.5" stroke="#fff" stroke-opacity=".09" stroke-width="3"/>
-  <g transform="translate(241.1 236.8) scale(8.6)">
-    <path d="M45 7.201A28 28 0 1 0 45 56.799V45.856A19 19 0 1 1 45 18.144Z" fill="#E8EAED"/>
-    <path d="M49 20h10v24H49Z" fill="#3DC9A4"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" fill="none">
+  <defs>
+    <!-- Soft ambient drop shadow underneath squircle -->
+    <filter id="ambient-shadow" x="-30%" y="-30%" width="160%" height="170%">
+      <feDropShadow dx="0" dy="40" stdDeviation="42" flood-color="#000000" flood-opacity="0.60"/>
+      <feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#000000" flood-opacity="0.40"/>
+    </filter>
+
+    <!-- Deep smoked glass base gradient -->
+    <linearGradient id="dark-glass-base" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#22262F"/>
+      <stop offset="30%" stop-color="#15181E"/>
+      <stop offset="70%" stop-color="#0E1014"/>
+      <stop offset="100%" stop-color="#07080A"/>
+    </linearGradient>
+
+    <!-- Top glass specular highlight rim -->
+    <linearGradient id="specular-rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.55"/>
+      <stop offset="15%" stop-color="#FFFFFF" stop-opacity="0.22"/>
+      <stop offset="40%" stop-color="#FFFFFF" stop-opacity="0.04"/>
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0.0"/>
+    </linearGradient>
+
+    <!-- Secondary inner bevel highlight -->
+    <linearGradient id="inner-bevel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.18"/>
+      <stop offset="25%" stop-color="#FFFFFF" stop-opacity="0.05"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0.25"/>
+    </linearGradient>
+
+    <!-- Top-left glass dome sheen -->
+    <radialGradient id="glass-sheen" cx="30%" cy="18%" r="60%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.12"/>
+      <stop offset="50%" stop-color="#FFFFFF" stop-opacity="0.03"/>
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0.0"/>
+    </radialGradient>
+
+    <!-- Bottom viridian caustic bounce -->
+    <radialGradient id="caustic-bounce" cx="50%" cy="92%" r="55%">
+      <stop offset="0%" stop-color="#3DC9A4" stop-opacity="0.20"/>
+      <stop offset="45%" stop-color="#3DC9A4" stop-opacity="0.06"/>
+      <stop offset="100%" stop-color="#3DC9A4" stop-opacity="0.0"/>
+    </radialGradient>
+
+    <!-- Mark ring gradient -->
+    <linearGradient id="ring-gradient-dark" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="50%" stop-color="#F2F4F7"/>
+      <stop offset="100%" stop-color="#D0D5DD"/>
+    </linearGradient>
+
+    <!-- Mark cell gradient -->
+    <linearGradient id="cell-gradient-dark" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#4EF2C5"/>
+      <stop offset="100%" stop-color="#28BA91"/>
+    </linearGradient>
+
+    <!-- Clean mark drop shadow on whole emblem -->
+    <filter id="emblem-shadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000000" flood-opacity="0.55"/>
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#000000" flood-opacity="0.35"/>
+    </filter>
+
+    <clipPath id="squircle-clip">
+      <rect x="100" y="100" width="824" height="824" rx="185"/>
+    </clipPath>
+  </defs>
+
+  <!-- Ambient shadow behind squircle -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="#07080A" filter="url(#ambient-shadow)"/>
+
+  <!-- Glass Plate Content -->
+  <g clip-path="url(#squircle-clip)">
+    <!-- Base dark smoked glass -->
+    <rect x="100" y="100" width="824" height="824" fill="url(#dark-glass-base)"/>
+
+    <!-- Bottom viridian caustic bounce -->
+    <rect x="100" y="100" width="824" height="824" fill="url(#caustic-bounce)"/>
+
+    <!-- Top-left smooth glass surface sheen -->
+    <rect x="100" y="100" width="824" height="824" fill="url(#glass-sheen)"/>
+
+    <!-- Emblem floating in glass -->
+    <g transform="translate(241.1 236.8) scale(8.6)" filter="url(#emblem-shadow)">
+      <!-- Ring -->
+      <path d="M45 7.201A28 28 0 1 0 45 56.799V45.856A19 19 0 1 1 45 18.144Z" fill="url(#ring-gradient-dark)"/>
+      <!-- Cursor Cell -->
+      <path d="M49 20h10v24H49Z" fill="url(#cell-gradient-dark)"/>
+    </g>
+
+    <!-- Inner bevel stroke -->
+    <rect x="102" y="102" width="820" height="820" rx="183" stroke="url(#inner-bevel)" stroke-width="3" fill="none"/>
+
+    <!-- Top specular liquid glass highlight rim -->
+    <rect x="101" y="101" width="822" height="822" rx="184" stroke="url(#specular-rim)" stroke-width="4.5" fill="none"/>
   </g>
+
+  <!-- Outer hairline boundary -->
+  <rect x="100.5" y="100.5" width="823" height="823" rx="184.5" stroke="#FFFFFF" stroke-opacity="0.14" stroke-width="1.5" fill="none"/>
 </svg>

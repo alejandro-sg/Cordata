@@ -10,6 +10,7 @@ mod control;
 mod detect;
 mod hud;
 mod keychain;
+pub mod mcp_catalog;
 mod platform;
 mod prefs;
 mod session;
@@ -179,7 +180,7 @@ fn main() {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(cordata_theme::tokens::MIN_WINDOW_W), px(cordata_theme::tokens::MIN_WINDOW_H))),
                 titlebar: Some(TitlebarOptions { title: Some(SharedString::from("Cordata")), appears_transparent: true, traffic_light_position: Some(point(px(18.), px(19.))) }),
-                window_background: WindowBackgroundAppearance::Opaque,
+                window_background: WindowBackgroundAppearance::Blurred,
                 app_id: Some("dev.cordata.app".into()),
                 ..Default::default()
             },

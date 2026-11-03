@@ -22,8 +22,10 @@ pub const CATALOG: &[Model] = &[
     Model { id: "gpt-5-mini", label: "GPT-5 mini", provider: "openai", window: 400_000, note: "cheap" },
     Model { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro", provider: "gemini", window: 1_048_576, note: "long context" },
     Model { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash", provider: "gemini", window: 1_048_576, note: "fast" },
-    Model { id: "ollama_cloud::kimi-k3", label: "Kimi K3", provider: "ollama_cloud", window: 262_144, note: "ollama cloud" },
-    Model { id: "ollama_cloud::qwen3-coder:480b", label: "Qwen3 Coder 480B", provider: "ollama_cloud", window: 262_144, note: "ollama cloud" },
+    Model { id: "ollama_cloud::qwen3-coder:480b", label: "Qwen3 Coder 480B", provider: "ollama_cloud", window: 262_144, note: "best coding" },
+    Model { id: "ollama_cloud::kimi-k3", label: "Kimi K3", provider: "ollama_cloud", window: 262_144, note: "balanced" },
+    Model { id: "ollama_cloud::deepseek-v4.1-flash", label: "DeepSeek V4.1 Flash", provider: "ollama_cloud", window: 160_000, note: "cost-effective" },
+    Model { id: "ollama_cloud::glm-5.3-flash", label: "GLM 5.3 Flash", provider: "ollama_cloud", window: 131_072, note: "fastest" },
 ];
 
 pub fn find(id: &str) -> Option<&'static Model> {
@@ -42,6 +44,8 @@ pub fn window(model: &str) -> Option<u64> {
         n if n.starts_with("gpt-4o") || n.starts_with("o3") || n.starts_with("o4") => Some(128_000),
         n if n.starts_with("gemini") => Some(1_048_576),
         n if n.starts_with("kimi") || n.starts_with("qwen3-coder") => Some(262_144),
+        n if n.starts_with("deepseek") => Some(160_000),
+        n if n.starts_with("glm") || n.starts_with("minimax") => Some(131_072),
         _ => None,
     }
 }
@@ -69,7 +73,11 @@ mod tests {
         assert_eq!(window("claude-sonnet-5-5"), Some(200_000));
         assert_eq!(window("claude-3-7-sonnet-latest"), Some(200_000));
         assert_eq!(window("ollama_cloud::kimi-k3"), Some(262_144));
+        assert_eq!(window("ollama_cloud::qwen3-coder:480b"), Some(262_144));
+        assert_eq!(window("ollama_cloud::deepseek-v4.1-flash"), Some(160_000));
+        assert_eq!(window("ollama_cloud::glm-5.3-flash"), Some(131_072));
         assert_eq!(window("llama3.2:3b"), None, "a local tag: unknown");
         assert_eq!((provider("gpt-5"), provider("llama3.2:3b")), (Some("openai"), None));
+        assert_eq!(provider("ollama_cloud::deepseek-v4.1-flash"), Some("ollama_cloud"));
     }
 }

@@ -4,6 +4,7 @@
 mod approval;
 mod engine;
 mod keys;
+pub(crate) mod mcp;
 mod provider;
 mod sandbox;
 mod tools;

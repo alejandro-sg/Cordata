@@ -24,6 +24,7 @@ pub enum Action {
     StopRun,
     Attach,
     Worktree,
+    SwitchWorktree(std::path::PathBuf),
     Review(bool),
     /// Show the open thread at this index.
     Thread(usize),
@@ -96,6 +97,18 @@ impl Workspace {
             Item { group: "Project", label: "Open folder…".into(), shortcut: "", action: Action::OpenFolder },
             Item { group: "App", label: "Settings".into(), shortcut: "⌘,", action: Action::Settings },
         ]);
+        for wt in &self.git.worktrees {
+            if !wt.is_current {
+                let agent = wt.agent_label.as_deref().unwrap_or(if wt.is_main { "Main repo" } else { "Worktree" });
+                let branch = wt.branch.as_deref().unwrap_or("HEAD");
+                items.push(Item {
+                    group: "Worktrees",
+                    label: format!("Switch to {agent} worktree: {} ({branch})", wt.name),
+                    shortcut: "",
+                    action: Action::SwitchWorktree(wt.path.clone()),
+                });
+            }
+        }
         items
     }
 
@@ -126,6 +139,7 @@ impl Workspace {
             Action::StopRun => self.session.update(cx, |s, cx| s.cancel(cx)),
             Action::Attach => self.choose_attachments(window, cx),
             Action::Worktree => self.begin_worktree(window, cx),
+            Action::SwitchWorktree(path) => self.switch_project(path, window, cx),
             Action::Review(branch) => self.request_review(branch, window, cx),
             Action::Thread(index) => {
                 if let Some(entity) = self.sessions.get(index).cloned() {
@@ -200,7 +214,7 @@ impl Workspace {
                     .flex()
                     .flex_col()
                     .rounded(px(t::RADIUS_POPOVER))
-                    .bg(c(tk.bg_input))
+                    .bg(crate::theme::glass_modal_bg(cx))
                     .border_1()
                     .border_color(line(cx, t::LINE_CONTROL_STRONG))
                     .shadow(crate::theme::modal_shadow(cx))

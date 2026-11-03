@@ -3,8 +3,9 @@
 //! adds ids, handlers and accessibility labels. No colour or size is written here except through `theme`/`tokens`.
 
 use cordata_theme::tokens::{self as t};
+use cordata_theme::Rgb;
 use gpui::prelude::FluentBuilder as _;
-use gpui::{AnyView, App, Div, ElementId, FontWeight, InteractiveElement as _, ParentElement, SharedString, Stateful, StatefulInteractiveElement as _, Styled, Window, div, px};
+use gpui::{AnyElement, AnyView, App, Div, ElementId, FontWeight, IntoElement as _, InteractiveElement as _, ParentElement, SharedString, Stateful, StatefulInteractiveElement as _, Styled, Window, div, px};
 use gpui_component::tooltip::Tooltip;
 
 use crate::theme::{amber, amber_glow, c, ca, line, mono, tk};
@@ -269,13 +270,13 @@ pub fn select_trigger(id: impl Into<ElementId>, value: &str, cx: &App) -> Statef
         .child(div().flex_shrink_0().text_color(c(tk(cx).text_faint)).child(gpui_component::Icon::new(gpui_kit_assets::IconName::ChevronDown).size(px(13.))))
 }
 
-/// A popover surface: input ground, control border, 8px radius, soft shadow.
+/// A popover surface: frosted liquid glass ground, control border, 8px radius, specular shadow.
 pub fn popover(cx: &App) -> Div {
     div()
         .rounded(px(t::RADIUS_POPOVER))
         .border_1()
         .border_color(line(cx, t::LINE_CONTROL_STRONG))
-        .bg(c(tk(cx).bg_input))
+        .bg(crate::theme::glass_modal_bg(cx))
         .shadow(crate::theme::soft_shadow(cx))
 }
 
@@ -343,15 +344,119 @@ pub fn empty(label: &str, hint: &str, cx: &App) -> Div {
 
 /// `$ pnpm test` blocks, code.
 pub fn code_block(text: impl Into<SharedString>, cx: &App) -> Div {
+    let tk = tk(cx);
     div()
         .px(px(12.))
         .py(px(10.))
         .rounded(px(t::RADIUS_CARD))
-        .bg(c(tk(cx).bg_window))
+        .bg(c(tk.bg_input))
         .border_1()
-        .border_color(line(cx, t::LINE_DEFAULT))
+        .border_color(line(cx, t::LINE_CONTROL_STRONG))
         .font_family(mono(cx))
-        .text_size(px(crate::theme::code_size(cx) - 1.))
-        .text_color(c(tk(cx).text_body))
+        .text_size(px(crate::theme::code_size(cx)))
+        .text_color(c(tk.text_primary))
         .child(text.into())
+}
+
+const MARK_RING_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="currentColor"><path d="M45 7.201A28 28 0 1 0 45 56.799V45.856A19 19 0 1 1 45 18.144Z"/></svg>"#;
+const MARK_CELL_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="currentColor"><path d="M49 20h10v24H49Z"/></svg>"#;
+
+/// The Cordata brand mark, adapting to light and dark themes.
+#[allow(dead_code)]
+pub fn cordata_mark(size: f32, cx: &App) -> AnyElement {
+    let t = tk(cx);
+    let ring_color = c(t.text_primary);
+    let cell_color = c(t.amber);
+    div()
+        .relative()
+        .size(px(size))
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .child(gpui::svg().data(MARK_RING_SVG).size_full().text_color(ring_color)),
+        )
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .child(gpui::svg().data(MARK_CELL_SVG).size_full().text_color(cell_color)),
+        )
+        .into_any_element()
+}
+
+/// The Cordata logo with subtle Apple liquid glass treatment (frosted squircle, specular rim, ambient drop shadow).
+pub fn cordata_logo(size: f32, cx: &App) -> AnyElement {
+    let t = tk(cx);
+    let mark_size = (size * 0.58).round();
+
+    // Subtle Apple liquid glass materials for light and dark
+    let badge_bg = if t.is_dark {
+        ca(Rgb::hex(0x1B1F27), 0.72)
+    } else {
+        ca(Rgb::hex(0xF8FAFC), 0.82)
+    };
+    let border_col = if t.is_dark {
+        ca(Rgb::hex(0xFFFFFF), 0.16)
+    } else {
+        ca(Rgb::hex(0x000000), 0.08)
+    };
+    let specular = if t.is_dark {
+        ca(Rgb::hex(0xFFFFFF), 0.40)
+    } else {
+        ca(Rgb::hex(0xFFFFFF), 0.95)
+    };
+    let inner_bounce = if t.is_dark {
+        ca(t.amber, 0.20)
+    } else {
+        ca(Rgb::hex(0x000000), 0.04)
+    };
+    let shadow_ambient = ca(t.shadow, if t.is_dark { 0.42 } else { 0.14 });
+    let shadow_contact = ca(t.shadow, if t.is_dark { 0.22 } else { 0.07 });
+
+    div()
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(px(size))
+        .rounded(px(size * 0.24))
+        .bg(badge_bg)
+        .border_1()
+        .border_color(border_col)
+        .shadow(vec![
+            // Top specular liquid glass reflection
+            gpui::BoxShadow {
+                color: specular,
+                offset: gpui::point(px(0.), px(1.)),
+                blur_radius: px(0.5),
+                spread_radius: px(0.),
+                inset: true,
+            },
+            // Bottom inner refraction bounce
+            gpui::BoxShadow {
+                color: inner_bounce,
+                offset: gpui::point(px(0.), px(-1.)),
+                blur_radius: px(1.5),
+                spread_radius: px(0.),
+                inset: true,
+            },
+            // Ambient elevation shadow
+            gpui::BoxShadow {
+                color: shadow_ambient,
+                offset: gpui::point(px(0.), px((size * 0.08).max(1.))),
+                blur_radius: px((size * 0.25).max(3.)),
+                spread_radius: px(0.),
+                inset: false,
+            },
+            // Contact shadow
+            gpui::BoxShadow {
+                color: shadow_contact,
+                offset: gpui::point(px(0.), px(1.)),
+                blur_radius: px(2.),
+                spread_radius: px(0.),
+                inset: false,
+            },
+        ])
+        .child(cordata_mark(mark_size, cx))
+        .into_any_element()
 }

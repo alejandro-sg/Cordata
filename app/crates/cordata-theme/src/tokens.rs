@@ -328,18 +328,18 @@ pub const RADIUS_CAP: f32 = 4.;
 
 // ------------------------------------------------------------------------------------------------ type (px)
 
-pub const TEXT_BODY: f32 = 14.;
-pub const LINE_HEIGHT_BODY: f32 = 1.6;
-pub const TEXT_TITLE: f32 = 13.5;
-pub const TEXT_UI: f32 = 13.;
-pub const TEXT_SMALL: f32 = 12.;
-pub const TEXT_META: f32 = 11.;
-pub const TEXT_STATUS: f32 = 10.5;
-pub const TEXT_LABEL: f32 = 10.;
-pub const TEXT_TAG: f32 = 9.5;
-pub const TEXT_SETTINGS_TITLE: f32 = 15.;
-pub const TEXT_EMPTY: f32 = 22.;
-pub const TEXT_LOGO: f32 = 12.;
+pub const TEXT_BODY: f32 = 15.5;
+pub const LINE_HEIGHT_BODY: f32 = 1.62;
+pub const TEXT_TITLE: f32 = 14.5;
+pub const TEXT_UI: f32 = 14.;
+pub const TEXT_SMALL: f32 = 13.;
+pub const TEXT_META: f32 = 12.;
+pub const TEXT_STATUS: f32 = 11.5;
+pub const TEXT_LABEL: f32 = 11.;
+pub const TEXT_TAG: f32 = 10.5;
+pub const TEXT_SETTINGS_TITLE: f32 = 16.5;
+pub const TEXT_EMPTY: f32 = 24.;
+pub const TEXT_LOGO: f32 = 13.;
 
 /// Letter-spacing, as GPUI has none: thin spaces between the letters (`tracked_text`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

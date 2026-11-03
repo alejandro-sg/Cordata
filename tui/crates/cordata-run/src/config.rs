@@ -24,7 +24,7 @@ pub const NATIVE_FAMILIES: [&str; 2] = ["claude_code", "antigravity"];
 type Row = (&'static str, &'static str, &'static str, f64, Option<&'static [&'static str]>);
 
 /// family, model, tier, price, roles (`None` = every role)
-pub const ROSTER: [Row; 12] = [
+pub const ROSTER: [Row; 13] = [
     ("claude_code", "haiku", "fast", 0.10, None),
     ("claude_code", "sonnet", "standard", 0.35, None),
     ("claude_code", "opus", "strong", 1.00, None),
@@ -33,7 +33,8 @@ pub const ROSTER: [Row; 12] = [
     ("antigravity", "gemini-3.1-pro-high", "strong", 0.60, None),
     ("ollama", "deepseek-v4.1-flash", "fast", 0.02, Some(&["execute", "harden", "audit"])),
     ("ollama", "glm-5.3-flash", "fast", 0.03, Some(&["plan", "execute", "audit"])),
-    ("ollama", "kimi-k2.7-code", "standard", 0.05, None),
+    ("ollama", "kimi-k3", "standard", 0.05, None),
+    ("ollama", "qwen3-coder:480b", "strong", 0.08, None),
     ("ollama", "minimax-m3.1-flash", "fast", 0.02, Some(&["execute", "audit"])),
     ("ollama", "gemma4:31b", "standard", 0.04, Some(&["plan", "audit"])),
     ("ollama", "mistral-large-4", "strong", 0.10, None),

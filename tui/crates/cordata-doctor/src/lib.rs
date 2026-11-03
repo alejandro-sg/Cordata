@@ -229,7 +229,7 @@ pub fn check_ollama() -> Check {
 /// The chat model: `CORDATA_NATIVE_MODEL`, else the engine's default (`acp-core`'s `default_model`: Anthropic's, unless only
 /// an Ollama cloud key exists).
 const DEFAULT_MODEL: &str = "claude-sonnet-5-5";
-const OLLAMA_CLOUD_DEFAULT: &str = "ollama_cloud::kimi-k3";
+const OLLAMA_CLOUD_DEFAULT: &str = "ollama_cloud::qwen3-coder:480b";
 
 /// Which key the chat model needs: (provider, environment variable, Keychain service). `None` for a local Ollama tag.
 fn key_for(model: &str) -> Option<(&'static str, &'static str, Option<&'static str>)> {
@@ -373,6 +373,7 @@ mod tests {
 
     #[test]
     fn an_ollama_cloud_model_needs_the_ollama_key() {
+        assert_eq!(key_for("ollama_cloud::qwen3-coder:480b").map(|k| k.1), Some("OLLAMA_API_KEY"));
         assert_eq!(key_for("ollama_cloud::kimi-k3").map(|k| k.1), Some("OLLAMA_API_KEY"));
         assert_eq!(key_for("kimi-k3"), None, "a bare tag is not the cloud: the doctor treats it as local");
     }

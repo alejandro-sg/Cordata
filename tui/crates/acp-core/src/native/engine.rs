@@ -26,7 +26,7 @@ use crate::session::{Attachment, Command, SessionOptions};
 const DEFAULT_MODEL: &str = "claude-sonnet-5-5";
 /// The default when there is an Ollama key but no Anthropic one. The `ollama_cloud::` prefix is required: genai sends a
 /// bare `kimi-…` (or `glm-…`, `deepseek-…`, `minimax-…`, `mimo-…`) tag to that vendor's own API, which needs its own key.
-const OLLAMA_CLOUD_DEFAULT: &str = "ollama_cloud::kimi-k3";
+const OLLAMA_CLOUD_DEFAULT: &str = "ollama_cloud::qwen3-coder:480b";
 
 /// The chat model when `CORDATA_NATIVE_MODEL` is unset: Anthropic's, unless only an Ollama cloud key is on hand.
 fn default_model(has_anthropic_key: bool, has_ollama_cloud_key: bool) -> &'static str {
@@ -150,6 +150,7 @@ struct Agent<'a> {
     always: HashSet<String>,
     economizer: Economizer,
     policy: Policy,
+    mcp: super::mcp::McpManager,
 }
 
 /// Where this conversation is saved after each turn, if anywhere.
@@ -262,7 +263,12 @@ pub(crate) async fn drive(
     }
 
     let economizer = Economizer::new(provider.model(), state_dir);
-    let mut agent = Agent { provider, switched: None, cwd: options.cwd.clone(), offload, always: HashSet::new(), economizer, policy };
+    let mcp = super::mcp::McpManager::load(&options.cwd).await;
+    if !mcp.tools().is_empty() {
+        let count = mcp.tools().len();
+        let _ = events.send(AppEvent::Notice(format!("mcp: discovered {count} tool{} from configured servers", if count == 1 { "" } else { "s" })));
+    }
+    let mut agent = Agent { provider, switched: None, cwd: options.cwd.clone(), offload, always: HashSet::new(), economizer, policy, mcp };
     let mut history: Vec<Msg> = Vec::new();
     while let Some(command) = commands.recv().await {
         match command {
@@ -409,12 +415,13 @@ impl Agent<'_> {
     /// The tools for this prompt: core tools plus whatever the prompt or the repository history asks for,
     /// added to those already sent this session.
     fn choose_tools(&mut self, prompt: &str) -> Vec<tools::ToolSpec> {
-        let all = tools::specs();
+        let mut all = tools::specs();
+        all.extend(self.mcp.tools().iter().cloned());
         let eco = &mut self.economizer;
         let picked: Vec<String> =
-            eco.pruner.select_tools(&self.cwd, prompt, &all, &eco.profile).into_iter().map(|t| t.name.to_owned()).collect();
+            eco.pruner.select_tools(&self.cwd, prompt, &all, &eco.profile).into_iter().map(|t| t.name.to_string()).collect();
         eco.active.extend(picked);
-        all.into_iter().filter(|s| eco.active.contains(s.name)).collect()
+        all.into_iter().filter(|s| eco.active.contains(s.name.as_ref())).collect()
     }
 
     /// Static prefix plus the micro-skills chosen at the first prompt. Fixed for the session, so it caches.
@@ -517,7 +524,11 @@ impl Agent<'_> {
         self.economizer.pruner.record_tool_invoked(&self.cwd, &call.name);
 
         let _ = events.send(patch(ToolStatus::InProgress, None));
-        let result = interruptible(tools::execute(&call.name, &call.args, &self.cwd, &self.policy.writable), commands, events).await;
+        let result = if self.mcp.has_tool(&call.name) {
+            interruptible(self.mcp.call_tool(&call.name, &call.args), commands, events).await
+        } else {
+            interruptible(tools::execute(&call.name, &call.args, &self.cwd, &self.policy.writable), commands, events).await
+        };
         let (status, output) = match result {
             Err(interrupt) => {
                 let _ = events.send(patch(ToolStatus::Failed, Some("cancelled".into())));
@@ -990,7 +1001,7 @@ mod tests {
                 _history: Vec<Msg>,
                 tools: &'a [ToolSpec],
             ) -> BoxFuture<'a, Result<BoxStream<'a, Result<Delta, String>>, String>> {
-                self.0.lock().unwrap().push((system.to_owned(), tools.iter().map(|t| t.name.to_owned()).collect()));
+                self.0.lock().unwrap().push((system.to_owned(), tools.iter().map(|t| t.name.to_string()).collect()));
                 Box::pin(async { Ok(stream::iter(vec![Ok(Delta::Text("ok".into()))]).boxed()) })
             }
         }

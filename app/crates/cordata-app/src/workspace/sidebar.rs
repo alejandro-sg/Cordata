@@ -12,12 +12,11 @@ use gpui::{Animation, AnimationExt as _, ease_in_out};
 use gpui::{AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement, MouseButton, ParentElement, SharedString, StatefulInteractiveElement as _, Styled, div, px};
 
 use super::{DockTab, Overlay, Workspace};
-use crate::theme::{c, line, mono, tk};
+use crate::theme::{c, ca, line, mono, tk};
 use crate::ui::{self, Dot, Kind};
 
 impl Workspace {
     pub(super) fn sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
-        let tk = tk(cx);
         div()
             .id("sidebar")
             .role(gpui::Role::Navigation)
@@ -27,7 +26,7 @@ impl Workspace {
             .flex_shrink_0()
             .flex()
             .flex_col()
-            .bg(c(tk.bg_panel))
+            .bg(crate::theme::glass_panel_bg(cx))
             .border_r_1()
             .border_color(line(cx, t::LINE_SUBTLE))
             // Traffic lights occupy the left ~76px of this row; empty space drags the window.
@@ -60,12 +59,13 @@ impl Workspace {
             )
             .child(self.project_block(cx))
             .child(self.open_list(cx))
+            .child(self.agent_worktrees_list(cx))
             .child(div().flex_1())
             .child(self.sidebar_footer(cx))
             .into_any_element()
     }
 
-    /// The project's name (switches project), and under it the branch and what changed — the only place either shows.
+    /// The project's name (switches project), and under it the branch, worktree status and what changed.
     fn project_block(&self, cx: &mut Context<Self>) -> AnyElement {
         let tk = tk(cx);
         let hover = line(cx, t::HOVER);
@@ -86,26 +86,43 @@ impl Workspace {
                     .tooltip(ui::tip("Switch project  ⌘O"))
                     .flex()
                     .items_center()
-                    .gap(px(6.))
+                    .gap(px(8.))
                     .px(px(6.))
-                    .py(px(3.))
+                    .py(px(4.))
                     .rounded(px(t::RADIUS_ROW))
                     .cursor_pointer()
                     .hover(move |s| s.bg(hover))
                     .on_click(cx.listener(|this, _, window, cx| this.open_overlay(Overlay::Picker, window, cx)))
+                    .child(ui::cordata_logo(20., cx))
                     .child(div().flex_1().min_w_0().truncate().text_size(px(t::TEXT_TITLE)).font_weight(FontWeight::SEMIBOLD).text_color(c(tk.text_primary)).child(SharedString::from(self.project_name())))
                     .child(div().flex_shrink_0().text_color(c(tk.text_faint)).child(gpui_component::Icon::new(gpui_kit_assets::IconName::ChevronDown).size(px(13.))))
             )
             .when_some(self.git.branch.clone(), |col, branch| {
+                let in_wt = self.git.is_worktree;
+                let wt_name = self.git.worktree_name.clone();
                 col.child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(8.))
+                        .gap(px(6.))
                         .px(px(6.))
                         .font_family(mono(cx))
                         .text_size(px(t::TEXT_META))
-                        .child(div().min_w_0().truncate().text_color(c(tk.text_muted)).child(SharedString::from(branch)))
+                        .child(div().text_color(c(tk.amber)).child("⎇"))
+                        .child(div().min_w_0().truncate().text_color(c(tk.text_primary)).child(SharedString::from(branch)))
+                        .when(in_wt, |row| {
+                            row.child(
+                                div()
+                                    .id("rail-worktree-badge")
+                                    .px(px(4.))
+                                    .py(px(1.))
+                                    .rounded(px(t::RADIUS_BADGE))
+                                    .bg(ca(tk.amber, 0.16))
+                                    .text_color(c(tk.amber_soft))
+                                    .tooltip(ui::tip("Linked Git worktree"))
+                                    .child(SharedString::from(wt_name.unwrap_or_else(|| "worktree".into()))),
+                            )
+                        })
                         .when(changed > 0, |row| {
                             row.child(
                                 div()
@@ -125,6 +142,91 @@ impl Workspace {
                         }),
                 )
             })
+            .into_any_element()
+    }
+
+    /// Active agent & secondary worktrees across the repository, with 1-click switching.
+    fn agent_worktrees_list(&self, cx: &mut Context<Self>) -> AnyElement {
+        let tk = tk(cx);
+        let other_worktrees: Vec<_> = self.git.worktrees.iter().filter(|w| !w.is_current).collect();
+        if other_worktrees.is_empty() {
+            return div().into_any_element();
+        }
+
+        let hover = line(cx, t::HOVER);
+        let rows: Vec<AnyElement> = other_worktrees
+            .into_iter()
+            .enumerate()
+            .map(|(ix, wt)| {
+                let path = wt.path.clone();
+                let branch = wt.branch.clone().unwrap_or_else(|| wt.name.clone());
+                let label = wt.agent_label.clone().unwrap_or_else(|| if wt.is_main { "Main".into() } else { "Worktree".into() });
+                let is_agent = wt.is_agent;
+                let badge_color = if is_agent { tk.amber } else { tk.text_secondary };
+                div()
+                    .id(("agent-worktree", ix))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .h(px(26.))
+                    .px(px(8.))
+                    .rounded(px(t::RADIUS_ROW))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hover))
+                    .tooltip(ui::tip(SharedString::from(format!("Switch to worktree: {} ({})", wt.name, wt.path.display()))))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.switch_project(path.clone(), window, cx);
+                    }))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .min_w_0()
+                            .truncate()
+                            .child(
+                                div()
+                                    .px(px(4.))
+                                    .py(px(0.5))
+                                    .rounded(px(t::RADIUS_BADGE))
+                                    .bg(ca(badge_color, 0.14))
+                                    .text_size(px(t::TEXT_TAG))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(c(badge_color))
+                                    .child(SharedString::from(label))
+                            )
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .font_family(mono(cx))
+                                    .text_size(px(t::TEXT_META))
+                                    .text_color(c(tk.text_secondary))
+                                    .child(SharedString::from(branch))
+                            )
+                    )
+                    .child(div().text_size(px(t::TEXT_META)).text_color(c(tk.text_faint)).child("→"))
+                    .into_any_element()
+            })
+            .collect();
+
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(1.))
+            .px(px(8.))
+            .pt(px(10.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .px(px(6.))
+                    .pb(px(2.))
+                    .child(div().text_size(px(t::TEXT_META)).text_color(c(tk.amber)).child("⚡"))
+                    .child(div().text_size(px(t::TEXT_META)).text_color(c(tk.text_faint)).child("Agent & Worktrees"))
+            )
+            .children(rows)
             .into_any_element()
     }
 

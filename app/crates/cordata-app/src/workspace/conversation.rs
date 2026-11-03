@@ -146,6 +146,7 @@ impl Workspace {
             .when_some(word, |row, (word, ink)| row.child(div().flex_shrink_0().whitespace_nowrap().text_size(px(t::TEXT_META)).text_color(c(ink)).child(word)))
             // The empty middle drags the window.
             .child(div().flex_1().h_full().min_w(px(8.)).on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move()))
+            .children(self.branch_chip(cx))
             .children(self.pr_chip(cx))
             .child(
                 ui::icon_action("panel-toggle", gpui_kit_assets::IconName::PanelRight, cx)
@@ -244,10 +245,17 @@ impl Workspace {
                     .gap(px(14.))
                     .child(
                         div()
-                            .text_size(px(t::TEXT_EMPTY))
-                            .font_weight(FontWeight::LIGHT)
-                            .text_color(c(tk.text_primary))
-                            .child(SharedString::from(project)),
+                            .flex()
+                            .items_center()
+                            .gap(px(12.))
+                            .child(ui::cordata_logo(36., cx))
+                            .child(
+                                div()
+                                    .text_size(px(t::TEXT_EMPTY))
+                                    .font_weight(FontWeight::LIGHT)
+                                    .text_color(c(tk.text_primary))
+                                    .child(SharedString::from(project)),
+                            ),
                     )
                     .child(div().flex().flex_col().child(explore).child(review).child(fix))
                     .children(notices)

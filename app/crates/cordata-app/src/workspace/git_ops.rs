@@ -17,7 +17,7 @@ use gpui::{AnyElement, AppContext as _, Context, IntoElement, ParentElement, Sha
 use gpui_component::input::{Textarea, TextareaState};
 use serde_json::Value;
 
-use super::Workspace;
+use super::{DockTab, Workspace};
 use crate::theme::{c, line, mono, tk};
 use crate::ui::{self, Dot, Kind};
 
@@ -38,6 +38,17 @@ pub struct Pr {
     pub failing: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeInfo {
+    pub path: PathBuf,
+    pub name: String,
+    pub branch: Option<String>,
+    pub is_main: bool,
+    pub is_current: bool,
+    pub is_agent: bool,
+    pub agent_label: Option<String>,
+}
+
 pub struct Git {
     pub branch: Option<String>,
     pub default_branch: String,
@@ -51,6 +62,9 @@ pub struct Git {
     pub note: Option<(String, bool)>,
     pub message: gpui::Entity<TextareaState>,
     pub branch_input: gpui::Entity<gpui_component::input::InputState>,
+    pub is_worktree: bool,
+    pub worktree_name: Option<String>,
+    pub worktrees: Vec<WorktreeInfo>,
 }
 
 impl Git {
@@ -67,6 +81,9 @@ impl Git {
             note: None,
             message: cx.new(|cx| TextareaState::new(window, cx).rows(3).placeholder("Commit message — or Generate")),
             branch_input: cx.new(|cx| gpui_component::input::InputState::new(window, cx).placeholder("new-branch-name")),
+            is_worktree: false,
+            worktree_name: None,
+            worktrees: Vec::new(),
         }
     }
 }
@@ -192,14 +209,92 @@ pub fn pr_status(cwd: &Path) -> Option<Pr> {
     })
 }
 
+/// Check if `cwd` is inside a linked git worktree (and return its name if so).
+pub fn check_worktree(cwd: &Path) -> (bool, Option<String>) {
+    let git_dir = run("git", &["rev-parse", "--git-dir"], cwd, None, GIT_TIMEOUT).ok();
+    let common_dir = run("git", &["rev-parse", "--git-common-dir"], cwd, None, GIT_TIMEOUT).ok();
+    if let (Some(gd), Some(cd)) = (git_dir, common_dir) {
+        let gd = gd.trim();
+        let cd = cd.trim();
+        if !gd.is_empty() && !cd.is_empty() && gd != cd && gd != ".git" {
+            let name = Path::new(gd).file_name().map(|n| n.to_string_lossy().into_owned());
+            return (true, name);
+        }
+    }
+    (false, None)
+}
+
+/// Lists all git worktrees in the repository, flagging the main worktree, agent worktrees, and current worktree.
+pub fn list_worktrees(cwd: &Path) -> Vec<WorktreeInfo> {
+    let Ok(out) = run("git", &["worktree", "list", "--porcelain"], cwd, None, GIT_TIMEOUT) else {
+        return Vec::new();
+    };
+    let mut worktrees = Vec::new();
+    let mut cur_path: Option<PathBuf> = None;
+    let mut cur_branch: Option<String> = None;
+    let canonical_cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+
+    let flush = |cur_p: &mut Option<PathBuf>, cur_b: &mut Option<String>, list: &mut Vec<WorktreeInfo>| {
+        if let Some(path) = cur_p.take() {
+            let is_current = std::fs::canonicalize(&path).map(|p| p == canonical_cwd).unwrap_or_else(|_| path == canonical_cwd);
+            let is_main = list.is_empty();
+            let branch = cur_b.take();
+            let p_str = path.to_string_lossy();
+            let is_agent = p_str.contains(".claude/worktrees")
+                || p_str.contains(".cordata")
+                || branch.as_deref().is_some_and(|b| b.starts_with("claude/") || b.starts_with("cordata/") || b.starts_with("agy/"));
+            let agent_label = if p_str.contains(".claude") || branch.as_deref().is_some_and(|b| b.starts_with("claude/")) {
+                Some("Claude".into())
+            } else if p_str.contains(".cordata") || branch.as_deref().is_some_and(|b| b.starts_with("cordata/")) {
+                Some("Cordata".into())
+            } else if branch.as_deref().is_some_and(|b| b.starts_with("agy/")) {
+                Some("Antigravity".into())
+            } else {
+                None
+            };
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "worktree".into());
+            list.push(WorktreeInfo {
+                path,
+                name,
+                branch,
+                is_main,
+                is_current,
+                is_agent,
+                agent_label,
+            });
+        }
+    };
+
+    for line in out.lines() {
+        if let Some(rest) = line.strip_prefix("worktree ") {
+            flush(&mut cur_path, &mut cur_branch, &mut worktrees);
+            cur_path = Some(PathBuf::from(rest.trim()));
+        } else if let Some(rest) = line.strip_prefix("branch ") {
+            let b = rest.trim().strip_prefix("refs/heads/").unwrap_or(rest.trim());
+            cur_branch = Some(b.to_owned());
+        }
+    }
+    flush(&mut cur_path, &mut cur_branch, &mut worktrees);
+    worktrees
+}
+
 impl Workspace {
     /// Read the repository's state (and, every `PR_EVERY`, the pull request) off the UI thread.
     pub(super) fn refresh_git(&mut self, with_pr: bool, cx: &mut Context<Self>) {
         let cwd = self.cwd.clone();
-        let job = cx.background_executor().spawn(async move { (status(&cwd), if with_pr { Some(pr_status(&cwd)) } else { None }) });
+        let job = cx.background_executor().spawn(async move {
+            let st = status(&cwd);
+            let (in_wt, wt_name) = check_worktree(&cwd);
+            let wts = list_worktrees(&cwd);
+            let pr = if with_pr { Some(pr_status(&cwd)) } else { None };
+            (st, in_wt, wt_name, wts, pr)
+        });
         cx.spawn(async move |this, cx| {
-            let (state, pr) = job.await;
+            let (state, in_wt, wt_name, wts, pr) = job.await;
             let _ = this.update(cx, |this, cx| {
+                this.git.is_worktree = in_wt;
+                this.git.worktree_name = wt_name;
+                this.git.worktrees = wts;
                 match state {
                     Some((branch, dirty, staged, ahead, upstream, default)) => {
                         this.git.branch = Some(branch);
@@ -391,6 +486,32 @@ impl Workspace {
     }
 
     /// The header's pull-request chip: number and checks; a click opens it.
+    pub(super) fn branch_chip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let branch = self.git.branch.clone()?;
+        let in_wt = self.git.is_worktree;
+        let wt_name = self.git.worktree_name.clone();
+        let label = if in_wt {
+            format!("⎇ {branch} · {}", wt_name.unwrap_or_else(|| "worktree".into()))
+        } else {
+            format!("⎇ {branch}")
+        };
+        let tip = if in_wt {
+            format!("Branch {branch} in linked worktree — click to review changes ⌘⌥4")
+        } else {
+            format!("Branch {branch} — click to review changes ⌘⌥4")
+        };
+        Some(
+            ui::chip("branch-chip", SharedString::from(label), cx)
+                .aria_label(SharedString::from(tip.clone()))
+                .tooltip(ui::tip(SharedString::from(tip)))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.set_panel(true, cx);
+                    this.switch_dock(DockTab::Review, cx);
+                }))
+                .into_any_element(),
+        )
+    }
+
     pub(super) fn pr_chip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let pr = self.git.pr.clone()?;
         let tk = tk(cx);

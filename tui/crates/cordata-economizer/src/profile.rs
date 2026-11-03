@@ -26,8 +26,11 @@ pub struct Profile {
 impl Profile {
     pub fn for_model(model: &str) -> Self {
         let model = model.to_ascii_lowercase();
-        let name = model.rsplit('/').next().unwrap_or(&model);
-        if name.starts_with("claude") {
+        let bare = model.rsplit_once("::").map_or(&model[..], |(_, m)| m);
+        let name = bare.rsplit('/').next().unwrap_or(bare);
+        if model.starts_with("ollama_cloud::") {
+            Self { kind: ProviderKind::Other, ..Self::for_model("claude") }
+        } else if name.starts_with("claude") {
             Self { kind: ProviderKind::Anthropic, max_tools: 8, output_chars: 6_000, age_after_turns: 3, age_reads_only: false }
         } else if name.starts_with("gemini") {
             Self { kind: ProviderKind::Gemini, max_tools: 6, output_chars: 12_000, age_after_turns: 3, age_reads_only: true }
@@ -48,6 +51,8 @@ mod tests {
         assert_eq!(Profile::for_model("claude-sonnet-5-5").kind, ProviderKind::Anthropic);
         assert_eq!(Profile::for_model("gemini-3-pro").kind, ProviderKind::Gemini);
         assert_eq!(Profile::for_model("gpt-5").kind, ProviderKind::Other);
+        assert_eq!(Profile::for_model("ollama_cloud::qwen3-coder:480b").kind, ProviderKind::Other);
+        assert_eq!(Profile::for_model("ollama_cloud::qwen3-coder:480b").max_tools, 8);
         assert_eq!(Profile::for_model("llama3.1:8b").kind, ProviderKind::Ollama);
         assert_eq!(Profile::for_model("llama3.1:8b").max_tools, 4);
     }

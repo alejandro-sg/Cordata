@@ -118,7 +118,7 @@ impl Provider for GenaiProvider {
     ) -> BoxFuture<'a, Result<BoxStream<'a, Result<Delta, String>>, String>> {
         Box::pin(async move {
             let genai_tools: Vec<Tool> =
-                tools.iter().map(|t| Tool::new(t.name).with_description(t.description).with_schema(t.schema.clone())).collect();
+                tools.iter().map(|t| Tool::new(t.name.as_ref()).with_description(t.description.as_ref()).with_schema(t.schema.clone())).collect();
             let request = ChatRequest::new(cached_messages(system, &history)).with_tools(genai_tools);
             let options = ChatOptions::default().with_capture_tool_calls(true).with_capture_usage(true);
             let response = self.client.exec_chat_stream(&self.model, request, Some(&options)).await.map_err(|e| e.to_string())?;
