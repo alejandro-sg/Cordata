@@ -86,6 +86,7 @@ impl Workspace {
             transport: self.transport.clone(),
             debug_log: self.debug_log.clone(),
             model: None,
+            history: true,
         });
         let number = self.next_number;
         self.next_number += 1;

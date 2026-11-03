@@ -80,6 +80,7 @@ impl Session {
                 transport: connection.transport.clone(),
                 debug_log: std::env::var_os("CORDATA_APP_DEBUG_LOG").map(PathBuf::from),
                 model,
+                history: true,
             })
         };
         session.handle = Some(handle);

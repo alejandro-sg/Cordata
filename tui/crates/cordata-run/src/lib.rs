@@ -4,6 +4,7 @@
 pub mod cli;
 pub mod config;
 pub mod controls;
+pub mod native_worker;
 pub mod roster;
 pub mod status;
 

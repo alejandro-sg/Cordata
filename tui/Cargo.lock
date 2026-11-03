@@ -634,6 +634,7 @@ dependencies = [
 name = "cordata-run"
 version = "0.3.0"
 dependencies = [
+ "acp-core",
  "clap",
  "cordata-checkpoints",
  "cordata-doctor",
