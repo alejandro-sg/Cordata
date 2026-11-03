@@ -242,6 +242,17 @@ fn without_a_usable_worker_run_refuses_before_doing_anything() {
 }
 
 #[test]
+fn without_egress_run_refuses_before_research_or_planning() {
+    let e = env();
+    let out = e.command().env_remove("CORDATA_VAULT_DIRECT").args(["run", "g", "--cwd", e.project.to_str().unwrap(), "--workers", "claude_code"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(78), "{}", String::from_utf8_lossy(&out.stderr));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(stderr.matches("--allow-direct").count(), 1, "one refusal, said once: {stderr}");
+    assert_eq!(text(&out), "", "no research, plan or usage line was printed");
+    assert!(text(&e.run(&["status", "--json"])).contains("\"runs\": []"), "no run record was created");
+}
+
+#[test]
 fn bin_cordata_launches_the_built_binary_and_a_real_failure_keeps_its_status() {
     if !seatbelt_works() {
         return eprintln!("skipped: sandbox-exec cannot be applied here");

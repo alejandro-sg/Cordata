@@ -303,6 +303,39 @@ async fn a_pause_request_stops_at_the_next_safe_point_with_a_resume_packet() {
 }
 
 #[tokio::test]
+async fn a_worker_that_gives_up_after_a_refusal_is_not_retried_and_is_benched_for_the_run() {
+    let e = env(two_pools(100_000.0));
+    // The strongest tier wins every high step on rank alone; it gives up on all of them, as agy did refusing RunCommand.
+    let quitter = worker("quitter", 1, 0.0, |_, _| {
+        let mut r = WorkerResult::new("quitter", "failed");
+        r.error_message = Some(format!("{} command:RunCommand: it stopped instead of finishing the step", cordata_orchestrator::worker::GAVE_UP));
+        Some(r)
+    });
+    let steady = worker("steady", 1, 0.0, |_, _| None);
+    let cp = CopyCheckpoints::new(&e.store);
+    let mut draft = draft(2, "rollback_checkpoint");
+    draft["steps"][0]["complexity"] = json!("high");
+    draft["steps"][1]["complexity"] = json!("high");
+    let plan = plan::from_draft(&draft, "/x", Options::default(), None).unwrap();
+    let profile = HashMap::from([("quitter:m".to_owned(), (3, 0.1)), ("steady:m".to_owned(), (2, 1.0))]);
+    let cands = vec![runnable(&quitter, "m", "antigravity", "google"), runnable(&steady, "m", "claude_code", "anthropic")];
+    let ex = exec(&e, plan, cands, &cp, Config { profile, max_parallel: 1, ..Default::default() });
+    let out = ex.run().await;
+    assert_eq!(out.status, "completed", "{}", out.reason);
+    assert_eq!(quitter.calls.lock().unwrap().len(), 1, "one give-up, then never again this run");
+    assert_eq!(steady.calls.lock().unwrap().len(), 2);
+    assert_eq!(out.benched, ["quitter:m"]);
+
+    // A later pass of the same run (recovery, replan) starts with it benched, even ranked strongest-first.
+    let e2 = env(two_pools(100_000.0));
+    let cp2 = CopyCheckpoints::new(&e2.store);
+    let cands = vec![runnable(&quitter, "m", "antigravity", "google"), runnable(&steady, "m", "claude_code", "anthropic")];
+    let ex = exec(&e2, plan_of(1, "rollback_checkpoint", 2.0), cands, &cp2, Config { strongest_first: true, benched: vec!["quitter:m".into()], ..Default::default() });
+    assert_eq!(ex.run().await.status, "completed");
+    assert_eq!(quitter.calls.lock().unwrap().len(), 1, "still benched");
+}
+
+#[tokio::test]
 async fn complexity_routes_high_steps_to_the_strongest_tier_and_low_to_the_cheapest() {
     let e = env(vec![Pool::new("pa", "claude_code").limit(100_000.0), Pool::new("pb", "antigravity").limit(100_000.0)]);
     let strong = worker("strong", 1, 0.0, |_, _| None);

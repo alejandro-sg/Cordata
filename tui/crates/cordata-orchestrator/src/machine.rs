@@ -475,6 +475,8 @@ pub struct Machine<'a> {
     resume_packet: Option<HandoffPacket>,
     last_report: Option<AuditReport>,
     recovery_note: String,
+    /// Workers that gave up after a refusal in an earlier pass: later passes go to the others first.
+    benched: Vec<String>,
     /// Every command screened this run, so a re-audit after a fix pass only sends the new ones.
     screened: audit::Screen,
     /// The run's message bus, started with the first execute phase; it closes when the run ends.
@@ -535,6 +537,7 @@ impl<'a> Machine<'a> {
             resume_packet: None,
             last_report: None,
             recovery_note: String::new(),
+            benched: Vec::new(),
             screened: audit::Screen::default(),
             bus: None,
         }
@@ -857,6 +860,7 @@ impl<'a> Machine<'a> {
             on_event: listener.map(|l| Box::new(move |e| l(e)) as Box<dyn Fn(Value) + Send + Sync>),
             controls: self.controls.clone().map(|c| Arc::new(ExecControls(c)) as Arc<dyn executor::Controls>),
             bus: self.run_bus(),
+            benched: self.benched.clone(),
             ..ExecConfig::default()
         };
         let executor = StepExecutor::new(&self.record.run_id, Path::new(&self.project), plan, candidates, self.ledger, self.checkpoints, cfg);
@@ -864,6 +868,12 @@ impl<'a> Machine<'a> {
         let ran_plan = executor.plan.lock().unwrap().clone();
         let used_candidates = executor.candidates.lock().unwrap().clone();
         drop(executor);
+        for key in &result.benched {
+            if !self.benched.contains(key) {
+                self.record.warnings.push(format!("{key} gave up after a refused command; the rest of the run prefers other workers"));
+                self.benched.push(key.clone());
+            }
+        }
         if recovering && result.status == "completed" {
             self.recovery_note.clear();
         }

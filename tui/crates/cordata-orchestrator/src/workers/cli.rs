@@ -565,7 +565,7 @@ impl CliWorker {
         if status == "completed" && !task.writable_scope().is_empty() && changed.is_empty() && !st.denied.is_empty() {
             // The CLI said "success", changed nothing, and was refused something it asked for: it gave up, not finished.
             status = "failed";
-            error = Some(format!("the worker made no change and was refused {}: it stopped instead of finishing the step", st.denied.iter().take(3).cloned().collect::<Vec<_>>().join(", ")));
+            error = Some(format!("{} {}: it stopped instead of finishing the step", crate::worker::GAVE_UP, st.denied.iter().take(3).cloned().collect::<Vec<_>>().join(", ")));
         }
         let out_of_scope = scope::out_of_scope(&changed, &task.writable_scope(), root_str);
         let mut r = WorkerResult::new(&self.worker_id, status);
