@@ -1,7 +1,7 @@
 [package]
 name = "cordata-theme"
 description = "Cordata colour roles and HUD vocabulary, shared by the terminal and the native app"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 license = "MIT"
 rust-version = "1.88"
