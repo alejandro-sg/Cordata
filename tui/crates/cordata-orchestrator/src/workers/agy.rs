@@ -173,6 +173,9 @@ impl Dialect for AgyDialect {
     fn binary_name(&self) -> &'static str {
         "agy"
     }
+    fn home_rules(&self, home: &str) -> Vec<String> {
+        crate::scope::agy_home_rules(home)
+    }
     fn can_run_commands(&self) -> bool {
         false
     }

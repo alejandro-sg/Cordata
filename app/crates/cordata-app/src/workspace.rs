@@ -76,6 +76,8 @@ pub enum Naming {
 pub enum Confirm {
     SignOut,
     ResetPrefs,
+    /// A merged linked checkout, and its branch.
+    RemoveWorktree { path: PathBuf, branch: Option<String> },
 }
 
 actions!(
@@ -175,6 +177,8 @@ pub struct Workspace {
     open_select: Option<settings_modal::Select>,
     api_key_input: Entity<InputState>,
     api_key_masked: Option<String>,
+    /// The MCP servers a chat here starts, read when the MCP section opens (never per frame).
+    mcp: crate::mcp_catalog::Snapshot,
     /// Settings' “Search settings…” box: narrows the section list.
     pub(super) settings_search: Entity<InputState>,
     /// Focus for the settings modal and the confirm dialog (their keys).
@@ -254,6 +258,7 @@ pub fn cordata_home() -> PathBuf {
 
 impl Workspace {
     pub fn new(connection: Connection, cwd: PathBuf, launch: Launch, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let cwd = cwd.canonicalize().unwrap_or(cwd);
         let Launch { prompt: initial_prompt, selftest, picker, show, control, shell } = launch;
         if control {
             Self::serve_control(window, cx);
@@ -367,6 +372,7 @@ impl Workspace {
             open_select: None,
             api_key_input,
             api_key_masked: None,
+            mcp: Default::default(),
             settings_search,
             settings_focus: cx.focus_handle(),
             esc_at: None,
@@ -598,7 +604,13 @@ impl Workspace {
 
     pub(super) fn show(&mut self, session: Entity<Session>, cx: &mut Context<Self>) {
         session.update(cx, |s, _| s.view.mark_seen());
+        // A thread owns its folder: the tree, review and branch follow it, so an approval is never read against another
+        // project's diff.
+        let home = session.read(cx).cwd.clone();
         self.session = session;
+        if home != self.cwd {
+            self.retarget(home, cx);
+        }
         let len = self.session.read(cx).view.messages.len();
         self.transcript.reset(len);
         self.seen = (self.session.entity_id(), len, self.session.read(cx).version);
@@ -1112,6 +1124,21 @@ impl Workspace {
                 self.sidebar_open = true;
                 self.settings_view.set_notice("This window's preferences are back to their defaults.".into(), false);
             }
+            Confirm::RemoveWorktree { path, branch } => {
+                let cwd = self.cwd.clone();
+                let job = cx.background_executor().spawn(async move { git_ops::remove_merged_worktree(&cwd, &path, branch.as_deref()) });
+                cx.spawn(async move |this, cx| {
+                    let outcome = job.await;
+                    let _ = this.update(cx, |this, cx| {
+                        this.git.note = Some(match outcome {
+                            Ok(said) => (said, false),
+                            Err(why) => (cordata_view::shown(&why), true),
+                        });
+                        this.refresh_git(false, cx);
+                    });
+                })
+                .detach();
+            }
         }
         cx.notify();
     }
@@ -1121,6 +1148,15 @@ impl Workspace {
         let (title, body, yes): (&str, String, &str) = match self.confirm.as_ref() {
             Some(Confirm::SignOut) => ("Sign out?", "The API key is removed from the Keychain. Requests fail until you add one again (or export it in your shell).".into(), "Sign out"),
             Some(Confirm::ResetPrefs) => ("Reset all settings?", "Theme, layout, sending and notification choices go back to their defaults. Harness settings files are not touched.".into(), "Reset"),
+            Some(Confirm::RemoveWorktree { path, branch }) => (
+                "Remove this checkout?",
+                format!(
+                    "{} is deleted from disk{}. Its commits are already in the default branch. Git refuses if anything there is uncommitted.",
+                    tilde(path),
+                    branch.as_ref().map(|b| format!(", and the merged branch {b} with it")).unwrap_or_default()
+                ),
+                "Remove",
+            ),
             None => ("", String::new(), ""),
         };
         let danger = true;
@@ -1300,21 +1336,34 @@ impl Workspace {
             cx.notify();
             return;
         }
-        self.cwd = path.clone();
         self.prefs.touch_recent(&path, prefs::now());
         self.prefs.save();
+        // Back to a folder with a thread still open (an agent's worktree, the main checkout): pick it up where it was.
+        let open = self.sessions.iter().rev().find(|s| s.read(cx).cwd == path).cloned();
+        match open {
+            Some(session) => self.show(session, cx),
+            None => {
+                self.retarget(path.clone(), cx);
+                let (connection, model) = (self.connection.clone(), self.prefs.model.clone());
+                let session = cx.new(|cx| Session::start(&connection, path, None, model, cx));
+                self.adopt(session, window, cx);
+            }
+        }
+        self.composer.update(cx, |s, cx| s.focus(window, cx));
+        cx.notify();
+    }
+
+    /// Points the folder-bound panes — tree, review, branch and PR — at `path`. Threads keep their own folders.
+    fn retarget(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.cwd = path;
         self.files = editor::Files::default();
         self.review = review::Review::default();
         self.git.pr = None;
         self.git.note = None;
-        let (connection, cwd, model) = (self.connection.clone(), self.cwd.clone(), self.prefs.model.clone());
-        let session = cx.new(|cx| Session::start(&connection, cwd, None, model, cx));
-        self.adopt(session, window, cx);
+        self.git.worktrees.clear();
         self.load_tree(cx);
         self.load_review(cx);
         self.refresh_git(true, cx);
-        self.composer.update(cx, |s, cx| s.focus(window, cx));
-        cx.notify();
     }
 
     /// The sidebar footer and status bar: is the connection well?
@@ -1983,6 +2032,30 @@ mod window_tests {
         let (view, cx) = cx.add_window_view(|window, cx| Workspace::new(offline(), std::env::temp_dir(), super::Launch::default(), window, cx));
         cx.run_until_parked();
         (view, cx)
+    }
+
+    #[gpui::test]
+    fn panes_follow_the_thread_and_a_folder_reuses_its_open_thread(cx: &mut TestAppContext) {
+        let (view, cx) = workspace(cx);
+        let a = view.read_with(cx, |this, cx| this.session.read(cx).cwd.clone());
+        let b = std::env::temp_dir().join(format!("cordata-proj-b-{}", std::process::id()));
+        std::fs::create_dir_all(&b).unwrap();
+        let b = std::fs::canonicalize(b).unwrap();
+        view.update_in(cx, |this, window, cx| this.switch_project(b.clone(), window, cx));
+        cx.run_until_parked();
+        let (cwd, threads) = view.read_with(cx, |this, _| (this.cwd.clone(), this.sessions.len()));
+        assert_eq!((cwd, threads), (b.clone(), 2), "a new folder gets a new thread");
+        // Pick the first thread (folder A): the tree, review and branch follow it.
+        view.update(cx, |this, cx| {
+            let first = this.sessions[0].clone();
+            this.show(first, cx);
+        });
+        assert_eq!(view.read_with(cx, |this, _| this.cwd.clone()), a);
+        // Back to B: its thread is still open, so no third one.
+        view.update_in(cx, |this, window, cx| this.switch_project(b.clone(), window, cx));
+        cx.run_until_parked();
+        let (cwd, threads, shown_in) = view.read_with(cx, |this, cx| (this.cwd.clone(), this.sessions.len(), this.session.read(cx).cwd.clone()));
+        assert_eq!((cwd, threads, shown_in), (b.clone(), 2, b));
     }
 
     #[gpui::test]

@@ -1,0 +1,24 @@
+[package]
+name = "cordata-repomap"
+description = "A ranked, token-budgeted map of a repository's definitions: tree-sitter tags, a reference graph, PageRank and BM25"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ignore.workspace = true
+tree-sitter.workspace = true
+tree-sitter-python.workspace = true
+tree-sitter-rust.workspace = true
+tree-sitter-typescript.workspace = true
+tree-sitter-javascript.workspace = true
+tree-sitter-go.workspace = true
+model2vec-rs = { workspace = true, optional = true }
+
+[features]
+# Rank with a local Model2Vec model as well (`~/.cordata/models/potion-code-16M`, or `CORDATA_EMBED_MODEL`).
+embed = ["dep:model2vec-rs"]
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -10,12 +10,19 @@ allow = [
     "MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Zlib", "0BSD",
     "Unicode-3.0", "Unlicense", "CC0-1.0", "BSL-1.0", "MPL-2.0",
 ]
+
 # Allowed above but not present today; kept so a new dependency under them does not need a config change.
 unused-allowed-license = "allow"
 confidence-threshold = 0.9
 
 [licenses.private]
 ignore = true
+
+# model2vec-rs (the repo map's optional embeddings) ships an MIT LICENSE file but no `license` field in its manifest.
+[[licenses.clarify]]
+crate = "model2vec-rs@0.4.0"
+expression = "MIT"
+license-files = []
 
 [bans]
 multiple-versions = "warn"

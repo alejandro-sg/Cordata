@@ -22,8 +22,8 @@ pub const CATALOG: &[Model] = &[
     Model { id: "gpt-5-mini", label: "GPT-5 mini", provider: "openai", window: 400_000, note: "cheap" },
     Model { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro", provider: "gemini", window: 1_048_576, note: "long context" },
     Model { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash", provider: "gemini", window: 1_048_576, note: "fast" },
-    Model { id: "ollama_cloud::qwen3-coder:480b", label: "Qwen3 Coder 480B", provider: "ollama_cloud", window: 262_144, note: "best coding" },
-    Model { id: "ollama_cloud::kimi-k3", label: "Kimi K3", provider: "ollama_cloud", window: 262_144, note: "balanced" },
+    Model { id: "ollama_cloud::kimi-k3", label: "Kimi K3", provider: "ollama_cloud", window: 262_144, note: "ollama cloud default" },
+    Model { id: "ollama_cloud::qwen3-coder:480b", label: "Qwen3 Coder 480B", provider: "ollama_cloud", window: 262_144, note: "ollama cloud" },
     Model { id: "ollama_cloud::deepseek-v4.1-flash", label: "DeepSeek V4.1 Flash", provider: "ollama_cloud", window: 160_000, note: "cost-effective" },
     Model { id: "ollama_cloud::glm-5.3-flash", label: "GLM 5.3 Flash", provider: "ollama_cloud", window: 131_072, note: "fastest" },
 ];

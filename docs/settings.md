@@ -24,7 +24,7 @@ The terminal client and the app run the agent in their own process. The model an
 
 | variable | meaning |
 |---|---|
-| `CORDATA_NATIVE_MODEL` | model name, any `genai` name (`claude-…`, `gemini-…`, `gpt-…`, or a local Ollama tag); `ollama_cloud::<tag>` (e.g. `ollama_cloud::qwen3-coder:480b`, `ollama_cloud::kimi-k3`, `ollama_cloud::deepseek-v4.1-flash`, `ollama_cloud::glm-5.3-flash`) for Ollama's cloud — without the prefix, `kimi-…`, `glm-…`, `deepseek-…`, `minimax-…` and `mimo-…` tags go to that vendor's own API. Unset: `claude-sonnet-5-5`, or `ollama_cloud::qwen3-coder:480b` when only an Ollama key exists |
+| `CORDATA_NATIVE_MODEL` | model name, any `genai` name (`claude-…`, `gemini-…`, `gpt-…`, or a local Ollama tag); `ollama_cloud::<tag>` (e.g. `ollama_cloud::kimi-k3`, `ollama_cloud::qwen3-coder:480b`, `ollama_cloud::deepseek-v4.1-flash`, `ollama_cloud::glm-5.3-flash`) for Ollama's cloud — without the prefix, `kimi-…`, `glm-…`, `deepseek-…`, `minimax-…` and `mimo-…` tags go to that vendor's own API. Unset: `claude-sonnet-5-5`, or `ollama_cloud::kimi-k3` when only an Ollama key exists |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OLLAMA_API_KEY` | provider key; wins over the Keychain |
 | Keychain `cordata-anthropic-api-key`, `cordata-ollama-api-key` | provider key (`make key` stores one: `PROVIDER=anthropic` by default, or `ollama`) |
 
@@ -38,6 +38,14 @@ in effect.
 | `chat.deny` | list of rules | none | calls refused without asking; any file may add them |
 | `chat.network` | `ask`, `off` | `ask` | commands run offline; `ask` lets a command request the network (you are asked), `off` refuses it. A project may set `off` |
 | `chat.writable` | list of absolute paths (`~/` allowed) | none | folders commands may write besides the project, temporary folders and package caches. **User file only** |
+| `mcp.approved` | list of `<folder>\|<name>\|sha256:<digest>` | none | project MCP servers you approved, each pinned to its exact command, arguments and environment; written by Settings → MCP → Approve. **User file only** |
+
+MCP servers: `~/.cordata/mcp.json` (`{"mcpServers": {name: {command, args, env}}}`) applies everywhere; a project's
+`.mcp.json` server only as approved (THREAT_MODEL.md, "MCP servers").
+
+`code_map` (the repo map tool) ranks definitions by the reference graph and the question's words; with a Model2Vec model
+in `~/.cordata/models/potion-code-16M` (or `CORDATA_EMBED_MODEL=<folder>`) it adds meaning. Nothing is downloaded for you:
+`config.json`, `tokenizer.json` and `model.safetensors` from huggingface.co/minishlab/potion-code-16M (64 MB).
 | `chat.history` | `on`, `off` | `on` | save sessions to `~/.cordata/sessions` for `/resume`. A project may set `off` |
 
 A rule is `tool` or `tool(pattern)`, for `read_file`, `edit_file`, `run_command`, `code_search`, `code_outline`. For

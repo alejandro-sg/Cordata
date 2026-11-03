@@ -69,8 +69,33 @@ fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
 }
 
+/// Every save masks the whole conversation again; the earlier turns are unchanged, so their masked form is kept and
+/// only new text meets the regexes. Keyed by a per-process SipHash and the length — the cache holds masked text only,
+/// never the raw. Bounded; dropped whole when full.
 fn mask(text: &str) -> String {
-    cordata_guard::redact::scrub(text).0
+    use std::collections::HashMap;
+    use std::hash::{BuildHasher as _, RandomState};
+    use std::sync::{LazyLock, Mutex};
+    const MIN: usize = 256;
+    const BYTES: usize = 32 << 20;
+    type Cache = (RandomState, HashMap<(u64, usize), String>, usize);
+    static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(Mutex::default);
+    if text.len() < MIN {
+        return cordata_guard::redact::scrub(text).0;
+    }
+    let Ok(mut cache) = CACHE.lock() else { return cordata_guard::redact::scrub(text).0 };
+    let key = (cache.0.hash_one(text), text.len());
+    if let Some(hit) = cache.1.get(&key) {
+        return hit.clone();
+    }
+    let out = cordata_guard::redact::scrub(text).0;
+    if cache.2 + out.len() > BYTES {
+        cache.1.clear();
+        cache.2 = 0;
+    }
+    cache.2 += out.len();
+    cache.1.insert(key, out.clone());
+    out
 }
 
 /// Masks every string inside `value`: the JSON text itself would hide `KEY=\"…\"` behind escapes.
@@ -293,5 +318,43 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         assert!(save_in(home.path(), Path::new("/p"), "../../etc/x", "m", &[]).is_err());
         assert!(new_id().chars().all(|c| c.is_ascii_hexdigit() || c == '-'));
+    }
+}
+
+/// `cargo test --release -p acp-core bench_ -- --ignored --nocapture` (scripts/bench.sh).
+#[cfg(test)]
+mod bench {
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn bench_save_and_list() {
+        let home = tempfile::tempdir().unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+        let body = "let token_count = request.auth_header.len(); // key lookup\n".repeat(40);
+        let mut messages = Vec::new();
+        let mut per_turn = Vec::new();
+        for turn in 0..100 {
+            messages.push(Msg::User { text: format!("prompt {turn}\n{body}") });
+            messages.push(Msg::ToolResult { id: format!("c{turn}"), output: body.clone() });
+            let start = std::time::Instant::now();
+            save_in(home.path(), cwd.path(), "abc-000001", "m", &messages).unwrap();
+            per_turn.push(start.elapsed().as_secs_f64() * 1e3);
+        }
+        for i in 2..=50 {
+            save_in(home.path(), cwd.path(), &format!("abc-{i:06}"), "m", &messages[..20]).unwrap();
+        }
+        let start = std::time::Instant::now();
+        let listed = list_in(home.path(), cwd.path());
+        let list_ms = start.elapsed().as_secs_f64() * 1e3;
+        println!(
+            "BENCH history save: turn 1 {:.2}ms, turn 100 ({} msgs, {}KB) {:.2}ms | list {} sessions {:.2}ms",
+            per_turn[0],
+            messages.len(),
+            messages.len() * body.len() / 1024,
+            per_turn[99],
+            listed.len(),
+            list_ms
+        );
     }
 }

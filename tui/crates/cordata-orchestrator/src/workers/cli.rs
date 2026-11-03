@@ -122,6 +122,10 @@ pub trait Dialect: Send + Sync {
     fn can_run_commands(&self) -> bool {
         true
     }
+    /// Seatbelt rules appended to this CLI's profile for its own state under an otherwise denied home folder.
+    fn home_rules(&self, _home: &str) -> Vec<String> {
+        Vec::new()
+    }
     fn build_argv(&self, binary: &str, task: &TaskPacket, resume: Option<&str>, model: Option<&str>) -> Vec<String>;
     fn build_stdin(&self, task: &TaskPacket, prompt: &str) -> Option<String>;
     fn new_parser(&self) -> Box<dyn LineParser>;
@@ -390,9 +394,15 @@ impl CliWorker {
         events: &EventSink,
     ) {
         let wrapped: Vec<String> = if confined {
-            let home = self.environ.get("HOME").cloned().unwrap_or_default();
+            // Seatbelt matches resolved paths: a symlinked HOME would make every home deny miss.
+            let home = self.environ.get("HOME").map(|h| std::fs::canonicalize(h).map_or_else(|_| h.clone(), |p| p.to_string_lossy().into_owned())).unwrap_or_default();
             let bus = task.bus.as_ref().map(|b| b.socket.display().to_string());
-            [SANDBOX_EXEC.to_owned(), "-p".into(), scope::scoped_profile_with_bus(root_str, writable, &home, bus.as_deref())].into_iter().chain(argv.iter().cloned()).collect()
+            let mut profile = scope::scoped_profile_with_bus(root_str, writable, &home, bus.as_deref());
+            for rule in self.dialect.home_rules(&home) {
+                profile.push_str(&rule);
+                profile.push('\n');
+            }
+            [SANDBOX_EXEC.to_owned(), "-p".into(), profile].into_iter().chain(argv.iter().cloned()).collect()
         } else {
             argv.to_vec()
         };

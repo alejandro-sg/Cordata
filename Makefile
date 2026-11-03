@@ -1,4 +1,4 @@
-.PHONY: install app app-run app-test app-check tui tui-build tui-test key check-key secrets hooks verify install-cli cli
+.PHONY: install app app-run app-test app-check tui tui-build tui-test key check-key secrets hooks verify bench install-cli cli
 
 # One step for a fresh clone: release binaries, `cordata` on your PATH, then the environment check.
 install: tui-build cli
@@ -52,6 +52,10 @@ hooks:
 
 verify:
 	@scripts/verify.sh $(ARGS)
+
+# Release-build timings of the hot paths (scripts/bench.sh): redaction, frame draw, session save, MCP start, cold start.
+bench:
+	@scripts/bench.sh
 
 # Put `cordata` on your PATH (a symlink in ~/.local/bin)
 install-cli cli:

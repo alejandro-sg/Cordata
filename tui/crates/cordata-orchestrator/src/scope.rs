@@ -243,9 +243,21 @@ pub fn base_profile(home: &str) -> Vec<String> {
         r#"(deny file-write* (regex #"/\.git/(config|hooks(/|$)|info/attributes$|modules/.+/(config|hooks(/|$)))"))"#.to_owned(),
     ];
     lines.extend(DENY_HOME.iter().map(|rel| format!("(deny file-read* file-write* (subpath {}))", sb_string(&format!("{home}/{rel}")))));
-    // Antigravity worker CLI needs its local state and config directories under ~/.gemini.
-    lines.push(format!("(allow file-read* file-write* (subpath {}))", sb_string(&format!("{home}/.gemini/antigravity-cli"))));
-    lines.push(format!("(allow file-read* file-write* (subpath {}))", sb_string(&format!("{home}/.gemini/config"))));
+    lines
+}
+
+/// What the Antigravity CLI itself needs under the denied `~/.gemini`, appended to *its* profile only (the last
+/// matching rule wins): its state folder read-write, its config read-only. What it later runs outside any sandbox stays
+/// shut — its binaries, updater, MCP and settings files — so a confined worker cannot plant code or a server there.
+pub fn agy_home_rules(home: &str) -> Vec<String> {
+    let cli = format!("{home}/.gemini/antigravity-cli");
+    let mut lines = vec![
+        format!("(allow file-read* file-write* (subpath {}))", sb_string(&cli)),
+        format!("(allow file-read* (subpath {}))", sb_string(&format!("{home}/.gemini/config"))),
+    ];
+    let shut = ["bin", "builtin", "updater", "mcp"].iter().map(|d| format!("(subpath {})", sb_string(&format!("{cli}/{d}"))));
+    let files = ["settings.json"].iter().map(|f| format!("(literal {})", sb_string(&format!("{cli}/{f}"))));
+    lines.push(format!("(deny file-write* {})", shut.chain(files).collect::<Vec<_>>().join(" ")));
     lines
 }
 
@@ -284,6 +296,43 @@ pub fn socket_rules(root: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Under real Seatbelt: no worker but agy reaches `~/.gemini`, and agy cannot write what it later runs unsandboxed.
+    #[test]
+    fn only_agy_reaches_its_state_and_never_its_binaries() {
+        if !std::path::Path::new("/usr/bin/sandbox-exec").exists() || !crate::workers::cli::seatbelt_works() {
+            eprintln!("skipped: no Seatbelt here");
+            return;
+        }
+        let home = tempfile::tempdir().unwrap();
+        let home = std::fs::canonicalize(home.path()).unwrap();
+        let h = home.to_string_lossy().into_owned();
+        for d in [".gemini/antigravity-cli/bin", ".gemini/antigravity-cli/conversations", ".gemini/config"] {
+            std::fs::create_dir_all(home.join(d)).unwrap();
+        }
+        std::fs::write(home.join(".gemini/config/config.json"), "{}").unwrap();
+        let touch = |profile: &str, rel: &str| {
+            std::process::Command::new("/usr/bin/sandbox-exec").args(["-p", profile, "/usr/bin/touch", &format!("{h}/{rel}")]).status().unwrap().success()
+        };
+        let cat = |profile: &str, rel: &str| {
+            std::process::Command::new("/usr/bin/sandbox-exec").args(["-p", profile, "/bin/cat", &format!("{h}/{rel}")]).output().unwrap().status.success()
+        };
+        let other = base_profile(&h).join("\n");
+        let agy = format!("{other}\n{}", agy_home_rules(&h).join("\n"));
+        assert!(!touch(&other, ".gemini/antigravity-cli/conversations/x"), "another worker writes agy's state");
+        assert!(!cat(&other, ".gemini/config/config.json"), "another worker reads agy's config");
+        assert!(touch(&agy, ".gemini/antigravity-cli/conversations/x"), "agy keeps its own state");
+        assert!(cat(&agy, ".gemini/config/config.json"), "agy reads its config");
+        assert!(!touch(&agy, ".gemini/config/mcp_config.json"), "config is read-only");
+        assert!(!touch(&agy, ".gemini/antigravity-cli/bin/agy"), "agy cannot replace its own binary");
+        assert!(!touch(&agy, ".gemini/antigravity-cli/settings.json"), "nor its settings");
+        std::fs::write(home.join(".gemini/antigravity-cli/bin/agy"), "orig").unwrap();
+        let link = std::process::Command::new("/usr/bin/sandbox-exec")
+            .args(["-p", &agy, "/bin/ln", &format!("{h}/.gemini/antigravity-cli/bin/agy"), &format!("{h}/.gemini/antigravity-cli/x")])
+            .output()
+            .unwrap();
+        assert!(!link.status.success(), "a hard link into the writable state folder would let agy write its own binary");
+    }
 
     #[test]
     fn normalize_cleans_and_keeps_directories() {

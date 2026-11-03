@@ -59,6 +59,8 @@ pub struct Session {
 
 impl Session {
     pub fn start(connection: &Connection, cwd: PathBuf, initial_prompt: Option<String>, model: Option<String>, cx: &mut Context<Self>) -> Self {
+        // Resolved once, so the panes, the worktree rail and git agree on which folder a thread belongs to.
+        let cwd = cwd.canonicalize().unwrap_or(cwd);
         let (local_tx, mut local_rx) = mpsc::unbounded_channel::<LocalEvent>();
         let mut view = View::new();
         view.attach_store(cordata_view::settings::Store::discover(&cwd));

@@ -26,7 +26,7 @@ use crate::session::{Attachment, Command, SessionOptions};
 const DEFAULT_MODEL: &str = "claude-sonnet-5-5";
 /// The default when there is an Ollama key but no Anthropic one. The `ollama_cloud::` prefix is required: genai sends a
 /// bare `kimi-…` (or `glm-…`, `deepseek-…`, `minimax-…`, `mimo-…`) tag to that vendor's own API, which needs its own key.
-const OLLAMA_CLOUD_DEFAULT: &str = "ollama_cloud::qwen3-coder:480b";
+const OLLAMA_CLOUD_DEFAULT: &str = "ollama_cloud::kimi-k3";
 
 /// The chat model when `CORDATA_NATIVE_MODEL` is unset: Anthropic's, unless only an Ollama cloud key is on hand.
 fn default_model(has_anthropic_key: bool, has_ollama_cloud_key: bool) -> &'static str {
@@ -92,7 +92,7 @@ pub(crate) async fn run(options: SessionOptions, commands: Commands, events: Eve
             let policy = Policy::load(&options.cwd);
             let sessions_home = policy::cordata_home();
             let history_home = if policy.history { sessions_home.clone() } else { None };
-            drive(&provider, options, commands, events, Setup { offload: tools::offload_dir(), state_dir, policy, history_home, sessions_home, switch: genai_provider }).await
+            drive(&provider, options, commands, events, Setup { offload: tools::offload_dir(), state_dir, policy, history_home, sessions_home: sessions_home.clone(), mcp_home: sessions_home, switch: genai_provider }).await
         }
         Err(error) => {
             let _ = events.send(AppEvent::ConnectionError(format!("could not start the native agent: {error}")));
@@ -111,6 +111,8 @@ pub(crate) struct Setup {
     pub(crate) policy: Policy,
     pub(crate) history_home: Option<PathBuf>,
     pub(crate) sessions_home: Option<PathBuf>,
+    /// Where `mcp.json` and the `mcp.approved` settings are read (`~/.cordata`); `None` starts no MCP server.
+    pub(crate) mcp_home: Option<PathBuf>,
 }
 
 fn genai_provider(model: &str) -> Result<Box<dyn Provider>, String> {
@@ -250,7 +252,7 @@ pub(crate) async fn drive(
     events: Events,
     setup: Setup,
 ) {
-    let Setup { offload, state_dir, policy, history_home, sessions_home, switch } = setup;
+    let Setup { offload, state_dir, policy, history_home, sessions_home, mcp_home, switch } = setup;
     let mut keeper = Keeper { home: history_home, id: history::new_id(), warned: false };
     let _ = events.send(AppEvent::Connected(SessionInfo {
         session_id: keeper.id.clone(),
@@ -263,10 +265,12 @@ pub(crate) async fn drive(
     }
 
     let economizer = Economizer::new(provider.model(), state_dir);
-    let mcp = super::mcp::McpManager::load(&options.cwd).await;
-    if !mcp.tools().is_empty() {
-        let count = mcp.tools().len();
-        let _ = events.send(AppEvent::Notice(format!("mcp: discovered {count} tool{} from configured servers", if count == 1 { "" } else { "s" })));
+    let approvals = super::mcp::approved(mcp_home.as_deref());
+    let (servers, held) = super::mcp::configured(mcp_home.as_deref(), &options.cwd, &approvals);
+    let (mcp, mut startup) = super::mcp::McpManager::start(servers, &options.cwd).await;
+    startup.held = held;
+    for notice in startup.notices() {
+        let _ = events.send(AppEvent::Notice(notice));
     }
     let mut agent = Agent { provider, switched: None, cwd: options.cwd.clone(), offload, always: HashSet::new(), economizer, policy, mcp };
     let mut history: Vec<Msg> = Vec::new();
@@ -648,7 +652,7 @@ mod tests {
 
     /// No rules, nothing saved, no economizer state.
     fn plain(cwd: &std::path::Path) -> Setup {
-        Setup { switch: fake_switch, offload: cwd.join(".offload"), state_dir: None, policy: Policy::default(), history_home: None, sessions_home: None }
+        Setup { switch: fake_switch, offload: cwd.join(".offload"), state_dir: None, policy: Policy::default(), history_home: None, sessions_home: None, mcp_home: None }
     }
 
     fn rules(doc: serde_json::Value) -> Policy {

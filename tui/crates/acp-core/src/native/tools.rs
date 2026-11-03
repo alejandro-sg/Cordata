@@ -1,4 +1,4 @@
-//! The native tool registry: `read_file`, `edit_file`, `run_command`, `code_search`, `code_outline`.
+//! The native tool registry: `read_file`, `edit_file`, `run_command`, `code_search`, `code_outline`, `code_map`.
 //! Pure functions of (arguments, cwd) so they test without a model.
 
 use std::borrow::Cow;
@@ -75,6 +75,17 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
             description: Cow::Borrowed("List the definitions (functions, types, headings) in a file with line numbers."),
             schema: json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}),
         },
+        ToolSpec {
+            name: Cow::Borrowed("code_map"),
+            description: Cow::Borrowed("Where things are: the repository's definitions most relevant to `query` (signatures with \
+                          path and line), ranked by how the code uses them, in about `tokens` tokens. Use it before \
+                          searching or reading files to find where to look. Phrase `query` with the names you expect in the code when you \
+                          can; plain words work too."),
+            schema: json!({"type":"object","properties":{
+                "query":{"type":"string","description":"what you are looking for, in words or identifiers"},
+                "tokens":{"type":"integer","description":"size of the map, default 1024"}},
+                "required":["query"]}),
+        },
     ]
 }
 
@@ -83,7 +94,7 @@ pub(crate) fn kind_of(name: &str) -> ToolKind {
         "read_file" | "code_outline" => ToolKind::Read,
         "edit_file" => ToolKind::Edit,
         "run_command" => ToolKind::Execute,
-        "code_search" => ToolKind::Search,
+        "code_search" | "code_map" => ToolKind::Search,
         _ => ToolKind::Other,
     }
 }
@@ -243,6 +254,14 @@ pub(crate) async fn execute(name: &str, args: &Value, cwd: &Path, writable: &[Pa
             sandbox::run(arg(args, "cmd")?, &confinement, Duration::from_secs(secs)).await
         }
         "code_search" => code_search(args, cwd),
+        "code_map" => {
+            let query = arg(args, "query")?.to_owned();
+            let tokens = args.get("tokens").and_then(Value::as_u64).unwrap_or(1024).clamp(128, 8192) as usize;
+            let root = cwd.to_path_buf();
+            // A first map parses the whole tree (~0.1s here): off the async workers.
+            let map = tokio::task::spawn_blocking(move || cordata_repomap::render_cached(&root, &query, &[], tokens)).await.map_err(|e| e.to_string())?;
+            Ok(if map.is_empty() { "no definitions found (code_map reads Rust, Python, TypeScript/JavaScript and Go)".into() } else { map })
+        }
         "code_outline" => {
             let path = resolve(cwd, arg(args, "path")?, true)?;
             let text = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
@@ -454,6 +473,16 @@ mod tests {
     #[test]
     fn approval_policy() {
         assert!(!needs_approval("read_file") && !needs_approval("code_search") && !needs_approval("code_outline"));
+        assert!(!needs_approval("code_map"), "a map only reads");
         assert!(needs_approval("edit_file") && needs_approval("run_command") && needs_approval("mystery"));
+    }
+
+    #[tokio::test]
+    async fn code_map_points_at_the_definition_for_a_question() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("billing.rs"), "/// Charges the card on file.\npub fn charge_customer(id: u64) {}\n").unwrap();
+        std::fs::write(dir.path().join("ui.rs"), "fn pay() { charge_customer(1); }\nfn render_menu() {}\n").unwrap();
+        let out = execute("code_map", &json!({"query": "where do we charge the customer card", "tokens": 256}), dir.path(), &[]).await.unwrap();
+        assert!(out.starts_with("billing.rs\n") && out.contains("2│ pub fn charge_customer"), "{out}");
     }
 }

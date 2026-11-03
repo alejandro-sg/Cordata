@@ -156,9 +156,14 @@ impl Workspace {
         }
         self.files.loading = true;
         let root = self.root();
+        let owner = self.cwd.clone();
         cx.spawn(async move |this, cx| {
             let entries = cx.background_executor().spawn(async move { mentions::index(&root) }).await;
             let _ = this.update(cx, |this, cx| {
+                // Started for another folder: the panes have moved on, and its loading flag was reset with them.
+                if this.cwd != owner {
+                    return;
+                }
                 this.files.loading = false;
                 match this.files.tree.as_mut() {
                     Some(tree) => tree.set_entries(entries),

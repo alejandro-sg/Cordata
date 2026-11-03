@@ -226,40 +226,10 @@ pub const SCHEMA: &[Entry] = &[
         help: "dispatch quota-scarcity weight (higher avoids pools near their limit)",
     },
     Entry {
-        key: "capture.enabled",
-        kind: Kind::Bool,
-        applies: Applies::NextSession,
-        help: "screen capture for terminal and desktop context",
-    },
-    Entry {
-        key: "capture.allowlist",
-        kind: Kind::BundleIds,
-        applies: Applies::NextSession,
-        help: "app bundle ids allowed for window capture",
-    },
-    Entry {
-        key: "capture.denylist",
-        kind: Kind::BundleIds,
-        applies: Applies::NextSession,
-        help: "app bundle ids blocked from window capture",
-    },
-    Entry {
-        key: "capture.screenshot",
-        kind: Kind::Bool,
-        applies: Applies::NextSession,
-        help: "capture screenshots on approval prompts",
-    },
-    Entry {
-        key: "capture.screenshotCloud",
-        kind: Kind::Bool,
-        applies: Applies::NextSession,
-        help: "allow screenshots to be sent to cloud model providers",
-    },
-    Entry {
-        key: "trustedProjects",
+        key: "mcp.approved",
         kind: Kind::Strings,
         applies: Applies::NextSession,
-        help: "directories trusted for automatic agent execution",
+        help: "project MCP servers you approved, pinned to their exact command (user file only)",
     },
 ];
 
@@ -272,7 +242,7 @@ static SECRET_KEY: LazyLock<Regex> = LazyLock::new(|| {
 });
 /// Setting groups read only from the user file — mirrors `USER_ONLY_PREFIXES` in `backend/settings_store.py`.
 /// `chat.allow` and `chat.writable` are single keys: a repository must not grant its own agent anything.
-pub const USER_ONLY_PREFIXES: &[&str] = &["app.", "vault.", "orchestrator.", "chat.allow", "chat.writable", "capture.", "trustedProjects"];
+pub const USER_ONLY_PREFIXES: &[&str] = &["app.", "vault.", "orchestrator.", "chat.allow", "chat.writable", "mcp."];
 
 static SECRET_VALUE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(

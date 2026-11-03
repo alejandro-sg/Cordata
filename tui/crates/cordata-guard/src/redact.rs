@@ -54,42 +54,14 @@ fn replace_where(re: &Regex, text: &str, count: &mut usize, f: impl Fn(&Captures
     .into_owned()
 }
 
-/// Zero-allocation case-insensitive substring search in byte slices.
-#[inline]
-fn contains_ignore_case(haystack: &str, needle: &str) -> bool {
-    let h_bytes = haystack.as_bytes();
-    let n_bytes = needle.as_bytes();
-    if n_bytes.len() > h_bytes.len() {
-        return false;
-    }
-    h_bytes.windows(n_bytes.len()).any(|window| window.eq_ignore_ascii_case(n_bytes))
-}
+/// Every pattern above needs one of these literals, so text without any cannot match: one pass of the regex crate's
+/// SIMD literal search (Teddy) instead of the eight full scans. Keep in step with `NAME` and `formats`.
+static MAY_HOLD_SECRET: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i:bearer|auth|key|token|secret|passw|credential)|sk-|ghp_|gho_|ghs_|github_pat_|xox|AKIA|AIza|hf_|eyJ|-----BEGIN").expect("static")
+});
 
-/// Fast pre-filter: returns false if text cannot possibly match any secret pattern.
-#[inline]
 fn may_contain_secrets(text: &str) -> bool {
-    if text.contains("sk-")
-        || text.contains("ghp_")
-        || text.contains("gho_")
-        || text.contains("ghs_")
-        || text.contains("github_pat_")
-        || text.contains("xox")
-        || text.contains("AKIA")
-        || text.contains("AIza")
-        || text.contains("hf_")
-        || text.contains("eyJ")
-        || text.contains("-----BEGIN")
-    {
-        return true;
-    }
-
-    const KEYWORDS: [&str; 7] = ["bearer", "auth", "key", "token", "secret", "passw", "credential"];
-    for kw in KEYWORDS {
-        if contains_ignore_case(text, kw) {
-            return true;
-        }
-    }
-    false
+    MAY_HOLD_SECRET.is_match(text)
 }
 
 /// `text` with every credential-shaped span masked, and how many were masked.
@@ -135,9 +107,51 @@ mod tests {
     }
 
     #[test]
+    fn the_prefilter_admits_every_shape_the_patterns_mask() {
+        for text in ["APIKEY=x", "PassWd", "Credential", "x-auth", "BEARER", "sk-1", "ghp_", "gho_", "ghs_", "github_pat_", "xoxb-", "AKIA", "AIza", "hf_", "eyJ", "-----BEGIN"] {
+            assert!(may_contain_secrets(text), "{text}");
+        }
+        assert!(!may_contain_secrets("The quick brown fox jumps over the lazy dog."));
+    }
+
+    #[test]
     fn leaves_code_readable() {
         for keep in ["max_tokens = 4096", "token_count = compute_budget", "bearer lowercaseonlytokenvalue", "secret: onlyletterslongvalueabcdef", "plain text"] {
             assert_eq!(scrub(keep), (keep.to_owned(), 0), "{keep}");
+        }
+    }
+}
+
+/// `cargo test --release -p cordata-guard bench_ -- --ignored --nocapture` (scripts/bench.sh).
+#[cfg(test)]
+mod bench {
+    use std::time::Instant;
+
+    /// Code as a transcript carries it: identifiers named token/key/auth on most lines, no actual secret.
+    pub(crate) fn code(bytes: usize) -> String {
+        let unit = "let token_count = request.auth_header.len(); // key lookup in cache\nfn main() { println!(\"hello world\"); }\n";
+        unit.repeat(bytes / unit.len() + 1)[..bytes].to_owned()
+    }
+
+    fn median_us(runs: usize, mut f: impl FnMut()) -> f64 {
+        let mut t: Vec<f64> = (0..runs).map(|_| {
+            let start = Instant::now();
+            f();
+            start.elapsed().as_secs_f64() * 1e6
+        }).collect();
+        t.sort_by(f64::total_cmp);
+        t[runs / 2]
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_scrub() {
+        for kb in [1, 10, 50, 100] {
+            let text = code(kb * 1024);
+            let prose = "The quick brown fox jumps over the lazy dog. ".repeat(kb * 1024 / 45);
+            let c = median_us(21, || drop(std::hint::black_box(super::scrub(&text))));
+            let p = median_us(21, || drop(std::hint::black_box(super::scrub(&prose))));
+            println!("BENCH scrub code {kb:>3}KB {c:>9.1}us | prose (pre-filter skips) {p:>7.1}us");
         }
     }
 }

@@ -47,6 +47,11 @@ pub struct WorktreeInfo {
     pub is_current: bool,
     pub is_agent: bool,
     pub agent_label: Option<String>,
+    /// Filled for the other checkouts only (`describe_worktrees`): uncommitted files, last commit subject and age.
+    pub changes: usize,
+    pub last_subject: Option<String>,
+    pub last_age_secs: Option<u64>,
+    pub merged: bool,
 }
 
 pub struct Git {
@@ -209,19 +214,44 @@ pub fn pr_status(cwd: &Path) -> Option<Pr> {
     })
 }
 
-/// Check if `cwd` is inside a linked git worktree (and return its name if so).
-pub fn check_worktree(cwd: &Path) -> (bool, Option<String>) {
-    let git_dir = run("git", &["rev-parse", "--git-dir"], cwd, None, GIT_TIMEOUT).ok();
-    let common_dir = run("git", &["rev-parse", "--git-common-dir"], cwd, None, GIT_TIMEOUT).ok();
-    if let (Some(gd), Some(cd)) = (git_dir, common_dir) {
-        let gd = gd.trim();
-        let cd = cd.trim();
-        if !gd.is_empty() && !cd.is_empty() && gd != cd && gd != ".git" {
-            let name = Path::new(gd).file_name().map(|n| n.to_string_lossy().into_owned());
-            return (true, name);
+/// Is `cwd` a linked worktree (not the main one), and its name — read off [`list_worktrees`], no extra `git` call.
+pub fn current_worktree(worktrees: &[WorktreeInfo]) -> (bool, Option<String>) {
+    worktrees.iter().find(|w| w.is_current && !w.is_main).map_or((false, None), |w| (true, Some(w.name.clone())))
+}
+
+/// What the other checkouts hold, for the work board: uncommitted files and the last commit. Two `git` calls each,
+/// for at most a dozen, off the UI thread.
+pub fn describe_worktrees(worktrees: &mut [WorktreeInfo], default_branch: &str) {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    for wt in worktrees.iter_mut().filter(|w| !w.is_current).take(12) {
+        if let Ok(out) = run("git", &["status", "--porcelain"], &wt.path, None, GIT_TIMEOUT) {
+            wt.changes = out.lines().filter(|l| !l.trim().is_empty()).count();
+        }
+        if let Ok(out) = run("git", &["log", "-1", "--format=%ct%x09%s"], &wt.path, None, GIT_TIMEOUT)
+            && let Some((ts, subject)) = out.trim().split_once('\t')
+        {
+            wt.last_age_secs = ts.parse::<u64>().ok().map(|t| now.saturating_sub(t));
+            wt.last_subject = Some(subject.to_owned());
+        }
+        if let Some(branch) = wt.branch.as_deref().filter(|b| *b != default_branch) {
+            wt.merged = run("git", &["merge-base", "--is-ancestor", branch, default_branch], &wt.path, None, GIT_TIMEOUT).is_ok();
         }
     }
-    (false, None)
+}
+
+/// Removes a linked checkout whose branch is merged, then the branch: both with git's own safety on — `worktree remove`
+/// without `--force` refuses a checkout with changes or untracked files, `branch -d` refuses an unmerged branch. Run
+/// from any checkout of the repository.
+pub fn remove_merged_worktree(cwd: &Path, path: &Path, branch: Option<&str>) -> Result<String, String> {
+    let target = path.to_string_lossy();
+    run("git", &["worktree", "remove", &target], cwd, None, GIT_TIMEOUT).map_err(|e| format!("kept {}: {}", target, e.trim()))?;
+    match branch {
+        Some(b) => match run("git", &["branch", "-d", b], cwd, None, GIT_TIMEOUT) {
+            Ok(_) => Ok(format!("Removed the checkout and its merged branch {b}")),
+            Err(e) => Ok(format!("Removed the checkout; kept branch {b}: {}", e.trim())),
+        },
+        None => Ok("Removed the checkout".into()),
+    }
 }
 
 /// Lists all git worktrees in the repository, flagging the main worktree, agent worktrees, and current worktree.
@@ -236,7 +266,7 @@ pub fn list_worktrees(cwd: &Path) -> Vec<WorktreeInfo> {
 
     let flush = |cur_p: &mut Option<PathBuf>, cur_b: &mut Option<String>, list: &mut Vec<WorktreeInfo>| {
         if let Some(path) = cur_p.take() {
-            let is_current = std::fs::canonicalize(&path).map(|p| p == canonical_cwd).unwrap_or_else(|_| path == canonical_cwd);
+            let is_current = false;
             let is_main = list.is_empty();
             let branch = cur_b.take();
             let p_str = path.to_string_lossy();
@@ -261,6 +291,10 @@ pub fn list_worktrees(cwd: &Path) -> Vec<WorktreeInfo> {
                 is_current,
                 is_agent,
                 agent_label,
+                changes: 0,
+                last_subject: None,
+                last_age_secs: None,
+                merged: false,
             });
         }
     };
@@ -275,6 +309,12 @@ pub fn list_worktrees(cwd: &Path) -> Vec<WorktreeInfo> {
         }
     }
     flush(&mut cur_path, &mut cur_branch, &mut worktrees);
+    // The current one is the deepest that holds `cwd`: agent worktrees often live inside the main checkout
+    // (`.claude/worktrees/…`), and `cwd` may be a subfolder.
+    let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    if let Some(ix) = worktrees.iter().enumerate().filter(|(_, w)| canonical_cwd.starts_with(real(&w.path))).max_by_key(|(_, w)| real(&w.path).components().count()).map(|(ix, _)| ix) {
+        worktrees[ix].is_current = true;
+    }
     worktrees
 }
 
@@ -282,16 +322,23 @@ impl Workspace {
     /// Read the repository's state (and, every `PR_EVERY`, the pull request) off the UI thread.
     pub(super) fn refresh_git(&mut self, with_pr: bool, cx: &mut Context<Self>) {
         let cwd = self.cwd.clone();
+        let owner = cwd.clone();
         let job = cx.background_executor().spawn(async move {
             let st = status(&cwd);
-            let (in_wt, wt_name) = check_worktree(&cwd);
-            let wts = list_worktrees(&cwd);
+            let mut wts = list_worktrees(&cwd);
+            let default = st.as_ref().map_or_else(|| "main".to_owned(), |s| s.5.clone());
+            describe_worktrees(&mut wts, &default);
+            let (in_wt, wt_name) = current_worktree(&wts);
             let pr = if with_pr { Some(pr_status(&cwd)) } else { None };
             (st, in_wt, wt_name, wts, pr)
         });
         cx.spawn(async move |this, cx| {
             let (state, in_wt, wt_name, wts, pr) = job.await;
             let _ = this.update(cx, |this, cx| {
+                // Started for another folder: the panes have moved on, and its loading flag was reset with them.
+                if this.cwd != owner {
+                    return;
+                }
                 this.git.is_worktree = in_wt;
                 this.git.worktree_name = wt_name;
                 this.git.worktrees = wts;
@@ -634,6 +681,50 @@ mod tests {
         assert!(!valid_name(""));
         assert_eq!(slug("Fix the login bug!"), "fix-the-login-bug");
         assert_eq!(slug("  ---  "), "");
+    }
+
+    #[test]
+    fn only_a_clean_merged_checkout_is_removed() {
+        let root = std::env::temp_dir().join(format!("cordata-rm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let root = std::fs::canonicalize(root).unwrap();
+        let g = |args: &[&str]| run("git", &[&["-c", "user.email=t@t", "-c", "user.name=t"], args].concat(), &root, None, GIT_TIMEOUT).unwrap();
+        g(&["init", "-q", "-b", "main"]);
+        g(&["commit", "-q", "--allow-empty", "-m", "c"]);
+        g(&["worktree", "add", "-q", "-b", "done", "wt-done"]);
+        g(&["worktree", "add", "-q", "-b", "dirty", "wt-dirty"]);
+        std::fs::write(root.join("wt-dirty/new.txt"), "work").unwrap();
+        let mut wts = list_worktrees(&root);
+        describe_worktrees(&mut wts, "main");
+        assert!(wts.iter().any(|w| w.branch.as_deref() == Some("done") && w.merged && w.changes == 0));
+        assert!(remove_merged_worktree(&root, &root.join("wt-dirty"), Some("dirty")).is_err(), "untracked work is never removed");
+        assert!(root.join("wt-dirty/new.txt").exists());
+        let said = remove_merged_worktree(&root, &root.join("wt-done"), Some("done")).unwrap();
+        assert!(said.contains("merged branch done"), "{said}");
+        assert!(!root.join("wt-done").exists());
+        assert!(!g(&["branch", "--list", "done"]).contains("done"));
+    }
+
+    #[test]
+    fn the_current_worktree_is_the_deepest_holding_cwd() {
+        let root = std::env::temp_dir().join(format!("cordata-wt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let root = std::fs::canonicalize(root).unwrap();
+        let g = |args: &[&str]| run("git", &[&["-c", "user.email=t@t", "-c", "user.name=t"], args].concat(), &root, None, GIT_TIMEOUT).unwrap();
+        g(&["init", "-q", "-b", "main"]);
+        g(&["commit", "-q", "--allow-empty", "-m", "c"]);
+        g(&["worktree", "add", "-q", "-b", "claude/x", ".claude/worktrees/x"]);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let main = list_worktrees(&root.join("src"));
+        assert_eq!(main.iter().filter(|w| w.is_current).map(|w| w.is_main).collect::<Vec<_>>(), [true], "a subfolder of the main checkout");
+        assert_eq!(current_worktree(&main), (false, None));
+        let nested = list_worktrees(&root.join(".claude/worktrees/x"));
+        let current: Vec<_> = nested.iter().filter(|w| w.is_current).collect();
+        assert_eq!(current.len(), 1);
+        assert_eq!((current[0].branch.as_deref(), current[0].agent_label.as_deref()), (Some("claude/x"), Some("Claude")));
+        assert_eq!(current_worktree(&nested), (true, Some("x".into())));
     }
 
     #[test]

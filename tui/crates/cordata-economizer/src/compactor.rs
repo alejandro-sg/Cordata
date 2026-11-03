@@ -60,7 +60,7 @@ pub fn digest(output: &str) -> String {
 
 /// The replacement for a result that is `turns_old` turns old, or `None` to keep it as it is.
 pub fn age(tool: &str, output: &str, turns_old: usize, profile: &Profile) -> Option<String> {
-    let is_read = matches!(tool, "read_file" | "code_search" | "code_outline");
+    let is_read = matches!(tool, "read_file" | "code_search" | "code_outline" | "code_map");
     let eligible = turns_old > profile.age_after_turns && (!profile.age_reads_only || is_read);
     (eligible && output.chars().count() >= AGE_MIN_CHARS && !output.contains("…[aged:")).then(|| digest(output))
 }

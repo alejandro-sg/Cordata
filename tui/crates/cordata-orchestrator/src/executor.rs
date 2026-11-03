@@ -590,17 +590,17 @@ impl<'a> StepExecutor<'a> {
             if let (Some(bus), Some(grant)) = (&self.cfg.bus, &grant) {
                 bus.revoke(&grant.token);
             }
-            if let Some(bus) = &self.cfg.bus {
-                if grant.is_none() && result.status == "completed" {
-                    let summary = if !result.raw_output.trim().is_empty() {
-                        result.raw_output.trim()
-                    } else if !result.files_changed.is_empty() {
-                        "completed step and changed files"
-                    } else {
-                        "completed step"
-                    };
-                    bus.post_system(&step.step_id, &candidate.key(), "run", "finding", summary);
-                }
+            // A worker with no bus connection of its own: the orchestrator reports what it finished, for its peers.
+            if let Some(bus) = &self.cfg.bus
+                && grant.is_none()
+                && result.status == "completed"
+            {
+                let summary = match result.raw_output.trim() {
+                    "" if !result.files_changed.is_empty() => "completed step and changed files",
+                    "" => "completed step",
+                    said => said,
+                };
+                bus.post_system(&step.step_id, &candidate.key(), "run", "finding", summary);
             }
             self.record(&step.step_id, &candidate, &result);
             if !ctx.sibling_scope.is_empty() {

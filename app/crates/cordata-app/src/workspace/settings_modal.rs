@@ -44,7 +44,7 @@ impl Section {
             Section::Appearance => "theme dark light ink paper density font size",
             Section::Shortcuts => "keys keyboard bindings hotkeys",
             Section::Account => "api key anthropic sign out usage keychain",
-            Section::Mcp => "mcp tools servers model context protocol marketplace plugins rea github brave postgres sqlite fetch memory",
+            Section::Mcp => "mcp tools servers model context protocol catalog approve rea github git fetch memory",
             Section::Advanced => "logs diagnostics reset clear history",
         }
     }
@@ -300,6 +300,9 @@ impl Workspace {
         if self.settings_section == Section::Account {
             self.api_key_masked = crate::keychain::masked();
         }
+        if self.settings_section == Section::Mcp {
+            self.mcp = crate::mcp_catalog::snapshot(&super::cordata_home(), &self.cwd);
+        }
     }
 
     // ------------------------------------------------------------------------------------------------ controls
@@ -492,93 +495,66 @@ impl Workspace {
 
     fn mcp_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let tk = tk(cx);
-        let servers = crate::mcp_catalog::discover_servers(&self.cwd);
+        let snap = &self.mcp;
         let mut rows = Vec::new();
 
-        rows.push(sub_heading("configured servers", cx));
-        if servers.is_empty() {
-            rows.push(setting_row(
-                "No MCP servers active",
-                "Cordata discovers servers from .mcp.json, ~/.cordata/mcp.json, Claude Code, and Antigravity.",
-                status_control(Dot::Muted, "none detected", cx),
-                cx,
-            ));
-        } else {
-            for server in &servers {
-                let name = server.name.clone();
-                let source_label = server.source.label();
-                let desc = format!("via {source_label} · command: {} {}", server.command, server.args.join(" "));
-                rows.push(setting_row_owned(
-                    name,
-                    desc,
-                    false,
-                    status_control(Dot::Ok, "connected", cx),
-                    cx,
-                ));
-            }
+        rows.push(sub_heading("servers a new chat starts", cx));
+        if snap.servers.is_empty() {
+            rows.push(setting_row("None", "Add one below, or list servers in ~/.cordata/mcp.json.", status_control(Dot::Muted, "none", cx), cx));
+        }
+        for server in &snap.servers {
+            let desc = format!("{} · {} {}", server.source.label(), server.command, server.args.join(" "));
+            rows.push(setting_row_owned(server.name.clone(), desc, false, status_control(Dot::Ok, "starts with each chat", cx), cx));
+        }
+        if !snap.held.is_empty() {
+            rows.push(sub_heading("waiting for you", cx));
+        }
+        for (ix, held) in snap.held.iter().enumerate() {
+            let approve_this = held.clone();
+            let button = ui::button(("mcp-approve", ix), if held.changed { "Approve change" } else { "Approve" }, Kind::Tint, cx)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    match crate::mcp_catalog::approve(&cordata_view::settings::Store::discover(&this.cwd), &approve_this) {
+                        Ok(()) => this.settings_view.set_notice(format!("Approved {}: it starts with the next chat", approve_this.name), false),
+                        Err(e) => this.settings_view.set_notice(format!("Could not approve {}: {e}", approve_this.name), true),
+                    }
+                    this.mcp = crate::mcp_catalog::snapshot(&super::cordata_home(), &this.cwd);
+                    cx.notify();
+                }))
+                .into_any_element();
+            let what = if held.changed {
+                format!("Changed since you approved it. This repository's .mcp.json now runs: {}", held.command_line())
+            } else {
+                format!("This repository's .mcp.json would run on your Mac: {}", held.command_line())
+            };
+            rows.push(setting_row_owned(held.name.clone(), what, false, button, cx));
         }
 
-        rows.push(sub_heading("official marketplace", cx));
-        rows.push(div().text_size(px(t::TEXT_SMALL)).text_color(c(tk.text_muted)).pb(px(8.)).child("Install official MCP servers directly into your project's .mcp.json with one click.").into_any_element());
-
+        rows.push(sub_heading("catalog", cx));
+        rows.push(div().text_size(px(t::TEXT_SMALL)).text_color(c(tk.text_muted)).pb(px(8.)).child("Adds the server to ~/.cordata/mcp.json. It runs with your rights; Cordata asks before each call.").into_any_element());
         for (ix, item) in crate::mcp_catalog::MARKETPLACE_ITEMS.iter().enumerate() {
-            let is_installed = servers.iter().any(|s| s.name == item.id);
-            let item_id = item.id;
-            let item_cmd = item.command;
-            let item_args = item.default_args;
-            let label = format!("{}  {}", item.icon_glyph, item.name);
-
-            let action: AnyElement = if is_installed {
-                div()
-                    .px(px(8.))
-                    .py(px(4.))
-                    .rounded(px(t::RADIUS_CONTROL))
-                    .bg(crate::theme::amber(cx, t::AMBER_FILL_MID))
-                    .border_1()
-                    .border_color(crate::theme::amber(cx, t::AMBER_BORDER_STRONG))
-                    .text_color(c(tk.amber))
-                    .text_size(px(t::TEXT_SMALL))
-                    .child("Installed")
-                    .into_any_element()
+            let installed = snap.servers.iter().any(|s| s.name == item.id);
+            let (item_id, item_cmd, item_args) = (item.id, item.command, item.default_args);
+            let action: AnyElement = if installed {
+                status_control(Dot::Ok, "added", cx)
             } else {
-                ui::button(("mcp-install", ix), "Install", Kind::Tint, cx)
+                ui::button(("mcp-install", ix), "Add", Kind::Tint, cx)
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        match crate::mcp_catalog::install_server_to_project(&this.cwd, item_id, item_cmd, item_args) {
-                            Ok(()) => {
-                                this.settings_view.set_notice(format!("Installed {item_id} to .mcp.json"), false);
-                            }
-                            Err(e) => {
-                                this.settings_view.set_notice(format!("Failed to install {item_id}: {e}"), true);
-                            }
+                        match crate::mcp_catalog::install_server(&super::cordata_home(), item_id, item_cmd, item_args) {
+                            Ok(()) => this.settings_view.set_notice(format!("Added {item_id}: it starts with the next chat"), false),
+                            Err(e) => this.settings_view.set_notice(format!("Could not add {item_id}: {e}"), true),
                         }
+                        this.mcp = crate::mcp_catalog::snapshot(&super::cordata_home(), &this.cwd);
                         cx.notify();
                     }))
                     .into_any_element()
             };
-
-            rows.push(setting_row_owned(
-                label,
-                format!("[{}] {}", item.category, item.description),
-                false,
-                action,
-                cx,
-            ));
+            rows.push(setting_row_owned(item.name.into(), format!("{} · {}", item.category, item.description), false, action, cx));
         }
 
-        let mcp_path = self.cwd.join(".mcp.json");
-        let reveal_btn = ui::button("reveal-mcp-json", "Open .mcp.json", Kind::Outline, cx)
-            .on_click(cx.listener(move |_, _, _, cx| {
-                cx.reveal_path(&mcp_path);
-            }))
-            .into_any_element();
-        rows.push(sub_heading("configuration files", cx));
-        rows.push(setting_row(
-            "Project MCP Configuration",
-            "Stored in .mcp.json in the project root. Shared with team and version control.",
-            reveal_btn,
-            cx,
-        ));
-
+        let user_file = super::cordata_home().join("mcp.json");
+        let reveal = ui::button("reveal-mcp-json", "Reveal mcp.json", Kind::Outline, cx).on_click(cx.listener(move |_, _, _, cx| cx.reveal_path(&user_file))).into_any_element();
+        rows.push(sub_heading("configuration", cx));
+        rows.push(setting_row("Your servers", "~/.cordata/mcp.json applies in every folder; a project's servers only as you approved them — a change asks again.", reveal, cx));
         rows
     }
 

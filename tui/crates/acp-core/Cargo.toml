@@ -12,6 +12,8 @@ futures.workspace = true
 genai.workspace = true
 ignore.workspace = true
 libc.workspace = true
+cordata-repomap = { path = "../cordata-repomap", version = "0.2.0", features = ["embed"] }
+sha2.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -38,7 +38,10 @@ impl ToolDefinition {
 }
 
 /// Words in a prompt that call for a tool beyond the core, matched by prefix on whole words.
-const INTENTS: &[(&str, &[&str])] = &[("code_outline", &["outline", "structure", "overview"])];
+const INTENTS: &[(&str, &[&str])] = &[
+    ("code_outline", &["outline", "structure", "overview"]),
+    ("code_map", &["where", "find", "locate", "which", "how", "architecture", "map", "explain", "understand"]),
+];
 
 /// Name fragments too common to signal intent on their own.
 const GENERIC: [&str; 4] = ["code", "file", "tool", "run"];

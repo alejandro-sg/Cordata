@@ -44,6 +44,7 @@ impl Workspace {
         }
         self.review.loading = true;
         let root = self.root();
+        let owner = self.cwd.clone();
         cx.spawn(async move |this, cx| {
             let (result, untracked_files) = cx.background_executor().spawn(async move {
                 let changes = working_changes(&root);
@@ -51,6 +52,10 @@ impl Workspace {
                 (changes, untracked)
             }).await;
             let _ = this.update(cx, |this, cx| {
+                // Started for another folder: the panes have moved on, and its loading flag was reset with them.
+                if this.cwd != owner {
+                    return;
+                }
                 this.review.loading = false;
                 match result {
                     Ok(files) => {

@@ -107,8 +107,26 @@ with its plan. When the screen is off (`orchestrator.screen`, `--no-screen`) or 
 alone and the run records a warning.
 Research findings are kept only when their quoted evidence is found in the file they cite.
 
+`~/.gemini` is denied to every worker. Only the `agy` worker's own profile reopens what that CLI needs — its state folder
+read-write, `~/.gemini/config` read-only — and keeps its `bin/`, `builtin/`, `updater/`, `mcp/` and `settings.json`
+unwritable, so no worker can plant code or an MCP server that agy later runs unsandboxed.
+
 Not covered: a worker is a full coding agent. Inside its write scope it can write anything, including code you will later
 run. Read the diff.
+
+## MCP servers
+
+A chat starts the servers in `~/.cordata/mcp.json`. A project's `.mcp.json` names programs to run on your Mac, so each
+of its servers starts only as you approved it (Settings → MCP → "Approve", which shows the exact command and the names of
+the variables it sets). The approval is `mcp.approved` in `~/.cordata/settings.json`: the folder, the server's name and a
+SHA-256 of its command, arguments and environment values. A `git pull` or checkout that changes any of them holds the
+server back again ("changed since you approved it"); a nested checkout or worktree is a different folder and asks on its
+own; a repository's own settings cannot approve anything, and a project server never replaces one of yours with the same
+name. Servers
+start with an allowlisted environment (`PATH`, `HOME`, locale; no provider keys) plus their own `env` block, and stop
+with the session. Every MCP tool call asks first, like an edit.
+
+Not covered: a started server runs with your rights, outside the command sandbox.
 
 ## Saved sessions
 
