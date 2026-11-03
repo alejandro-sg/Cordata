@@ -90,6 +90,54 @@ async fn a_real_claude_code_worker_talks_through_the_bus() {
     assert!(result.raw_output.contains("8080"));
 }
 
+#[tokio::test]
+async fn a_real_antigravity_worker_communicates_via_the_bus() {
+    if std::env::var_os("CORDATA_LIVE_BUS").is_none_or(|v| v != "1") {
+        eprintln!("skipped: set CORDATA_LIVE_BUS=1 to run against the real agy CLI");
+        return;
+    }
+    let Some(command) = release_bus() else {
+        eprintln!("skipped: build cordata-bus first (make tui-build)");
+        return;
+    };
+    let environ: HashMap<String, String> = std::env::vars().collect();
+    let worker = cordata_orchestrator::workers::agy::worker(Arc::new(Direct)).environ(environ).seatbelt(Seatbelt::Auto);
+    if worker.find_binary().is_none() {
+        eprintln!("skipped: agy CLI not found");
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("notes.txt"), "notes\n").unwrap();
+
+    let bus = Bus::start(&cordata_bus::default_root(), "live-agy", &command).unwrap();
+    let peer = bus.grant("s0", "execute", "peer:test", &[]).unwrap();
+    peer.pid.set(std::process::id());
+    let said = call(&peer, "post", json!({"topic": "run", "kind": "finding", "body": "the service listens on port 8080"})).await;
+    assert_eq!(said["ok"], true, "{said}");
+
+    let mut task = TaskPacket::new("live:s1:1", "execute", "", &project.path().to_string_lossy());
+    task.file_scope = vec!["notes.txt".into()];
+    task.timeout_s = 240.0;
+    task.model = Some("gemini-3.8-flash-low".into());
+    let digest = bus.digest(2500).unwrap();
+    task.prompt = format!(
+        "This is a connectivity test of the run bus; do not edit any file. \
+        What the other workers in this run have reported so far:\n{digest}\n\n\
+        Reply with exactly the body of the message from step s0."
+    );
+
+    let seen = Arc::new(Mutex::new(Vec::<WorkerEvent>::new()));
+    let log = seen.clone();
+    let sink: EventSink = Arc::new(move |e| log.lock().unwrap().push(e));
+    let result = worker.run(task, sink).await;
+    eprintln!("status={} error={:?}\nanswer={}", result.status, result.error_message, result.raw_output);
+    if result.status == "completed" {
+        bus.post_system("s1", "agy:gemini", "run", "finding", &result.raw_output);
+        let messages = bus.messages();
+        assert!(messages.iter().any(|m| m.from_step == "s1" && m.body.contains("8080")));
+    }
+}
+
 /// The shim binary itself, under the worker's real Seatbelt profile, against a bus in `~/.cordata/bus`: what Claude
 /// Code's MCP child does, minus the model. Needs no account, but writes under the real `~/.cordata`, so it is opt-in too.
 #[tokio::test]

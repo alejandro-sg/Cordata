@@ -243,6 +243,9 @@ pub fn base_profile(home: &str) -> Vec<String> {
         r#"(deny file-write* (regex #"/\.git/(config|hooks(/|$)|info/attributes$|modules/.+/(config|hooks(/|$)))"))"#.to_owned(),
     ];
     lines.extend(DENY_HOME.iter().map(|rel| format!("(deny file-read* file-write* (subpath {}))", sb_string(&format!("{home}/{rel}")))));
+    // Antigravity worker CLI needs its local state and config directories under ~/.gemini.
+    lines.push(format!("(allow file-read* file-write* (subpath {}))", sb_string(&format!("{home}/.gemini/antigravity-cli"))));
+    lines.push(format!("(allow file-read* file-write* (subpath {}))", sb_string(&format!("{home}/.gemini/config"))));
     lines
 }
 

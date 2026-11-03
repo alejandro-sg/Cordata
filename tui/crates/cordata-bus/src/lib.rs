@@ -289,6 +289,37 @@ impl Bus {
         self.inner.state.lock().unwrap().messages.clone()
     }
 
+    /// A message from the orchestrator (e.g. reporting what a worker without a direct bus connection completed).
+    pub fn post_system(&self, from_step: &str, from_worker: &str, topic: &str, kind: &str, body: &str) -> Option<u64> {
+        let body = clean(body);
+        if body.trim().is_empty() {
+            return None;
+        }
+        let mut st = self.inner.state.lock().unwrap();
+        if st.messages.len() >= RUN_MESSAGES || st.bytes + body.len() > RUN_BYTES {
+            return None;
+        }
+        st.seq += 1;
+        let message = Message {
+            seq: st.seq,
+            ts: now(),
+            from_step: from_step.into(),
+            from_worker: from_worker.into(),
+            topic: topic.into(),
+            kind: kind.into(),
+            body,
+            reply_to: None,
+        };
+        st.bytes += message.body.len();
+        st.messages.push(message.clone());
+        drop(st);
+        if let Some(sink) = self.inner.sink.lock().unwrap().as_ref() {
+            sink(&message);
+        }
+        self.inner.posted.notify_waiters();
+        Some(message.seq)
+    }
+
     /// The newest messages as a short digest for a prompt (a retried or resumed step), newest last.
     pub fn digest(&self, max_chars: usize) -> Option<String> {
         let st = self.inner.state.lock().unwrap();

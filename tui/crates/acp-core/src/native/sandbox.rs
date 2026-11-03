@@ -363,6 +363,8 @@ mod tests {
         let reach = |path: &Path| format!("echo hi | /usr/bin/nc -U -w1 '{}'", path.display());
         assert!(run(&reach(&inside), &c, Duration::from_secs(10)).await.is_ok(), "a test's own server in the project");
         let online = Confinement { project: project.path(), network: true, writable: &[] };
+        assert!(run(&reach(Path::new(MDNS_SOCKET)), &online, Duration::from_secs(10)).await.is_ok(), "address lookup reachable online");
+        assert!(run(&reach(Path::new(MDNS_SOCKET)), &c, Duration::from_secs(10)).await.is_err(), "address lookup blocked offline");
         assert!(run(&reach(&away), &c, Duration::from_secs(10)).await.is_err(), "a daemon's socket elsewhere, offline");
         assert!(run(&reach(&away), &online, Duration::from_secs(10)).await.is_err(), "…and online");
         for server in &mut servers {
