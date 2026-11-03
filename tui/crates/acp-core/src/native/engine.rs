@@ -93,7 +93,7 @@ pub(crate) async fn run(options: SessionOptions, commands: Commands, events: Eve
             let state_dir = if off { None } else { cordata_economizer::default_state_dir() };
             let policy = Policy::load(&options.cwd);
             let sessions_home = policy::cordata_home();
-            let history_home = if policy.history { sessions_home.clone() } else { None };
+            let history_home = if policy.history && options.history { sessions_home.clone() } else { None };
             drive(&provider, options, commands, events, Setup { offload: tools::offload_dir(), state_dir, policy, history_home, sessions_home: sessions_home.clone(), mcp_home: sessions_home, switch: genai_provider }).await
         }
         Err(error) => {
@@ -860,6 +860,7 @@ mod tests {
     fn options(cwd: &std::path::Path) -> SessionOptions {
         SessionOptions {
             model: None,
+            history: true,
             cwd: cwd.to_path_buf(),
             transport: crate::transport::BackendTransport::Native,
             debug_log: None,

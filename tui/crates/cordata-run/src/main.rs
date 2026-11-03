@@ -22,7 +22,7 @@ enum Command {
         /// comma-separated worker families (claude_code,antigravity)
         #[arg(long)]
         workers: Option<String>,
-        #[arg(long, value_parser = ["off", "shadow", "live"])]
+        #[arg(long, value_parser = ["off", "shadow", "live", "auto"])]
         dispatch: Option<String>,
         #[arg(long)]
         allow_direct: bool,

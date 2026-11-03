@@ -16,6 +16,7 @@ pub mod checkpoints;
 pub mod dispatch;
 pub mod executor;
 pub mod handoff;
+pub mod knowledge;
 pub mod machine;
 pub mod plan;
 pub mod research;

@@ -860,8 +860,17 @@ fn usage_low_note(step_id: &str, short: &[Headroom]) -> String {
         _ => format!("{v:.0} {}", unit.as_str()),
     };
     let duration = |secs: f64| if secs >= 3600.0 { format!("{}h{:02}m", (secs / 3600.0) as i64, ((secs % 3600.0) / 60.0) as i64) } else { format!("{}m", (secs / 60.0).ceil() as i64) };
+    // Several candidates share a pool (opus@medium, opus@high): name each pool once.
+    let mut named: Vec<&str> = Vec::new();
     let pools: Vec<String> = short
         .iter()
+        .filter(|h| match h {
+            Headroom::Short { pool_id, .. } if !named.contains(&pool_id.as_str()) => {
+                named.push(pool_id);
+                true
+            }
+            _ => false,
+        })
         .filter_map(|h| match h {
             Headroom::Short { pool_id, unit, left, typical, resets_at } => {
                 let frees = resets_at.filter(|t| *t > now).map_or(String::new(), |t| format!(", frees up in {}", duration(t - now)));

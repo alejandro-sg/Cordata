@@ -19,7 +19,7 @@ use serde_json::Value;
 pub const DEFAULT_WORKERS: [&str; 3] = ["claude_code", "antigravity", "ollama"];
 pub const KNOWN_FAMILIES: [&str; 3] = ["claude_code", "antigravity", "ollama"];
 /// Families this binary can run.
-pub const NATIVE_FAMILIES: [&str; 2] = ["claude_code", "antigravity"];
+pub const NATIVE_FAMILIES: [&str; 3] = ["claude_code", "antigravity", "ollama"];
 
 type Row = (&'static str, &'static str, Option<&'static str>, &'static str, f64, Option<&'static [&'static str]>);
 
@@ -74,6 +74,12 @@ pub fn family_available(family: &str, environ: &HashMap<String, String>) -> bool
     let (env_var, bin) = match family {
         "claude_code" => ("CORDATA_CLAUDE_BIN", "claude"),
         "antigravity" => ("CORDATA_AGY_BIN", "agy"),
+        // Ollama Cloud runs in Cordata's own engine: it needs a key, not a CLI. The Keychain is asked for the
+        // account in `environ` (none, as in the hermetic tests, means no Keychain).
+        "ollama" => {
+            return environ.get("OLLAMA_API_KEY").is_some_and(|k| !k.trim().is_empty())
+                || (environ.get("USER").is_some_and(|u| !u.is_empty()) && acp_core::native::key_present("ollama_cloud"));
+        }
         _ => return false,
     };
     // A `$CORDATA_*_BIN` override counts only when it names a file that exists: a stale one must not hide the fallback.
@@ -128,6 +134,7 @@ pub fn workers(settings: &Settings, environ: &HashMap<String, String>) -> HashMa
     let mut out: HashMap<String, Arc<dyn Worker>> = HashMap::new();
     out.insert("claude_code".into(), Arc::new(claude::worker(egress.clone()).environ(environ.clone())));
     out.insert("antigravity".into(), Arc::new(agy::worker(egress).environ(environ.clone())));
+    out.insert("ollama".into(), Arc::new(crate::native_worker::NativeWorker::ollama_cloud()));
     out
 }
 

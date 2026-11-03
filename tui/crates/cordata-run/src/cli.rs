@@ -176,6 +176,26 @@ pub fn run_args_to_config(args: &RunArgs, base: RunConfig) -> RunConfig {
     c
 }
 
+/// What the ledger's `orch_outcome` events say each past decision earned, oldest first.
+fn logged_outcomes(ledger: &Ledger) -> Vec<cordata_orchestrator::dispatch::Logged> {
+    let mut rows: Vec<cordata_orchestrator::dispatch::Logged> = ledger
+        .recent_events("orch_outcome", 2000)
+        .iter()
+        .filter_map(|e| {
+            let p = e.get("payload").unwrap_or(e);
+            Some(cordata_orchestrator::dispatch::Logged {
+                role: p.get("role")?.as_str()?.to_owned(),
+                task_class: p.get("task_class").and_then(Value::as_str).unwrap_or("").to_owned(),
+                arm: p.get("arm")?.as_str()?.to_owned(),
+                ok: p.get("ok").and_then(Value::as_bool).unwrap_or(false),
+                cost: p.get("cost").and_then(Value::as_f64).unwrap_or(0.0),
+            })
+        })
+        .collect();
+    rows.reverse();
+    rows
+}
+
 fn mode_of(name: &str, notes: &mut Vec<String>) -> Mode {
     match name {
         "off" => Mode::Off,
@@ -241,9 +261,17 @@ pub async fn run(args: RunArgs) -> i32 {
         }
     };
     let home = cordata_home(&environ);
-    let mode = mode_of(&args.dispatch.clone().unwrap_or_else(|| config::setting(&settings, "orchestrator.dispatch").and_then(Value::as_str).unwrap_or("shadow").to_owned()), &mut notes);
     let (specs, dropped) = config::live_specs(config::specs(&requested), &environ);
     notes.extend(dropped);
+    let wanted = args.dispatch.clone().unwrap_or_else(|| config::setting(&settings, "orchestrator.dispatch").and_then(Value::as_str).unwrap_or("auto").to_owned());
+    let mode = if wanted == "auto" {
+        // Learned routing earns the right to decide: it acts once replay says it does as well as the default.
+        let (mode, note) = cordata_orchestrator::dispatch::graduate(&logged_outcomes(&ledger), &specs, config::setting_f64(&settings, "orchestrator.lambda", 0.3));
+        notes.push(note);
+        mode
+    } else {
+        mode_of(&wanted, &mut notes)
+    };
     let env_for_avail = environ.clone();
     let mut roster = LearnedRoster::new(
         specs,

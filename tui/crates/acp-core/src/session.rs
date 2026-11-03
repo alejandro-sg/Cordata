@@ -22,6 +22,9 @@ pub struct SessionOptions {
     pub debug_log: Option<PathBuf>,
     /// The model to start with; `None` follows `CORDATA_NATIVE_MODEL`, then whichever provider key exists.
     pub model: Option<String>,
+    /// Save the conversation for `/resume` (when `chat.history` allows). Off for orchestrator workers, whose steps are
+    /// not conversations anyone resumes.
+    pub history: bool,
 }
 
 /// Something sent with a prompt: an image (a pasted screenshot, a dropped picture) or a file's text.

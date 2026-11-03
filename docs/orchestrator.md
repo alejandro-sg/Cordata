@@ -77,8 +77,20 @@ untrusted data) is saved, and the same step continues on another pool.
 Hard gates come first and are never learned: the role, the CLI being installed, the pool being under its hard line, and
 the reviewer coming from a family that wrote none of the change. Then the order: the cheapest competent worker per role.
 With no evidence, planning and research prefer the cheapest standard-tier worker, execution and harden the strongest.
-`--dispatch off|shadow|live` controls learning: `shadow` (default) records what the learned policy would have chosen and
-acts as `off`; `live` acts on it.
+`--dispatch off|shadow|live|auto` controls learning: `shadow` records what the learned policy would have chosen and
+acts as `off`; `live` acts on it. `auto` (default) starts in shadow and goes live on its own once the learned policy has
+earned it: after 30 logged outcomes, trained on the older 70% and replayed on the newest 30%, it must pass as often as
+the always-strongest order (within 2 points) at no more cost per success. The run's warnings say which way it went and
+why; a policy that drifts (a model that got worse) falls back to shadow on the next run.
+
+Each candidate is a model at an effort (`claude_code:opus@high`): the bandit learns model and effort together, so a
+cheaper effort that passes as often wins its role. The agy models the installed CLI does not list (`agy models`) are
+left out of a run, and planning tries each family's best before any family's second.
+
+Before each step the executor checks the step's pool against what a step there usually costs (the 75th percentile of
+recent steps). With no pool able to fit one, the run stops at that step boundary (`usage_low`) with each pool's room
+and when it frees up, rather than being cut off mid-step; `cordata status` shows about how many steps each pool has
+left.
 
 ## What the CLIs do headless
 
@@ -117,3 +129,11 @@ but built for untrusted workers:
 `executor.rs`, `audit.rs`, `handoff.rs`, `dispatch.rs` and `bandit.rs`, `synthesizer.rs`, `scope.rs`, `checkpoints.rs`,
 and `workers/` (one streaming contract, adapters for `claude` and `agy`, the Seatbelt profile and the vault gate).
 `tui/crates/cordata-run` is the command; `cordata-ledger` holds the quota pools and run records.
+
+## What a project teaches
+
+Each run ends by adding what it taught to `~/.cordata/knowledge/<project key>.jsonl` (Antigravity's knowledge items in
+miniature): a worker that gave up on refused commands, models the installed agy does not offer, the check commands that
+passed on a finished run, and why a run failed or stopped. Lessons are read off the run record, with no model call. A
+lesson seen again counts up; at most 40 are kept. The planner and every worker get the eight most-seen as "What earlier
+runs on this project learned". Delete the file to start over.
