@@ -1429,6 +1429,13 @@ impl<'a> Machine<'a> {
             *feedback = report.items.clone();
         } else {
             let items: Vec<String> = report.failures().into_iter().chain(report.items.iter().cloned()).chain(report.warnings.iter().cloned()).collect();
+            if let Some(missing) = report.missing_tools().filter(|_| !report.tier1_ok) {
+                // Not drift: retrying or replanning only invites a worker to fake the tool.
+                let mut missing = missing;
+                missing.dedup();
+                self.fail(&format!("the checks cannot run here: {} is not installed. Install it or change the definition of done, then run again; no edit can fix this", missing.join(", ")));
+                return;
+            }
             if !report.tier1_ok || report.verdict == "drift" || report.ambiguous {
                 if self.record.drift_retries < self.config.max_drift_retries {
                     self.record.drift_retries += 1;
