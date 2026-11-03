@@ -367,6 +367,7 @@ mod tests {
                 kind: ToolKind::Execute,
                 raw_input: Some(serde_json::json!({"cmd": "rm -rf /tmp/x"})),
                 always_label: None,
+                reason: None,
             },
             decision: tx,
         });
@@ -393,6 +394,7 @@ mod tests {
                     kind: ToolKind::Execute,
                     raw_input: Some(serde_json::json!({"cmd": "git status"})),
                     always_label: label.map(Into::into),
+                    reason: None,
                 },
                 decision: tx,
             });
@@ -485,6 +487,7 @@ mod tests {
                 kind: ToolKind::Edit,
                 raw_input: Some(serde_json::json!({"cmd": "str_replace", "path": "src/a.rs", "old_str": "line 20", "new_str": "LINE TWENTY"})),
                 always_label: None,
+                reason: None,
             },
             decision: tx,
         });

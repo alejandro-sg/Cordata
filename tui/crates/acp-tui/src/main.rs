@@ -100,6 +100,8 @@ impl Workspace {
         let mut app = crate::overlay::new_app();
         app.attach_store(settings::Store::discover(&self.cwd));
         app.initial_prompt = initial_prompt;
+        // The engine starts in the user file's `chat.mode`; the footer agrees from the first frame.
+        app.mode = acp_core::policy::Policy::load(&self.cwd).mode;
         self.slots.push(Slot {
             number,
             handle: Some(handle),
@@ -535,6 +537,7 @@ async fn run(
                 Effect::Cancel => with_handle(workspace, SessionHandle::cancel),
                 Effect::Resume(wanted) => with_handle(workspace, |h| h.resume(wanted)),
                 Effect::SetModel(model) => with_handle(workspace, |h| h.set_model(model)),
+                Effect::SetMode(mode) => with_handle(workspace, |h| h.set_mode(mode)),
                 // Every open session stops saving, or one of them would write the folder back.
                 Effect::Forget => workspace.slots.iter().filter_map(|slot| slot.handle.as_ref()).try_for_each(SessionHandle::forget),
             };

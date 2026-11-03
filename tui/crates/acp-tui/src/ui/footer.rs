@@ -113,6 +113,11 @@ pub fn line(app: &App, width: u16) -> Line<'static> {
     if matches!(app.conn, ConnState::Connecting) {
         head.push(Span::styled(" connecting…", dim));
     }
+    // Auto mode is in the head, so it shows at any width: calls the judge clears run without a card.
+    if app.mode == acp_core::Mode::Auto {
+        head.push(Span::raw(" "));
+        head.push(Span::styled("auto", Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+    }
     // Optional segments in the order they are worth keeping on a narrow terminal: the model, then where we are. Each is a few spans and its width.
     let mut segments: Vec<(Vec<Span<'static>>, usize)> = Vec::new();
     let mut add = |spans: Vec<Span<'static>>| {
@@ -169,4 +174,23 @@ pub fn line(app: &App, width: u16) -> Line<'static> {
         spans.push(Span::styled(truncate(&flat, room), style));
     }
     Line::from(spans)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn the_footer_shows_auto_only_in_auto_mode() {
+        let mut app = App::new();
+        app.conn = ConnState::Connected;
+        assert!(!text(&line(&app, 80)).contains("auto"));
+        app.mode = acp_core::Mode::Auto;
+        assert!(text(&line(&app, 80)).contains(" auto"));
+        assert!(text(&line(&app, 12)).contains("auto"), "kept on a narrow terminal");
+    }
 }

@@ -35,6 +35,7 @@ in effect.
 | key | values | default | what |
 |---|---|---|---|
 | `chat.allow` | list of rules | none | calls that run without asking. **User file only** |
+| `chat.mode` | `ask`, `auto` | `ask` | `ask` asks before each edit or command; `auto` lets a judge model allow the ones it finds safe and asks about the rest (with its reason). **Read only from the user file**: a project or local value is ignored with a warning. Switch per session with ⇧⇥. See `docs/auto-mode.md`. The guard, `chat.deny`, `chat.network = off` and the sandbox still apply |
 | `chat.deny` | list of rules | none | calls refused without asking; any file may add them |
 | `chat.network` | `ask`, `off` | `ask` | commands run offline; `ask` lets a command request the network (you are asked), `off` refuses it. A project may set `off` |
 | `chat.writable` | list of absolute paths (`~/` allowed) | none | folders commands may write besides the project, temporary folders and package caches. **User file only** |

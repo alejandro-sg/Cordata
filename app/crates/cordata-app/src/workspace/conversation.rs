@@ -289,6 +289,8 @@ impl Workspace {
         let command = input.and_then(|i| i.get("cmd")).and_then(|v| v.as_str()).map(str::to_owned);
         let summary = input.and_then(cordata_view::view::summarize_input).unwrap_or_default();
         let place = tilde(&self.session.read(cx).cwd);
+        // Display only: the target is shortened as the transcript shows it; `raw_input` stays whole.
+        let fold = cordata_view::fold::Context::here(self.session.read(cx).cwd.clone());
         let diffs = self.session.read(cx).view.card(&info.tool_call_id).map(|card| card.diffs.clone()).filter(|d| !d.is_empty());
         let has_diff = diffs.is_some();
         let tool = info.tool_name.as_str();
@@ -327,7 +329,7 @@ impl Workspace {
                         .on_click(answer(ApprovalDecision::Reject))
                         .into_any_element(),
                 );
-                ("", sentence, command.clone().map(|cmd| format!("$ {cmd}")).or_else(|| (!summary.is_empty()).then(|| summary.clone())), buttons)
+                ("", sentence, command.clone().map(|cmd| fold.shorten(&format!("$ {cmd}"))).or_else(|| (!summary.is_empty()).then(|| fold.shorten(&summary))), buttons)
             }
         };
         // Not a box: a 2px attention rule down the left, the question, the command, the answers.

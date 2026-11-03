@@ -31,6 +31,7 @@ pub(crate) fn request(id: &str, name: &str, args: &Value) -> PermissionInfo {
         kind,
         raw_input: Some(args.clone()),
         always_label: (!online).then(|| format!("Always allow {what} this session")),
+        reason: None,
     }
 }
 

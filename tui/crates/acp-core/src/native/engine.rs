@@ -5,6 +5,7 @@
 use std::collections::{BTreeSet, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use cordata_economizer::cache_align::{self, PrefixTracker};
 use cordata_economizer::loopguard::{GuardDecision, LoopGuard, ToolCall};
@@ -20,7 +21,8 @@ use super::tools;
 use crate::events::{AppEvent, Restored, SessionInfo, StopReason, ToolCallInfo, ToolCallPatch, ToolStatus};
 use crate::history;
 use crate::permission::ApprovalDecision;
-use crate::policy::{self, Network, Policy};
+use crate::auto::{self, Judgement};
+use crate::policy::{self, Mode, Network, Policy};
 use crate::session::{Attachment, Command, SessionOptions};
 
 const DEFAULT_MODEL: &str = "claude-sonnet-5-5";
@@ -124,8 +126,9 @@ enum Interrupt {
     Shutdown,
 }
 
-/// Awaits `fut`, but gives up the moment the user cancels or the session is shut down.
-async fn interruptible<F: Future>(fut: F, commands: &mut Commands, events: &Events) -> Result<F::Output, Interrupt> {
+/// Awaits `fut`, but gives up the moment the user cancels or the session is shut down. A mode switch lands at once,
+/// so the next call this turn is judged under it.
+async fn interruptible<F: Future>(fut: F, commands: &mut Commands, events: &Events, mode: &ModeSwitch) -> Result<F::Output, Interrupt> {
     tokio::pin!(fut);
     loop {
         tokio::select! {
@@ -133,12 +136,36 @@ async fn interruptible<F: Future>(fut: F, commands: &mut Commands, events: &Even
             command = commands.recv() => match command {
                 Some(Command::Cancel) => return Err(Interrupt::Cancel),
                 Some(Command::Shutdown) | None => return Err(Interrupt::Shutdown),
+                Some(Command::SetMode(next)) => set_mode(mode, next, events),
                 Some(Command::Prompt(..) | Command::Resume(_) | Command::Forget | Command::SetModel(_)) => {
                     let _ = events.send(AppEvent::Notice("a turn is still running; wait or cancel it first".into()));
                 }
             },
             out = &mut fut => return Ok(out),
         }
+    }
+}
+
+fn set_mode(mode: &ModeSwitch, next: Mode, events: &Events) {
+    mode.set(next);
+    let _ = events.send(AppEvent::ModeChanged(next));
+}
+
+/// The session's mode, switched through a shared reference by the command loop while a turn holds the agent. An
+/// atomic rather than a `Cell` keeps the session future `Send` (it runs under `tokio::spawn`).
+struct ModeSwitch(AtomicBool);
+
+impl ModeSwitch {
+    fn new(mode: Mode) -> Self {
+        Self(AtomicBool::new(mode == Mode::Auto))
+    }
+
+    fn get(&self) -> Mode {
+        if self.0.load(Ordering::Relaxed) { Mode::Auto } else { Mode::Ask }
+    }
+
+    fn set(&self, mode: Mode) {
+        self.0.store(mode == Mode::Auto, Ordering::Relaxed);
     }
 }
 
@@ -152,6 +179,9 @@ struct Agent<'a> {
     always: HashSet<String>,
     economizer: Economizer,
     policy: Policy,
+    /// Who answers a call no rule decides: the person (`ask`), or `auto::judge` first (`auto`). Starts at `chat.mode`;
+    /// `Command::SetMode` changes it, mid-turn too.
+    mode: ModeSwitch,
     mcp: super::mcp::McpManager,
 }
 
@@ -260,6 +290,7 @@ pub(crate) async fn drive(
         transport: format!("native · {}", provider.model()),
         model: provider.model().to_owned(),
     }));
+    let _ = events.send(AppEvent::ModeChanged(policy.mode));
     for warning in &policy.warnings {
         let _ = events.send(AppEvent::Notice(format!("settings: {warning}")));
     }
@@ -272,7 +303,8 @@ pub(crate) async fn drive(
     for notice in startup.notices() {
         let _ = events.send(AppEvent::Notice(notice));
     }
-    let mut agent = Agent { provider, switched: None, cwd: options.cwd.clone(), offload, always: HashSet::new(), economizer, policy, mcp };
+    let mode = ModeSwitch::new(policy.mode);
+    let mut agent = Agent { provider, switched: None, cwd: options.cwd.clone(), offload, always: HashSet::new(), economizer, policy, mode, mcp };
     let mut history: Vec<Msg> = Vec::new();
     while let Some(command) = commands.recv().await {
         match command {
@@ -326,6 +358,7 @@ pub(crate) async fn drive(
                     let _ = events.send(AppEvent::Notice(format!("could not switch to {model}: {error}")));
                 }
             },
+            Command::SetMode(next) => set_mode(&agent.mode, next, &events),
             Command::Cancel => {}
             Command::Shutdown => break,
         }
@@ -350,7 +383,7 @@ impl Agent<'_> {
         let tools_json = specs.iter().map(|s| format!("{}{}", s.name, s.schema)).collect::<String>();
         self.economizer.prefix.observe(&system, &tools_json);
         for _ in 0..MAX_ROUNDS {
-            let stream = match interruptible(self.llm().stream(&system, history.clone(), &specs), commands, events).await {
+            let stream = match interruptible(self.llm().stream(&system, history.clone(), &specs), commands, events, &self.mode).await {
                 Ok(Ok(stream)) => stream,
                 Ok(Err(error)) => return {
                     self.fail(history, events, error);
@@ -361,7 +394,7 @@ impl Agent<'_> {
             let mut stream = stream;
             let (mut text, mut calls) = (String::new(), Vec::<Call>::new());
             loop {
-                let item = match interruptible(stream.next(), commands, events).await {
+                let item = match interruptible(stream.next(), commands, events, &self.mode).await {
                     Ok(item) => item,
                     Err(interrupt) => return self.interrupted(interrupt, history, text, events),
                 };
@@ -502,20 +535,33 @@ impl Agent<'_> {
         if tools::needs_approval(&call.name) && let policy::Verdict::Allow(rule) = &rule {
             let _ = events.send(AppEvent::Notice(format!("{} ran without asking: your rule `{rule}`", call.name)));
         } else if tools::needs_approval(&call.name) && !self.always.contains(&key) {
-            let (tx, rx) = oneshot::channel::<ApprovalDecision>();
-            let _ = events.send(AppEvent::PermissionRequested { info: approval::request(&call.id, &call.name, &call.args), decision: tx });
-            // A dropped sender counts as a rejection.
-            let decision = interruptible(rx, commands, events).await?.unwrap_or(ApprovalDecision::Reject);
-            match approval::interpret(decision) {
-                Verdict::Allow { always } => {
-                    // A network call is never remembered, whatever the front end sent.
-                    if always && !(call.name == "run_command" && policy::wants_network(&call.args)) {
-                        self.always.insert(key);
-                    }
+            // Auto mode answers first; a call it cannot show is safe goes to the card with the reason why.
+            let judged = match self.mode.get() {
+                Mode::Ask => None,
+                Mode::Auto => Some(auto::judge(&call.name, &call.args, &self.cwd, &self.policy)),
+            };
+            if let Some(Judgement::Allow(reason)) = judged {
+                let _ = events.send(AppEvent::AutoAllowed { id: call.id.clone(), reason });
+            } else {
+                let mut info = approval::request(&call.id, &call.name, &call.args);
+                if let Some(Judgement::Ask(reason)) = judged {
+                    info.reason = Some(reason);
                 }
-                Verdict::Deny(reason) => {
-                    let _ = events.send(patch(ToolStatus::Failed, Some(reason.clone())));
-                    return Ok(reason);
+                let (tx, rx) = oneshot::channel::<ApprovalDecision>();
+                let _ = events.send(AppEvent::PermissionRequested { info, decision: tx });
+                // A dropped sender counts as a rejection.
+                let decision = interruptible(rx, commands, events, &self.mode).await?.unwrap_or(ApprovalDecision::Reject);
+                match approval::interpret(decision) {
+                    Verdict::Allow { always } => {
+                        // A network call is never remembered, whatever the front end sent.
+                        if always && !(call.name == "run_command" && policy::wants_network(&call.args)) {
+                            self.always.insert(key);
+                        }
+                    }
+                    Verdict::Deny(reason) => {
+                        let _ = events.send(patch(ToolStatus::Failed, Some(reason.clone())));
+                        return Ok(reason);
+                    }
                 }
             }
         }
@@ -529,9 +575,9 @@ impl Agent<'_> {
 
         let _ = events.send(patch(ToolStatus::InProgress, None));
         let result = if self.mcp.has_tool(&call.name) {
-            interruptible(self.mcp.call_tool(&call.name, &call.args), commands, events).await
+            interruptible(self.mcp.call_tool(&call.name, &call.args), commands, events, &self.mode).await
         } else {
-            interruptible(tools::execute(&call.name, &call.args, &self.cwd, &self.policy.writable), commands, events).await
+            interruptible(tools::execute(&call.name, &call.args, &self.cwd, &self.policy.writable), commands, events, &self.mode).await
         };
         let (status, output) = match result {
             Err(interrupt) => {
@@ -827,9 +873,20 @@ mod tests {
         prompts: &[&str],
         policy: impl Fn(&crate::permission::PermissionInfo) -> ApprovalDecision,
     ) -> Vec<AppEvent> {
+        session_in(provider, cwd, plain(cwd), prompts, policy).await
+    }
+
+    /// `session`, starting from `setup` (the person's rules, `chat.mode`, …).
+    async fn session_in(
+        provider: &Fake,
+        cwd: &std::path::Path,
+        setup: Setup,
+        prompts: &[&str],
+        policy: impl Fn(&crate::permission::PermissionInfo) -> ApprovalDecision,
+    ) -> Vec<AppEvent> {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (ev_tx, mut ev_rx) = mpsc::unbounded_channel();
-        let driver = drive(provider, options(cwd), cmd_rx, ev_tx, plain(cwd));
+        let driver = drive(provider, options(cwd), cmd_rx, ev_tx, setup);
         let script = async {
             let mut out = Vec::new();
             for prompt in prompts {
@@ -1057,6 +1114,170 @@ mod tests {
         let tools = cordata_economizer::toolprune::ToolPruner::load(&state.join("tools.json"));
         assert_eq!(tools.usage(dir.path(), "run_command"), 2);
         assert!(state.join("skills.json").exists());
+    }
+
+    /// `id: reason` for each call auto mode ran without a card.
+    fn auto_allowed(events: &[AppEvent]) -> Vec<String> {
+        events.iter().filter_map(|e| if let AppEvent::AutoAllowed { id, reason } = e { Some(format!("{id}: {reason}")) } else { None }).collect()
+    }
+
+    fn modes(events: &[AppEvent]) -> Vec<Mode> {
+        events.iter().filter_map(|e| if let AppEvent::ModeChanged(m) = e { Some(*m) } else { None }).collect()
+    }
+
+    fn in_auto_mode(cwd: &std::path::Path, chat: serde_json::Value) -> Setup {
+        let mut chat = chat;
+        chat["mode"] = json!("auto");
+        Setup { policy: rules(json!({ "chat": chat })), ..plain(cwd) }
+    }
+
+    #[tokio::test]
+    async fn auto_mode_runs_offline_commands_and_read_only_fetches_without_asking() {
+        let dir = tempfile::tempdir().unwrap();
+        // `.invalid` never resolves and the timeout bounds the fetch, so the test needs no network.
+        let fetch = json!({"cmd": "curl -sS --max-time 2 https://example.invalid/x", "network": true});
+        let fake = Fake::new(vec![
+            vec![call("c1", "run_command", json!({"cmd": "true"}))],
+            vec![call("c2", "run_command", fetch)],
+            vec![call("c3", "edit_file", json!({"path": "src/a.txt", "target": "", "replacement": "x"}))],
+            vec![text("done")],
+        ]);
+        let events = session_in(&fake, dir.path(), in_auto_mode(dir.path(), json!({})), &["go"], |_| ApprovalDecision::Reject).await;
+        assert!(asked(&events).is_empty(), "{:?}", asked(&events));
+        assert_eq!(auto_allowed(&events), ["c1: sandboxed, offline", "c2: read-only fetch", "c3: edit inside the project"]);
+        assert!(notices(&events).iter().all(|n| !n.contains("without asking")), "auto mode says so on the row, not in a notice");
+        assert!(dir.path().join("src/a.txt").exists(), "the judged call ran");
+        assert_eq!(modes(&events), [Mode::Auto], "the session announces its starting mode");
+        assert!(matches!(&events[1], AppEvent::ModeChanged(Mode::Auto)), "right after Connected");
+    }
+
+    #[tokio::test]
+    async fn auto_mode_still_asks_for_a_post_and_git_reset_hard_with_a_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Fake::new(vec![
+            vec![call("c1", "run_command", json!({"cmd": "curl -X POST https://example.com", "network": true}))],
+            vec![call("c2", "run_command", json!({"cmd": "git reset --hard HEAD~1"}))],
+            vec![text("done")],
+        ]);
+        let reasons = Mutex::new(Vec::new());
+        let events = session_in(&fake, dir.path(), in_auto_mode(dir.path(), json!({})), &["go"], |info| {
+            reasons.lock().unwrap().push(info.reason.clone());
+            ApprovalDecision::Reject
+        })
+        .await;
+        assert_eq!(asked(&events), ["run_command", "run_command"]);
+        assert!(auto_allowed(&events).is_empty());
+        let reasons = reasons.into_inner().unwrap();
+        assert_eq!(reasons[0].as_deref(), Some("needs the network to POST"));
+        assert!(reasons[1].as_deref().is_some_and(|r| r.contains("git reset --hard")), "{reasons:?}");
+        assert!(matches!(&fake.seen.lock().unwrap()[2][4], Msg::ToolResult { output, .. } if output.contains("rejected")), "a rejected card still refuses");
+
+        // Ask mode never consults the judge: the card has no reason.
+        let fake = Fake::new(vec![vec![call("c1", "run_command", json!({"cmd": "true"}))], vec![text("done")]]);
+        let reasons = Mutex::new(Vec::new());
+        let events = session(&fake, dir.path(), &["go"], |info| {
+            reasons.lock().unwrap().push(info.reason.clone());
+            ApprovalDecision::Reject
+        })
+        .await;
+        assert_eq!(reasons.into_inner().unwrap(), [None]);
+        assert!(auto_allowed(&events).is_empty());
+        assert_eq!(modes(&events), [Mode::Ask]);
+    }
+
+    #[tokio::test]
+    async fn deny_rules_and_network_off_win_over_auto_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Fake::new(vec![
+            vec![call("c1", "run_command", json!({"cmd": "cargo test -p x"}))],
+            vec![call("c2", "run_command", json!({"cmd": "curl -sS https://example.com", "network": true}))],
+            vec![call("c3", "edit_file", json!({"path": "src/a.txt", "target": "", "replacement": "x"}))],
+            vec![call("c4", "edit_file", json!({"path": ".git/config", "target": "", "replacement": "x"}))],
+            vec![text("done")],
+        ]);
+        let setup = in_auto_mode(dir.path(), json!({"network": "off", "deny": ["run_command(cargo test*)"], "allow": ["edit_file(src/**)"]}));
+        let events = session_in(&fake, dir.path(), setup, &["go"], |_| ApprovalDecision::Allow).await;
+        assert!(asked(&events).is_empty());
+        assert!(auto_allowed(&events).is_empty(), "rules, network-off and the guard decide before auto mode is consulted");
+        assert!(notices(&events).iter().any(|n| n.contains("your rule `edit_file(src/**)`")), "an allow rule still says so");
+        let seen = fake.seen.lock().unwrap();
+        assert!(matches!(&seen[1][2], Msg::ToolResult { output, .. } if output.contains("refused by the rule `run_command(cargo test*)`")));
+        assert!(matches!(&seen[2][4], Msg::ToolResult { output, .. } if output.contains("network access for commands is off")));
+        assert!(matches!(&seen[4][8], Msg::ToolResult { output, .. } if output.contains("GUARD REFUSAL")));
+    }
+
+    #[tokio::test]
+    async fn set_mode_applies_mid_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let edit = |n: &str| json!({"path": n, "target": "", "replacement": "x"});
+        let fake = Fake::new(vec![
+            vec![call("c1", "edit_file", edit("one.txt"))],
+            vec![call("c2", "edit_file", edit("two.txt"))],
+            vec![text("first done")],
+            vec![call("c3", "edit_file", edit("three.txt"))],
+            vec![text("second done")],
+        ]);
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let (ev_tx, mut ev_rx) = mpsc::unbounded_channel();
+        let driver = drive(&fake, options(dir.path()), cmd_rx, ev_tx, plain(dir.path()));
+        let run = async {
+            let mut out = Vec::new();
+            // Turn one: the person switches to auto while c1's card is open, then allows it; c2 is judged under auto.
+            cmd_tx.send(prompt("one")).unwrap();
+            let mut switched = false;
+            loop {
+                match ev_rx.recv().await.expect("events open") {
+                    AppEvent::PermissionRequested { info, decision } => {
+                        out.push(AppEvent::Notice(format!("asked:{}", info.tool_call_id)));
+                        if !switched {
+                            switched = true;
+                            cmd_tx.send(Command::SetMode(Mode::Auto)).unwrap();
+                            loop {
+                                let event = ev_rx.recv().await.expect("events open");
+                                let landed = matches!(event, AppEvent::ModeChanged(Mode::Auto));
+                                out.push(event);
+                                if landed {
+                                    break;
+                                }
+                            }
+                        }
+                        let _ = decision.send(ApprovalDecision::Allow);
+                    }
+                    event @ AppEvent::TurnComplete(_) => {
+                        out.push(event);
+                        break;
+                    }
+                    event => out.push(event),
+                }
+            }
+            // Between turns: back to ask, and the next edit asks again.
+            cmd_tx.send(Command::SetMode(Mode::Ask)).unwrap();
+            cmd_tx.send(prompt("two")).unwrap();
+            loop {
+                match ev_rx.recv().await.expect("events open") {
+                    AppEvent::PermissionRequested { info, decision } => {
+                        out.push(AppEvent::Notice(format!("asked:{}", info.tool_call_id)));
+                        let _ = decision.send(ApprovalDecision::Allow);
+                    }
+                    event @ AppEvent::TurnComplete(_) => {
+                        out.push(event);
+                        break;
+                    }
+                    event => out.push(event),
+                }
+            }
+            cmd_tx.send(Command::Shutdown).unwrap();
+            while let Some(event) = ev_rx.recv().await {
+                out.push(event);
+            }
+            out
+        };
+        let (_, events) = tokio::join!(driver, run);
+        assert_eq!(asked(&events), ["c1", "c3"]);
+        assert_eq!(auto_allowed(&events), ["c2: edit inside the project"]);
+        assert_eq!(modes(&events), [Mode::Ask, Mode::Auto, Mode::Ask]);
+        assert!(notices(&events).iter().all(|n| !n.contains("still running")), "a mode switch is not refused mid-turn");
+        assert!(["one.txt", "two.txt", "three.txt"].iter().all(|f| dir.path().join(f).exists()));
     }
 
     #[test]

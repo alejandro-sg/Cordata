@@ -157,6 +157,13 @@ pub enum AppEvent {
     Usage(TokenUsage),
     /// The session now answers with another model (`SessionHandle::set_model`); the conversation carries on.
     ModelChanged(String),
+    /// Auto mode allowed tool call `id` without a card (`auto::judge`), for this reason.
+    AutoAllowed {
+        id: String,
+        reason: String,
+    },
+    /// Who answers approvals now (`chat.mode`, or `SessionHandle::set_mode`).
+    ModeChanged(crate::policy::Mode),
     TurnComplete(StopReason),
     /// The turn failed; the session stays usable.
     TurnFailed(String),

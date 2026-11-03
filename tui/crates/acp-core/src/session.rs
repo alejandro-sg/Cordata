@@ -9,6 +9,7 @@ use tokio::task::JoinHandle;
 
 use crate::error::{Error, Result};
 use crate::events::AppEvent;
+use crate::policy::Mode;
 use crate::transport::BackendTransport;
 
 #[derive(Debug, Clone)]
@@ -42,6 +43,8 @@ pub(crate) enum Command {
     Forget,
     /// Answer with this model from the next request on (between turns).
     SetModel(String),
+    /// Who answers approvals from now on: the person (`Ask`) or `auto::judge` first (`Auto`).
+    SetMode(Mode),
     Cancel,
     Shutdown,
 }
@@ -98,6 +101,11 @@ impl SessionHandle {
     /// Answered with `ModelChanged`, or a `Notice` saying why not.
     pub fn set_model(&self, model: impl Into<String>) -> Result<()> {
         self.send(Command::SetModel(model.into()))
+    }
+
+    /// Switches who answers approvals (`ask` or `auto`) for the rest of this session. Answered with `ModeChanged`.
+    pub fn set_mode(&self, mode: Mode) -> Result<()> {
+        self.send(Command::SetMode(mode))
     }
 
     /// Stops a running turn, between streamed events. Inert while an approval is unanswered: answer it first.

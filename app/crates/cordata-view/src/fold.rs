@@ -40,7 +40,7 @@ impl Activity {
 }
 
 /// What folding needs besides the messages: where paths are shortened from, and which tool calls wait for approval
-/// (those flush a group and stay on their own row).
+/// (those flush a group and are left out of the rows: the approval card stands for them).
 #[derive(Debug, Clone, Default)]
 pub struct Context {
     pub cwd: Option<PathBuf>,
@@ -125,6 +125,10 @@ pub fn rows_with(messages: &[Message], ctx: &Context) -> Vec<Row> {
     for (i, message) in messages.iter().enumerate() {
         match message {
             Message::Thought(_) | Message::Info(_) if group.is_some() => tail.push(i),
+            // The card an open approval belongs to is left out: the approval card stands for it.
+            Message::Tool(card) if ctx.waiting.iter().any(|id| *id == card.id) => {
+                flush(&mut out, &mut group, &mut tail);
+            }
             Message::Tool(card) => match quiet(card, ctx) {
                 Some(q) => {
                     let g = group.get_or_insert_with(|| Activity { first: i, ..Activity::default() });
@@ -340,12 +344,29 @@ mod tests {
         let rows = rows_with(&msgs, &ctx);
         let groups = activity(&rows);
         assert_eq!(groups.iter().map(|a| (a.first, a.last)).collect::<Vec<_>>(), [(0, 1), (3, 4), (6, 7), (9, 10), (12, 13)]);
-        for i in [2, 5, 8, 11, 14] {
+        for i in [2, 5, 8, 14] {
             assert!(rows.contains(&Row::Message(i)), "{i} on its own row: {rows:?}");
         }
+        // The waiting card (11) is absent: its approval card stands for it.
+        assert!(!rows.contains(&Row::Message(11)), "{rows:?}");
         // Without the approval, the pending run folds in.
         let groups = activity(&super::rows(&msgs)).into_iter().map(|a| (a.first, a.last)).collect::<Vec<_>>();
         assert!(groups.contains(&(9, 13)), "{groups:?}");
+    }
+
+    #[test]
+    fn fold_hides_the_card_an_approval_belongs_to() {
+        let msgs = vec![read("1", "a"), run("2", "curl x"), read("3", "b"), Message::Agent("ok".into())];
+        let ctx = Context { waiting: vec!["2".into()], ..Context::default() };
+        let rows = rows_with(&msgs, &ctx);
+        // The waiting run is gone everywhere; the reads on either side do not fold across it.
+        assert!(!rows.iter().any(|r| matches!(r, Row::Message(1))), "{rows:?}");
+        assert_eq!(rows, vec![Row::Message(0), Row::Message(2), Row::Message(3)]);
+        // A group still flushes at it: the read before it is a plain row, not an activity.
+        assert!(activity(&rows).is_empty(), "{rows:?}");
+        // Without the approval the run folds in with the reads.
+        let folded = super::rows(&msgs);
+        assert_eq!(activity(&folded).len(), 1, "{folded:?}");
     }
 
     #[test]

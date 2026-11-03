@@ -65,6 +65,8 @@ impl Session {
         let mut view = View::new();
         view.attach_store(cordata_view::settings::Store::discover(&cwd));
         view.initial_prompt = initial_prompt;
+        // The engine starts in the user file's `chat.mode`; the view shows the same from the start.
+        view.mode = acp_core::policy::Policy::load(&cwd).mode;
         let mut session = Self { view, handle: None, cwd: cwd.clone(), transport: connection.describe(), version: 0, outgoing: Vec::new(), local: local_tx };
         if let Some(problem) = &connection.problem {
             session.view.messages.push(Message::Error(problem.clone()));
@@ -229,6 +231,7 @@ impl Session {
                 }
                 sent
             }
+            Effect::SetMode(mode) => self.with_handle(|h| h.set_mode(mode)),
             Effect::Copy(text) => {
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
                 Ok(())

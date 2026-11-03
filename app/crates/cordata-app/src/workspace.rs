@@ -2249,7 +2249,7 @@ mod window_tests {
         let rx = view.update(cx, |this, cx| {
             let first = this.sessions[0].clone();
             let (tx, rx) = tokio::sync::oneshot::channel();
-            let info = acp_core::PermissionInfo { tool_call_id: "c".into(), tool_name: "run_command".into(), title: "Run run_command".into(), kind: acp_core::ToolKind::Execute, raw_input: None, always_label: None };
+            let info = acp_core::PermissionInfo { tool_call_id: "c".into(), tool_name: "run_command".into(), title: "Run run_command".into(), kind: acp_core::ToolKind::Execute, raw_input: None, always_label: None, reason: None };
             first.update(cx, |s, _| {
                 s.view.conn = cordata_view::app::ConnState::Connected;
                 s.view.on_event(acp_core::AppEvent::PermissionRequested { info, decision: tx });
@@ -2273,6 +2273,7 @@ mod window_tests {
             kind: acp_core::ToolKind::Execute,
             raw_input: Some(serde_json::json!({"command": "make deploy"})),
             always_label: Some("shell(make deploy)".into()),
+            reason: None,
         };
         view.update(cx, |this, cx| {
             this.session.update(cx, |s, cx| {

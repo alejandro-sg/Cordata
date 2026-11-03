@@ -14,5 +14,6 @@ pub mod transport;
 pub use error::{Error, Result};
 pub use events::{AppEvent, FileDiff, Restored, SessionInfo, StopReason, TokenUsage, ToolCallInfo, ToolCallPatch, ToolKind, ToolStatus};
 pub use permission::{ApprovalDecision, PermissionInfo};
+pub use policy::Mode;
 pub use session::{Attachment, SessionHandle, SessionOptions};
 pub use transport::BackendTransport;

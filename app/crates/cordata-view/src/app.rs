@@ -1,10 +1,10 @@
 //! UI-independent application state: everything the screen shows and every
 //! key's effect lives here so it can be unit-tested without a terminal.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
-use acp_core::{AppEvent, ApprovalDecision, FileDiff, PermissionInfo, Restored, SessionInfo, StopReason, ToolCallInfo, ToolKind, ToolStatus};
+use acp_core::{AppEvent, ApprovalDecision, FileDiff, Mode, PermissionInfo,Restored, SessionInfo, StopReason, ToolCallInfo, ToolKind, ToolStatus};
 use crate::key::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use serde_json::Value;
 use tokio::sync::oneshot;
@@ -83,6 +83,8 @@ pub enum Effect {
     Forget,
     /// Answer with another model from the next turn (`SessionHandle::set_model`).
     SetModel(String),
+    /// Switch who answers approvals for the rest of the session (`SessionHandle::set_mode`).
+    SetMode(Mode),
     /// A command run in the project folder, reported back as a `LocalEvent`. `share` hands its output to the agent
     /// with the next prompt (`!command`); `as_diff` shows it as a coloured diff (`/diff`).
     Shell {
@@ -235,6 +237,11 @@ pub struct App {
     /// The person's own words for the approval card in front of them (`w`): a reason for refusing, what a plan should
     /// change, or an answer to a question the offered options did not cover.
     pub note: Option<Input>,
+    /// Who answers approvals no rule decides: the person (`Ask`) or `auto::judge` (`Auto`). Shift+Tab flips it.
+    pub mode: Mode,
+    /// `auto · <reason>` for each tool call auto mode let run without a card, by tool call id. Shown on the call's own
+    /// row, never as a message of its own.
+    pub auto_meta: HashMap<String, String>,
 }
 
 impl Default for App {
@@ -289,7 +296,23 @@ impl App {
             overlay: None,
             overlay_factory: crate::overlay::none,
             note: None,
+            mode: Mode::Ask,
+            auto_meta: HashMap::new(),
         }
+    }
+
+    /// `auto · <reason>` when auto mode ran tool call `id` without asking.
+    pub fn auto_meta(&self, id: &str) -> Option<&str> {
+        self.auto_meta.get(id).map(String::as_str)
+    }
+
+    /// Shift+Tab: `ask` ↔ `auto`. The mode shows at once; the engine is told through the effect.
+    pub fn cycle_mode(&mut self) -> Effect {
+        self.mode = match self.mode {
+            Mode::Ask => Mode::Auto,
+            Mode::Auto => Mode::Ask,
+        };
+        Effect::SetMode(self.mode)
     }
 
     /// For the footer of *another* session's tab strip.
@@ -437,6 +460,10 @@ impl App {
                     session.model = model;
                 }
             }
+            AppEvent::AutoAllowed { id, reason } => {
+                self.auto_meta.insert(id, format!("auto · {}", sanitize(&reason)));
+            }
+            AppEvent::ModeChanged(mode) => self.mode = mode,
             AppEvent::ToolCallStarted(info) => {
                 self.telemetry.output(Instant::now());
                 self.turn_tools += 1;
@@ -699,6 +726,11 @@ impl App {
                 }
                 _ => None,
             };
+        }
+
+        // Shift+Tab flips ask/auto unless the completion menu has the keyboard (an open overlay returned above).
+        if key.code == KeyCode::BackTab && self.menu.is_none() {
+            return Some(self.cycle_mode());
         }
 
         self.handle_input_key(key)
@@ -1437,6 +1469,7 @@ mod tests {
                 kind: ToolKind::Execute,
                 raw_input: None,
                 always_label: None,
+                reason: None,
             },
             decision: tx,
         });
@@ -1456,6 +1489,7 @@ mod tests {
                 kind: ToolKind::Execute,
                 raw_input: None,
                 always_label: None,
+                reason: None,
             },
             decision: tx,
         });
@@ -1483,6 +1517,7 @@ mod tests {
                 kind: ToolKind::Execute,
                 raw_input: None,
                 always_label: None,
+                reason: None,
             },
             decision: tx,
         });
@@ -1502,6 +1537,7 @@ mod tests {
                 kind: ToolKind::Execute,
                 raw_input: None,
                 always_label: None,
+                reason: None,
             },
             decision: tx,
         });
@@ -1690,6 +1726,45 @@ mod tests {
         assert_eq!(effect, Some(Effect::SendPrompt("what is this project".into())));
         assert!(app.take_initial_prompt().is_none(), "taken once");
         assert!(matches!(app.messages.last(), Some(Message::User(u)) if u == "what is this project"));
+    }
+
+    #[test]
+    fn shift_tab_cycles_ask_and_auto() {
+        let mut app = connected();
+        assert_eq!(app.mode, Mode::Ask, "ask is the default");
+        assert_eq!(app.on_key(key(KeyCode::BackTab)), Some(Effect::SetMode(Mode::Auto)));
+        assert_eq!(app.mode, Mode::Auto);
+        assert_eq!(app.on_key(key(KeyCode::BackTab)), Some(Effect::SetMode(Mode::Ask)));
+        assert_eq!(app.mode, Mode::Ask);
+        assert!(app.messages.is_empty(), "switching is not a message");
+
+        // The engine's word wins.
+        app.on_event(AppEvent::ModeChanged(Mode::Auto));
+        assert_eq!(app.mode, Mode::Auto);
+
+        // An open completion menu keeps the key.
+        type_text(&mut app, "/hel");
+        assert!(app.menu.is_some());
+        assert_eq!(app.on_key(key(KeyCode::BackTab)), None);
+        assert_eq!(app.mode, Mode::Auto);
+        app.input.clear();
+        app.menu = None;
+
+        // A call auto mode ran shows its reason on its own row, not as a message.
+        app.on_event(AppEvent::ToolCallStarted(ToolCallInfo {
+            id: "t1".into(),
+            name: "read_file".into(),
+            kind: ToolKind::Read,
+            status: ToolStatus::Pending,
+            raw_input: None,
+            content: String::new(),
+            diffs: Vec::new(),
+        }));
+        let before = app.messages.len();
+        app.on_event(AppEvent::AutoAllowed { id: "t1".into(), reason: "reads inside the project".into() });
+        assert_eq!(app.messages.len(), before);
+        assert_eq!(app.auto_meta("t1"), Some("auto · reads inside the project"));
+        assert_eq!(app.auto_meta("t2"), None);
     }
 
     #[test]

@@ -23,4 +23,6 @@ pub struct PermissionInfo {
     pub raw_input: Option<Value>,
     /// "Always allow <tool> this session", when the person may offer it.
     pub always_label: Option<String>,
+    /// Why auto mode left this call to the person (`auto::judge`); `None` in ask mode.
+    pub reason: Option<String>,
 }
