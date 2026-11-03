@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "acp-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cordata-economizer",
  "cordata-guard",
@@ -22,7 +22,7 @@ dependencies = [
 
 [[package]]
 name = "acp-tui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "acp-core",
  "anyhow",
@@ -493,7 +493,7 @@ dependencies = [
 
 [[package]]
 name = "cordata-checkpoints"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -503,7 +503,7 @@ dependencies = [
 
 [[package]]
 name = "cordata-doctor"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "serde",
@@ -513,7 +513,7 @@ dependencies = [
 
 [[package]]
 name = "cordata-economizer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ahash",
  "regex",
@@ -525,7 +525,7 @@ dependencies = [
 
 [[package]]
 name = "cordata-floorplan"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -539,7 +539,7 @@ dependencies = [
 
 [[package]]
 name = "cordata-guard"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "regex",
  "serde_json",
@@ -547,7 +547,7 @@ dependencies = [
 
 [[package]]
 name = "cordata-ledger"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "regex",
  "rusqlite",
@@ -559,7 +559,7 @@ dependencies = [
 
 [[package]]
 name = "cordata-orchestrator"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cordata-checkpoints",
  "cordata-guard",
@@ -582,7 +582,7 @@ dependencies = [
 
 [[package]]
 name = "cordata-run"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "cordata-checkpoints",
@@ -599,11 +599,11 @@ dependencies = [
 
 [[package]]
 name = "cordata-theme"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "cordata-view"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "acp-core",
  "crossterm",
