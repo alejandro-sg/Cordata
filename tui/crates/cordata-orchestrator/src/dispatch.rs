@@ -543,9 +543,56 @@ pub fn evaluate(logs: &[Logged], specs: &[Spec], train_fraction: f64, lam: f64, 
     json!({"train": train.len(), "test": test.len(), "learned": replay(test, &mut learned, &arms), "strongest": replay(test, &mut strongest, &arms)})
 }
 
+/// Outcomes the `auto` dispatch mode wants before it judges the learned policy at all.
+pub const GRADUATE_AFTER: usize = 30;
+
+/// The `auto` dispatch mode: `Live` once the learned policy, trained on the older 70% of `logs` (oldest first) and
+/// replayed on the rest, passes as often as the always-strongest default (within 2 points) at no more cost per
+/// success, on at least 5 matched decisions; `Shadow` (still learning, nothing changes) otherwise. The note says why.
+pub fn graduate(logs: &[Logged], specs: &[Spec], lam: f64) -> (Mode, String) {
+    if logs.len() < GRADUATE_AFTER {
+        return (Mode::Shadow, format!("routing is learning ({}/{GRADUATE_AFTER} outcomes); the default order decides", logs.len()));
+    }
+    let report = evaluate(logs, specs, 0.7, lam, 3, 1.5);
+    let num = |side: &str, key: &str| report[side][key].as_f64();
+    let matched = report["learned"]["matched"].as_u64().unwrap_or(0);
+    let (lp, sp) = (num("learned", "pass_rate"), num("strongest", "pass_rate"));
+    let (lc, sc) = (num("learned", "cost_per_success"), num("strongest", "cost_per_success"));
+    let good = matched >= 5
+        && match (lp, sp) {
+            (Some(l), Some(s)) => l + 0.02 >= s && lc.zip(sc).is_none_or(|(l, s)| l <= s),
+            (Some(_), None) => true,
+            _ => false,
+        };
+    let pct = |p: Option<f64>| p.map_or("—".to_owned(), |p| format!("{:.0}%", p * 100.0));
+    let money = |c: Option<f64>| c.map_or("—".to_owned(), |c| format!("{c:.2}"));
+    let summary = format!("learned {} pass at {} per success vs default {} at {}, {matched} matched", pct(lp), money(lc), pct(sp), money(sc));
+    if good { (Mode::Live, format!("routing learned from {} outcomes and now decides ({summary})", logs.len())) } else { (Mode::Shadow, format!("routing has not yet beaten the default order ({summary}); it keeps learning")) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_mode_goes_live_only_when_the_learned_policy_holds_up_on_replay() {
+        let few: Vec<Logged> = (0..10).map(|_| Logged { role: "execute".into(), task_class: "g".into(), arm: "cc:opus".into(), ok: true, cost: 1.0 }).collect();
+        assert_eq!(graduate(&few, &specs(), 0.3).0, Mode::Shadow, "too little evidence");
+        // haiku passes as often as opus at a tenth of the cost: the learner should take over.
+        let mut logs = Vec::new();
+        for i in 0..120 {
+            let (arm, cost) = [("cc:opus", 1.0), ("cc:haiku", 0.1), ("agy:gemini", 0.3)][i % 3];
+            logs.push(Logged { role: "execute".into(), task_class: "g".into(), arm: arm.into(), ok: arm != "agy:gemini" || i % 2 == 0, cost });
+        }
+        let (mode, note) = graduate(&logs, &specs(), 0.3);
+        assert_eq!(mode, Mode::Live, "{note}");
+        // Drift: haiku did fine in the older outcomes and fails in the recent ones. Replay on the recent ones catches
+        // it, and the default keeps deciding.
+        let cut = logs.len() * 7 / 10;
+        let drifted: Vec<Logged> = logs.iter().cloned().enumerate().map(|(i, mut r)| { if i >= cut && r.arm == "cc:haiku" { r.ok = false } r }).collect();
+        let (mode, note) = graduate(&drifted, &specs(), 0.3);
+        assert_eq!(mode, Mode::Shadow, "{note}");
+    }
 
     fn cand(worker: &str, model: &str, family: &str, vendor: &str) -> Candidate {
         Candidate { worker_id: worker.into(), family: family.into(), model: Some(model.into()), effort: None, model_family: vendor.into() }
