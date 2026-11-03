@@ -237,6 +237,16 @@ pub struct AuditReport {
 }
 
 impl AuditReport {
+    /// When every failed check failed because something it runs is not installed here, what is missing: no edit can
+    /// fix that, and a worker asked to will fake the tool instead (a local `pytest/` package that "passes").
+    pub fn missing_tools(&self) -> Option<Vec<String>> {
+        let failed: Vec<&CheckResult> = self.checks.iter().filter(|c| !c.ok).collect();
+        if failed.is_empty() || !self.out_of_scope.is_empty() {
+            return None;
+        }
+        failed.iter().map(|c| (c.kind == "command").then(|| missing_tool(&c.detail)).flatten()).collect()
+    }
+
     pub fn failures(&self) -> Vec<String> {
         let mut out: Vec<String> = self.checks.iter().filter(|c| !c.ok).map(|c| format!("{} ({}): {}", c.id, c.kind, c.detail)).collect();
         if !self.out_of_scope.is_empty() {
@@ -629,5 +639,41 @@ mod tests {
         assert_eq!(lines[2], "(deny network-outbound)");
         assert!(lines[5].contains("__pycache__|") && lines[5].contains("node_modules/\\.cache"), "{}", lines[5]);
         assert!(p.contains(".aws"));
+    }
+}
+
+/// What a failed command's output says is not installed: a Python module, a shell command, or (exit 127) an unnamed
+/// program. `None` when the failure looks like the code's.
+pub fn missing_tool(detail: &str) -> Option<String> {
+    static PATTERNS: std::sync::LazyLock<Vec<regex::Regex>> = std::sync::LazyLock::new(|| {
+        [r"No module named '?([A-Za-z0-9_.\-]+)'?", r"command not found: ([A-Za-z0-9_./\-]+)", r"([A-Za-z0-9_./\-]+): command not found", r"([A-Za-z0-9_./\-]+): No such file or directory \(os error 2\)"]
+            .iter()
+            .filter_map(|p| regex::Regex::new(p).ok())
+            .collect()
+    });
+    for re in PATTERNS.iter() {
+        if let Some(name) = re.captures(detail).and_then(|c| c.get(1)) {
+            return Some(name.as_str().trim_matches('\'').to_owned());
+        }
+    }
+    detail.starts_with("exit 127 ").then(|| "a program the check runs".to_owned())
+}
+
+#[cfg(test)]
+mod missing_tool_tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_tool_is_told_apart_from_a_failing_test() {
+        assert_eq!(missing_tool("exit 1 (expected 0) in 0.1s\n/usr/bin/python3: No module named pytest").as_deref(), Some("pytest"));
+        assert_eq!(missing_tool("exit 127 (expected 0) in 0.0s\nzsh: command not found: cargo-nextest").as_deref(), Some("cargo-nextest"));
+        assert_eq!(missing_tool("exit 127 (expected 0) in 0.0s\nbash: jest: command not found").as_deref(), Some("jest"));
+        assert_eq!(missing_tool("exit 127 (expected 0) in 0.0s\n").as_deref(), Some("a program the check runs"));
+        assert_eq!(missing_tool("exit 1 (expected 0) in 2.0s\nAssertionError: 3 != 2"), None);
+        let report = |checks: Vec<CheckResult>| AuditReport { checks, ..Default::default() };
+        let env = report(vec![CheckResult::new("a", "command", false, "exit 1 (expected 0) in 0.1s\nNo module named pytest", 0.1), CheckResult::new("b", "file_exists", true, "", 0.0)]);
+        assert_eq!(env.missing_tools(), Some(vec!["pytest".to_owned()]));
+        let mixed = report(vec![CheckResult::new("a", "command", false, "exit 1 (expected 0) in 0.1s\nNo module named pytest", 0.1), CheckResult::new("b", "file_exists", false, "missing", 0.0)]);
+        assert_eq!(mixed.missing_tools(), None, "a real failure alongside: the code still needs work");
     }
 }
