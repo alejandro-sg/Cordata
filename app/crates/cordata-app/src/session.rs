@@ -206,6 +206,12 @@ impl Session {
         self.settle(Vec::new(), cx);
     }
 
+    /// `ask` ↔ `auto` (Shift+Tab, or the composer's mode chip): shown at once, applied by the engine from its next call.
+    pub fn cycle_mode(&mut self, cx: &mut Context<Self>) {
+        let effect = self.view.cycle_mode();
+        self.settle(vec![effect], cx);
+    }
+
     /// The model switcher: same path as `/model <name>`, so the reducer's checks apply.
     pub fn set_model(&mut self, model: &str, cx: &mut Context<Self>) {
         self.submit(&format!("/model {model}"), cx);

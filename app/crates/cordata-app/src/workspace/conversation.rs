@@ -15,7 +15,7 @@ use gpui::{AnyElement, App, BoxShadow, ClickEvent, Context, FontWeight, Interact
 use gpui_component::input::Textarea;
 
 use super::{DockTab, Overlay, TogglePanel, ToggleSidebar, Workspace, tilde};
-use crate::theme::{amber, c, inset_ring, line, mono, soft_shadow, tk};
+use crate::theme::{amber, c, ca, inset_ring, line, mono, soft_shadow, tk};
 use crate::transcript;
 use crate::ui::{self, Kind, Tone};
 
@@ -296,9 +296,11 @@ impl Workspace {
         let tool = info.tool_name.as_str();
         let (_, sentence, block, buttons): (&str, String, Option<String>, Vec<AnyElement>) = {
             {
-                let sentence = match (&command, info.kind) {
-                    (Some(_), _) => format!("Run shell command in {place}"),
-                    (None, acp_core::ToolKind::Edit) => format!("Modify files in {place}"),
+                let sentence = match (&info.reason, &command, info.kind) {
+                    // Auto mode let everything else through: say why this one still needs a person.
+                    (Some(reason), ..) => format!("Auto mode asks: {}", shown(reason)),
+                    (None, Some(_), _) => format!("Run shell command in {place}"),
+                    (None, None, acp_core::ToolKind::Edit) => format!("Modify files in {place}"),
                     _ => format!("Allow {tool}?"),
                 };
                 // The engine words the offer ("Always allow run_command this session"): the button says "Always",
@@ -645,10 +647,42 @@ impl Workspace {
                     .child(div().flex_1().min_w_0().truncate().children(view.hint.clone().map(|hint| SharedString::from(shown(&hint)))))
                     .when_some(esc, |row, hint| row.child(div().flex_shrink_0().text_color(c(tk.attention)).child(hint)))
                     .children(self.meter(cx))
+                    .child(self.mode_chip(cx))
                     .when_some(model, |row, model| row.child(self.model_trigger(model, cx)))
                     .children(action),
             )
             .into_any_element()
+    }
+
+    /// The approval mode, next to the model: `ask` muted, `auto` in amber. A click (or Shift+Tab) switches it.
+    pub(super) fn mode_chip(&self, cx: &mut Context<Self>) -> AnyElement {
+        let tk = tk(cx);
+        let auto = self.session.read(cx).view.mode == acp_core::Mode::Auto;
+        let hover = line(cx, t::HOVER);
+        div()
+            .id("mode-chip")
+            .role(gpui::Role::Button)
+            .aria_label(SharedString::from(if auto { "Approval mode: auto — switch to ask" } else { "Approval mode: ask — switch to auto" }))
+            .tooltip(ui::tip(if auto { "Auto: safe calls run without asking  ⇧⇥" } else { "Ask: every edit and command asks first  ⇧⇥" }))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .px(px(6.))
+            .h(px(22.))
+            .rounded(px(t::RADIUS_ROW))
+            .cursor_pointer()
+            .font_family(mono(cx))
+            .text_color(c(if auto { tk.amber } else { tk.text_muted }))
+            .when(auto, |el| el.bg(ca(tk.amber, 0.12)))
+            .hover(move |s| s.bg(hover))
+            .child(if auto { "auto" } else { "ask" })
+            .on_click(cx.listener(|this, _, _, cx| this.cycle_mode(cx)))
+            .into_any_element()
+    }
+
+    pub(super) fn cycle_mode(&mut self, cx: &mut Context<Self>) {
+        self.session.update(cx, |session, cx| session.cycle_mode(cx));
+        cx.notify();
     }
 
     /// The composer's placeholder for the session's state.

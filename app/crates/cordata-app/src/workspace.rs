@@ -100,6 +100,7 @@ actions!(
         OpenSettings,
         ToggleThoughts,
         ToggleTools,
+        CycleMode,
         Help,
         ShowFiles,
         ShowEditor,
@@ -1827,6 +1828,7 @@ impl Render for Workspace {
             .key_context("Workspace")
             .on_action(cx.listener(Self::stop))
             .on_action(cx.listener(Self::focus_composer))
+            .on_action(cx.listener(|this, _: &CycleMode, _, cx| this.cycle_mode(cx)))
             .on_action(cx.listener(Self::new_session))
             .on_action(cx.listener(Self::close_session))
             .on_action(cx.listener(Self::next_session))
@@ -1931,6 +1933,7 @@ pub fn bind_keys(cx: &mut App) {
         gpui::KeyBinding::new("ctrl-r", gpui::NoAction, Some("CordataTerminal")),
         gpui::KeyBinding::new("ctrl-e", gpui::NoAction, Some("CordataTerminal")),
         gpui::KeyBinding::new("cmd-l", FocusComposer, Some("Workspace")),
+        gpui::KeyBinding::new("shift-tab", CycleMode, Some("Workspace")),
         gpui::KeyBinding::new("cmd-n", NewSession, Some("Workspace")),
         gpui::KeyBinding::new("cmd-w", CloseSession, Some("Workspace")),
         gpui::KeyBinding::new("cmd-w", CloseSession, Some("CordataEditor")),
