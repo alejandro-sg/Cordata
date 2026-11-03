@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::SystemTime;
 
-use cordata_theme::Role;
+use cordata_theme::tokens as t;
 use cordata_view::tree::{Row, Tree};
 use cordata_view::{mentions, shown};
 use gpui::prelude::FluentBuilder as _;
@@ -20,11 +20,11 @@ use gpui::{
     AnyElement, AppContext as _, ClickEvent, Context, Entity, InteractiveElement as _, IntoElement, ParentElement, SharedString, StatefulInteractiveElement as _, Styled, Subscription,
     Window, div, px, relative, uniform_list,
 };
-use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Editor, EditorState, Input, InputEvent, InputState, Position};
 
 use super::{DockTab, Workspace};
-use crate::theme::{color, tint};
+use crate::theme::{amber, c, ca, inset_bottom, line, mono, tk};
+use crate::ui::{self, Kind};
 
 /// Larger files open in Zed.
 const MAX_OPEN_BYTES: u64 = 2 * 1024 * 1024;
@@ -378,18 +378,18 @@ impl Workspace {
     // ------------------------------------------------------------------------------------------------ drawing
 
     pub(super) fn files_panel(&self, cx: &mut Context<Self>) -> AnyElement {
+        let tk = tk(cx);
         let rows: Rc<Vec<Row>> = Rc::new(self.files.tree.as_ref().map(|t| t.rows().to_vec()).unwrap_or_default());
         let open: Vec<PathBuf> = self.files.buffers.iter().map(|b| b.path.clone()).collect();
         let root = self.root();
         let this = cx.entity().downgrade();
         let count = rows.len();
-        let list = uniform_list("file-tree", count, move |range, _window, cx| {
+        let hover = line(cx, t::HOVER);
+        let list = uniform_list("file-tree", count, move |range, _window, _cx| {
             range
                 .filter_map(|ix| rows.get(ix).cloned().map(|row| (ix, row)))
                 .map(|(ix, row)| {
                     let is_open = !row.dir && open.contains(&root.join(&row.path));
-                    let glyph = if row.dir { if row.open { "▾" } else { "▸" } } else { " " };
-                    let role = if row.dir { Role::TextSecondary } else if is_open { Role::Accent } else { Role::Text };
                     let this = this.clone();
                     let click = row.clone();
                     div()
@@ -400,12 +400,26 @@ impl Workspace {
                         .gap(px(4.))
                         .pl(px(6. + row.depth as f32 * 12.))
                         .pr(px(6.))
-                        .rounded(px(2.))
+                        .rounded(px(t::RADIUS_ROW))
                         .cursor_pointer()
-                        .text_xs()
-                        .text_color(color(cx, role))
-                        .hover(|el| el.bg(tint(cx, Role::Accent, 0.08)))
-                        .child(div().w(px(10.)).text_color(color(cx, Role::TextDim)).child(glyph))
+                        .text_size(px(t::TEXT_SMALL))
+                        .text_color(c(if is_open { tk.amber } else if row.dir { tk.text_secondary } else { tk.text_primary }))
+                        .hover(move |el| el.bg(hover))
+                        .child(
+                            div()
+                                .w(px(12.))
+                                .flex_shrink_0()
+                                .text_color(c(tk.text_faint))
+                                .child(if row.dir {
+                                    if row.open {
+                                        gpui_component::Icon::new(gpui_kit_assets::IconName::ChevronDown).size(px(12.))
+                                    } else {
+                                        gpui_component::Icon::new(gpui_kit_assets::IconName::ChevronRight).size(px(12.))
+                                    }
+                                } else {
+                                    gpui_component::Icon::new(gpui_kit_assets::IconName::ChevronRight).size(px(0.))
+                                }),
+                        )
                         .child(div().truncate().child(SharedString::from(row.name.clone())))
                         .on_click(move |_: &ClickEvent, window, cx| {
                             let _ = this.update(cx, |this, cx| this.click_row(&click, window, cx));
@@ -417,9 +431,9 @@ impl Workspace {
         .flex_1()
         .min_h_0();
         let empty = match (&self.files.tree, self.files.loading) {
-            (None, _) | (_, true) if count == 0 => Some("Reading the project's files…"),
-            (Some(tree), _) if count == 0 && !tree.filter().is_empty() => Some("No file matches."),
-            (Some(_), _) if count == 0 => Some("No files."),
+            (None, _) | (_, true) if count == 0 => Some(ui::empty("reading files", "Indexing the project's files…", cx)),
+            (Some(tree), _) if count == 0 && !tree.filter().is_empty() => Some(ui::empty("no match", "No files match the filter.", cx)),
+            (Some(_), _) if count == 0 => Some(ui::empty("empty project", "No files found.", cx)),
             _ => None,
         };
         div()
@@ -432,19 +446,60 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .gap(px(6.))
-                    .child(div().flex_1().p(px(2.)).rounded(px(3.)).border_1().border_color(color(cx, Role::Hairline)).child(Input::new(&self.file_filter).appearance(false)))
-                    .child(Button::new("files-refresh").label("↻").ghost().on_click(cx.listener(|this, _, _, cx| this.load_tree(cx)))),
+                    .child(
+                        div()
+                            .flex_1()
+                            .h(px(28.))
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .px(px(8.))
+                            .rounded(px(t::RADIUS_CONTROL))
+                            .border_1()
+                            .border_color(line(cx, t::LINE_CONTROL))
+                            .child(div().flex_shrink_0().text_color(c(tk.text_faint)).child(gpui_component::Icon::new(gpui_kit_assets::IconName::Search).size(px(13.))))
+                            .child(div().flex_1().min_w_0().child(Input::new(&self.file_filter).appearance(false))),
+                    )
+                    .child(
+                        ui::icon_action("files-refresh", gpui_kit_assets::IconName::RefreshCw, cx)
+                            .aria_label("Refresh files")
+                            .tooltip(ui::tip("Refresh files"))
+                            .on_click(cx.listener(|this, _, _, cx| this.load_tree(cx))),
+                    ),
             )
-            .when_some(self.files.notice.clone(), |el, notice| el.child(div().text_xs().text_color(color(cx, Role::Attention)).child(SharedString::from(shown(&notice)))))
-            .when_some(empty, |el, text| el.child(div().text_xs().text_color(color(cx, Role::TextDim)).child(text)))
+            .when_some(self.files.notice.clone(), |el, notice| {
+                el.child(
+                    div()
+                        .px(px(6.))
+                        .py(px(4.))
+                        .rounded(px(t::RADIUS_CONTROL))
+                        .bg(amber(cx, t::AMBER_FILL_FAINT))
+                        .text_size(px(t::TEXT_SMALL))
+                        .text_color(c(tk.amber))
+                        .child(SharedString::from(shown(&notice))),
+                )
+            })
+            .when_some(empty, |el, view| el.child(view))
             .child(list)
             .into_any_element()
     }
 
     pub(super) fn editor_panel(&self, cx: &mut Context<Self>) -> AnyElement {
+        let tk = tk(cx);
         let Some(buffer) = self.files.active() else {
             return crate::ui::empty("no file open", "Pick one in Files (⌘P), or click a hunk in Review.", cx)
-                .when_some(self.files.notice.clone(), |el, notice| el.child(div().text_color(color(cx, Role::Attention)).child(SharedString::from(shown(&notice)))))
+                .when_some(self.files.notice.clone(), |el, notice| {
+                    el.child(
+                        div()
+                            .px(px(6.))
+                            .py(px(4.))
+                            .rounded(px(t::RADIUS_CONTROL))
+                            .bg(amber(cx, t::AMBER_FILL_FAINT))
+                            .text_size(px(t::TEXT_SMALL))
+                            .text_color(c(tk.amber))
+                            .child(SharedString::from(shown(&notice))),
+                    )
+                })
                 .into_any_element();
         };
         let tabs: Vec<AnyElement> = self
@@ -455,33 +510,46 @@ impl Workspace {
             .map(|(index, b)| {
                 let selected = index == self.files.active;
                 let name = b.rel.rsplit('/').next().unwrap_or(&b.rel).to_owned();
-                let marks = format!("{}{}", if b.dirty { " ●" } else { "" }, if b.errors > 0 { format!(" ✕{}", b.errors) } else { String::new() });
+                let hover = c(tk.text_primary);
+                let close_group = SharedString::from(format!("buf-close-{index}"));
                 div()
                     .id(("buffer-tab", index))
+                    .group(close_group.clone())
                     .flex()
                     .items_center()
-                    .gap(px(4.))
+                    .gap(px(5.))
+                    .h(px(28.))
                     .px(px(8.))
-                    .py(px(3.))
-                    .border_b_2()
-                    .border_color(if selected { color(cx, Role::Accent) } else { tint(cx, Role::Accent, 0.0) })
-                    .text_xs()
-                    .text_color(color(cx, if selected { Role::Text } else { Role::TextSecondary }))
                     .cursor_pointer()
+                    .whitespace_nowrap()
+                    .text_size(px(t::TEXT_SMALL))
+                    .font_weight(if selected { gpui::FontWeight::MEDIUM } else { gpui::FontWeight::NORMAL })
+                    .text_color(c(if selected { tk.text_primary } else { tk.text_muted }))
+                    .when(selected, |el| el.shadow(inset_bottom(c(tk.amber))))
+                    .when(!selected, move |el| el.hover(move |s| s.text_color(hover)))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.files.active = index;
                         this.files.closing = None;
                         cx.notify();
                     }))
                     .child(SharedString::from(name))
-                    .when(!marks.is_empty(), |el| el.child(div().text_color(color(cx, if b.errors > 0 { Role::Danger } else { Role::Attention })).child(SharedString::from(marks))))
+                    .when(b.dirty, |el| el.child(div().size(px(t::DOT_SMALL)).rounded_full().bg(c(tk.attention))))
+                    .when(b.errors > 0, |el| {
+                        el.child(
+                            div()
+                                .font_family(mono(cx))
+                                .text_size(px(t::TEXT_META))
+                                .text_color(c(tk.danger))
+                                .child(format!("✕{}", b.errors)),
+                        )
+                    })
                     .child(
-                        div()
-                            .id(("buffer-close", index))
-                            .px(px(2.))
-                            .text_color(color(cx, Role::TextDim))
-                            .hover(|el| el.text_color(color(cx, Role::Danger)))
-                            .child("×")
+                        ui::icon_action(("buffer-close", index), gpui_kit_assets::IconName::X, cx)
+                            .size(px(16.))
+                            .aria_label("Close file")
+                            .tooltip(ui::tip("Close file"))
+                            .opacity(if selected { 0.7 } else { 0. })
+                            .group_hover(close_group, |s| s.opacity(1.))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 cx.stop_propagation();
                                 this.close_buffer(index, cx);
@@ -498,15 +566,15 @@ impl Workspace {
             .flex_col()
             .size_full()
             .gap(px(6.))
-            .child(div().id("buffer-tabs").flex().overflow_x_scroll().border_b_1().border_color(color(cx, Role::Hairline)).children(tabs))
+            .child(div().id("buffer-tabs").flex().overflow_x_scroll().border_b_1().border_color(line(cx, t::LINE_SUBTLE)).children(tabs))
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap(px(6.))
-                    .child(div().flex_1().min_w_0().truncate().text_xs().text_color(color(cx, Role::TextSecondary)).child(SharedString::from(format!("{} · {language}", buffer.rel))))
-                    .when(buffer.dirty, |el| el.child(Button::new("buffer-save").label("Save ⌘S").primary().on_click(cx.listener(|this, _, _, cx| this.save_active(cx)))))
-                    .child(Button::new("open-in-zed").label("Open in Zed").ghost().on_click(cx.listener(|this, _, _, cx| this.open_in_zed(cx)))),
+                    .child(div().flex_1().min_w_0().truncate().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.text_muted)).child(SharedString::from(format!("{} · {language}", buffer.rel))))
+                    .when(buffer.dirty, |el| el.child(ui::button("buffer-save", "Save ⌘S", Kind::Primary, cx).h(px(24.)).px(px(8.)).text_size(px(t::TEXT_SMALL)).on_click(cx.listener(|this, _, _, cx| this.save_active(cx)))))
+                    .child(ui::button("open-in-zed", "Open in Zed", Kind::Ghost, cx).h(px(24.)).px(px(8.)).text_size(px(t::TEXT_SMALL)).on_click(cx.listener(|this, _, _, cx| this.open_in_zed(cx)))),
             )
             .when(buffer.conflict, |el| {
                 let index = self.files.active;
@@ -514,19 +582,29 @@ impl Workspace {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(6.))
-                        .p(px(6.))
-                        .rounded(px(3.))
-                        .border_1()
-                        .border_color(color(cx, Role::Attention))
-                        .bg(tint(cx, Role::Attention, 0.1))
-                        .text_xs()
-                        .child(div().flex_1().text_color(color(cx, Role::Attention)).child("Changed on disk while you were editing."))
-                        .child(Button::new("conflict-reload").label("Reload theirs").ghost().on_click(cx.listener(move |this, _, window, cx| this.reload_buffer(index, window, cx))))
-                        .child(Button::new("conflict-keep").label("Keep mine (save)").on_click(cx.listener(|this, _, _, cx| this.save_active(cx)))),
+                        .gap(px(8.))
+                        .p(px(8.))
+                        .rounded(px(t::RADIUS_CONTROL))
+                        .border_l_2()
+                        .border_color(c(tk.attention))
+                        .bg(ca(tk.attention, 0.08))
+                        .child(div().flex_1().text_size(px(t::TEXT_SMALL)).text_color(c(tk.attention)).child("Changed on disk while you were editing."))
+                        .child(ui::button("conflict-reload", "Reload theirs", Kind::Ghost, cx).h(px(24.)).on_click(cx.listener(move |this, _, window, cx| this.reload_buffer(index, window, cx))))
+                        .child(ui::button("conflict-keep", "Keep mine (save)", Kind::Primary, cx).h(px(24.)).on_click(cx.listener(|this, _, _, cx| this.save_active(cx)))),
                 )
             })
-            .when_some(self.files.notice.clone(), |el, notice| el.child(div().text_xs().text_color(color(cx, Role::Attention)).child(SharedString::from(shown(&notice)))))
+            .when_some(self.files.notice.clone(), |el, notice| {
+                el.child(
+                    div()
+                        .px(px(6.))
+                        .py(px(4.))
+                        .rounded(px(t::RADIUS_CONTROL))
+                        .bg(amber(cx, t::AMBER_FILL_FAINT))
+                        .text_size(px(t::TEXT_SMALL))
+                        .text_color(c(tk.amber))
+                        .child(SharedString::from(shown(&notice))),
+                )
+            })
             .child(
                 div()
                     .id("editor")
@@ -534,14 +612,14 @@ impl Workspace {
                     .aria_label("Editor")
                     .flex_1()
                     .min_h_0()
-                    .rounded(px(3.))
+                    .rounded(px(t::RADIUS_CARD))
                     .border_1()
-                    .border_color(color(cx, Role::Hairline))
-                    .bg(color(cx, Role::Surface))
+                    .border_color(line(cx, t::LINE_DEFAULT))
+                    .bg(c(tk.bg_window))
                     .text_size(px(crate::theme::code_size(cx)))
                     .child(Editor::new(&buffer.state).bordered(false).h(relative(1.)).font_family(crate::theme::mono(cx))),
             )
-            .child(div().text_xs().text_color(color(cx, if buffer.errors > 0 { Role::Danger } else { Role::TextDim })).child(SharedString::from(self.files.servers.clone().unwrap_or_else(|| "checking…".into()))))
+            .child(div().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(if buffer.errors > 0 { tk.danger } else { tk.text_faint })).child(SharedString::from(self.files.servers.clone().unwrap_or_else(|| "checking…".into()))))
             .into_any_element()
     }
 

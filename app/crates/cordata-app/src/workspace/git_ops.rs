@@ -452,7 +452,8 @@ impl Workspace {
                         .flex()
                         .items_center()
                         .gap(px(8.))
-                        .child(div().font_family(mono(cx)).text_size(px(t::TEXT_SMALL)).text_color(c(tk.text_primary)).child(SharedString::from(format!("⎇ {branch}"))))
+                        .child(div().flex_shrink_0().text_color(c(tk.text_muted)).child(gpui_component::Icon::new(gpui_kit_assets::IconName::GitBranch).size(px(13.))))
+                        .child(div().font_family(mono(cx)).text_size(px(t::TEXT_SMALL)).text_color(c(tk.text_primary)).child(SharedString::from(branch)))
                         .child(ui::meta(SharedString::from(format!("{} changed · {} staged{}", self.git.dirty, self.git.staged, if self.git.ahead > 0 { format!(" · {} to push", self.git.ahead) } else { String::new() })), cx))
                         .child(div().flex_1())
                         .when_some(busy, |r, label| r.child(div().text_size(px(t::TEXT_SMALL)).text_color(c(tk.amber)).child(label))),

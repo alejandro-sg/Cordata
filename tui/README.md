@@ -43,7 +43,7 @@ live: the unfinished reply, running tool cards, the prompt box (or an approval b
 | `!git status` | runs in the project on your authority; the next prompt carries the output to the agent |
 | anything, while the agent works | queues as the next turn; Esc stops the turn and puts the queue back in the box |
 
-`/diff`, `/copy`, `/export [file]` and `/cost` do what they say. `/history` lists this project's saved sessions,
+`/diff`, `/copy` and `/export [file]` do what they say. `/history` lists this project's saved sessions,
 `/resume [id]` continues one (`acp-tui --resume` at start-up), `/forget` deletes them, and `/permissions` shows the rules,
 network and write scope commands run under. Any `*.md` in `.cordata/commands/` (or `.claude/commands/`) becomes `/name`, with `$ARGUMENTS`.
 

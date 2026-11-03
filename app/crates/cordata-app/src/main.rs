@@ -85,7 +85,13 @@ fn parse_cordata_url(url: &str, args: &mut Args) {
 }
 
 // The icons the window draws, embedded from Lucide (gpui-kit-assets); anything not listed loads nothing.
-gpui_kit_assets::icon_assets!(Icons, [Search, PanelLeft, PanelRight, Settings, Plus, Mic, Paperclip, X, ChevronDown, SquarePen]);
+gpui_kit_assets::icon_assets!(
+    Icons,
+    [
+        Search, PanelLeft, PanelRight, Settings, Plus, Mic, Paperclip, X, ChevronDown, ChevronRight, SquarePen, RefreshCw, ExternalLink, GitBranch, FolderOpen, FolderPlus, Keyboard, Palette, KeyRound, Wrench,
+        SlidersHorizontal, ArrowRight, Ellipsis,
+    ]
+);
 
 /// Launched from Finder the working directory is `/`: the person's home is the honest default there.
 fn default_cwd() -> PathBuf {

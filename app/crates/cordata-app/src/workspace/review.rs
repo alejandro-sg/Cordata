@@ -4,7 +4,7 @@
 //! [`cordata_view::review::untracked`]. Per-hunk actions stage ("Keep") or unstage/revert ("Revert") individual
 //! hunks without disturbing other changes in the same file.
 
-use cordata_theme::Role;
+use cordata_theme::tokens as t;
 use cordata_view::review::{Action, FileDiff, Status, apply, apply_file, untracked, working_changes};
 use cordata_view::shown;
 use gpui::prelude::FluentBuilder as _;
@@ -12,10 +12,10 @@ use gpui::{
     AnyElement, ClickEvent, Context, InteractiveElement as _, IntoElement, ParentElement,
     SharedString, StatefulInteractiveElement as _, Styled, Window, div, px,
 };
-use gpui_component::button::{Button, ButtonVariants as _};
 
 use super::Workspace;
-use crate::theme::{color, tint};
+use crate::theme::{amber, c, ca, line, mono, tk};
+use crate::ui;
 
 #[derive(Default)]
 pub struct Review {
@@ -123,6 +123,7 @@ impl Workspace {
     }
 
     pub(super) fn review_panel(&self, cx: &mut Context<Self>) -> AnyElement {
+        let tk = tk(cx);
         let file_count = self.review.files.len();
         let hunk_count = self.review.hunks();
         let this = cx.entity().downgrade();
@@ -131,10 +132,12 @@ impl Workspace {
             .flex()
             .items_center()
             .justify_between()
+            .pb(px(4.))
             .child(
                 div()
-                    .text_xs()
-                    .text_color(color(cx, Role::TextSecondary))
+                    .font_family(mono(cx))
+                    .text_size(px(t::TEXT_META))
+                    .text_color(c(tk.text_muted))
                     .child(if self.review.loading {
                         "Reading git diff…".to_string()
                     } else if let Some(err) = &self.review.error {
@@ -150,9 +153,9 @@ impl Workspace {
                     }),
             )
             .child(
-                Button::new("review-refresh")
-                    .label("↻")
-                    .ghost()
+                ui::icon_action("review-refresh", gpui_kit_assets::IconName::RefreshCw, cx)
+                    .aria_label("Refresh diff")
+                    .tooltip(ui::tip("Refresh diff"))
                     .on_click(cx.listener(|this, _, _, cx| this.load_review(cx))),
             );
 
@@ -168,11 +171,11 @@ impl Workspace {
                     Status::Renamed => "R",
                     Status::Modified => "M",
                 };
-                let status_role = match file.status {
-                    Status::Added => Role::Ok,
-                    Status::Deleted => Role::Danger,
-                    Status::Renamed => Role::Accent,
-                    Status::Modified => Role::Attention,
+                let status_color = match file.status {
+                    Status::Added => c(tk.amber),
+                    Status::Deleted => c(tk.danger),
+                    Status::Renamed => c(tk.amber_soft),
+                    Status::Modified => c(tk.attention),
                 };
                 let file_path = file.path.clone();
                 let this_click = this.clone();
@@ -191,20 +194,20 @@ impl Workspace {
                             .flex()
                             .items_center()
                             .justify_between()
-                            .px(px(6.))
+                            .px(px(8.))
                             .py(px(3.))
-                            .bg(tint(cx, Role::Accent, 0.05))
+                            .bg(line(cx, t::FILL_FAINT))
                             .border_b_1()
-                            .border_color(color(cx, Role::Hairline))
+                            .border_color(line(cx, t::LINE_SUBTLE))
                             .child(
                                 div()
                                     .id(SharedString::from(format!("hunk-hdr-{file_idx}-{hunk_idx}")))
                                     .flex_1()
                                     .cursor_pointer()
-                                    .font_family(crate::theme::mono(cx))
-                                    .text_xs()
-                                    .text_color(color(cx, Role::Accent))
-                                    .hover(|el| el.text_color(color(cx, Role::Text)))
+                                    .font_family(mono(cx))
+                                    .text_size(px(t::TEXT_META))
+                                    .text_color(c(tk.text_muted))
+                                    .hover(|el| el.text_color(c(tk.text_primary)))
                                     .child(SharedString::from(hunk.header.clone()))
                                     .on_click(move |_: &ClickEvent, window, cx| {
                                         let _ = this_hunk_click.update(cx, |this, cx| {
@@ -216,19 +219,15 @@ impl Workspace {
                                 div()
                                     .flex()
                                     .items_center()
-                                    .gap(px(4.))
+                                    .gap(px(8.))
                                     .child(
-                                        Button::new(SharedString::from(format!("hunk-keep-{file_idx}-{hunk_idx}")))
-                                            .label("Keep")
-                                            .primary()
+                                        ui::text_action(SharedString::from(format!("hunk-keep-{file_idx}-{hunk_idx}")), "keep", false, cx)
                                             .on_click(cx.listener(move |this, _, window, cx| {
                                                 this.apply_hunk(file_idx, hunk_idx, Action::Keep, window, cx);
                                             })),
                                     )
                                     .child(
-                                        Button::new(SharedString::from(format!("hunk-revert-{file_idx}-{hunk_idx}")))
-                                            .label("Revert")
-                                            .ghost()
+                                        ui::text_action(SharedString::from(format!("hunk-revert-{file_idx}-{hunk_idx}")), "revert", true, cx)
                                             .on_click(cx.listener(move |this, _, window, cx| {
                                                 this.apply_hunk(file_idx, hunk_idx, Action::Revert, window, cx);
                                             })),
@@ -240,19 +239,20 @@ impl Workspace {
                             .iter()
                             .map(|line| {
                                 let (prefix, rest) = line.split_at(line.chars().next().map_or(0, char::len_utf8));
-                                let (line_role, bg_tint) = match prefix {
-                                    "+" => (Role::Ok, Some((Role::Ok, 0.08))),
-                                    "-" => (Role::Danger, Some((Role::Danger, 0.08))),
-                                    _ => (Role::TextSecondary, None),
+                                let (bg, ink) = match prefix {
+                                    "+" => (Some(amber(cx, t::DIFF_ADD_FILL)), tk.text_body),
+                                    "-" => (Some(ca(tk.danger, t::DIFF_DEL_FILL)), tk.text_muted),
+                                    _ => (None, tk.text_muted),
                                 };
                                 let masked = format!("{prefix}{}", shown(rest));
                                 div()
-                                    .px(px(6.))
+                                    .px(px(8.))
                                     .py(px(1.))
-                                    .text_xs()
-                                    .font_family(crate::theme::mono(cx))
-                                    .text_color(color(cx, line_role))
-                                    .when_some(bg_tint, |el, (r, a)| el.bg(tint(cx, r, a)))
+                                    .font_family(mono(cx))
+                                    .text_size(px(t::TEXT_SMALL))
+                                    .line_height(gpui::relative(1.5))
+                                    .text_color(c(ink))
+                                    .when_some(bg, |el, bg| el.bg(bg))
                                     .child(SharedString::from(masked))
                                     .into_any_element()
                             })
@@ -262,9 +262,9 @@ impl Workspace {
                             .flex()
                             .flex_col()
                             .mb(px(6.))
-                            .rounded(px(3.))
+                            .rounded(px(t::RADIUS_CONTROL))
                             .border_1()
-                            .border_color(color(cx, Role::Hairline))
+                            .border_color(line(cx, t::LINE_SUBTLE))
                             .overflow_hidden()
                             .child(hunk_header)
                             .children(lines_rendered)
@@ -276,19 +276,20 @@ impl Workspace {
                     .flex()
                     .flex_col()
                     .mb(px(8.))
-                    .rounded(px(4.))
+                    .rounded(px(t::RADIUS_CARD))
                     .border_1()
-                    .border_color(color(cx, Role::Hairline))
-                    .bg(color(cx, Role::Surface))
+                    .border_color(line(cx, t::LINE_DEFAULT))
+                    .bg(c(tk.bg_window))
+                    .overflow_hidden()
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .justify_between()
-                            .p(px(6.))
-                            .bg(tint(cx, Role::Surface, 0.5))
+                            .px(px(8.))
+                            .py(px(5.))
                             .border_b_1()
-                            .border_color(color(cx, Role::Hairline))
+                            .border_color(line(cx, t::LINE_SUBTLE))
                             .child(
                                 div()
                                     .id(SharedString::from(format!("file-row-{file_idx}")))
@@ -303,27 +304,26 @@ impl Workspace {
                                     })
                                     .child(
                                         div()
-                                            .px(px(4.))
-                                            .rounded(px(2.))
-                                            .text_xs()
-                                            .font_family(crate::theme::mono(cx))
-                                            .text_color(color(cx, status_role))
-                                            .bg(tint(cx, status_role, 0.15))
+                                            .w(px(12.))
+                                            .font_family(mono(cx))
+                                            .text_size(px(t::TEXT_META))
+                                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                                            .text_color(status_color)
                                             .child(status_str),
                                     )
                                     .child(
                                         div()
-                                            .text_xs()
-                                            .font_family(crate::theme::mono(cx))
-                                            .text_color(color(cx, Role::Text))
-                                            .hover(|el| el.text_color(color(cx, Role::Accent)))
+                                            .text_size(px(t::TEXT_UI))
+                                            .font_family(mono(cx))
+                                            .text_color(c(tk.text_primary))
+                                            .hover(|el| el.text_color(c(tk.amber)))
                                             .child(SharedString::from(file.path.clone())),
                                     )
                                     .child(
                                         div()
-                                            .text_xs()
-                                            .font_family(crate::theme::mono(cx))
-                                            .text_color(color(cx, Role::TextDim))
+                                            .text_size(px(t::TEXT_META))
+                                            .font_family(mono(cx))
+                                            .text_color(c(tk.text_faint))
                                             .child(format!("+{} -{}", file.additions(), file.deletions())),
                                     ),
                             )
@@ -331,19 +331,15 @@ impl Workspace {
                                 div()
                                     .flex()
                                     .items_center()
-                                    .gap(px(4.))
+                                    .gap(px(8.))
                                     .child(
-                                        Button::new(SharedString::from(format!("file-keep-all-{file_idx}")))
-                                            .label("Keep All")
-                                            .ghost()
+                                        ui::text_action(SharedString::from(format!("file-keep-all-{file_idx}")), "keep all", false, cx)
                                             .on_click(cx.listener(move |this, _, window, cx| {
                                                 this.apply_file(file_idx, Action::Keep, window, cx);
                                             })),
                                     )
                                     .child(
-                                        Button::new(SharedString::from(format!("file-revert-all-{file_idx}")))
-                                            .label("Revert All")
-                                            .ghost()
+                                        ui::text_action(SharedString::from(format!("file-revert-all-{file_idx}")), "revert all", true, cx)
                                             .on_click(cx.listener(move |this, _, window, cx| {
                                                 this.apply_file(file_idx, Action::Revert, window, cx);
                                             })),
@@ -354,8 +350,8 @@ impl Workspace {
                         el.child(
                             div()
                                 .p(px(8.))
-                                .text_xs()
-                                .text_color(color(cx, Role::TextDim))
+                                .text_size(px(t::TEXT_META))
+                                .text_color(c(tk.text_muted))
                                 .child("Binary file changed (not diffed)"),
                         )
                     })
@@ -380,7 +376,6 @@ impl Workspace {
                         .gap(px(6.))
                         .py(px(2.))
                         .cursor_pointer()
-                        .hover(|el| el.text_color(color(cx, Role::Accent)))
                         .on_click(move |_: &ClickEvent, window, cx| {
                             let _ = this_untracked.update(cx, |this, cx| {
                                 this.open_file(&path_clone, None, window, cx);
@@ -388,19 +383,19 @@ impl Workspace {
                         })
                         .child(
                             div()
-                                .px(px(4.))
-                                .rounded(px(2.))
-                                .text_xs()
-                                .font_family(crate::theme::mono(cx))
-                                .text_color(color(cx, Role::Accent))
-                                .bg(tint(cx, Role::Accent, 0.15))
+                                .w(px(12.))
+                                .font_family(mono(cx))
+                                .text_size(px(t::TEXT_META))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(c(tk.amber))
                                 .child("?"),
                         )
                         .child(
                             div()
-                                .text_xs()
-                                .font_family(crate::theme::mono(cx))
-                                .text_color(color(cx, Role::TextSecondary))
+                                .text_size(px(t::TEXT_SMALL))
+                                .font_family(mono(cx))
+                                .text_color(c(tk.text_secondary))
+                                .hover(|el| el.text_color(c(tk.text_primary)))
                                 .child(SharedString::from(path.clone())),
                         )
                         .into_any_element()
@@ -412,17 +407,12 @@ impl Workspace {
                 .flex_col()
                 .gap(px(4.))
                 .mt(px(8.))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(color(cx, Role::TextDim))
-                        .child(format!("untracked ({})", self.review.untracked.len())),
-                )
+                .child(ui::quiet_label(format!("untracked ({})", self.review.untracked.len()), cx))
                 .children(items)
         });
 
         let empty = if file_count == 0 && self.review.untracked.is_empty() && !self.review.loading && self.review.error.is_none() {
-            Some("Working tree is clean — no unstaged changes.")
+            Some(ui::empty("working tree clean", "No unstaged changes in this project.", cx))
         } else {
             None
         };
@@ -438,34 +428,28 @@ impl Workspace {
             .when_some(self.review.notice.clone(), |el, notice| {
                 el.child(
                     div()
-                        .p(px(4.))
-                        .rounded(px(3.))
-                        .bg(tint(cx, Role::Accent, 0.08))
-                        .text_xs()
-                        .text_color(color(cx, Role::Accent))
+                        .px(px(6.))
+                        .py(px(4.))
+                        .rounded(px(t::RADIUS_CONTROL))
+                        .bg(amber(cx, t::AMBER_FILL_FAINT))
+                        .text_size(px(t::TEXT_SMALL))
+                        .text_color(c(tk.amber))
                         .child(SharedString::from(shown(&notice))),
                 )
             })
             .when_some(self.review.error.clone(), |el, err| {
                 el.child(
                     div()
-                        .p(px(4.))
-                        .rounded(px(3.))
-                        .bg(tint(cx, Role::Danger, 0.08))
-                        .text_xs()
-                        .text_color(color(cx, Role::Danger))
+                        .px(px(6.))
+                        .py(px(4.))
+                        .rounded(px(t::RADIUS_CONTROL))
+                        .bg(ca(tk.danger, 0.08))
+                        .text_size(px(t::TEXT_SMALL))
+                        .text_color(c(tk.danger))
                         .child(SharedString::from(shown(&err))),
                 )
             })
-            .when_some(empty, |el, msg| {
-                el.child(
-                    div()
-                        .py(px(12.))
-                        .text_xs()
-                        .text_color(color(cx, Role::TextDim))
-                        .child(msg),
-                )
-            })
+            .when_some(empty, |el, msg| el.child(msg))
             .child(
                 div()
                     .id("review-files-scroll")

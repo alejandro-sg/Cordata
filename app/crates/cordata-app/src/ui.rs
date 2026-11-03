@@ -7,9 +7,10 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{AnyView, App, Div, ElementId, FontWeight, InteractiveElement as _, ParentElement, SharedString, Stateful, StatefulInteractiveElement as _, Styled, Window, div, px};
 use gpui_component::tooltip::Tooltip;
 
-use crate::theme::{amber, amber_glow, c, ca, inset_ring, line, mono, sans, tk};
+use crate::theme::{amber, amber_glow, c, ca, line, mono, sans, tk};
 
 /// `PROJECT`: 10.5px semibold sans, subtly tracked capitals, the label colour.
+#[allow(dead_code)]
 pub fn section_label(text: &str, cx: &App) -> Div {
     div()
         .flex_shrink_0()
@@ -22,6 +23,7 @@ pub fn section_label(text: &str, cx: &App) -> Div {
 }
 
 /// `◆ MISSION CONTROL`: a primary panel heading with a subtle amber diamond marker.
+#[allow(dead_code)]
 pub fn heading(text: &str, cx: &App) -> Div {
     div()
         .flex()
@@ -41,6 +43,7 @@ pub fn meta(text: impl Into<SharedString>, cx: &App) -> Div {
 }
 
 /// `⌘K` in a key cap: 1px border, 2px bottom border, 4px radius.
+#[allow(dead_code)]
 pub fn keycap(text: impl Into<SharedString>, cx: &App) -> Div {
     div()
         .flex_shrink_0()
@@ -64,7 +67,7 @@ pub enum Dot {
     Live,
     /// Amber, still: waiting on you.
     Amber,
-    /// Teal: idle, done, trusted, connected.
+    /// Viridian, still: healthy, done, connected. (Lavender is for delegated or untrusted work, not for "fine".)
     Ok,
     /// The failure colour.
     Danger,
@@ -79,7 +82,7 @@ pub fn dot(kind: Dot, cx: &App) -> Div {
         Dot::Hollow => base.border_1().border_color(c(tk.text_muted)),
         Dot::Live => base.bg(c(tk.amber)).shadow(amber_glow(cx)),
         Dot::Amber => base.bg(c(tk.attention)),
-        Dot::Ok => base.bg(c(tk.teal)),
+        Dot::Ok => base.bg(c(tk.amber)),
         Dot::Danger => base.bg(c(tk.danger)),
         Dot::Muted => base.bg(c(tk.text_faint)),
     }
@@ -256,11 +259,11 @@ pub fn switch(id: impl Into<ElementId>, on: bool, cx: &App) -> Stateful<Div> {
         )
 }
 
-/// One option of a segmented control; amber tint on the selected one. The caller lays them in a row
-/// (`segmented_row`) and adds the click.
+/// One option of a segmented control: the selected one is a stronger fill in the primary ink — no accent tint, no
+/// ring. The caller lays them in a row (`segmented_row`) and adds the click.
 pub fn segment(id: impl Into<ElementId>, label: &str, selected: bool, cx: &App) -> Stateful<Div> {
     let tk = tk(cx);
-    let hover = line(cx, t::HOVER);
+    let (hover, strong, ink) = (line(cx, t::HOVER), line(cx, t::HOVER_STRONG + 0.03), c(tk.text_primary));
     div()
         .id(id)
         .flex_shrink_0()
@@ -271,10 +274,9 @@ pub fn segment(id: impl Into<ElementId>, label: &str, selected: bool, cx: &App) 
         .rounded(px(t::RADIUS_ROW))
         .whitespace_nowrap()
         .cursor_pointer()
-        .font_family(mono(cx))
-        .text_size(px(t::TEXT_META))
-        .when(selected, |s| s.bg(amber(cx, t::AMBER_FILL_STRONG)).text_color(c(tk.amber)).shadow(inset_ring(amber(cx, t::AMBER_BORDER))))
-        .when(!selected, move |s| s.text_color(c(tk.text_muted)).hover(move |s| s.bg(hover)))
+        .text_size(px(t::TEXT_SMALL))
+        .when(selected, move |s| s.bg(strong).text_color(ink).font_weight(FontWeight::MEDIUM))
+        .when(!selected, move |s| s.text_color(c(tk.text_muted)).hover(move |s| s.bg(hover).text_color(ink)))
         .role(gpui::Role::RadioButton)
         .aria_selected(selected)
         .child(SharedString::from(label.to_owned()))
@@ -300,12 +302,11 @@ pub fn select_trigger(id: impl Into<ElementId>, value: &str, cx: &App) -> Statef
         .rounded(px(t::RADIUS_CONTROL))
         .border_1()
         .border_color(line(cx, t::LINE_CONTROL_STRONG))
-        .bg(c(tk(cx).bg_input))
         .cursor_pointer()
         .hover(move |s| s.bg(hover))
         .role(gpui::Role::ComboBox)
-        .child(div().whitespace_nowrap().truncate().font_family(mono(cx)).text_size(px(t::TEXT_SMALL)).text_color(c(tk(cx).text_primary)).child(SharedString::from(value.to_owned())))
-        .child(div().text_size(px(t::TEXT_SMALL)).text_color(c(tk(cx).text_muted)).child("⌄"))
+        .child(div().whitespace_nowrap().truncate().text_size(px(t::TEXT_SMALL)).text_color(c(tk(cx).text_primary)).child(SharedString::from(value.to_owned())))
+        .child(div().flex_shrink_0().text_color(c(tk(cx).text_faint)).child(gpui_component::Icon::new(gpui_kit_assets::IconName::ChevronDown).size(px(13.))))
 }
 
 /// A popover surface: input ground, control border, 8px radius, soft shadow.
@@ -324,11 +325,13 @@ pub fn tip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> A
     move |window, cx| Tooltip::new(text.clone()).build(window, cx)
 }
 
-/// One row of a menu, list or palette: hover fill, selected amber tint.
+/// One row of a menu, list or palette: a hover fill; the selected row is a stronger fill with the rail's 2px signal
+/// edge mark — never an accent flood.
 pub fn row(id: impl Into<ElementId>, selected: bool, cx: &App) -> Stateful<Div> {
-    let hover = line(cx, t::HOVER);
+    let (hover, strong, mark) = (line(cx, t::HOVER), line(cx, t::HOVER_STRONG), c(tk(cx).amber));
     div()
         .id(id)
+        .relative()
         .flex()
         .items_center()
         .gap(px(10.))
@@ -336,22 +339,46 @@ pub fn row(id: impl Into<ElementId>, selected: bool, cx: &App) -> Stateful<Div> 
         .py(px(6.))
         .rounded(px(t::RADIUS_ROW))
         .cursor_pointer()
-        .when(selected, |s| s.bg(amber(cx, t::AMBER_FILL_MID)))
+        .when(selected, move |s| s.bg(strong).child(edge_mark(mark)))
         .when(!selected, move |s| s.hover(move |s| s.bg(hover)))
 }
 
-/// Empty state for a side-panel tab: a centred label and a one-line hint.
+/// The 2px edge mark at a row's left (the rail's thread state, a selected row): absolutely placed, no layout shift.
+pub fn edge_mark(colour: gpui::Hsla) -> Div {
+    div().absolute().left(px(0.)).top(px(7.)).bottom(px(7.)).w(px(2.)).rounded_full().bg(colour)
+}
+
+/// A quiet group label (`Threads`, `Recent`): sentence case, faint, small — the rail's voice, not tracked capitals.
+pub fn quiet_label(text: impl Into<SharedString>, cx: &App) -> Div {
+    div().flex_shrink_0().whitespace_nowrap().text_size(px(t::TEXT_META)).text_color(c(tk(cx).text_faint)).child(text.into())
+}
+
+/// A link-weight action (`keep`, `revert`, `copy`): faint text that lights on hover; `danger` hovers in the danger
+/// colour. The after-reply links' form, for panes that need small actions without buttons.
+pub fn text_action(id: impl Into<ElementId>, label: impl Into<SharedString>, danger: bool, cx: &App) -> Stateful<Div> {
+    let tk = tk(cx);
+    let hover = c(if danger { tk.danger } else { tk.text_primary });
+    div()
+        .id(id)
+        .flex_shrink_0()
+        .whitespace_nowrap()
+        .cursor_pointer()
+        .role(gpui::Role::Button)
+        .text_size(px(t::TEXT_SMALL))
+        .text_color(c(tk.text_faint))
+        .hover(move |s| s.text_color(hover))
+        .child(label.into())
+}
+
+/// Empty state for a side-panel tab: what is missing, and a one-line hint — plain text, left on the pane's edge.
 pub fn empty(label: &str, hint: &str, cx: &App) -> Div {
     div()
         .flex()
         .flex_col()
-        .items_center()
-        .justify_center()
-        .gap(px(6.))
-        .py(px(40.))
-        .px(px(16.))
-        .child(section_label(label, cx))
-        .child(div().text_size(px(t::TEXT_SMALL)).text_color(c(tk(cx).text_muted)).text_center().child(SharedString::from(hint.to_owned())))
+        .gap(px(4.))
+        .py(px(16.))
+        .child(div().text_size(px(t::TEXT_UI)).text_color(c(tk(cx).text_secondary)).child(SharedString::from(label.to_owned())))
+        .child(div().text_size(px(t::TEXT_SMALL)).text_color(c(tk(cx).text_muted)).child(SharedString::from(hint.to_owned())))
 }
 
 /// `$ pnpm test` blocks, code.

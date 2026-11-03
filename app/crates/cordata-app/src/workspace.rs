@@ -15,7 +15,7 @@ use cordata_theme::tokens as t;
 use cordata_view::app::{ConnState, SwitchTarget};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, EntityId, InteractiveElement as _, IntoElement, KeyDownEvent, ListAlignment, ListState, ParentElement, Render, SharedString,
+    AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, EntityId, Focusable as _, InteractiveElement as _, IntoElement, KeyDownEvent, ListAlignment, ListState, ParentElement, Render, SharedString,
     StatefulInteractiveElement as _, Styled, Subscription, Window, actions, div, list, px,
 };
 use gpui_component::input::{InputEvent, InputState, TextareaState};
@@ -305,6 +305,17 @@ impl Workspace {
                 }
             }),
         ];
+        let mut subscriptions = subscriptions;
+        let this_handle = cx.entity().downgrade();
+        subscriptions.push(cx.intercept_keystrokes(move |event, window, cx| {
+            if let Some(this) = this_handle.upgrade() {
+                this.update(cx, |this, cx| {
+                    if this.should_intercept_keystroke(&event.keystroke, window, cx) {
+                        cx.stop_propagation();
+                    }
+                });
+            }
+        }));
         composer.update(cx, |state, cx| state.focus(window, cx));
         let sidebar_open = prefs.sidebar_open.unwrap_or(true);
         // Closed until the person opens it (⌘\): the conversation is the window's default, not three columns.
@@ -866,6 +877,60 @@ impl Workspace {
         }
     }
 
+    /// Whether a keystroke should be intercepted before inner input keybindings (e.g. MoveUp/MoveDown in Textarea)
+    /// swallow it.
+    ///
+    /// Menus, overlays and the approval's one-key answers take arrows, Tab, Enter and Escape before the text box
+    /// underneath turns them into caret movement.
+    fn should_intercept_keystroke(&self, keystroke: &gpui::Keystroke, window: &Window, cx: &App) -> bool {
+        let plain = !keystroke.modifiers.modified();
+        let key = keystroke.key.as_str();
+
+        // 1. Overlay: Palette takes up/down/enter/escape before its input field sees them.
+        if self.overlays.last() == Some(&Overlay::Palette) {
+            return matches!(key, "up" | "down" | "enter" | "escape");
+        }
+
+        // 2. Overlay: Picker takes up/down/enter/escape before its input field sees them.
+        if self.overlays.last() == Some(&Overlay::Picker) {
+            return matches!(key, "up" | "down" | "enter" | "escape");
+        }
+
+        // 3. Other overlays close on plain Escape.
+        if self.overlays.last().is_some() && key == "escape" && plain {
+            return true;
+        }
+
+        // Everything below is the composer's: with focus elsewhere (the terminal, the editor) keys are theirs.
+        let is_composer_focused = self.composer.read(cx).focus_handle(cx).is_focused(window);
+        if !is_composer_focused {
+            return false;
+        }
+
+        // 4. The `/` and `@` menu above the composer.
+        if self.session.read(cx).view.menu.is_some() {
+            return matches!(key, "up" | "down" | "tab" | "enter" | "escape");
+        }
+
+        // 5. The composer without a menu.
+        {
+            let (pending, empty) = {
+                let view = &self.session.read(cx).view;
+                let pending = view.pending.front();
+                (pending.is_some(), self.composer.read(cx).value().is_empty())
+            };
+            if pending && empty && plain && !self.saying {
+                return matches!(key, "a" | "y" | "s" | "r" | "n" | "k" | "w" | "enter");
+            }
+            let single_line = !self.composer.read(cx).value().contains('\n');
+            if plain && single_line && matches!(key, "up" | "down") {
+                return true;
+            }
+        }
+
+        false
+    }
+
     /// Arrow keys, Tab and Escape belong to the `/`/`@` menu while it is open (before the text box sees them).
     fn composer_keys(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let mods = event.keystroke.modifiers;
@@ -923,6 +988,10 @@ impl Workspace {
             "down" => self.session.update(cx, |session, cx| session.menu_move(1, cx)),
             "tab" => {
                 let text = self.session.update(cx, |session, cx| session.menu_accept(false, cx));
+                self.composer.update(cx, |state, cx| state.set_value(text, window, cx));
+            }
+            "enter" => {
+                let text = self.session.update(cx, |session, cx| session.menu_accept(true, cx));
                 self.composer.update(cx, |state, cx| state.set_value(text, window, cx));
             }
             "escape" => self.session.update(cx, |session, cx| session.menu_dismiss(cx)),
@@ -1888,6 +1957,57 @@ mod window_tests {
     }
 
     #[gpui::test]
+    fn arrow_keys_navigate_the_menu(cx: &mut TestAppContext) {
+        let (view, cx) = workspace(cx);
+        view.update(cx, |this, cx| this.session.update(cx, |s, _| s.view.conn = cordata_view::app::ConnState::Connected));
+        cx.simulate_input("/");
+        cx.run_until_parked();
+        let selected_0 = view.read_with(cx, |this, cx| this.session.read(cx).view.menu.as_ref().map(|m| m.selected));
+        assert_eq!(selected_0, Some(0));
+        cx.simulate_keystrokes("down");
+        cx.run_until_parked();
+        let selected_1 = view.read_with(cx, |this, cx| this.session.read(cx).view.menu.as_ref().map(|m| m.selected));
+        assert_eq!(selected_1, Some(1));
+        cx.simulate_keystrokes("down");
+        cx.run_until_parked();
+        let selected_2 = view.read_with(cx, |this, cx| this.session.read(cx).view.menu.as_ref().map(|m| m.selected));
+        assert_eq!(selected_2, Some(2));
+        cx.simulate_keystrokes("up");
+        cx.run_until_parked();
+        let selected_back = view.read_with(cx, |this, cx| this.session.read(cx).view.menu.as_ref().map(|m| m.selected));
+        assert_eq!(selected_back, Some(1));
+        cx.simulate_keystrokes("tab");
+        cx.run_until_parked();
+        let text = view.read_with(cx, |this, cx| this.composer.read(cx).value().to_string());
+        assert_eq!(text, "/thinking ");
+        assert!(view.read_with(cx, |this, cx| this.session.read(cx).view.menu.is_none()));
+    }
+
+    #[gpui::test]
+    fn history_navigates_with_up_and_down_arrows(cx: &mut TestAppContext) {
+        let (view, cx) = workspace(cx);
+        view.update(cx, |this, cx| {
+            this.session.update(cx, |s, _| {
+                s.view.conn = cordata_view::app::ConnState::Connected;
+                s.view.submit_text("first prompt");
+                s.view.submit_text("second prompt");
+            });
+        });
+        cx.simulate_keystrokes("up");
+        cx.run_until_parked();
+        let text1 = view.read_with(cx, |this, cx| this.composer.read(cx).value().to_string());
+        assert_eq!(text1, "second prompt");
+        cx.simulate_keystrokes("up");
+        cx.run_until_parked();
+        let text2 = view.read_with(cx, |this, cx| this.composer.read(cx).value().to_string());
+        assert_eq!(text2, "first prompt");
+        cx.simulate_keystrokes("down");
+        cx.run_until_parked();
+        let text3 = view.read_with(cx, |this, cx| this.composer.read(cx).value().to_string());
+        assert_eq!(text3, "second prompt");
+    }
+
+    #[gpui::test]
     fn sessions_open_switch_and_close_from_the_keyboard(cx: &mut TestAppContext) {
         let (view, cx) = workspace(cx);
         cx.simulate_keystrokes("cmd-n");
@@ -2105,6 +2225,14 @@ mod window_tests {
         let (view, cx) = workspace(cx);
         cx.simulate_keystrokes("cmd-k");
         cx.run_until_parked();
+        let total = view.read_with(cx, |this, cx| this.palette_matches(cx).len());
+        assert!(total > 1);
+        cx.simulate_keystrokes("down");
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |this, _| this.palette_ix), 1, "down arrow navigates palette");
+        cx.simulate_keystrokes("up");
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |this, _| this.palette_ix), 0, "up arrow navigates palette back");
         cx.simulate_input("toggle side");
         cx.run_until_parked();
         let first = view.read_with(cx, |this, cx| this.palette_matches(cx).first().map(|i| i.label.clone()));

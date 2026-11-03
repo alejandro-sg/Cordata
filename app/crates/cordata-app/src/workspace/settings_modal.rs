@@ -9,7 +9,7 @@ use gpui::{AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement
 use gpui_component::input::Input;
 
 use super::{Confirm, Overlay, Workspace};
-use crate::theme::{amber, c, inset_ring, line, mono, tk};
+use crate::theme::{c, line, mono, tk};
 use crate::ui::{self, Dot, Kind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -25,13 +25,13 @@ pub enum Section {
 impl Section {
     pub const ALL: [Section; 5] = [Section::General, Section::Appearance, Section::Shortcuts, Section::Account, Section::Advanced];
 
-    fn icon(self) -> &'static str {
+    fn icon(self) -> gpui_kit_assets::IconName {
         match self {
-            Section::General => "◎",
-            Section::Appearance => "◐",
-            Section::Shortcuts => "⌘",
-            Section::Account => "◉",
-            Section::Advanced => "⚑",
+            Section::General => gpui_kit_assets::IconName::SlidersHorizontal,
+            Section::Appearance => gpui_kit_assets::IconName::Palette,
+            Section::Shortcuts => gpui_kit_assets::IconName::Keyboard,
+            Section::Account => gpui_kit_assets::IconName::KeyRound,
+            Section::Advanced => gpui_kit_assets::IconName::Wrench,
         }
     }
 
@@ -143,7 +143,7 @@ impl Workspace {
         let query = self.settings_search.read(cx).value().to_string();
         let nav: Vec<AnyElement> = Section::ALL.iter().filter(|s| s.matches(&query)).map(|&section| {
             let active = self.settings_section == section;
-            let hover = line(cx, t::HOVER);
+            let (hover, selected) = (line(cx, t::HOVER), line(cx, t::HOVER_STRONG));
             div()
                 .id(("settings-nav", section as usize))
                 .role(gpui::Role::Tab)
@@ -157,7 +157,8 @@ impl Workspace {
                 .cursor_pointer()
                 .whitespace_nowrap()
                 .text_size(px(t::TEXT_UI))
-                .when(active, |r| r.bg(amber(cx, t::AMBER_FILL_MID)).shadow(inset_ring(amber(cx, t::AMBER_BORDER))).text_color(c(tk.text_primary)))
+                .font_weight(if active { FontWeight::MEDIUM } else { FontWeight::NORMAL })
+                .when(active, move |r| r.bg(selected).text_color(c(tk.text_primary)))
                 .when(!active, move |r| r.text_color(c(tk.text_secondary)).hover(move |s| s.bg(hover)))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.settings_section = section;
@@ -165,7 +166,7 @@ impl Workspace {
                     this.on_settings_section(cx);
                     cx.notify();
                 }))
-                .child(div().w(px(16.)).text_color(c(if active { tk.amber } else { tk.text_muted })).child(section.icon()))
+                .child(div().w(px(16.)).text_color(c(if active { tk.amber } else { tk.text_muted })).child(gpui_component::Icon::new(section.icon()).size(px(15.))))
                 .child(section.title())
                 .into_any_element()
         }).collect();
@@ -179,7 +180,7 @@ impl Workspace {
                     .iter()
                     .map(|(label, keys)| {
                         let keys: SharedString = if *label == QUICK_ASK_SHORTCUT { quick_ask.clone().into() } else { (*keys).into() };
-                        setting_row(label, "", ui::keycap(keys, cx).into_any_element(), cx)
+                        setting_row(label, "", ui::meta(keys, cx).into_any_element(), cx)
                     })
                     .collect()
             }
@@ -203,7 +204,7 @@ impl Workspace {
                     .h(px(h))
                     .flex()
                     .overflow_hidden()
-                    .rounded(px(t::RADIUS_MODAL))
+                    .rounded(px(t::RADIUS_POPOVER))
                     .border_1()
                     .border_color(line(cx, t::LINE_CONTROL_STRONG))
                     .bg(c(tk.bg_panel))
@@ -218,7 +219,14 @@ impl Workspace {
                             .bg(c(tk.bg_nav_deep))
                             .border_r_1()
                             .border_color(line(cx, t::LINE_DEFAULT))
-                            .child(div().h(px(t::SETTINGS_HEADER_H)).flex().items_center().px(px(16.)).child(ui::heading("settings", cx)))
+                            .child(
+                                div()
+                                    .h(px(t::SETTINGS_HEADER_H))
+                                    .flex()
+                                    .items_center()
+                                    .px(px(16.))
+                                    .child(div().text_size(px(t::TEXT_TITLE)).font_weight(FontWeight::SEMIBOLD).text_color(c(tk.text_primary)).child("Settings")),
+                            )
                             .child(
                                 div()
                                     .mx(px(8.))
@@ -231,9 +239,9 @@ impl Workspace {
                                     .rounded(px(t::RADIUS_CONTROL))
                                     .bg(c(tk.bg_input))
                                     .border_1()
-                                    .border_color(line(cx, t::LINE_CONTROL_STRONG))
+                                    .border_color(line(cx, t::LINE_CONTROL))
                                     .text_size(px(t::TEXT_UI))
-                                    .child(div().text_color(c(tk.text_muted)).child("⌕"))
+                                    .child(div().flex_shrink_0().text_color(c(tk.text_muted)).child(gpui_component::Icon::new(gpui_kit_assets::IconName::Search).size(px(14.))))
                                     .child(div().flex_1().min_w_0().child(Input::new(&self.settings_search).appearance(false).aria_label("Search settings"))),
                             )
                             .when(nav.is_empty(), |col| col.child(div().px(px(16.)).py(px(6.)).child(ui::meta("No settings match.", cx))))
@@ -268,17 +276,10 @@ impl Workspace {
                                             .child(div().truncate().text_size(px(t::TEXT_SMALL)).text_color(c(tk.text_muted)).child(section.description())),
                                     )
                                     .child(
-                                        div()
-                                            .id("settings-close")
-                                            .role(gpui::Role::Button)
+                                        ui::icon_action("settings-close", gpui_kit_assets::IconName::X, cx)
                                             .aria_label("Close settings (esc)")
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(6.))
-                                            .cursor_pointer()
-                                            .on_click(cx.listener(|this, _, window, cx| this.close_overlay(Overlay::Settings, window, cx)))
-                                            .child(ui::keycap("esc", cx))
-                                            .child(div().text_color(c(tk.text_muted)).child("✕")),
+                                            .tooltip(ui::tip("Close settings  esc"))
+                                            .on_click(cx.listener(|this, _, window, cx| this.close_overlay(Overlay::Settings, window, cx))),
                                     ),
                             )
                             .child(
@@ -542,7 +543,7 @@ fn setting_row_owned(label: String, description: String, error: bool, control: A
 }
 
 fn sub_heading(text: &str, cx: &mut Context<Workspace>) -> AnyElement {
-    div().pt(px(22.)).pb(px(4.)).child(ui::section_label(text, cx)).into_any_element()
+    div().pt(px(22.)).pb(px(4.)).child(ui::quiet_label(text, cx)).into_any_element()
 }
 
 fn status_control(kind: Dot, text: &str, cx: &mut Context<Workspace>) -> AnyElement {

@@ -1,5 +1,6 @@
-//! The command palette (⌘K): every window command and the project's conversations, filtered fuzzily as you type;
-//! ↑/↓ move, ↵ runs, esc closes. The `/` menu in the composer stays for the harness's slash commands.
+//! The command palette (⌘K): the open threads and every window command, filtered fuzzily as you type; ↑/↓ move, ↵
+//! runs, esc closes. Unfiltered it reads in groups under quiet headings. The `/` menu in the composer stays for the
+//! harness's slash commands.
 
 use cordata_theme::tokens as t;
 use gpui::prelude::FluentBuilder as _;
@@ -24,7 +25,12 @@ pub enum Action {
     Attach,
     Worktree,
     Review(bool),
+    /// Show the open thread at this index.
+    Thread(usize),
 }
+
+/// `⌘1`…`⌘9`: the first nine threads' keys.
+const THREAD_KEYS: [&str; 9] = ["⌘1", "⌘2", "⌘3", "⌘4", "⌘5", "⌘6", "⌘7", "⌘8", "⌘9"];
 
 #[derive(Debug, Clone)]
 pub struct Item {
@@ -59,25 +65,37 @@ pub fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
 }
 
 impl Workspace {
-    fn palette_items(&self, _cx: &gpui::App) -> Vec<Item> {
-        let items = vec![
-            Item { group: "chat", label: "New conversation".into(), shortcut: "⌘N", action: Action::NewConversation },
-            Item { group: "chat", label: "Stop the run".into(), shortcut: "esc esc", action: Action::StopRun },
-            Item { group: "panel", label: "Toggle side panel".into(), shortcut: "⌘\\", action: Action::TogglePanel },
-            Item { group: "panel", label: "Show or hide project sidebar".into(), shortcut: "⌘B", action: Action::ToggleSidebar },
-            Item { group: "panel", label: "Open terminal".into(), shortcut: "⌃`", action: Action::OpenTerminal },
-            Item { group: "panel", label: "Files".into(), shortcut: "⌘P", action: Action::Tab(DockTab::Files) },
-            Item { group: "panel", label: "Editor".into(), shortcut: "⌘⌥3", action: Action::Tab(DockTab::Editor) },
-            Item { group: "panel", label: "Review changes".into(), shortcut: "⌘⌥4", action: Action::Tab(DockTab::Review) },
-            Item { group: "chat", label: "Attach files…".into(), shortcut: "", action: Action::Attach },
-            Item { group: "chat", label: "New conversation in a worktree…".into(), shortcut: "", action: Action::Worktree },
-            Item { group: "proj", label: "Review uncommitted changes".into(), shortcut: "", action: Action::Review(false) },
-            Item { group: "proj", label: "Review this branch".into(), shortcut: "", action: Action::Review(true) },
-            Item { group: "proj", label: "Commit, push, pull request…".into(), shortcut: "", action: Action::Tab(DockTab::Review) },
-            Item { group: "proj", label: "Switch project…".into(), shortcut: "⌘O", action: Action::SwitchProject },
-            Item { group: "proj", label: "Open folder…".into(), shortcut: "", action: Action::OpenFolder },
-            Item { group: "app", label: "Settings".into(), shortcut: "⌘,", action: Action::Settings },
-        ];
+    fn palette_items(&self, cx: &gpui::App) -> Vec<Item> {
+        // The open threads first: the rail's search (⌘K) promises them.
+        let mut items: Vec<Item> = self
+            .sessions
+            .iter()
+            .enumerate()
+            .map(|(index, entity)| Item {
+                group: "Threads",
+                label: cordata_view::shown(&entity.read(cx).view.title()),
+                shortcut: THREAD_KEYS.get(index).copied().unwrap_or(""),
+                action: Action::Thread(index),
+            })
+            .collect();
+        items.extend([
+            Item { group: "Conversation", label: "New conversation".into(), shortcut: "⌘N", action: Action::NewConversation },
+            Item { group: "Conversation", label: "New conversation in a worktree…".into(), shortcut: "", action: Action::Worktree },
+            Item { group: "Conversation", label: "Attach files…".into(), shortcut: "⇧⌘A", action: Action::Attach },
+            Item { group: "Conversation", label: "Stop the run".into(), shortcut: "esc esc", action: Action::StopRun },
+            Item { group: "Panels", label: "Toggle side panel".into(), shortcut: "⌘\\", action: Action::TogglePanel },
+            Item { group: "Panels", label: "Show or hide project sidebar".into(), shortcut: "⌘B", action: Action::ToggleSidebar },
+            Item { group: "Panels", label: "Files".into(), shortcut: "⌘P", action: Action::Tab(DockTab::Files) },
+            Item { group: "Panels", label: "Editor".into(), shortcut: "⌘⌥3", action: Action::Tab(DockTab::Editor) },
+            Item { group: "Panels", label: "Review changes".into(), shortcut: "⌘⌥4", action: Action::Tab(DockTab::Review) },
+            Item { group: "Panels", label: "Open terminal".into(), shortcut: "⌃`", action: Action::OpenTerminal },
+            Item { group: "Project", label: "Review uncommitted changes".into(), shortcut: "", action: Action::Review(false) },
+            Item { group: "Project", label: "Review this branch".into(), shortcut: "", action: Action::Review(true) },
+            Item { group: "Project", label: "Commit, push, pull request…".into(), shortcut: "", action: Action::Tab(DockTab::Review) },
+            Item { group: "Project", label: "Switch project…".into(), shortcut: "⌘O", action: Action::SwitchProject },
+            Item { group: "Project", label: "Open folder…".into(), shortcut: "", action: Action::OpenFolder },
+            Item { group: "App", label: "Settings".into(), shortcut: "⌘,", action: Action::Settings },
+        ]);
         items
     }
 
@@ -109,6 +127,11 @@ impl Workspace {
             Action::Attach => self.choose_attachments(window, cx),
             Action::Worktree => self.begin_worktree(window, cx),
             Action::Review(branch) => self.request_review(branch, window, cx),
+            Action::Thread(index) => {
+                if let Some(entity) = self.sessions.get(index).cloned() {
+                    self.show(entity, cx);
+                }
+            }
         }
     }
 
@@ -133,20 +156,28 @@ impl Workspace {
         let tk = tk(cx);
         let items = self.palette_matches(cx);
         let selected = self.palette_ix.min(items.len().saturating_sub(1));
-        let rows: Vec<AnyElement> = items
-            .into_iter()
-            .enumerate()
-            .map(|(index, item)| {
-                let action = item.action.clone();
-                ui::row(("palette-row", index), index == selected, cx)
-                    .h(px(34.))
+        // With nothing typed the list reads in groups under quiet headings; a query is one list, best first.
+        let grouped = self.palette_input.read(cx).value().trim().is_empty();
+        let mut rows: Vec<AnyElement> = Vec::with_capacity(items.len() + 6);
+        let mut last_group = "";
+        for (index, item) in items.into_iter().enumerate() {
+            if grouped && item.group != last_group {
+                last_group = item.group;
+                rows.push(div().px(px(10.)).pt(px(if index == 0 { 4. } else { 12. })).pb(px(4.)).child(ui::quiet_label(item.group, cx)).into_any_element());
+            }
+            let action = item.action.clone();
+            let is_selected = index == selected;
+            rows.push(
+                ui::row(("palette-row", index), is_selected, cx)
+                    .h(px(32.))
+                    .role(gpui::Role::ListBoxOption)
+                    .aria_selected(is_selected)
                     .on_click(cx.listener(move |this, _, window, cx| this.run_palette(action.clone(), window, cx)))
-                    .child(div().w(px(44.)).flex_shrink_0().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).text_color(c(tk.text_faint)).child(SharedString::from(item.group.to_uppercase())))
-                    .child(div().flex_1().min_w_0().truncate().text_size(px(t::TEXT_UI)).text_color(c(if index == selected { tk.text_primary } else { tk.text_secondary })).child(SharedString::from(item.label)))
+                    .child(div().flex_1().min_w_0().truncate().text_size(px(t::TEXT_UI)).text_color(c(if is_selected { tk.text_primary } else { tk.text_secondary })).child(SharedString::from(item.label)))
                     .when(!item.shortcut.is_empty(), |r| r.child(ui::meta(item.shortcut, cx)))
-                    .into_any_element()
-            })
-            .collect();
+                    .into_any_element(),
+            );
+        }
         let empty = rows.is_empty();
         let top = window.viewport_size().height.as_f32() * t::PALETTE_TOP_VH;
         div()
@@ -168,33 +199,32 @@ impl Workspace {
                     .max_w(relative(0.9))
                     .flex()
                     .flex_col()
-                    .rounded(px(t::RADIUS_MODAL))
+                    .rounded(px(t::RADIUS_POPOVER))
                     .bg(c(tk.bg_input))
                     .border_1()
                     .border_color(line(cx, t::LINE_CONTROL_STRONG))
                     .shadow(crate::theme::modal_shadow(cx))
+                    // The query line is the composer's form: the signal `›`, then your words. No keycap: esc closes.
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(10.))
                             .h(px(48.))
                             .px(px(16.))
                             .border_b_1()
-                            .border_color(line(cx, t::LINE_DEFAULT))
-                            .child(div().font_family(mono(cx)).text_size(px(t::TEXT_BODY)).text_color(c(tk.amber)).child("›"))
-                            .child(div().flex_1().text_size(px(t::TEXT_BODY)).child(Input::new(&self.palette_input).appearance(false)))
-                            .child(ui::keycap("esc", cx)),
+                            .border_color(line(cx, t::LINE_SUBTLE))
+                            .child(div().w(px(12.)).mr(px(10.)).flex_shrink_0().font_family(mono(cx)).text_size(px(t::TEXT_BODY + 3.)).text_color(c(tk.amber)).child("›"))
+                            .child(div().flex_1().text_size(px(t::TEXT_BODY)).child(Input::new(&self.palette_input).appearance(false))),
                     )
                     .child(
                         div()
                             .id("palette-list")
                             .role(gpui::Role::ListBox)
-                            .max_h(px(380.))
+                            .max_h(px(400.))
                             .overflow_y_scroll()
                             .p(px(6.))
                             .children(rows)
-                            .when(empty, |list| list.child(div().px(px(10.)).py(px(12.)).text_size(px(t::TEXT_UI)).text_color(c(tk.text_muted)).child("No matching command or conversation."))),
+                            .when(empty, |list| list.child(div().px(px(10.)).py(px(12.)).text_size(px(t::TEXT_UI)).text_color(c(tk.text_muted)).child("No matching command or thread."))),
                     ),
             )
             .into_any_element()

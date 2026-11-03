@@ -377,8 +377,8 @@ fn render_diff_rows(rows: Vec<(DiffLineKind, String)>, more: usize, header: Opti
         let (bg, ink) = match kind {
             // The +/− prefixes carry the meaning; colour only tints them.
             DiffLineKind::Header => (None, tk.text_faint),
-            DiffLineKind::Add => (Some(amber(cx, 0.07)), tk.text_body),
-            DiffLineKind::Del => (Some(ca(tk.danger, 0.06)), tk.text_muted),
+            DiffLineKind::Add => (Some(amber(cx, t::DIFF_ADD_FILL)), tk.text_body),
+            DiffLineKind::Del => (Some(ca(tk.danger, t::DIFF_DEL_FILL)), tk.text_muted),
             DiffLineKind::Context => (None, tk.text_muted),
         };
         div()

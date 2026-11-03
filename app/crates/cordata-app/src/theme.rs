@@ -18,6 +18,7 @@ use gpui_component::theme::{Theme, ThemeConfig, ThemeMode};
 /// What is in force.
 pub struct Active {
     pub tokens: Tokens,
+    #[allow(dead_code)]
     pub palette: Palette,
     pub sans: SharedString,
     pub mono: SharedString,
@@ -37,6 +38,7 @@ pub fn tk(cx: &App) -> Tokens {
     active(cx).map_or(tokens::T2049, |a| a.tokens)
 }
 
+#[allow(dead_code)]
 pub fn palette(cx: &App) -> Palette {
     active(cx).map_or_else(|| tokens::T2049.palette(), |a| a.palette)
 }
@@ -54,6 +56,7 @@ pub fn code_size(cx: &App) -> f32 {
     cx.try_global::<crate::prefs::Prefs>().map_or(tokens::TEXT_UI, |p| p.code_font_size)
 }
 
+#[allow(dead_code)]
 pub fn color(cx: &App, role: Role) -> Hsla {
     rgba(palette(cx).get(role)).into()
 }
@@ -75,6 +78,7 @@ pub fn ca(value: Rgb, alpha: f32) -> Hsla {
 }
 
 /// `role` at `alpha` (0–1), for washes and glows.
+#[allow(dead_code)]
 pub fn tint(cx: &App, role: Role, alpha: f32) -> Hsla {
     let mut c: Hsla = color(cx, role);
     c.a = alpha;

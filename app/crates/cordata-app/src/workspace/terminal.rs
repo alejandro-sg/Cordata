@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::Event;
 use alacritty_terminal::term::TermMode;
-use cordata_theme::Role;
+use cordata_theme::tokens as t;
 use cordata_view::shown;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -15,11 +15,11 @@ use gpui::{
     ParentElement, Pixels, ScrollWheelEvent, SharedString, StatefulInteractiveElement as _, StrikethroughStyle, Styled, StyledText, UnderlineStyle,
     Window, canvas, div, px, rgb,
 };
-use gpui_component::button::{Button, ButtonVariants as _};
 
 use super::Workspace;
 use crate::detect;
-use crate::theme::color;
+use crate::theme::{c, line, tk};
+use crate::ui::{self, Kind};
 use crate::vt::{self, Mods, Palette, Session};
 
 pub struct Terminal {
@@ -111,9 +111,9 @@ fn hsla(value: u32) -> gpui::Hsla {
 }
 
 fn palette(cx: &gpui::App) -> Palette {
-    let p = crate::theme::palette(cx);
-    let palette = Palette::new(p.get(Role::Text).to_u32(), p.get(Role::Ground).to_u32(), p.get(Role::Accent).to_u32());
-    if crate::theme::tk(cx).is_dark { palette } else { palette.for_light() }
+    let t = crate::theme::tk(cx);
+    let palette = Palette::new(t.text_primary.to_u32(), t.bg_main.to_u32(), t.amber.to_u32());
+    if t.is_dark { palette } else { palette.for_light() }
 }
 
 fn metrics(cx: &gpui::App) -> Metrics {
@@ -331,13 +331,15 @@ impl Workspace {
     }
 
     pub(super) fn terminal_panel(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let tk = tk(cx);
         let term = &self.terminal;
         let palette = palette(cx);
         let m = metrics(cx);
         let exit_badge = term.exited.map(|code| match code {
-            Some(0) => ("exited", Role::Ok),
-            Some(_) | None => ("exited", Role::Danger),
+            Some(0) => ("exited", tk.amber),
+            Some(_) | None => ("exited", tk.danger),
         });
+        let restart_label = if term.exited.is_some() || term.error.is_some() { "Restart" } else { "New shell" };
         let status_strip = div()
             .flex()
             .items_center()
@@ -351,43 +353,44 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .text_xs()
+                    .text_size(px(t::TEXT_META))
                     .font_family(crate::theme::mono(cx))
                     .child(
                         div()
                             .min_w_0()
                             .truncate()
-                            .text_color(color(cx, Role::TextDim))
+                            .text_color(c(tk.text_muted))
                             .child(SharedString::from(term.title.clone().unwrap_or_else(|| shown(&super::tilde(&self.cwd))))),
                     )
-                    .when_some(exit_badge, |el, (label, role)| {
+                    .when_some(exit_badge, |el, (label, color)| {
                         let code = term.exited.flatten().map_or_else(|| "signal".to_owned(), |c| c.to_string());
-                        el.child(div().font_weight(FontWeight::BOLD).text_color(color(cx, role)).child(SharedString::from(format!("{label} {code}"))))
+                        el.child(div().font_weight(FontWeight::MEDIUM).text_color(c(color)).child(SharedString::from(format!("{label} {code}"))))
                     })
                     // The agent running here, as herdr shows it: Claude Code · blocked.
                     .when_some(term.detection.clone(), |el, d| {
-                        let role = match d.state {
-                            detect::State::Blocked => Role::Attention,
-                            detect::State::Working => Role::Accent,
-                            detect::State::Idle => Role::TextSecondary,
+                        let color = match d.state {
+                            detect::State::Blocked => tk.attention,
+                            detect::State::Working => tk.amber,
+                            detect::State::Idle => tk.text_secondary,
                         };
                         el.child(
                             div()
                                 .id("term-agent")
                                 .flex_shrink_0()
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(color(cx, role))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(c(color))
                                 .child(SharedString::from(format!("{} · {}", d.name, d.state.label()))),
                         )
                     })
                     .when_some(term.rules_warning.clone(), |el, warning| {
-                        el.child(div().id("term-rules-warning").flex_shrink_0().text_color(color(cx, Role::Danger)).child("detect.toml ✗").tooltip(crate::ui::tip(warning)))
+                        el.child(div().id("term-rules-warning").flex_shrink_0().text_color(c(tk.danger)).child("detect.toml ✗").tooltip(crate::ui::tip(warning)))
                     }),
             )
             .child(
-                Button::new("term-restart-btn")
-                    .label(if term.exited.is_some() || term.error.is_some() { "Restart" } else { "New shell" })
-                    .ghost()
+                ui::button("term-restart-btn", restart_label, Kind::Ghost, cx)
+                    .h(px(24.))
+                    .px(px(8.))
+                    .text_size(px(t::TEXT_SMALL))
                     .on_click(cx.listener(|this, _, window, cx| this.restart_terminal(window, cx))),
             );
 
@@ -448,12 +451,14 @@ impl Workspace {
             .font_family(crate::theme::mono(cx))
             .text_size(m.size)
             .line_height(m.line_h)
-            .rounded(px(cordata_theme::tokens::RADIUS_CARD))
+            .rounded(px(t::RADIUS_CARD))
+            .border_1()
+            .border_color(line(cx, t::LINE_DEFAULT))
             .cursor_text()
             .child(div().relative().size_full().overflow_hidden().child(sizer).children(rows))
-            .when_some(term.error.clone(), |el, error| el.child(div().text_color(color(cx, Role::Danger)).child(SharedString::from(error))))
+            .when_some(term.error.clone(), |el, error| el.child(div().text_color(c(tk.danger)).child(SharedString::from(error))))
             .when(term.session.is_none() && term.error.is_none(), |el| {
-                el.child(div().text_color(color(cx, Role::TextDim)).child("Click to start a shell in the project."))
+                el.child(div().text_color(c(tk.text_muted)).child("Click to start a shell in the project."))
             });
 
         div()

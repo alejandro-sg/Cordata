@@ -259,6 +259,10 @@ pub const TEAL_FILL: f32 = 0.08;
 pub const TEAL_BORDER: f32 = 0.25;
 pub const DANGER_FILL: f32 = 0.08;
 pub const DANGER_BORDER: f32 = 0.35;
+/// Diff lines: an added line is the signal at this alpha, a removed one the danger colour — faint tints, never floods.
+/// The transcript and the Review pane read the same two values.
+pub const DIFF_ADD_FILL: f32 = 0.07;
+pub const DIFF_DEL_FILL: f32 = 0.06;
 
 /// The modal scrim, over `bg_window`.
 pub const SCRIM: f32 = 0.65;

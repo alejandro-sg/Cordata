@@ -10,7 +10,7 @@ use gpui_component::input::Input;
 
 use super::{Overlay, Workspace, tilde};
 use crate::prefs;
-use crate::theme::{amber, c, line, mono, tk};
+use crate::theme::{c, line, mono, tk};
 use crate::ui::{self, Kind};
 
 /// What the picker's search box holds: a filter, or a path to open.
@@ -75,7 +75,7 @@ impl Workspace {
         cx.notify();
     }
 
-    fn picker_matches(&self, cx: &Context<Self>) -> Vec<prefs::RecentProject> {
+    pub(super) fn picker_matches(&self, cx: &Context<Self>) -> Vec<prefs::RecentProject> {
         let text = self.picker_input.read(cx).value().to_string();
         let mut rows = self.prefs.recents.clone();
         if !rows.iter().any(|r| r.path == self.cwd) {
@@ -185,7 +185,7 @@ impl Workspace {
                 Some(
                     ui::row("picker-open-path", true, cx)
                         .on_click(cx.listener(move |this, _, window, cx| this.switch_project(path.clone(), window, cx)))
-                        .child(div().text_color(c(tk.amber)).child("↳"))
+                        .child(div().text_color(c(tk.amber)).child(gpui_component::Icon::new(gpui_kit_assets::IconName::ArrowRight).size(px(14.))))
                         .child(div().flex_shrink_0().text_size(px(t::TEXT_UI)).text_color(c(tk.text_primary)).child("Open this folder"))
                         .child(div().flex_1().min_w_0().truncate().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(if exists { tk.text_muted } else { tk.danger })).child(SharedString::from(if exists { shown_path } else { format!("{shown_path} (not found)") })))
                         .child(ui::meta("↵", cx))
@@ -201,8 +201,8 @@ impl Workspace {
                 let current = row.path == self.cwd;
                 let path = row.path.clone();
                 let name = row.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| tilde(&row.path));
-                ui::row(("picker-row", index), current || index == self.picker_ix, cx)
-                    .when(current, |r| r.bg(amber(cx, t::AMBER_FILL_MID)))
+                let selected = index == self.picker_ix;
+                ui::row(("picker-row", index), selected, cx)
                     .on_click(cx.listener(move |this, _, window, cx| this.switch_project(path.clone(), window, cx)))
                     .child(
                         div()
@@ -210,7 +210,7 @@ impl Workspace {
                             .min_w_0()
                             .flex()
                             .flex_col()
-                            .child(div().truncate().text_size(px(t::TEXT_UI)).text_color(c(tk.text_primary)).child(SharedString::from(name)))
+                            .child(div().truncate().text_size(px(t::TEXT_UI)).font_weight(if current { gpui::FontWeight::MEDIUM } else { gpui::FontWeight::NORMAL }).text_color(c(tk.text_primary)).child(SharedString::from(name)))
                             .child(div().truncate().font_family(mono(cx)).text_size(px(t::TEXT_LABEL)).text_color(c(tk.text_faint)).child(SharedString::from(tilde(&row.path)))),
                     )
                     .child(ui::meta(SharedString::from(if current { "current".to_owned() } else { super::age(now.saturating_sub(row.opened) as f64) }), cx))
@@ -220,8 +220,14 @@ impl Workspace {
         let no_match = list.is_empty() && path_row.is_none();
         let top = t::HEADER_H + 34.;
         let max_h = (window.viewport_size().height.as_f32() - top - 16.).max(240.);
-        let footer_action = |id: &'static str, label: &'static str, key: &'static str, cx: &mut Context<Self>| {
-            ui::row(id, false, cx).h(px(32.)).text_size(px(t::TEXT_UI)).text_color(c(tk.text_secondary)).child(div().flex_1().child(label)).when(!key.is_empty(), |r| r.child(ui::meta(key, cx)))
+        let footer_action = |id: &'static str, icon: gpui_kit_assets::IconName, label: &'static str, key: &'static str, cx: &mut Context<Self>| {
+            ui::row(id, false, cx)
+                .h(px(30.))
+                .text_size(px(t::TEXT_UI))
+                .text_color(c(tk.text_secondary))
+                .child(div().flex_shrink_0().text_color(c(tk.text_faint)).child(gpui_component::Icon::new(icon).size(px(14.))))
+                .child(div().flex_1().child(label))
+                .when(!key.is_empty(), |r| r.child(ui::meta(key, cx)))
         };
         div()
             .id("project-picker")
@@ -252,8 +258,8 @@ impl Workspace {
                             .flex_shrink_0()
                             .px(px(12.))
                             .border_b_1()
-                            .border_color(line(cx, t::LINE_DEFAULT))
-                            .child(div().text_color(c(tk.text_faint)).child("⌕"))
+                            .border_color(line(cx, t::LINE_SUBTLE))
+                            .child(div().flex_shrink_0().text_color(c(tk.text_faint)).child(gpui_component::Icon::new(gpui_kit_assets::IconName::Search).size(px(14.))))
                             .child(div().flex_1().text_size(px(t::TEXT_UI)).child(Input::new(&self.picker_input).appearance(false))),
                     )
                     .child(
@@ -267,7 +273,7 @@ impl Workspace {
                             .flex_col()
                             .gap(px(2.))
                             .children(path_row)
-                            .when(!list.is_empty(), |l| l.child(div().px(px(8.)).pt(px(6.)).pb(px(4.)).child(ui::section_label("recent projects", cx))))
+                            .when(!list.is_empty(), |l| l.child(div().px(px(8.)).pt(px(6.)).pb(px(4.)).child(ui::quiet_label("Recent", cx))))
                             .children(list)
                             .when(no_match, |l| l.child(div().px(px(10.)).py(px(14.)).text_size(px(t::TEXT_SMALL)).text_color(c(tk.text_muted)).child("No match. Paste a full path to open a folder.")))
                             .when_some(self.picker_note.clone(), |l, (note, error)| l.child(div().px(px(10.)).py(px(6.)).text_size(px(t::TEXT_SMALL)).text_color(c(if error { tk.danger } else { tk.text_muted })).child(SharedString::from(note)))),
@@ -279,13 +285,13 @@ impl Workspace {
                             .flex_shrink_0()
                             .p(px(6.))
                             .border_t_1()
-                            .border_color(line(cx, t::LINE_DEFAULT))
-                            .child(footer_action("picker-open-folder", "Open folder…", "⌘O", cx).on_click(cx.listener(|this, _, window, cx| this.choose_folder(window, cx))))
-                            .child(footer_action("picker-clone", "Clone repository…", "", cx).on_click(cx.listener(|this, _, window, cx| {
+                            .border_color(line(cx, t::LINE_SUBTLE))
+                            .child(footer_action("picker-open-folder", gpui_kit_assets::IconName::FolderOpen, "Open folder…", "⌘O", cx).on_click(cx.listener(|this, _, window, cx| this.choose_folder(window, cx))))
+                            .child(footer_action("picker-clone", gpui_kit_assets::IconName::GitBranch, "Clone repository…", "", cx).on_click(cx.listener(|this, _, window, cx| {
                                 this.close_overlay(Overlay::Picker, window, cx);
                                 this.open_overlay(Overlay::Clone, window, cx);
                             })))
-                            .child(footer_action("picker-new", "New empty project", "", cx).on_click(cx.listener(|this, _, window, cx| this.new_empty_project(window, cx)))),
+                            .child(footer_action("picker-new", gpui_kit_assets::IconName::FolderPlus, "New empty project", "", cx).on_click(cx.listener(|this, _, window, cx| this.new_empty_project(window, cx)))),
                     ),
             )
             .into_any_element()
@@ -298,8 +304,8 @@ impl Workspace {
                 .flex()
                 .flex_col()
                 .gap(px(6.))
-                .child(ui::section_label(label, cx))
-                .child(div().h(px(32.)).flex().items_center().px(px(10.)).rounded(px(t::RADIUS_CARD)).bg(c(tk.bg_window)).border_1().border_color(line(cx, t::LINE_CONTROL_STRONG)).font_family(mono(cx)).text_size(px(t::TEXT_SMALL)).child(Input::new(input).appearance(false)))
+                .child(ui::quiet_label(label, cx))
+                .child(div().h(px(32.)).flex().items_center().px(px(10.)).rounded(px(t::RADIUS_CONTROL)).border_1().border_color(line(cx, t::LINE_CONTROL_STRONG)).font_family(mono(cx)).text_size(px(t::TEXT_SMALL)).child(Input::new(input).appearance(false)))
         };
         div()
             .size_full()
@@ -330,7 +336,7 @@ impl Workspace {
                     .flex_col()
                     .gap(px(14.))
                     .p(px(20.))
-                    .rounded(px(t::RADIUS_MODAL))
+                    .rounded(px(t::RADIUS_POPOVER))
                     .bg(c(tk.bg_input))
                     .border_1()
                     .border_color(line(cx, t::LINE_CONTROL_STRONG))
