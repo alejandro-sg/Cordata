@@ -197,7 +197,7 @@ mod tests {
     use acp_core::ToolKind;
 
     fn ask(tool: &str, args: Value) -> PermissionInfo {
-        PermissionInfo { tool_call_id: "c".into(), tool_name: tool.into(), title: String::new(), kind: ToolKind::Other, raw_input: Some(args), always_label: None }
+        PermissionInfo { tool_call_id: "c".into(), tool_name: tool.into(), title: String::new(), kind: ToolKind::Other, raw_input: Some(args), always_label: None, reason: None }
     }
 
     #[test]
