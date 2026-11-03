@@ -491,12 +491,17 @@ impl Workspace {
         let in_wt = self.git.is_worktree;
         let wt_name = self.git.worktree_name.clone();
         let label = if in_wt {
-            format!("⎇ {branch} · {}", wt_name.unwrap_or_else(|| "worktree".into()))
+            match &wt_name {
+                Some(name) if branch.ends_with(name) => format!("⎇ {branch} · worktree"),
+                Some(name) => format!("⎇ {branch} · {name}"),
+                None => format!("⎇ {branch} · worktree"),
+            }
         } else {
             format!("⎇ {branch}")
         };
         let tip = if in_wt {
-            format!("Branch {branch} in linked worktree — click to review changes ⌘⌥4")
+            let name_str = wt_name.as_deref().unwrap_or("linked");
+            format!("Branch {branch} in worktree ({name_str}) — click to review changes ⌘⌥4")
         } else {
             format!("Branch {branch} — click to review changes ⌘⌥4")
         };

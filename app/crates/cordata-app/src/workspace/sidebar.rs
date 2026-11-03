@@ -109,18 +109,29 @@ impl Workspace {
                         .font_family(mono(cx))
                         .text_size(px(t::TEXT_META))
                         .child(div().text_color(c(tk.amber)).child("⎇"))
-                        .child(div().min_w_0().truncate().text_color(c(tk.text_primary)).child(SharedString::from(branch)))
+                        .child(div().min_w_0().truncate().text_color(c(tk.text_primary)).child(SharedString::from(branch.clone())))
                         .when(in_wt, |row| {
+                            let badge_text = if let Some(ref name) = wt_name {
+                                if branch.ends_with(name) || name == &self.project_name() {
+                                    "worktree".to_owned()
+                                } else {
+                                    name.clone()
+                                }
+                            } else {
+                                "worktree".to_owned()
+                            };
+                            let tip = wt_name.as_ref().map(|n| format!("Linked Git worktree: {n}")).unwrap_or_else(|| "Linked Git worktree".into());
                             row.child(
                                 div()
                                     .id("rail-worktree-badge")
+                                    .flex_shrink_0()
                                     .px(px(4.))
                                     .py(px(1.))
                                     .rounded(px(t::RADIUS_BADGE))
                                     .bg(ca(tk.amber, 0.16))
                                     .text_color(c(tk.amber_soft))
-                                    .tooltip(ui::tip("Linked Git worktree"))
-                                    .child(SharedString::from(wt_name.unwrap_or_else(|| "worktree".into()))),
+                                    .tooltip(ui::tip(SharedString::from(tip)))
+                                    .child(SharedString::from(badge_text)),
                             )
                         })
                         .when(changed > 0, |row| {
