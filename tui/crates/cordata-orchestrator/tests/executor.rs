@@ -344,11 +344,13 @@ async fn a_run_stops_at_a_step_boundary_when_the_pool_has_no_room_for_a_typical_
     }
     let w = worker("w", 1, 2.0, |_, _| None);
     let cp = CopyCheckpoints::new(&e.store);
-    let ex = exec(&e, plan_of(3, "rollback_checkpoint", 50.0), vec![runnable(&w, "m", "claude_code", "anthropic")], &cp, Config { max_parallel: 1, ..Default::default() });
+    // Two candidates on the one pool: the note names the pool once.
+    let ex = exec(&e, plan_of(3, "rollback_checkpoint", 50.0), vec![runnable(&w, "m", "claude_code", "anthropic"), runnable(&w, "m2", "claude_code", "anthropic")], &cp, Config { max_parallel: 1, ..Default::default() });
     let out = ex.run().await;
     // $6 used: s1 fits under the $9.50 hard line ($3.50 left); after it $1.50 is left, short of a $2 step.
     assert_eq!(out.status, "paused", "{}", out.reason);
     assert!(out.reason.starts_with("stopped at a safe point before step s2: usage is running low (pa has $1.50 left before its hard line, a step takes about $2.00"), "{}", out.reason);
+    assert_eq!(out.reason.matches("pa has").count(), 1, "{}", out.reason);
     assert_eq!(w.calls.lock().unwrap().len(), 1, "s2 never started, so nothing was cut off");
     assert_eq!(read(&e, "calc/s1.txt").as_deref(), Some("ok s1"), "s1's work is kept");
     assert_eq!(kinds(&e, "paused")[0]["reason"], "usage_low");
