@@ -24,6 +24,9 @@ pub fn role_brief(role: &str) -> &'static str {
 /// Said to a worker whose CLI refuses every shell command when run headless (agy).
 pub const NO_COMMANDS_NOTE: &str = "Shell commands are NOT available in this environment: every attempt to run one is refused, and trying ends your turn with nothing done. Do not run tests, scripts or git. Read the code with your file tools, make the edit directly, and state what you changed. The harness runs the checks itself afterwards.";
 
+/// Sent on the same conversation when a worker that cannot run commands asked to, was refused and stopped.
+pub const GAVE_UP_NUDGE: &str = "Your shell command was refused: shell commands are not available here, and asking again will be refused too. The step is not done yet. Continue now with your file tools only: read what you need, make the edits the step asks for, then state what you changed. The harness runs the checks afterwards.";
+
 /// Escapes every non-ASCII char as `\uXXXX` (UTF-16 units), as Python's `json.dumps` does by default.
 fn ascii_escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());

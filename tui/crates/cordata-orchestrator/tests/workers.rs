@@ -301,6 +301,35 @@ cat <<'STREAM'
 {"event":"result","result":{"status":"SUCCESS","response":"Edited it.","usage":{"input_tokens":60,"output_tokens":10},"structured_output":{"ok":true,"toolAction":"x","toolSummary":"y"},"denied_actions":[{"action":"RUN","display_name":"pytest"}]}}
 STREAM"##;
 
+/// Gives up on the first call (asks for a command, is refused, edits nothing); edits when resumed with `--conversation`.
+const AGY_GIVES_UP_ONCE: &str = r##"echo "$@" >> "$OUT/argv.txt"
+cat >> "$OUT/stdin.txt"
+case "$*" in
+  *--conversation*) echo done > calc/a.txt; denied='[]' ;;
+  *) denied='[{"action":"RUN","display_name":"ls"}]' ;;
+esac
+cat <<STREAM
+{"event":"init","conversation_id":"conv-9","init":{"model":"m"}}
+{"event":"result","result":{"status":"SUCCESS","response":"ok","usage":{"input_tokens":5,"output_tokens":1},"denied_actions":$denied}}
+STREAM"##;
+
+#[tokio::test]
+async fn agy_that_gives_up_after_a_refused_command_is_resumed_once_and_finishes() {
+    let f = fixture();
+    let w = agy::worker(Arc::new(Direct)).binary(&f.script("agy", AGY_GIVES_UP_ONCE)).environ(env_with_home()).seatbelt(Seatbelt::Off);
+    let (r, events) = run(&w, f.task("execute", &["calc/a.txt"])).await;
+    assert_eq!(r.status, "completed", "{:?}", r.error_message);
+    assert_eq!(r.files_changed, ["calc/a.txt"]);
+    assert_eq!((r.tokens_in, r.requests), (10, 2), "both calls are metered");
+    assert_eq!(r.denied, ["RUN:ls"]);
+    let argv = std::fs::read_to_string(f.dir.path().join("argv.txt")).unwrap();
+    assert_eq!(argv.lines().count(), 2);
+    assert!(argv.lines().nth(1).unwrap().contains("--conversation conv-9"), "{argv}");
+    let stdin = std::fs::read_to_string(f.dir.path().join("stdin.txt")).unwrap();
+    assert!(stdin.lines().nth(1).unwrap().contains("Your shell command was refused"), "the resume sends the nudge alone");
+    assert_eq!(events.iter().filter(|e| e.event_type == "done").count(), 1, "one done for the whole call");
+}
+
 #[tokio::test]
 async fn an_agy_run_reads_its_dialect_and_gets_ndjson_on_stdin() {
     let f = fixture();

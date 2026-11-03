@@ -309,7 +309,30 @@ impl CliWorker {
     }
 
     /// Runs `task` (or, with `resume`, continues a provider session). Never fails: errors are results.
+    ///
+    /// A CLI that cannot run commands (agy) still sometimes asks to, is refused, and ends its turn with nothing done
+    /// (`worker::GAVE_UP`). Its conversation is resumed once with a note saying so, before the result counts as a failure.
     pub async fn execute(&self, task: TaskPacket, resume: Option<&str>, events: EventSink) -> WorkerResult {
+        let first = self.attempt(task.clone(), resume, events.clone(), None).await;
+        let gave_up = first.status == "failed" && first.error_message.as_deref().is_some_and(|e| e.starts_with(crate::worker::GAVE_UP));
+        let handle = first.session_handle.clone().filter(|_| gave_up && !self.dialect.can_run_commands());
+        let result = match handle {
+            Some(handle) => {
+                events(WorkerEvent { event_type: "progress".into(), payload: json!({"phase": "nudge", "denied": first.denied}) });
+                let second = self.attempt(task, Some(&handle), events.clone(), Some(prompting::GAVE_UP_NUDGE)).await;
+                combine(first, second)
+            }
+            None => first,
+        };
+        if result.status != "completed" {
+            events(WorkerEvent { event_type: "error".into(), payload: json!({"message": result.error_message.clone().unwrap_or_else(|| result.status.clone())}) });
+        }
+        events(WorkerEvent { event_type: "done".into(), payload: serde_json::to_value(&result).unwrap_or(Value::Null) });
+        result
+    }
+
+    /// One CLI call. `nudge`, on a resumed conversation, is sent as the whole message instead of the composed prompt.
+    async fn attempt(&self, task: TaskPacket, resume: Option<&str>, events: EventSink, nudge: Option<&str>) -> WorkerResult {
         let started = Instant::now();
         let mut problem = self.validate(&task);
         let binary = if problem.is_none() { self.find_binary() } else { None };
@@ -324,10 +347,7 @@ impl CliWorker {
             }
         }
         if let Some(problem) = problem {
-            events(WorkerEvent { event_type: "error".into(), payload: json!({"message": problem}) });
-            let result = self.failed(&task, started, "failed", &problem);
-            events(WorkerEvent { event_type: "done".into(), payload: serde_json::to_value(&result).unwrap_or(Value::Null) });
-            return result;
+            return self.failed(&task, started, "failed", &problem);
         }
         let binary = binary.expect("checked above");
         env.extend(self.extra_env.clone());
@@ -335,7 +355,7 @@ impl CliWorker {
         let root = std::fs::canonicalize(&task.cwd).unwrap_or_else(|_| PathBuf::from(&task.cwd));
         let root_str = root.to_string_lossy().into_owned();
         let writable = task.writable_scope();
-        let prompt = prompting::compose(&task, self.dialect.native_schema(), self.dialect.can_run_commands());
+        let prompt = nudge.map_or_else(|| prompting::compose(&task, self.dialect.native_schema(), self.dialect.can_run_commands()), str::to_owned);
         let model = self.model(&task);
         let argv = self.dialect.build_argv(&binary, &task, resume, model.as_deref());
         let stdin = self.dialect.build_stdin(&task, &prompt);
@@ -371,10 +391,6 @@ impl CliWorker {
                 None => note.to_owned(),
             });
         }
-        if result.status != "completed" {
-            events(WorkerEvent { event_type: "error".into(), payload: json!({"message": result.error_message.clone().unwrap_or_else(|| result.status.clone())}) });
-        }
-        events(WorkerEvent { event_type: "done".into(), payload: serde_json::to_value(&result).unwrap_or(Value::Null) });
         result
     }
 
@@ -588,6 +604,22 @@ impl CliWorker {
         r.provider_quota = st.quota_info.clone();
         r
     }
+}
+
+/// A resumed attempt's result, carrying what both calls spent and everything the first was refused.
+fn combine(first: WorkerResult, mut second: WorkerResult) -> WorkerResult {
+    second.duration_s = ((first.duration_s + second.duration_s) * 1000.0).round() / 1000.0;
+    second.cost_usd = ((first.cost_usd + second.cost_usd) * 1e6).round() / 1e6;
+    second.tokens_in += first.tokens_in;
+    second.tokens_out += first.tokens_out;
+    second.requests += first.requests;
+    second.session_handle = second.session_handle.or(first.session_handle);
+    for d in first.denied {
+        if !second.denied.contains(&d) {
+            second.denied.push(d);
+        }
+    }
+    second
 }
 
 /// Why `value` does not satisfy `schema`, or `None`.
