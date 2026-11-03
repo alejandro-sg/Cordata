@@ -150,6 +150,13 @@ pub const SCHEMA: &[Entry] = &[
         applies: Applies::NextSession,
         help: "keep sessions in ~/.cordata/sessions so /resume can continue them (/forget deletes them)",
     },
+    // `chat.mode` decides who answers an approval card, so it is user-file only (`USER_ONLY_PREFIXES`).
+    Entry {
+        key: "chat.mode",
+        kind: Kind::Enum(&["ask", "auto"]),
+        applies: Applies::NextSession,
+        help: "ask = every call no rule decides asks you; auto = calls auto mode can show are safe run without asking, the rest ask (user file only)",
+    },
     // Mirror of backend/settings_store.py's SCHEMA. Both front doors reject an
     // unknown key with a warning, so a key added on one side and not the other
     // shows up as a spurious warning in whichever door is behind.
@@ -241,8 +248,8 @@ static SECRET_KEY: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)(api[_-]?key|token|secret|password|passwd|credential)").unwrap()
 });
 /// Setting groups read only from the user file — mirrors `USER_ONLY_PREFIXES` in `backend/settings_store.py`.
-/// `chat.allow` and `chat.writable` are single keys: a repository must not grant its own agent anything.
-pub const USER_ONLY_PREFIXES: &[&str] = &["app.", "vault.", "orchestrator.", "chat.allow", "chat.writable", "mcp."];
+/// `chat.allow`, `chat.writable` and `chat.mode` are single keys: a repository must not grant its own agent anything.
+pub const USER_ONLY_PREFIXES: &[&str] = &["app.", "vault.", "orchestrator.", "chat.allow", "chat.writable", "chat.mode", "mcp."];
 
 static SECRET_VALUE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -604,6 +611,19 @@ mod tests {
         assert!(loaded.get("vault.addr").is_none());
         assert_eq!(loaded.text("tui.thinking"), Some("expanded"));
         assert_eq!(loaded.warnings.iter().filter(|w| w.contains("only read from the user file")).count(), 2);
+    }
+
+    #[test]
+    fn chat_mode_is_read_only_from_the_user_file() {
+        let sb = sandbox();
+        put(&sb.store, Scope::Project, r#"{"chat":{"mode":"auto"}}"#);
+        put(&sb.store, Scope::Local, r#"{"chat.mode":"auto"}"#);
+        let loaded = sb.store.load();
+        assert!(loaded.get("chat.mode").is_none());
+        let ignored: Vec<_> = loaded.warnings.iter().filter(|w| w.contains("'chat.mode' is only read from the user file")).collect();
+        assert_eq!(ignored.len(), 2, "{:?}", loaded.warnings);
+        put(&sb.store, Scope::User, r#"{"chat":{"mode":"auto"}}"#);
+        assert_eq!(sb.store.load().text("chat.mode"), Some("auto"));
     }
 
     #[test]

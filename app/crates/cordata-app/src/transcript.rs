@@ -6,6 +6,7 @@
 use acp_core::{FileDiff, ToolStatus};
 use cordata_theme::tokens as t;
 use cordata_view::app::{Message, ToolCard};
+use cordata_view::fold::{self, Activity};
 use cordata_view::shown;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{AnyElement, App, FontWeight, InteractiveElement as _, IntoElement, ParentElement, SharedString, Styled, div, px, relative};
@@ -37,12 +38,13 @@ pub enum DiffLineKind {
     Context,
 }
 
-pub fn block(message: &Message, ix: usize, edge: GroupEdge, expanded: bool, show_thoughts: bool, cx: &App) -> AnyElement {
+/// `ctx` shortens the targets tool rows show (docs/auto-mode.md §1.3); the model and the ledger keep the full text.
+pub fn block(message: &Message, ix: usize, edge: GroupEdge, expanded: bool, show_thoughts: bool, ctx: &fold::Context, cx: &App) -> AnyElement {
     match message {
         Message::User(text) => user(text, cx),
         Message::Agent(text) => assistant(text, ix, cx),
         Message::Thought(text) => thought(text, show_thoughts, cx),
-        Message::Tool(card) => tool(card, edge, expanded, cx),
+        Message::Tool(card) => tool(card, edge, expanded, ctx, cx),
         // Housekeeping (instructions read, `/cost`, a command's note): small and faint, never in the way.
         // A `!command`'s output is something you asked to read: a code block. The rest is a faint note.
         Message::Info(text) if text.starts_with("$ ") => div().py(px(6.)).child(ui::code_block(SharedString::from(cut_lines(&shown(text))), cx)).into_any_element(),
@@ -483,7 +485,7 @@ fn meta_of(card: &ToolCard) -> String {
     format!("{n} line{}", if n == 1 { "" } else { "s" })
 }
 
-fn tool(card: &ToolCard, edge: GroupEdge, expanded: bool, cx: &App) -> AnyElement {
+fn tool(card: &ToolCard, edge: GroupEdge, expanded: bool, ctx: &fold::Context, cx: &App) -> AnyElement {
     let tk = tk(cx);
     let (mark, ink) = match card.status {
         // Done is the ordinary case: said quietly. Running and failing are the ones worth colour.
@@ -559,11 +561,84 @@ fn tool(card: &ToolCard, edge: GroupEdge, expanded: bool, cx: &App) -> AnyElemen
                 .text_size(px(t::TEXT_SMALL))
                 .child(div().w(px(12.)).flex_shrink_0().text_color(c(ink)).child(mark))
                 .child(div().w(px(62.)).flex_shrink_0().font_weight(FontWeight::MEDIUM).text_color(c(tk.text_secondary)).child(if matches!(card.status, ToolStatus::Pending | ToolStatus::InProgress) { verb_pending(&card.name) } else { verb_display(&card.name) }))
-                .child(div().flex_1().min_w_0().truncate().text_color(c(tk.text_body)).child(SharedString::from(cut(&shown(&target(card))))))
+                .child(div().flex_1().min_w_0().truncate().text_color(c(tk.text_body)).child(SharedString::from(cut(&shown(&ctx.shorten(&target(card)))))))
                 .child(right_meta)
                 .child(div().flex_shrink_0().text_color(c(tk.text_faint)).child(if expanded { "⌃" } else { "⌄" })),
         )
         .children(body)
+        .into_any_element()
+}
+
+fn plural(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+/// An activity row's counts, read at a glance: `Read 3 files · searched 2 patterns · ran 1 command`.
+pub fn activity_summary(a: &Activity) -> String {
+    let mut parts = Vec::new();
+    if a.reads > 0 {
+        parts.push(format!("read {}", plural(a.reads, "file", "files")));
+    }
+    if a.searches > 0 {
+        parts.push(format!("searched {}", plural(a.searches, "pattern", "patterns")));
+    }
+    if a.runs > 0 {
+        parts.push(format!("ran {}", plural(a.runs, "command", "commands")));
+    }
+    if a.other > 0 {
+        parts.push(format!("called {}", plural(a.other, "tool", "tools")));
+    }
+    if a.thoughts > 0 {
+        parts.push(plural(a.thoughts, "thought", "thoughts"));
+    }
+    let text = parts.join(" · ");
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => text,
+    }
+}
+
+/// A folded run of quiet tool calls (docs/auto-mode.md §1.1): one compact row with its counts and the newest target,
+/// a pulsing dot while the newest call runs. `body` (the member blocks) shows under it when it is open.
+pub fn activity(a: &Activity, expanded: bool, body: Vec<AnyElement>, cx: &App) -> AnyElement {
+    let tk = tk(cx);
+    let row_hover = line(cx, t::HOVER);
+    let dot = div().w(px(12.)).flex_shrink_0().text_color(c(if a.running { tk.amber } else { tk.text_faint })).child(if a.running { "●" } else { "✓" });
+    let dot: AnyElement = if a.running && crate::ui::motion(cx) {
+        gpui::AnimationExt::with_animation(
+            dot,
+            ("activity-dot", a.first),
+            gpui::Animation::new(std::time::Duration::from_millis(1200)).repeat().with_easing(gpui::ease_in_out),
+            // Up and back down once a cycle: a breath, not a blink.
+            |el, t| el.opacity(0.35 + 0.65 * (1. - (2. * t - 1.).abs())),
+        )
+        .into_any_element()
+    } else {
+        dot.into_any_element()
+    };
+    let hint = a.hint.as_deref().map(|h| cut(&shown(h))).unwrap_or_default();
+    div()
+        .mt(px(6.))
+        .mb(px(6.))
+        .border_l_1()
+        .border_color(line(cx, t::LINE_CONTROL))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .h(px(32.))
+                .px(px(12.))
+                .hover(move |s| s.bg(row_hover))
+                .font_family(mono(cx))
+                .text_size(px(t::TEXT_SMALL))
+                .child(dot)
+                .child(div().flex_shrink_0().whitespace_nowrap().font_weight(FontWeight::MEDIUM).text_color(c(tk.text_secondary)).child(SharedString::from(activity_summary(a))))
+                .child(div().flex_1().min_w_0().truncate().text_color(c(tk.text_faint)).child(SharedString::from(hint)))
+                .child(div().flex_shrink_0().text_color(c(tk.text_faint)).child(if expanded { "⌃" } else { "⌄" })),
+        )
+        .when(expanded, |d| d.child(div().pl(px(8.)).flex().flex_col().children(body)))
         .into_any_element()
 }
 
@@ -584,6 +659,14 @@ fn cut_lines(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn activity_summary_counts_read_at_a_glance() {
+        let a = Activity { reads: 3, searches: 1, runs: 2, thoughts: 1, ..Activity::default() };
+        assert_eq!(activity_summary(&a), "Read 3 files · searched 1 pattern · ran 2 commands · 1 thought");
+        let b = Activity { other: 2, ..Activity::default() };
+        assert_eq!(activity_summary(&b), "Called 2 tools");
+    }
 
     #[test]
     fn a_huge_line_is_cut_before_layout() {

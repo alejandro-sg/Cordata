@@ -27,6 +27,25 @@ pub enum Network {
     Off,
 }
 
+/// Who answers the approval card when no rule decides (`chat.mode`, read only from the user file).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mode {
+    /// Every call no rule decides asks the person (the default).
+    #[default]
+    Ask,
+    /// `auto::judge` runs the calls it can show are safe and asks for the rest.
+    Auto,
+}
+
+impl Mode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Mode::Ask => "ask",
+            Mode::Auto => "auto",
+        }
+    }
+}
+
 /// What the rules say about one tool call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
@@ -54,6 +73,8 @@ pub struct Policy {
     pub writable: Vec<PathBuf>,
     /// Keep sessions in `~/.cordata/sessions` so they can be resumed (`chat.history`, default on).
     pub history: bool,
+    /// `chat.mode`: only the user file may set it; a repository's file is ignored with a line in `ignored`.
+    pub mode: Mode,
     /// Entries that could not be used (not a rule, not a list, not an absolute path), worded for the person.
     pub warnings: Vec<String>,
     /// Loosening keys a repository's file tried to set; the settings panel reports these too.
@@ -62,7 +83,7 @@ pub struct Policy {
 
 impl Default for Policy {
     fn default() -> Self {
-        Self { allow: Vec::new(), deny: Vec::new(), network: Network::Ask, writable: Vec::new(), history: true, warnings: Vec::new(), ignored: Vec::new() }
+        Self { allow: Vec::new(), deny: Vec::new(), network: Network::Ask, writable: Vec::new(), history: true, mode: Mode::Ask, warnings: Vec::new(), ignored: Vec::new() }
     }
 }
 
@@ -158,7 +179,7 @@ fn normalize(path: &Path) -> PathBuf {
 }
 
 /// The project-relative path a file tool names, or `None` when it points outside the project.
-fn relative(raw: &str, cwd: &Path) -> Option<String> {
+pub(crate) fn relative(raw: &str, cwd: &Path) -> Option<String> {
     let joined = normalize(&if Path::new(raw).is_absolute() { PathBuf::from(raw) } else { cwd.join(raw) });
     let root = normalize(cwd);
     let rel = joined.strip_prefix(&root).ok()?;
@@ -172,7 +193,7 @@ const PREFIXES: [&str; 16] = ["then", "do", "else", "elif", "if", "while", "unti
 /// and quote; leading keywords, wrappers and `VAR=value` dropped; `/usr/bin/git` read as `git`; spaces collapsed.
 /// Best effort: a shell can always spell a command in a way no pattern foresees, which is why deny rules sit in front
 /// of the approval card and the sandbox, not instead of them.
-fn simple_commands(cmd: &str) -> Vec<String> {
+pub(crate) fn simple_commands(cmd: &str) -> Vec<String> {
     let separators = [';', '&', '|', '\n', '\r', '(', ')', '`', '{', '}', '\'', '"'];
     cmd.replace("$(", "(")
         .split(separators)
@@ -246,8 +267,9 @@ impl Policy {
             policy.writable.clear();
             policy.network = Network::Off;
             policy.history = false;
+            policy.mode = Mode::Ask;
             policy.warnings.push(format!(
-                "{}: not valid JSON, so no allow rules, no network and no history until it is fixed (`cordata doctor`)",
+                "{}: not valid JSON, so no allow rules, no network, no history and no auto mode until it is fixed (`cordata doctor`)",
                 path.display()
             ));
         }
@@ -278,8 +300,14 @@ impl Policy {
                         None => warnings.push(format!("{file}: chat.writable: '{raw}' is not an absolute path, ignored")),
                     }
                 }
+                match lookup(doc, "chat.mode").map(|v| v.as_str()) {
+                    None => {}
+                    Some(Some("ask")) => policy.mode = Mode::Ask,
+                    Some(Some("auto")) => policy.mode = Mode::Auto,
+                    Some(_) => warnings.push(format!("{file}: chat.mode must be \"ask\" or \"auto\", ignored")),
+                }
             } else {
-                for key in ["chat.allow", "chat.writable"] {
+                for key in ["chat.allow", "chat.writable", "chat.mode"] {
                     if lookup(doc, key).is_some() {
                         policy.ignored.push(format!("{file}: '{key}' ignored, only ~/.cordata/settings.json may set it"));
                     }
@@ -346,6 +374,10 @@ impl Policy {
         };
         lines.push(format!("commands may write: the project, temporary folders and package caches{extra}"));
         lines.push(format!("session history: {}", if self.history { "kept in ~/.cordata/sessions (/history, /forget)" } else { "off" }));
+        lines.push(match self.mode {
+            Mode::Ask => "mode: ask — every call no rule decides asks you".to_owned(),
+            Mode::Auto => "mode: auto — calls auto mode can show are safe run without asking; the rest ask you".to_owned(),
+        });
         lines.extend(self.ignored.iter().chain(&self.warnings).cloned());
         lines
     }
@@ -425,6 +457,36 @@ mod tests {
         // …but it may tighten.
         let p = policy(json!({}), json!({"chat": {"network": "off", "history": "off"}}));
         assert_eq!((p.network, p.history), (Network::Off, false));
+    }
+
+    #[test]
+    fn chat_mode_is_read_only_from_the_user_file() {
+        assert_eq!(policy(json!({}), json!({})).mode, Mode::Ask);
+        assert_eq!(policy(json!({"chat": {"mode": "auto"}}), json!({})).mode, Mode::Auto);
+        assert_eq!(policy(json!({"chat.mode": "auto"}), json!({})).mode, Mode::Auto);
+        // A repository cannot turn auto mode on…
+        let p = policy(json!({}), json!({"chat": {"mode": "auto"}}));
+        assert_eq!(p.mode, Mode::Ask);
+        assert!(p.ignored.iter().any(|w| w.contains("'chat.mode' ignored")), "{:?}", p.ignored);
+        assert!(p.describe().iter().any(|l| l.contains("'chat.mode' ignored")));
+        // …nor off, and the local file is no different.
+        let p = Policy::from_files(&[
+            ("user".into(), json!({"chat.mode": "auto"}), true),
+            ("project".into(), json!({"chat.mode": "ask"}), false),
+            ("local".into(), json!({"chat": {"mode": "ask"}}), false),
+        ]);
+        assert_eq!(p.mode, Mode::Auto);
+        assert_eq!(p.ignored.len(), 2, "{:?}", p.ignored);
+        let p = policy(json!({"chat": {"mode": "yolo"}}), json!({}));
+        assert_eq!(p.mode, Mode::Ask);
+        assert!(p.warnings.iter().any(|w| w.contains("chat.mode must be")), "{:?}", p.warnings);
+    }
+
+    #[test]
+    fn a_broken_user_file_never_leaves_auto_mode_on() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(home.path().join("settings.json"), r#"{"chat": {"mode": "auto",}}"#).unwrap();
+        assert_eq!(Policy::load_in(Some(home.path()), Path::new("/nonexistent")).mode, Mode::Ask);
     }
 
     #[test]

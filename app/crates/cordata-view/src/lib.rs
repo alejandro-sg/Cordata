@@ -15,6 +15,7 @@ pub mod commands;
 pub mod config_ui;
 pub mod custom;
 pub mod extras;
+pub mod fold;
 pub mod input;
 pub mod key;
 pub mod mentions;

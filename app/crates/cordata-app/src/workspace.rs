@@ -24,6 +24,7 @@ use crate::prefs::{self, Prefs};
 use crate::session::{Connection, Session, SessionEvent, WindowRequest};
 use crate::theme::{c, ca, line, tk};
 use crate::transcript::{self, GroupEdge};
+use cordata_view::fold;
 use crate::ui::{self, Dot, Kind};
 
 mod agents;
@@ -611,7 +612,7 @@ impl Workspace {
         if home != self.cwd {
             self.retarget(home, cx);
         }
-        let len = self.session.read(cx).view.messages.len();
+        let len = self.row_count(cx);
         self.transcript.reset(len);
         self.seen = (self.session.entity_id(), len, self.session.read(cx).version);
         cx.notify();
@@ -721,14 +722,21 @@ impl Workspace {
         }
     }
 
+    /// How many display rows the transcript has (messages after folding).
+    fn row_count(&self, cx: &App) -> usize {
+        display_rows(self.session.read(cx)).0.len()
+    }
+
     fn sync_transcript(&mut self, cx: &App) {
         let session = self.session.read(cx);
-        let (id, len, version) = (self.session.entity_id(), session.view.messages.len(), session.version);
+        let (id, len, version) = (self.session.entity_id(), display_rows(session).0.len(), session.version);
         let (old_id, old_len, old_version) = self.seen;
-        if id != old_id || len < old_len {
+        // Another thread, or a cleared one (folding shrinks the count by a row or two, never by a screenful).
+        if id != old_id || len + REMEASURE_TAIL < old_len {
             self.transcript.reset(len);
         } else if len != old_len || version != old_version {
-            let start = old_len.saturating_sub(REMEASURE_TAIL);
+            // A new card may fold into the group before it, so the row count can shrink: re-measure the tail either way.
+            let start = old_len.min(len).saturating_sub(REMEASURE_TAIL);
             self.transcript.splice(start..old_len, len - start);
         }
         self.seen = (id, len, version);
@@ -863,14 +871,16 @@ impl Workspace {
 
     fn toggle_thoughts(&mut self, _: &ToggleThoughts, _: &mut Window, cx: &mut Context<Self>) {
         self.session.update(cx, |session, cx| session.toggle_thoughts(cx));
-        let len = self.session.read(cx).view.messages.len();
+        let len = self.row_count(cx);
         self.transcript.reset(len);
+        self.seen.1 = len;
     }
 
     fn toggle_tools(&mut self, _: &ToggleTools, _: &mut Window, cx: &mut Context<Self>) {
         self.session.update(cx, |session, cx| session.toggle_tools(cx));
-        let len = self.session.read(cx).view.messages.len();
+        let len = self.row_count(cx);
         self.transcript.reset(len);
+        self.seen.1 = len;
     }
 
     fn help(&mut self, _: &Help, _: &mut Window, cx: &mut Context<Self>) {
@@ -1662,6 +1672,14 @@ impl Workspace {
     }
 }
 
+/// What the transcript draws (docs/auto-mode.md §1.1): quiet tool calls folded into activity rows, targets shortened
+/// against the thread's folder and `$HOME`. A call waiting for approval stays its own row.
+fn display_rows(session: &Session) -> (Vec<fold::Row>, fold::Context) {
+    let mut ctx = fold::Context::here(session.cwd.clone());
+    ctx.waiting = session.view.pending.iter().map(|p| p.info.tool_call_id.clone()).collect();
+    (fold::rows_with(&session.view.messages, &ctx), ctx)
+}
+
 /// Whether a pending approval earns a system notification: only the first sighting, only with the window out of front,
 /// and only once per absence (the Dock bounce covers the rest), so ten approvals in a minute are one banner.
 fn should_notify(first_sighting: bool, enabled: bool, window_active: bool, notified_away: bool) -> bool {
@@ -1689,17 +1707,37 @@ impl Render for Workspace {
         // Anything past the session banner (a reply, a `!command`'s output, `/cost`) is worth the transcript.
         let has_conversation = transcript::has_content(&session.read(cx).view);
         let this = cx.entity().downgrade();
+        // Folded once per frame, not once per row: the list asks for rows by index.
+        let (rows, fold_ctx) = display_rows(session.read(cx));
+        let (rows, fold_ctx) = (std::rc::Rc::new(rows), std::rc::Rc::new(fold_ctx));
         let transcript_list = list(self.transcript.clone(), move |ix, _window, cx| {
             let view = &session.read(cx).view;
-            let Some(message) = view.messages.get(ix) else { return div().into_any_element() };
-            let is_tool = |m: Option<&cordata_view::app::Message>| matches!(m, Some(cordata_view::app::Message::Tool(_)));
-            let edge = GroupEdge { first: ix == 0 || !is_tool(view.messages.get(ix - 1)), last: !is_tool(view.messages.get(ix + 1)) };
-            let (card_id, is_thought) = match message {
-                cordata_view::app::Message::Tool(card) => (Some(card.id.clone()), false),
-                cordata_view::app::Message::Thought(_) => (None, true),
-                _ => (None, false),
+            let Some(row) = rows.get(ix) else { return div().into_any_element() };
+            let is_tool_row = |r: Option<&fold::Row>| matches!(r, Some(fold::Row::Message(j)) if matches!(view.messages.get(*j), Some(cordata_view::app::Message::Tool(_))));
+            let edge = GroupEdge { first: ix == 0 || !is_tool_row(rows.get(ix - 1)), last: !is_tool_row(rows.get(ix + 1)) };
+            let (card_id, is_thought) = match row {
+                // An activity row opens and closes on its first card's id.
+                fold::Row::Activity(a) => (match view.messages.get(a.first) {
+                    Some(cordata_view::app::Message::Tool(card)) => Some(card.id.clone()),
+                    _ => None,
+                }, false),
+                fold::Row::Message(i) => match view.messages.get(*i) {
+                    Some(cordata_view::app::Message::Tool(card)) => (Some(card.id.clone()), false),
+                    Some(cordata_view::app::Message::Thought(_)) => (None, true),
+                    _ => (None, false),
+                },
             };
+            // The approval card shows the call waiting on it: its own row would say it twice.
+            if let fold::Row::Message(i) = row
+                && let Some(cordata_view::app::Message::Tool(card)) = view.messages.get(*i)
+                && view.awaiting_approval(&card.id)
+            {
+                return div().into_any_element();
+            }
             let open = view.expand_tools || card_id.as_ref().is_some_and(|id| expanded.contains(id));
+            let fold_ctx = fold_ctx.clone();
+            let last_row = ix + 1 == rows.len();
+            let row = row.clone();
             let (this, session) = (this.clone(), session.clone());
             div()
                 .w_full()
@@ -1728,9 +1766,30 @@ impl Render for Workspace {
                             }
                         })
                         .child({
-                            let block = transcript::block(message, ix, edge, open, thoughts, cx);
+                            let block = match &row {
+                                fold::Row::Message(i) => match view.messages.get(*i) {
+                                    Some(message) => transcript::block(message, *i, edge, open, thoughts, &fold_ctx, cx),
+                                    None => div().into_any_element(),
+                                },
+                                fold::Row::Activity(a) => {
+                                    // Opened, the group lists its calls as plain rows (Ctrl+E opens each one's output).
+                                    let body = if open {
+                                        let tool_at = |j: usize| matches!(view.messages.get(j), Some(cordata_view::app::Message::Tool(_)));
+                                        (a.first..=a.last)
+                                            .filter_map(|j| {
+                                                let message = view.messages.get(j)?;
+                                                let edge = GroupEdge { first: j == a.first || !tool_at(j - 1), last: j == a.last || !tool_at(j + 1) };
+                                                Some(transcript::block(message, j, edge, view.expand_tools, thoughts, &fold_ctx, cx))
+                                            })
+                                            .collect()
+                                    } else {
+                                        Vec::new()
+                                    };
+                                    transcript::activity(a, open, body, cx)
+                                }
+                            };
                             // The newest block rises 6px into place as it fades in (200 ms): you see what arrived.
-                            if ix + 1 == view.messages.len() && crate::ui::motion(cx) {
+                            if last_row && crate::ui::motion(cx) {
                                 gpui::AnimationExt::with_animation(
                                     div().relative().child(block),
                                     ("arrive", ix), gpui::Animation::new(std::time::Duration::from_millis(200)).with_easing(gpui::ease_out_quint()), |el, t| {
