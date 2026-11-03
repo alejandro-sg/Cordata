@@ -42,7 +42,18 @@ pub fn status_data(ledger: &Ledger, limit: usize) -> Value {
             Value::Object(out)
         })
         .collect();
-    json!({"pools": ledger.states(), "runs": runs, "handoffs": handoffs, "ts": cordata_checkpoints::now()})
+    let pools: Vec<Value> = ledger
+        .states()
+        .into_iter()
+        .map(|state| {
+            let mut pool = serde_json::to_value(&state).unwrap_or(Value::Null);
+            if let (Some(obj), Some(n)) = (pool.as_object_mut(), ledger.steps_left(&state.pool_id)) {
+                obj.insert("steps_left".into(), json!(n));
+            }
+            pool
+        })
+        .collect();
+    json!({"pools": pools, "runs": runs, "handoffs": handoffs, "ts": cordata_checkpoints::now()})
 }
 
 pub fn gauge(pct: Option<f64>, width: usize) -> String {
@@ -92,8 +103,9 @@ pub fn pool_line(pool: &Value, marks: bool) -> String {
     let mark = if marks { format!("{} ", level_mark(level)) } else { String::new() };
     let source = if pool.get("source").and_then(Value::as_str) == Some("provider") { " · provider" } else { "" };
     let until = pool.get("limited_until").and_then(Value::as_f64).filter(|t| *t != 0.0).map_or(String::new(), |t| format!(" · resets {}", local_time(t, "%H:%M")));
+    let steps = pool.get("steps_left").and_then(Value::as_i64).map_or(String::new(), |n| format!(" · ~{n} step{} left", if n == 1 { "" } else { "s" }));
     let pct_text = if capped && pct.is_some() { format!("{:4.0}%", pct.unwrap_or(0.0) * 100.0) } else { "  — ".to_owned() };
-    format!("{mark}{} {} {pct_text}  {}{used}{source}{until}", pad(pool.get("pool_id").and_then(Value::as_str).unwrap_or(""), 18), gauge(if capped { pct } else { None }, GAUGE_WIDTH), pad(level, 9) + " ")
+    format!("{mark}{} {} {pct_text}  {}{used}{source}{steps}{until}", pad(pool.get("pool_id").and_then(Value::as_str).unwrap_or(""), 18), gauge(if capped { pct } else { None }, GAUGE_WIDTH), pad(level, 9) + " ")
 }
 
 pub fn handoff_line(item: &Value) -> String {

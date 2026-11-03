@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use cordata_ledger::{Ledger, Outcome, Pool};
+use cordata_ledger::{Ledger, Outcome, Pool, Unit};
 use cordata_orchestrator::executor::{Config, Controls, ExecResult, Runnable, StepExecutor, form_wave};
 use cordata_orchestrator::handoff;
 use cordata_orchestrator::plan::{self, Options, Plan};
@@ -333,6 +333,26 @@ async fn a_worker_that_gives_up_after_a_refusal_is_not_retried_and_is_benched_fo
     let ex = exec(&e2, plan_of(1, "rollback_checkpoint", 2.0), cands, &cp2, Config { strongest_first: true, benched: vec!["quitter:m".into()], ..Default::default() });
     assert_eq!(ex.run().await.status, "completed");
     assert_eq!(quitter.calls.lock().unwrap().len(), 1, "still benched");
+}
+
+#[tokio::test]
+async fn a_run_stops_at_a_step_boundary_when_the_pool_has_no_room_for_a_typical_step() {
+    let e = env(vec![Pool::new("pa", "claude_code").unit(Unit::Usd).limit(10.0)]);
+    // History: a step on this pool costs about $2.
+    for step in ["h1", "h2", "h3"] {
+        e.ledger.record_result("old-run", Some(step), "claude_code", None, &Outcome { cost_usd: 2.0, ..Default::default() }, Some("execute"), None);
+    }
+    let w = worker("w", 1, 2.0, |_, _| None);
+    let cp = CopyCheckpoints::new(&e.store);
+    let ex = exec(&e, plan_of(3, "rollback_checkpoint", 50.0), vec![runnable(&w, "m", "claude_code", "anthropic")], &cp, Config { max_parallel: 1, ..Default::default() });
+    let out = ex.run().await;
+    // $6 used: s1 fits under the $9.50 hard line ($3.50 left); after it $1.50 is left, short of a $2 step.
+    assert_eq!(out.status, "paused", "{}", out.reason);
+    assert!(out.reason.starts_with("stopped at a safe point before step s2: usage is running low (pa has $1.50 left before its hard line, a step takes about $2.00"), "{}", out.reason);
+    assert_eq!(w.calls.lock().unwrap().len(), 1, "s2 never started, so nothing was cut off");
+    assert_eq!(read(&e, "calc/s1.txt").as_deref(), Some("ok s1"), "s1's work is kept");
+    assert_eq!(kinds(&e, "paused")[0]["reason"], "usage_low");
+    assert_eq!(out.last_packet.as_ref().unwrap().reason, "usage_low", "the resume packet says why");
 }
 
 #[tokio::test]

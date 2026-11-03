@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use crate::secrets;
 
-pub const REASONS: [&str; 6] = ["quota_soft_limit_reached", "quota_hard_limit_reached", "provider_rate_limit", "worker_failed", "worker_unavailable", "user_pause"];
+pub const REASONS: [&str; 7] = ["quota_soft_limit_reached", "quota_hard_limit_reached", "usage_low", "provider_rate_limit", "worker_failed", "worker_unavailable", "user_pause"];
 pub const MAX_PATCH_CHARS: usize = 30_000;
 pub const MAX_LIST: usize = 40;
 pub const MAX_ITEM_CHARS: usize = 600;

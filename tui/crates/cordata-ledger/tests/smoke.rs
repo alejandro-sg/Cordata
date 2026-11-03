@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use cordata_ledger::{Allowance, Ledger, Outcome, Pool, UsageRow, Unit, pools_from_settings};
+use cordata_ledger::{Allowance, Headroom, Ledger, Outcome, Pool, UsageRow, Unit, pools_from_settings};
 use serde_json::json;
 
 fn clock() -> (Arc<Mutex<f64>>, impl Fn() -> f64 + Send + 'static) {
@@ -132,4 +132,33 @@ fn the_database_is_private() {
     let path = dir.path().join("p.db");
     let _l = Ledger::open(&path, vec![]).unwrap();
     assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+}
+
+#[test]
+fn headroom_compares_what_is_left_with_what_a_step_usually_takes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (now, read) = clock();
+    let l = Ledger::open(&dir.path().join("state.db"), vec![Pool::new("cc", "claude_code").unit(Unit::Usd).limit(10.0)]).unwrap().with_clock(read);
+    let pool = l.pool_for("claude_code", None);
+    // No history: no guess, so nothing is held back.
+    assert_eq!(l.typical_step(&pool), None);
+    assert_eq!(l.headroom("claude_code", None), Headroom::Fits);
+    // Old steps (long out of the window) still teach what a step costs; two attempts at one step are one step.
+    for (step, usd) in [("a", 0.5), ("b", 1.0), ("c", 1.5), ("d", 2.0)] {
+        l.record_result("old-run", Some(step), "claude_code", None, &spend(usd), Some("execute"), None);
+    }
+    l.record_result("old-run", Some("a"), "claude_code", None, &spend(0.25), Some("execute"), None);
+    l.record_result("old-run", None, "claude_code", None, &spend(9.0), Some("plan"), None);
+    assert_eq!(l.typical_step(&pool), Some(1.5), "p75 of 0.75, 1.0, 1.5, 2.0");
+    *now.lock().unwrap() += 10.0 * 3600.0;
+    l.record_result("run", Some("x"), "claude_code", None, &spend(8.2), Some("execute"), None);
+    // 9.5 hard line - 8.2 = 1.3 left; with this step a sample too, a step takes ~2.0 (p75): stop before the next.
+    match l.headroom("claude_code", None) {
+        Headroom::Short { pool_id, left, typical, resets_at, .. } => {
+            assert_eq!(pool_id, "cc");
+            assert!((left - 1.3).abs() < 1e-9 && (typical - 2.0).abs() < 1e-9, "{left} {typical}");
+            assert!(resets_at.is_some());
+        }
+        Headroom::Fits => panic!("expected short"),
+    }
 }
