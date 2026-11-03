@@ -307,7 +307,9 @@ impl<'a> StepExecutor<'a> {
     fn pick_fresh(&self, exclude_pools: &HashSet<String>, failed: &HashSet<String>, complexity: &str, candidates: &[Runnable]) -> Option<Runnable> {
         let benched = self.out(|o| o.benched.clone());
         let fresh: Vec<Runnable> = candidates.iter().filter(|c| !failed.contains(&c.key()) && !benched.contains(&c.key())).cloned().collect();
-        self.pick(exclude_pools, complexity, &fresh).or_else(|| self.pick(exclude_pools, complexity, candidates))
+        // A benched worker is never the fallback: with only benched workers left the step pauses instead of looping.
+        let unbenched: Vec<Runnable> = candidates.iter().filter(|c| !benched.contains(&c.key())).cloned().collect();
+        self.pick(exclude_pools, complexity, &fresh).or_else(|| self.pick(exclude_pools, complexity, &unbenched))
     }
 
     // ------------------------------------------------------------------ the person's controls
