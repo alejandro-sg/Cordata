@@ -32,17 +32,56 @@ impl Display {
 
 impl gpui::Global for Display {}
 
-/// A system notification. Only fixed text from the app is ever passed (never model or tool output).
-///
-/// From the packaged `Cordata.app` it goes through `UNUserNotificationCenter`, so the banner carries Cordata's name and
-/// icon; the first one asks for permission. A notification with the same identifier replaces the last one, so banners
-/// never stack. Outside a bundle (`cargo run`) the framework refuses to start, so it falls back to `osascript`, whose
-/// banners macOS labels "Script Editor"; there the text goes through argv to AppleScript's `on run`, never spliced into
-/// the script, so nothing in it is code.
+/// Which notification: each kind replaces its own last one in Notification Center instead of stacking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Notice {
+    /// A thread is waiting on an approval.
+    Approval,
+    /// A thread finished while the window was in the back.
+    Done,
+    /// The dock terminal's agent is waiting for an answer.
+    Terminal,
+}
+
+impl Notice {
+    fn id(self) -> &'static str {
+        match self {
+            Notice::Approval => "cordata.approval",
+            Notice::Done => "cordata.done",
+            Notice::Terminal => "cordata.terminal",
+        }
+    }
+}
+
+/// The same notification twice within this is one notification.
+const NOTICE_QUIET: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Whether to post: only from the installed app (a development build posts nothing unless `CORDATA_APP_NOTIFY=1`,
+/// since it would post as "Script Editor" on every test run), and never the same text twice within `NOTICE_QUIET`.
+fn should_post(bundled: bool, dev_opt_in: bool, since_same: Option<std::time::Duration>) -> bool {
+    (bundled || dev_opt_in) && since_same.is_none_or(|elapsed| elapsed >= NOTICE_QUIET)
+}
+
+/// A system notification. From the packaged `Cordata.app` it goes through `UNUserNotificationCenter`, so the banner
+/// carries Cordata's name and icon (the first one asks for permission), and each kind replaces its previous banner.
+/// A development build posts through `osascript` only with `CORDATA_APP_NOTIFY=1`. Text (a thread's title, an agent's
+/// name) is always data: an `NSString`, or argv to AppleScript's `on run` — never spliced into the script.
 #[cfg(target_os = "macos")]
-pub fn notify(title: &str, body: &str) {
-    if std::env::current_exe().is_ok_and(|exe| is_bundled(&exe)) {
-        notify_native(title, body);
+pub fn notify(kind: Notice, title: &str, body: &str) {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::Instant;
+    static LAST: OnceLock<Mutex<HashMap<(Notice, String), Instant>>> = OnceLock::new();
+    let bundled = std::env::current_exe().is_ok_and(|exe| is_bundled(&exe));
+    let dev_opt_in = std::env::var_os("CORDATA_APP_NOTIFY").is_some_and(|v| v == "1");
+    let key = (kind, format!("{title}\n{body}"));
+    let mut last = LAST.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    if !should_post(bundled, dev_opt_in, last.get(&key).map(Instant::elapsed)) {
+        return;
+    }
+    last.insert(key, Instant::now());
+    if bundled {
+        notify_native(kind, title, body);
     } else {
         notify_osascript(title, body);
     }
@@ -56,7 +95,7 @@ fn is_bundled(exe: &std::path::Path) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn notify_native(title: &str, body: &str) {
+fn notify_native(kind: Notice, title: &str, body: &str) {
     use block2::RcBlock;
     use objc2::runtime::Bool;
     use objc2_foundation::{NSError, NSString};
@@ -66,8 +105,8 @@ fn notify_native(title: &str, body: &str) {
     let content = UNMutableNotificationContent::new();
     content.setTitle(&NSString::from_str(title));
     content.setBody(&NSString::from_str(body));
-    content.setThreadIdentifier(&NSString::from_str("approval"));
-    let request = UNNotificationRequest::requestWithIdentifier_content_trigger(&NSString::from_str("cordata.approval"), &content, None);
+    content.setThreadIdentifier(&NSString::from_str("cordata"));
+    let request = UNNotificationRequest::requestWithIdentifier_content_trigger(&NSString::from_str(kind.id()), &content, None);
     // Asking is idempotent: it prompts once, then reports the person's answer. A "no" leaves the Dock bounce.
     let add = {
         let center = center.clone();
@@ -91,7 +130,7 @@ fn notify_osascript(title: &str, body: &str) {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn notify(_title: &str, _body: &str) {}
+pub fn notify(_kind: Notice, _title: &str, _body: &str) {}
 
 /// System dictation into the focused text box (Edit → Start Dictation): the composer must have focus first.
 #[cfg(target_os = "macos")]
@@ -467,6 +506,17 @@ pub fn pasteboard_image_png() -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notifications_come_from_the_installed_app_once() {
+        use std::time::Duration;
+        assert!(should_post(true, false, None), "the installed app posts");
+        assert!(!should_post(false, false, None), "a development build does not");
+        assert!(should_post(false, true, None), "unless CORDATA_APP_NOTIFY=1");
+        assert!(!should_post(true, false, Some(Duration::from_secs(5))), "the same one again within 30 s is dropped");
+        assert!(should_post(true, false, Some(NOTICE_QUIET)), "after that it may post");
+        assert_ne!(Notice::Approval.id(), Notice::Done.id());
+    }
 
     #[test]
     fn combos_parse_to_carbon_codes_and_labels() {

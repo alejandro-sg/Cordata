@@ -209,7 +209,7 @@ impl Workspace {
             if !shown && self.prefs.notify_approval
                 && let Some(d) = &self.terminal.detection
             {
-                crate::platform::notify(&format!("{} needs you", d.name), "It is waiting for an answer in Cordata's terminal.");
+                crate::platform::notify(crate::platform::Notice::Terminal, &format!("{} needs you", d.name), "It is waiting for an answer in Cordata's terminal.");
             }
         }
         cx.notify();

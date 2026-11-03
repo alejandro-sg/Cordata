@@ -1546,7 +1546,7 @@ impl Workspace {
                 self.sounds.play(crate::sound::Cue::Done);
             }
             if unseen && !in_front && self.prefs.notify_done && !pending {
-                crate::platform::notify("Cordata finished", &title);
+                crate::platform::notify(crate::platform::Notice::Done, "Cordata finished", &title);
             }
         }
         if pending {
@@ -1556,7 +1556,7 @@ impl Workspace {
             }
             if should_notify(first, self.prefs.notify_approval, window.is_window_active(), self.notified_away) {
                 self.notified_away = true;
-                crate::platform::notify("Cordata needs you", "A command is waiting for your approval.");
+                crate::platform::notify(crate::platform::Notice::Approval, "Cordata needs you", "A command is waiting for your approval.");
             }
         } else {
             self.pending_seen.remove(&id);
