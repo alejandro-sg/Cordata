@@ -185,7 +185,6 @@ impl Workspace {
                 Some(
                     ui::row("picker-open-path", true, cx)
                         .on_click(cx.listener(move |this, _, window, cx| this.switch_project(path.clone(), window, cx)))
-                        .child(div().text_color(c(tk.amber)).child(gpui_component::Icon::new(gpui_kit_assets::IconName::ArrowRight).size(px(14.))))
                         .child(div().flex_shrink_0().text_size(px(t::TEXT_UI)).text_color(c(tk.text_primary)).child("Open this folder"))
                         .child(div().flex_1().min_w_0().truncate().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(if exists { tk.text_muted } else { tk.danger })).child(SharedString::from(if exists { shown_path } else { format!("{shown_path} (not found)") })))
                         .child(ui::meta("↵", cx))
@@ -220,12 +219,11 @@ impl Workspace {
         let no_match = list.is_empty() && path_row.is_none();
         let top = t::HEADER_H + 34.;
         let max_h = (window.viewport_size().height.as_f32() - top - 16.).max(240.);
-        let footer_action = |id: &'static str, icon: gpui_kit_assets::IconName, label: &'static str, key: &'static str, cx: &mut Context<Self>| {
+        let footer_action = |id: &'static str, label: &'static str, key: &'static str, cx: &mut Context<Self>| {
             ui::row(id, false, cx)
                 .h(px(30.))
                 .text_size(px(t::TEXT_UI))
                 .text_color(c(tk.text_secondary))
-                .child(div().flex_shrink_0().text_color(c(tk.text_faint)).child(gpui_component::Icon::new(icon).size(px(14.))))
                 .child(div().flex_1().child(label))
                 .when(!key.is_empty(), |r| r.child(ui::meta(key, cx)))
         };
@@ -259,7 +257,8 @@ impl Workspace {
                             .px(px(12.))
                             .border_b_1()
                             .border_color(line(cx, t::LINE_SUBTLE))
-                            .child(div().flex_shrink_0().text_color(c(tk.text_faint)).child(gpui_component::Icon::new(gpui_kit_assets::IconName::Search).size(px(14.))))
+                            // Every query line in the window is the composer's form: the `›`, then your words.
+                            .child(crate::workspace::prompt_mark(c(tk.amber), cx))
                             .child(div().flex_1().text_size(px(t::TEXT_UI)).child(Input::new(&self.picker_input).appearance(false))),
                     )
                     .child(
@@ -286,12 +285,12 @@ impl Workspace {
                             .p(px(6.))
                             .border_t_1()
                             .border_color(line(cx, t::LINE_SUBTLE))
-                            .child(footer_action("picker-open-folder", gpui_kit_assets::IconName::FolderOpen, "Open folder…", "⌘O", cx).on_click(cx.listener(|this, _, window, cx| this.choose_folder(window, cx))))
-                            .child(footer_action("picker-clone", gpui_kit_assets::IconName::GitBranch, "Clone repository…", "", cx).on_click(cx.listener(|this, _, window, cx| {
+                            .child(footer_action("picker-open-folder", "Open folder…", "⌘O", cx).on_click(cx.listener(|this, _, window, cx| this.choose_folder(window, cx))))
+                            .child(footer_action("picker-clone", "Clone repository…", "", cx).on_click(cx.listener(|this, _, window, cx| {
                                 this.close_overlay(Overlay::Picker, window, cx);
                                 this.open_overlay(Overlay::Clone, window, cx);
                             })))
-                            .child(footer_action("picker-new", gpui_kit_assets::IconName::FolderPlus, "New empty project", "", cx).on_click(cx.listener(|this, _, window, cx| this.new_empty_project(window, cx)))),
+                            .child(footer_action("picker-new", "New empty project", "", cx).on_click(cx.listener(|this, _, window, cx| this.new_empty_project(window, cx)))),
                     ),
             )
             .into_any_element()

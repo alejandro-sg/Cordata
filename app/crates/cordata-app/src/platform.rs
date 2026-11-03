@@ -28,27 +28,9 @@ impl Display {
     pub fn read() -> Self {
         Self::default()
     }
-
-    /// Glass and the drifting haze are decoration: off when the person asked for less transparency or motion.
-    pub fn atmosphere(self) -> bool {
-        !self.reduce_transparency && !self.reduce_motion
-    }
 }
 
 impl gpui::Global for Display {}
-
-/// A system sound by name (`Glass`, `Ping`…), for a finished turn. Silent where there is none.
-#[cfg(target_os = "macos")]
-pub fn play_sound(name: &str) {
-    use objc2_app_kit::NSSound;
-    use objc2_foundation::NSString;
-    if let Some(sound) = NSSound::soundNamed(&NSString::from_str(name)) {
-        sound.play();
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn play_sound(_name: &str) {}
 
 /// A system notification. Only fixed text from the app is ever passed (never model or tool output).
 ///

@@ -25,16 +25,6 @@ pub enum Section {
 impl Section {
     pub const ALL: [Section; 5] = [Section::General, Section::Appearance, Section::Shortcuts, Section::Account, Section::Advanced];
 
-    fn icon(self) -> gpui_kit_assets::IconName {
-        match self {
-            Section::General => gpui_kit_assets::IconName::SlidersHorizontal,
-            Section::Appearance => gpui_kit_assets::IconName::Palette,
-            Section::Shortcuts => gpui_kit_assets::IconName::Keyboard,
-            Section::Account => gpui_kit_assets::IconName::KeyRound,
-            Section::Advanced => gpui_kit_assets::IconName::Wrench,
-        }
-    }
-
     fn title(self) -> &'static str {
         match self {
             Section::General => "General",
@@ -49,7 +39,7 @@ impl Section {
     fn keywords(self) -> &'static str {
         match self {
             Section::General => "launch startup quick ask hotkey send enter cost notifications sound",
-            Section::Appearance => "theme dark light haze density font size",
+            Section::Appearance => "theme dark light ink paper density font size",
             Section::Shortcuts => "keys keyboard bindings hotkeys",
             Section::Account => "api key anthropic sign out usage keychain",
             Section::Advanced => "logs diagnostics reset clear history",
@@ -65,7 +55,7 @@ impl Section {
     fn description(self) -> &'static str {
         match self {
             Section::General => "Launch, sending and notifications.",
-            Section::Appearance => "Theme, haze and density.",
+            Section::Appearance => "Theme and density.",
             Section::Shortcuts => "Every key the window answers to.",
             Section::Account => "Your key and usage.",
             Section::Advanced => "Logs, diagnostics and resets.",
@@ -166,7 +156,6 @@ impl Workspace {
                     this.on_settings_section(cx);
                     cx.notify();
                 }))
-                .child(div().w(px(16.)).text_color(c(if active { tk.amber } else { tk.text_muted })).child(gpui_component::Icon::new(section.icon()).size(px(15.))))
                 .child(section.title())
                 .into_any_element()
         }).collect();
@@ -241,7 +230,6 @@ impl Workspace {
                                     .border_1()
                                     .border_color(line(cx, t::LINE_CONTROL))
                                     .text_size(px(t::TEXT_UI))
-                                    .child(div().flex_shrink_0().text_color(c(tk.text_muted)).child(gpui_component::Icon::new(gpui_kit_assets::IconName::Search).size(px(14.))))
                                     .child(div().flex_1().min_w_0().child(Input::new(&self.settings_search).appearance(false).aria_label("Search settings"))),
                             )
                             .when(nav.is_empty(), |col| col.child(div().px(px(16.)).py(px(6.)).child(ui::meta("No settings match.", cx))))
@@ -418,7 +406,7 @@ impl Workspace {
             this.prefs.notify_done = on;
             this.save_prefs(cx);
         }, cx);
-        let sound = self.toggle("sound-done", self.prefs.sound_on_completion, "Sound on completion", |this, on, cx| {
+        let sound = self.toggle("sound-done", self.prefs.sound_on_completion, "Sounds", |this, on, cx| {
             this.prefs.sound_on_completion = on;
             this.save_prefs(cx);
         }, cx);
@@ -443,19 +431,15 @@ impl Workspace {
             sub_heading("notifications", cx),
             setting_row("Notify when approval is needed", "A system notification when a command waits for you and the window is in the back.", notify, cx),
             setting_row("Notify when a thread finishes", "A system notification when a thread finishes while the window is in the back; it stays marked Done until you look (⌘J goes there).", notify_done, cx),
-            setting_row("Sound on completion", "A short sound when a turn finishes.", sound, cx),
+            setting_row("Sounds", "Two soft cues, only for what you cannot see: a rising one when something needs you, a falling one when a thread finishes elsewhere.", sound, cx),
         ]
     }
 
     fn appearance_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let theme = self.segmented("theme", &[("system", "system"), ("light", "light"), ("2049", "2049"), ("graphite", "graphite"), ("dim", "dim")], &self.prefs.theme.clone(), |this, v, cx| {
+        let theme = self.segmented("theme", &[("system", "system"), ("light", "paper"), ("2049", "ink"), ("graphite", "graphite"), ("dim", "dim")], &self.prefs.theme.clone(), |this, v, cx| {
             this.prefs.theme = v.into();
             this.save_prefs(cx);
             crate::theme::set_theme(v, cx);
-        }, cx);
-        let haze = self.toggle("haze", self.prefs.haze, "Ambient haze", |this, on, cx| {
-            this.prefs.haze = on;
-            this.save_prefs(cx);
         }, cx);
         let density = self.segmented("density", &[("compact", "compact"), ("comfortable", "comfortable")], &self.prefs.density.clone(), |this, v, cx| {
             this.prefs.density = v.into();
@@ -464,8 +448,7 @@ impl Workspace {
         let size = format!("{:.0}", self.prefs.code_font_size);
         let font = self.select(Select::CodeFont, &size, ["11", "12", "13", "14", "15", "16"].iter().map(|v| ((*v).to_owned(), format!("{v} px"))).collect(), cx);
         vec![
-            setting_row("Theme", "system follows macOS Light/Dark live; light uses the WCAG DAY palette; 2049, graphite and dim are dark.", theme, cx),
-            setting_row("Ambient haze", "The amber and teal glow behind the conversation. Off with Reduce Motion or Reduce Transparency.", haze, cx),
+            setting_row("Theme", "system follows macOS Light/Dark live. Paper is the light theme; ink, graphite and dim are dark.", theme, cx),
             setting_row("Density", "Spacing in lists and the transcript.", density, cx),
             setting_row("Code font size", "The editor and code blocks.", font, cx),
         ]

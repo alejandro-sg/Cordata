@@ -13,6 +13,7 @@ mod keychain;
 mod platform;
 mod prefs;
 mod session;
+mod sound;
 mod theme;
 mod transcript;
 mod ui;
@@ -88,8 +89,10 @@ fn parse_cordata_url(url: &str, args: &mut Args) {
 gpui_kit_assets::icon_assets!(
     Icons,
     [
-        Search, PanelLeft, PanelRight, Settings, Plus, Mic, Paperclip, X, ChevronDown, ChevronRight, SquarePen, RefreshCw, ExternalLink, GitBranch, FolderOpen, FolderPlus, Keyboard, Palette, KeyRound, Wrench,
-        SlidersHorizontal, ArrowRight, Ellipsis,
+        // Whole controls (each has a tooltip): search, the two panels, new thread, close, settings, attach, dictate, refresh.
+        Search, PanelLeft, PanelRight, SquarePen, X, Settings, Paperclip, Mic, RefreshCw,
+        // States you would otherwise read: a folder or a select open or closed.
+        ChevronDown, ChevronRight,
     ]
 );
 

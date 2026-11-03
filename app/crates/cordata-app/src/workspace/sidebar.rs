@@ -5,7 +5,10 @@
 use cordata_theme::tokens as t;
 use cordata_view::app::{ConnState, TabState};
 use cordata_view::shown;
+use std::time::Duration;
+
 use gpui::prelude::FluentBuilder as _;
+use gpui::{Animation, AnimationExt as _, ease_in_out};
 use gpui::{AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement, MouseButton, ParentElement, SharedString, StatefulInteractiveElement as _, Styled, div, px};
 
 use super::{DockTab, Overlay, Workspace};
@@ -172,7 +175,17 @@ impl Workspace {
                     .when(active, move |row| row.bg(selected))
                     .when(!active, move |row| row.hover(move |s| s.bg(hover)))
                     .on_click(cx.listener(move |this, _, _, cx| this.show(target.clone(), cx)))
-                    .when_some(mark, |row, colour| row.child(div().absolute().left(px(0.)).top(px(7.)).bottom(px(7.)).w(px(2.)).rounded_full().bg(colour)))
+                    .when_some(mark, |row, colour| {
+                        let bar = div().absolute().left(px(0.)).top(px(7.)).bottom(px(7.)).w(px(2.)).rounded_full().bg(colour);
+                        // A working thread's mark breathes: alive, not stuck. Waiting and failed marks hold still.
+                        if state == TabState::Working && ui::motion(cx) {
+                            row.child(bar.with_animation(("thread-breath", index), Animation::new(Duration::from_millis(1800)).repeat().with_easing(ease_in_out), |el, t| {
+                                el.opacity(0.35 + 0.65 * (1.0 - (2.0 * t - 1.0).powi(2)))
+                            }))
+                        } else {
+                            row.child(bar)
+                        }
+                    })
                     .child(
                         div()
                             .flex_1()

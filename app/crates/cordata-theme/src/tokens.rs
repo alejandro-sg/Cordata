@@ -268,9 +268,6 @@ pub const DIFF_DEL_FILL: f32 = 0.06;
 pub const SCRIM: f32 = 0.65;
 pub const MODAL_SHADOW: f32 = 0.65;
 
-/// The haze: amber from the bottom-left, teal from the top-right.
-pub const HAZE_AMBER: (u32, f32) = (0xC46E28, 0.10);
-pub const HAZE_TEAL: (u32, f32) = (0x468C96, 0.07);
 
 // ------------------------------------------------------------------------------------------------ metrics (px)
 

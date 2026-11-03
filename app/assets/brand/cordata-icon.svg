@@ -1,19 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" fill="none">
   <title>Cordata</title>
-  <defs>
-    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0F1013"/><stop offset="1" stop-color="#050607"/></linearGradient>
-    <radialGradient id="a" cx="0.12" cy="1" r="0.75"><stop offset="0" stop-color="#E8A254" stop-opacity=".22"/><stop offset="1" stop-color="#E8A254" stop-opacity="0"/></radialGradient>
-    <radialGradient id="t" cx="0.95" cy="0" r="0.7"><stop offset="0" stop-color="#5FB3B3" stop-opacity=".16"/><stop offset="1" stop-color="#5FB3B3" stop-opacity="0"/></radialGradient>
-    <clipPath id="b"><rect x="100" y="100" width="824" height="824" rx="185"/></clipPath>
-  </defs>
-  <g clip-path="url(#b)">
-    <rect x="100" y="100" width="824" height="824" fill="url(#g)"/>
-    <rect x="100" y="100" width="824" height="824" fill="url(#a)"/>
-    <rect x="100" y="100" width="824" height="824" fill="url(#t)"/>
-  </g>
-  <rect x="101.5" y="101.5" width="821" height="821" rx="183.5" stroke="#fff" stroke-opacity=".08" stroke-width="3"/>
+  <!-- One flat ink ground with a hairline edge, as the window is: no gradient, no haze. -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="#0E1013"/>
+  <rect x="101.5" y="101.5" width="821" height="821" rx="183.5" stroke="#fff" stroke-opacity=".09" stroke-width="3"/>
   <g transform="translate(241.1 236.8) scale(8.6)">
-    <path d="M45 7.201A28 28 0 1 0 45 56.799V45.856A19 19 0 1 1 45 18.144Z" fill="#ECE7DE"/>
-    <path d="M49 20h10v24H49Z" fill="#E8A254"/>
+    <path d="M45 7.201A28 28 0 1 0 45 56.799V45.856A19 19 0 1 1 45 18.144Z" fill="#E8EAED"/>
+    <path d="M49 20h10v24H49Z" fill="#3DC9A4"/>
   </g>
 </svg>

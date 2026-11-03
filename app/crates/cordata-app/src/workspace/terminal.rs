@@ -203,6 +203,9 @@ impl Workspace {
         self.terminal.detection = detection;
         if self.terminal.blocked() && !was_blocked {
             let shown = self.panel_open && self.dock_tab == super::DockTab::Terminal && cx.active_window().is_some();
+            if !shown && self.prefs.sound_on_completion {
+                self.sounds.play(crate::sound::Cue::NeedsYou);
+            }
             if !shown && self.prefs.notify_approval
                 && let Some(d) = &self.terminal.detection
             {

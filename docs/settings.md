@@ -102,8 +102,12 @@ recursive deletes of `/`, `~` or `..`, and shell redirects into `.env`. It is no
 
 ## The native app (`app.*`)
 
-Kept in the app's own preferences file (`CORDATA_APP_PREFS_DIR` moves it): `app.theme`, `app.density`,
-`app.notifications`, `app.restoreWindows`, `app.showReasoning`.
+Kept in the window's own preferences, `~/Library/Application Support/Cordata/prefs.toml` (`CORDATA_APP_PREFS_DIR`
+moves it), and changed from Settings (⌘,): `theme` (`system`, `light` = Paper, `2049` = Ink, `graphite`, `dim`),
+`density`, `code_font_size`, `send_with`, `open_on_launch`, `notify_approval`, `notify_done`, `sound_on_completion` (the
+two sounds), `quick_ask_hotkey` and `quick_ask_key`, plus what the window remembers (`sidebar_open`, `panel_open`,
+recent projects). A file that does not parse is kept beside it as `prefs.toml.damaged-<time>` before the defaults
+replace it.
 
 ## Environment
 

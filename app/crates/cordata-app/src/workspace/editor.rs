@@ -410,14 +410,9 @@ impl Workspace {
                                 .w(px(12.))
                                 .flex_shrink_0()
                                 .text_color(c(tk.text_faint))
-                                .child(if row.dir {
-                                    if row.open {
-                                        gpui_component::Icon::new(gpui_kit_assets::IconName::ChevronDown).size(px(12.))
-                                    } else {
-                                        gpui_component::Icon::new(gpui_kit_assets::IconName::ChevronRight).size(px(12.))
-                                    }
-                                } else {
-                                    gpui_component::Icon::new(gpui_kit_assets::IconName::ChevronRight).size(px(0.))
+                                // The chevron says open or closed; a file gets the same 12px of nothing.
+                                .when(row.dir, |el| {
+                                    el.child(gpui_component::Icon::new(if row.open { gpui_kit_assets::IconName::ChevronDown } else { gpui_kit_assets::IconName::ChevronRight }).size(px(12.)))
                                 }),
                         )
                         .child(div().truncate().child(SharedString::from(row.name.clone())))
@@ -457,7 +452,6 @@ impl Workspace {
                             .rounded(px(t::RADIUS_CONTROL))
                             .border_1()
                             .border_color(line(cx, t::LINE_CONTROL))
-                            .child(div().flex_shrink_0().text_color(c(tk.text_faint)).child(gpui_component::Icon::new(gpui_kit_assets::IconName::Search).size(px(13.))))
                             .child(div().flex_1().min_w_0().child(Input::new(&self.file_filter).appearance(false))),
                     )
                     .child(

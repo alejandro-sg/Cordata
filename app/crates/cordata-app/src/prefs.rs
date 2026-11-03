@@ -21,7 +21,6 @@ pub struct Prefs {
     pub panel_open: Option<bool>,
     /// `system` (follow macOS Light/Dark) · `light` · `2049` · `graphite` · `dim`.
     pub theme: String,
-    pub haze: bool,
     /// `compact` · `comfortable`.
     pub density: String,
     pub code_font_size: f32,
@@ -32,6 +31,8 @@ pub struct Prefs {
     pub notify_approval: bool,
     /// A notification when a thread finishes while the window is in the background.
     pub notify_done: bool,
+    /// Cordata's two sounds (`sound.rs`): needs-you and done, for what happens out of sight. The key keeps its old
+    /// name so saved preferences carry over.
     pub sound_on_completion: bool,
     /// The global quick-ask hotkey brings the window forward with the composer focused.
     pub quick_ask_hotkey: bool,
@@ -54,7 +55,6 @@ impl Default for Prefs {
             sidebar_open: None,
             panel_open: None,
             theme: "system".into(),
-            haze: false,
             density: "comfortable".into(),
             code_font_size: 13.0,
             send_with: "enter".into(),

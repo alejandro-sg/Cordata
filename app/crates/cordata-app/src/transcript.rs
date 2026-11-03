@@ -371,6 +371,20 @@ pub fn preview_file_diff(diff: &FileDiff, max_lines: usize) -> (Vec<(DiffLineKin
     (all, total.saturating_sub(shown_count))
 }
 
+/// What an edit will change, as the approval shows it: each file's diff (the first four files), named when there are
+/// several.
+pub fn diff_preview(diffs: &[FileDiff], cx: &App) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .children(diffs.iter().take(4).map(|diff| {
+            let (rows, more) = preview_file_diff(diff, DIFF_PREVIEW_LINES);
+            render_diff_rows(rows, more, (diffs.len() > 1).then_some(diff.path.as_str()), cx)
+        }))
+        .into_any_element()
+}
+
 fn render_diff_rows(rows: Vec<(DiffLineKind, String)>, more: usize, header: Option<&str>, cx: &App) -> AnyElement {
     let tk = tk(cx);
     let elements = rows.into_iter().map(|(kind, text)| {

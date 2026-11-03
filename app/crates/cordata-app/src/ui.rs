@@ -2,61 +2,16 @@
 //! chips, buttons, the switch, the segmented control, the select trigger. Each returns a styled element; the caller
 //! adds ids, handlers and accessibility labels. No colour or size is written here except through `theme`/`tokens`.
 
-use cordata_theme::tokens::{self as t, Tracking, tracked_text};
+use cordata_theme::tokens::{self as t};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{AnyView, App, Div, ElementId, FontWeight, InteractiveElement as _, ParentElement, SharedString, Stateful, StatefulInteractiveElement as _, Styled, Window, div, px};
 use gpui_component::tooltip::Tooltip;
 
-use crate::theme::{amber, amber_glow, c, ca, line, mono, sans, tk};
-
-/// `PROJECT`: 10.5px semibold sans, subtly tracked capitals, the label colour.
-#[allow(dead_code)]
-pub fn section_label(text: &str, cx: &App) -> Div {
-    div()
-        .flex_shrink_0()
-        .whitespace_nowrap()
-        .font_family(sans(cx))
-        .text_size(px(t::TEXT_STATUS))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(c(tk(cx).text_label))
-        .child(SharedString::from(tracked_text(text, Tracking::Label, true)))
-}
-
-/// `◆ MISSION CONTROL`: a primary panel heading with a subtle amber diamond marker.
-#[allow(dead_code)]
-pub fn heading(text: &str, cx: &App) -> Div {
-    div()
-        .flex()
-        .items_center()
-        .gap(px(6.))
-        .whitespace_nowrap()
-        .font_family(sans(cx))
-        .text_size(px(t::TEXT_META))
-        .font_weight(FontWeight::SEMIBOLD)
-        .child(div().text_color(c(tk(cx).amber)).child("◆"))
-        .child(div().text_color(c(tk(cx).text_primary)).child(SharedString::from(tracked_text(text, Tracking::Label, true))))
-}
+use crate::theme::{amber, amber_glow, c, ca, line, mono, tk};
 
 /// Small mono meta text (shortcut hints, ages, counts).
 pub fn meta(text: impl Into<SharedString>, cx: &App) -> Div {
     div().flex_shrink_0().whitespace_nowrap().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk(cx).text_faint)).child(text.into())
-}
-
-/// `⌘K` in a key cap: 1px border, 2px bottom border, 4px radius.
-#[allow(dead_code)]
-pub fn keycap(text: impl Into<SharedString>, cx: &App) -> Div {
-    div()
-        .flex_shrink_0()
-        .whitespace_nowrap()
-        .px(px(4.))
-        .rounded(px(t::RADIUS_CAP))
-        .border_1()
-        .border_b_2()
-        .border_color(line(cx, t::LINE_CONTROL_STRONG))
-        .font_family(mono(cx))
-        .text_size(px(t::TEXT_LABEL))
-        .text_color(c(tk(cx).text_muted))
-        .child(text.into())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -188,6 +143,11 @@ pub fn icon_button(id: impl Into<ElementId>, glyph: &'static str, cx: &App) -> S
         .hover(move |s| s.bg(hover).text_color(ink))
         .role(gpui::Role::Button)
         .child(glyph)
+}
+
+/// Whether the window may animate: off when macOS Reduce Motion is on. Every animation asks this first.
+pub fn motion(cx: &App) -> bool {
+    !cx.try_global::<crate::platform::Display>().is_some_and(|d| d.reduce_motion)
 }
 
 /// A 24px icon action: one Lucide icon (the set embedded in `main.rs`), muted until hovered. Every action in the

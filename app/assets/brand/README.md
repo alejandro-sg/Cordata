@@ -1,74 +1,92 @@
-# Cordata mark
+# Cordata brand
 
-A **C** and a terminal cursor cell. The ring is the cord and the sandbox boundary; the amber cell sitting in its mouth is
-the agent's next action, waiting at the approval gate. In a terminal it is literally `C█`.
+Cordata is a quiet instrument: it shows what the agent is doing and gets out of the way. Every element below has one
+job; anything that only decorates is left out.
 
-## Brief
+## The mark
 
-What the product is, from `ARCHITECTURE.md` and `docs/orchestrator.md`: several coding agents on one job; every edit and
-command asks first; commands run inside a Seatbelt boundary; work moves between pools when a quota runs out; checkpoints
-make a turn undoable; it runs in a terminal and in a GPUI window, on the 2049 theme (amber = "needs you", teal = agent).
+A **C** and a terminal cursor cell. The ring is the cord and the sandbox boundary; the cell in its mouth is the agent's
+next action, waiting at the approval gate. In a terminal it is literally `C█`. The cell is the brand's one moving part,
+the same signal colour as the window's live line and your `›`.
 
-The mark has to:
+The mark has to be drawn from a fact about the product, survive one colour at 16 px, exist as terminal text, and carry
+state by **shape** as well as colour. It must not read as a moon, a heart, an infinity sign, a fork or a crop box.
 
-1. be drawn from one of those facts, not from a pun found afterwards;
-2. survive one colour, 16 px, and a blur (it must stay one object);
-3. exist as terminal text, since the TUI is the primary front end;
-4. carry state with a **shape** cue, not hue alone (`hud.rs`: "colour is never the only signal");
-5. not read as a moon, a heart, an infinity sign, a fork or a crop box.
+Geometry, on a 64 grid: ring outer radius 28, stroke 9, cut vertically at x = 45; cell 10 × 24 at x = 49, y = 20 (a
+terminal cell's aspect), 4 units clear of the ring. The bounding box (4 to 59) is centred on the ring, so the mark crops
+into a circle or a squircle. Keep a quarter of its width clear on every side; do not go below 16 px.
 
-## Candidates, scored
+### State
 
-1–5 per criterion (a judgement made from the renders, not a measurement), weighted: truth to the product 20, one object at small sizes 25, one colour 10, distinct and
-unambiguous 15, exists as terminal text 15, state by shape 15.
-
-| candidate | idea | score | why it lost or won |
-|---|---|---|---|
-| **C + cursor cell** | the gate is the cursor | **79** | wins: true to the medium, `C█` is the text form, states come from real cursor conventions |
-| chord ring (first version) | circle cut by a chord | 62 | strongest silhouette, but the chord is a pun; the amber half-disc has no meaning, reads as a moon / `C)`, no text form, states were hue only |
-| frame + core cell | corner brackets round a cell | – | keeps the old brackets but reads as a screenshot / focus icon |
-| bracket-C + cell | square `[` with a cell | – | reads as an `E` |
-| circle ∩ square | two model families, agreement in amber | – | the idea is good (cross-family audit) but it is mush at 16 px and needs three colours |
-| fan-in | three lanes merge | – | reads as a fork / trident; every devtool has one |
-| interlocking C's | handoff between pools | – | reads as a heart or an infinity sign |
-| gate + dot | dot waiting at a bar | – | too generic to own |
-
-The honest cost of the winner: at small sizes the cell and the ring read as two objects where the chord ring read as
-one. Stroke 9 and a cell 10 wide are the weights that keep them balanced; thinner strokes make the cell a speck.
-
-## Geometry
-
-64 grid. Ring: outer radius 28, stroke 9, cut vertically at x = 45. Cell: 10 × 24 at x = 49, y = 20, which is the cell
-aspect of a terminal (about 1 : 2.4), 4 units clear of the ring, 1.9 units inside the ring's mouth. The bounding box
-(4 to 59) is centred on the ring, so the mark crops cleanly into a circle or a squircle.
-
-## State
-
-The cell is the only thing that moves, and each state differs in shape and place as well as colour:
+The cell is the only thing that changes; each state differs in shape and place as well as colour.
 
 | state | cell | colour | terminal text |
 |---|---|---|---|
 | idle (unfocused) | hollow, in the mouth | ink at 55% | `C▯` |
-| working | solid, **inside** the ring (in the sandbox) | teal | `(█` |
-| needs you (the brand mark) | solid, in the mouth (at the gate) | amber | `C█` |
-| done | none; the ring closes | ink | `O` / `◯` |
-| error | solid, split by a slash | red | `C▚` |
+| working | solid, **inside** the ring (in the sandbox) | signal | `(█` |
+| needs you | solid, in the mouth (at the gate) | attention | `C█` |
+| done | none; the ring closes | ink | `O` |
+| error | solid, split by a slash | danger | `C▚` |
 
-Hollow for idle is the terminal convention for an unfocused cursor.
+## Colour
+
+| role | Ink (dark) | Paper (light) | means |
+|---|---|---|---|
+| ground | `#0E1013` | `#FAFAF9` | one per theme; columns are told apart by hairlines |
+| ink | `#E8EAED` | `#111418` | text and the ring |
+| signal (viridian) | `#3DC9A4` | `#0A6553` | the live thing: the cell, the live line, your `›`, focus |
+| attention (ochre) | `#E2A640` | `#8A5100` | something needs you — and nothing else |
+| second voice (lavender) | `#A096E6` | `#5B4BA8` | delegated or untrusted work |
+| danger | `#E5584E` | `#A8231B` | failure, destruction |
+
+The tokens live in `app/crates/cordata-theme/src/tokens.rs`, with contrast tests (AA everywhere, AAA for text under
+macOS Increase Contrast).
+
+## Icons
+
+An icon is used in exactly two cases, and each one is in the app's embedded set (`icon_assets!` in
+`app/crates/cordata-app/src/main.rs`, Lucide):
+
+1. **It is the whole control** — no room for a word — and it carries a tooltip: search, the two panel toggles, new
+   thread, close, settings, attach, dictate, refresh.
+2. **It shows a state you would otherwise have to read**: the chevron of a folder or a select, open or closed.
+
+An icon next to a word that already says the same thing is decoration, and is not used.
+
+## Sound
+
+Two cues, synthesised in `app/crates/cordata-app/src/sound.rs` (no audio files), each for something you could not see
+happen. Off unless you turn on Settings → General → Sounds.
+
+| cue | shape | when |
+|---|---|---|
+| needs you | two notes rising a fourth (A5 → D6): a question | an approval arrives, or the terminal's agent is waiting, out of sight |
+| done | two notes falling a major third (E6 → C6): a resolution | a thread finishes while you are elsewhere |
+
+Never while you are looking at the thing, never for a turn you cancelled, at most one every three seconds. A sine with
+a faint second harmonic and a soft attack, under half a second, peak at 22% of full scale.
+
+## Motion
+
+Motion says that something changed or is alive; it never decorates. All of it stops under macOS Reduce Motion.
+
+| motion | says |
+|---|---|
+| the live line (a signal segment sweeping the header's edge) | the agent is working |
+| a working thread's edge mark breathing | that thread is alive, not stuck |
+| the approval's attention rule drawing top to bottom (240 ms) | a decision just arrived |
+| the newest transcript block rising 6 px into place (200 ms) | this is what just came in |
 
 ## Files
 
 | file | use |
 |---|---|
-| `cordata-mark.svg` | dark grounds (2049, graphite, dim) |
-| `cordata-mark-light.svg` | the `light` theme's paper |
+| `cordata-mark.svg` | dark grounds (Ink, graphite, dim) |
+| `cordata-mark-light.svg` | Paper |
 | `cordata-mark-mono.svg` | one colour, `currentColor`: favicons, print, embossing |
 | `cordata-mark-states.svg` | the five states above |
-| `cordata-icon.svg`, `cordata-icon-1024.png`, `Cordata.icns` | macOS app icon; `package-app.sh` ships the `.icns` |
-
-Colours are theme tokens: ink `#ECE7DE`, amber `#E8A254`, teal `#5FB3B3`, danger `#E56050`; on paper ink `#16181D`,
-amber `#7F470B`. Keep a quarter of the mark's width clear on every side; do not go below 16 px.
+| `cordata-icon.svg`, `cordata-icon-1024.png`, `Cordata.icns` | the macOS app icon (flat Ink ground, hairline edge); `package-app.sh` ships the `.icns` |
 
 Rebuild the icon after editing `cordata-icon.svg`: render it to a transparent 1024 px PNG with headless Chrome
-(`--default-background-color=00000000 --window-size=1024,1024 --screenshot`), `sips -z` each size into an `.iconset`,
-then `iconutil -c icns`.
+(`--headless=new --default-background-color=00000000 --window-size=1024,1024 --screenshot`), `sips -z` each size into an
+`.iconset`, then `iconutil -c icns`.

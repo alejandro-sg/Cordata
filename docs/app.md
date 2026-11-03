@@ -33,6 +33,15 @@ Every thread in the rail shows what it is doing; one that finished while you wer
 you look, and ⌘J (Go → Thread That Needs You) goes to the next one waiting on an approval, then the next Done one. A
 notification says when a thread finishes or needs you while the window is in the back (Settings → General).
 
+### The look
+
+A quiet instrument: one ground per theme (Paper, Ink and two dark variants), one signal colour (viridian) for what is
+live, ochre only for what needs you, no cards or shadows. Your prompts and the agent's replies share one text edge, with
+the `›` hanging in the margin. The header's bottom edge is the live line: a signal segment sweeps it while the agent
+works and it turns ochre when you are needed. Icons appear only as whole controls or as open/closed state; the two
+sounds (Settings → General → Sounds, off by default) play only for what you cannot see; the four small animations each
+say that something changed, and stop under Reduce Motion. The rules, colours and files: `app/assets/brand/README.md`.
+
 ### Driving the window from a shell
 
 ```bash

@@ -20,8 +20,6 @@ use gpui::{
 };
 use gpui_component::input::{InputEvent, InputState, TextareaState};
 
-use crate::hud;
-use crate::platform::Display;
 use crate::prefs::{self, Prefs};
 use crate::session::{Connection, Session, SessionEvent, WindowRequest};
 use crate::theme::{c, ca, line, tk};
@@ -144,8 +142,6 @@ pub struct Workspace {
     /// The project's conversations (the hub's, or the saved stdio sessions).
     /// `w` on an approval card: the next Enter sends the composer's text as the answer (the reason, or one's own words).
     saying: bool,
-    /// `--run GOAL`: started once the session connects.
-    display: Display,
     pub(super) dock_tab: DockTab,
     /// The left sidebar is shown (`⌘B`).
     pub(super) sidebar_open: bool,
@@ -187,6 +183,8 @@ pub struct Workspace {
     pending_seen: HashSet<EntityId>,
     /// A notification went out since the window was last in front: a burst of approvals while away is one banner, not one each.
     notified_away: bool,
+    /// Cordata's two sounds (`sound.rs`), one at a time.
+    pub(super) sounds: crate::sound::Gate,
     /// Images and files waiting to go with the next prompt.
     staged: Vec<attachments::Staged>,
     /// Why the last attachment or send was refused, shown above the composer.
@@ -251,7 +249,6 @@ impl Workspace {
         }
         let prefs = cx.try_global::<Prefs>().cloned().unwrap_or_default();
         let composer = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, 10).submit_on_enter(prefs.send_with != "cmd-enter").placeholder("Ask anything, @mention files, or type / for commands…"));
-        let display = cx.try_global::<Display>().copied().unwrap_or_default();
         let first = cx.new(|cx| Session::start(&connection, cwd.clone(), initial_prompt, cx));
         let file_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter files…"));
         let palette_input = cx.new(|cx| InputState::new(window, cx).placeholder("Type a command or search conversations…"));
@@ -332,7 +329,6 @@ impl Workspace {
             seen: (first.entity_id(), 0, 0),
             expanded: HashSet::new(),
             saying: false,
-            display,
             dock_tab: DockTab::default(),
             sidebar_open,
             panel_open,
@@ -364,6 +360,7 @@ impl Workspace {
             turn_seen: HashMap::new(),
             pending_seen: HashSet::new(),
             notified_away: false,
+            sounds: crate::sound::Gate::default(),
             staged: Vec::new(),
             attach_note: None,
             renaming: None,
@@ -1537,20 +1534,26 @@ impl Workspace {
             // Finished in front of the person: nothing to mark Done.
             session.update(cx, |s, _| s.view.mark_seen());
         }
+        // What you can see: the window is in front and this is the thread on screen.
+        let in_view = in_front && id == self.session.entity_id();
         if was && !active {
-            if self.prefs.sound_on_completion {
-                crate::platform::play_sound("Glass");
-            }
             let (unseen, title) = {
                 let view = &session.read(cx).view;
                 (view.unseen, view.title())
             };
+            // `unseen` is false for a cancelled turn and for one that finished in front of you.
+            if unseen && !pending && !in_view && self.prefs.sound_on_completion {
+                self.sounds.play(crate::sound::Cue::Done);
+            }
             if unseen && !in_front && self.prefs.notify_done && !pending {
                 crate::platform::notify("Cordata finished", &title);
             }
         }
         if pending {
             let first = self.pending_seen.insert(id);
+            if first && !in_view && self.prefs.sound_on_completion {
+                self.sounds.play(crate::sound::Cue::NeedsYou);
+            }
             if should_notify(first, self.prefs.notify_approval, window.is_window_active(), self.notified_away) {
                 self.notified_away = true;
                 crate::platform::notify("Cordata needs you", "A command is waiting for your approval.");
@@ -1649,7 +1652,21 @@ impl Render for Workspace {
                                 session.update(cx, |session, cx| session.toggle_thoughts(cx));
                             }
                         })
-                        .child(transcript::block(message, ix, edge, open, thoughts, cx)),
+                        .child({
+                            let block = transcript::block(message, ix, edge, open, thoughts, cx);
+                            // The newest block rises 6px into place as it fades in (200 ms): you see what arrived.
+                            if ix + 1 == view.messages.len() && crate::ui::motion(cx) {
+                                gpui::AnimationExt::with_animation(
+                                    div().relative().child(block),
+                                    ("arrive", ix), gpui::Animation::new(std::time::Duration::from_millis(200)).with_easing(gpui::ease_out_quint()), |el, t| {
+                                        el.opacity(t).top(px(6. * (1. - t)))
+                                    },
+                                )
+                                .into_any_element()
+                            } else {
+                                block
+                            }
+                        }),
                 )
                 .into_any_element()
         })
@@ -1663,7 +1680,6 @@ impl Render for Workspace {
         let composer = self.composer(cx);
         let panel = self.panel_open.then(|| self.side_panel(window_w, window, cx));
         let overlays = self.overlay_layer(window, cx);
-        let haze = self.prefs.haze && self.display.atmosphere();
         let drop_ring = crate::theme::amber(cx, t::AMBER_BORDER_STRONG);
         let body: AnyElement = if has_conversation {
             div().id("transcript").role(gpui::Role::Log).aria_label("Transcript").flex_1().min_h_0().child(transcript_list).into_any_element()
@@ -1735,7 +1751,6 @@ impl Render for Workspace {
                             .flex()
                             .flex_col()
                             .bg(c(tk.bg_main))
-                            .child(hud::haze(haze, cx))
                             .child(header)
                             .child(body)
                             .child(

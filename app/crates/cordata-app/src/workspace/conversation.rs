@@ -39,6 +39,16 @@ pub fn status_of(view: &cordata_view::app::App) -> Status {
     }
 }
 
+/// The approval's 2px attention rule. A new question draws it top to bottom (240 ms): the eye goes to the decision.
+fn attention_rule(id: &str, cx: &App) -> AnyElement {
+    let bar = div().absolute().left(px(0.)).top(px(0.)).w(px(2.)).rounded_full().bg(c(tk(cx).attention));
+    if !ui::motion(cx) {
+        return bar.bottom(px(0.)).into_any_element();
+    }
+    bar.with_animation(SharedString::from(format!("rule-{id}")), Animation::new(Duration::from_millis(240)).with_easing(gpui::ease_out_quint()), |el, t| el.h(relative(t)))
+        .into_any_element()
+}
+
 /// The prompt mark `›`, set in the margin before your words — in the composer and on each of your lines in the
 /// transcript. A 12px column, centred on the first line of body text.
 pub fn prompt_mark(ink: gpui::Hsla, cx: &App) -> AnyElement {
@@ -63,6 +73,7 @@ pub fn live_line(status: Status, cx: &App) -> AnyElement {
     match status {
         Status::Waiting => base.bg(c(tk.attention)).into_any_element(),
         Status::Closed => base.bg(c(tk.danger)).into_any_element(),
+        Status::Running if !ui::motion(cx) => base.bg(c(tk.amber)).into_any_element(),
         Status::Running => {
             let mut glow = c(tk.amber);
             glow.a = 0.9;
@@ -270,6 +281,8 @@ impl Workspace {
         let command = input.and_then(|i| i.get("cmd")).and_then(|v| v.as_str()).map(str::to_owned);
         let summary = input.and_then(cordata_view::view::summarize_input).unwrap_or_default();
         let place = tilde(&self.session.read(cx).cwd);
+        let diffs = self.session.read(cx).view.card(&info.tool_call_id).map(|card| card.diffs.clone()).filter(|d| !d.is_empty());
+        let has_diff = diffs.is_some();
         let tool = info.tool_name.as_str();
         let (_, sentence, block, buttons): (&str, String, Option<String>, Vec<AnyElement>) = {
             {
@@ -314,6 +327,7 @@ impl Workspace {
             .id("approval")
             .role(gpui::Role::AlertDialog)
             .aria_label("Approval needed")
+            .relative()
             .w_full()
             .mb(px(12.))
             .pl(px(14.))
@@ -321,8 +335,7 @@ impl Workspace {
             .flex()
             .flex_col()
             .gap(px(10.))
-            .border_l_2()
-            .border_color(c(tk.attention))
+            .child(attention_rule(&info.tool_call_id, cx))
             .child(
                 div()
                     .flex()
@@ -331,7 +344,9 @@ impl Workspace {
                     .child(div().text_size(px(t::TEXT_BODY)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(SharedString::from(shown(&sentence))))
                     .when(self.saying, |row| row.child(ui::badge("type below · ↵ sends", Tone::Amber, cx))),
             )
-            .when_some(block, |card, text| card.child(ui::code_block(SharedString::from(shown(&text)), cx).text_color(c(tk.text_body))))
+            // An edit shows the change it asks about; anything else, its command or input.
+            .when_some(diffs, |card, diffs| card.child(transcript::diff_preview(&diffs, cx)))
+            .when(!has_diff, |card| card.when_some(block, |card, text| card.child(ui::code_block(SharedString::from(shown(&text)), cx).text_color(c(tk.text_body)))))
             .child(div().flex().flex_wrap().items_center().gap(px(6.)).children(buttons))
             .into_any_element()
     }

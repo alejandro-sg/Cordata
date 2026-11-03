@@ -11,15 +11,13 @@ use std::borrow::Cow;
 use std::rc::Rc;
 
 use cordata_theme::tokens::{self, Tokens, fonts};
-use cordata_theme::{Palette, Role, Rgb};
+use cordata_theme::{Palette, Rgb};
 use gpui::{App, BoxShadow, Hsla, Rgba, SharedString, WindowAppearance, point, px, rgb};
 use gpui_component::theme::{Theme, ThemeConfig, ThemeMode};
 
 /// What is in force.
 pub struct Active {
     pub tokens: Tokens,
-    #[allow(dead_code)]
-    pub palette: Palette,
     pub sans: SharedString,
     pub mono: SharedString,
     pub increase_contrast: bool,
@@ -38,11 +36,6 @@ pub fn tk(cx: &App) -> Tokens {
     active(cx).map_or(tokens::T2049, |a| a.tokens)
 }
 
-#[allow(dead_code)]
-pub fn palette(cx: &App) -> Palette {
-    active(cx).map_or_else(|| tokens::T2049.palette(), |a| a.palette)
-}
-
 pub fn sans(cx: &App) -> SharedString {
     active(cx).map_or_else(|| SharedString::from(fonts::SANS_FALLBACK), |a| a.sans.clone())
 }
@@ -54,11 +47,6 @@ pub fn mono(cx: &App) -> SharedString {
 /// The code font size (Settings → Appearance), for code blocks and the editor.
 pub fn code_size(cx: &App) -> f32 {
     cx.try_global::<crate::prefs::Prefs>().map_or(tokens::TEXT_UI, |p| p.code_font_size)
-}
-
-#[allow(dead_code)]
-pub fn color(cx: &App, role: Role) -> Hsla {
-    rgba(palette(cx).get(role)).into()
 }
 
 pub fn rgba(c: Rgb) -> Rgba {
@@ -75,14 +63,6 @@ pub fn ca(value: Rgb, alpha: f32) -> Hsla {
     let mut out = c(value);
     out.a = alpha;
     out
-}
-
-/// `role` at `alpha` (0–1), for washes and glows.
-#[allow(dead_code)]
-pub fn tint(cx: &App, role: Role, alpha: f32) -> Hsla {
-    let mut c: Hsla = color(cx, role);
-    c.a = alpha;
-    c
 }
 
 /// A line or a hover fill: the theme's ink at `alpha` (`tokens::LINE_*`, `tokens::HOVER*`).
@@ -190,7 +170,7 @@ fn install_resolved(increase_contrast: bool, choice: &str, dark: bool, cx: &mut 
     let palette = tokens.palette();
     let mode = if tokens.is_dark { ThemeMode::Dark } else { ThemeMode::Light };
     let config = Rc::new(component_theme(&tokens, &palette, &sans, &mono));
-    cx.set_global(Active { tokens, palette, sans, mono, increase_contrast, choice: SharedString::from(choice.to_owned()) });
+    cx.set_global(Active { tokens, sans, mono, increase_contrast, choice: SharedString::from(choice.to_owned()) });
     // The library's mode first — `Theme::change` loads its stock colours for that mode — then ours over them; the other
     // order threw our colours away.
     Theme::change(mode, None, cx);
