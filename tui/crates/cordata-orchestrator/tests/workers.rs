@@ -356,3 +356,33 @@ echo '{"type":"result","subtype":"success"}'"#;
     assert_eq!(std::fs::read_to_string(f.dir.path().join("dotenv.txt")).unwrap().trim(), "blocked-env");
     assert_eq!(r.files_changed, ["calc/a.txt"]);
 }
+
+#[tokio::test]
+async fn a_claude_worker_with_a_bus_pass_gets_the_server_its_tools_and_its_token_and_can_post() {
+    let f = fixture();
+    // A short root: a unix socket path must fit in 104 bytes.
+    let root = tempfile::Builder::new().prefix("cb").tempdir_in("/tmp").unwrap();
+    let bus = cordata_bus::Bus::start(root.path(), "run", std::path::Path::new("/usr/local/bin/cordata-bus")).unwrap();
+    let body = r##"cat > "$OUT/stdin.txt"
+echo "$@" > "$OUT/argv.txt"
+env > "$OUT/env.txt"
+printf '{"token":"%s","op":"post","topic":"run","kind":"finding","body":"the API answers on 8080"}\n' "$CORDATA_BUS_TOKEN" | nc -U -w 1 "$CORDATA_BUS_SOCKET" > "$OUT/bus.txt"
+echo '{"type":"result","subtype":"success","is_error":false,"result":"ok","total_cost_usd":0.01,"session_id":"s","num_turns":1}'"##;
+    let w = claude_worker(&f.script("claude", body), Arc::new(Direct));
+    let mut task = f.task("execute", &["calc/a.txt"]);
+    let grant = bus.grant("s1", "execute", "claude:sonnet", &task.file_scope).unwrap();
+    task.bus = Some(grant.clone());
+    let (r, _) = run(&w, task).await;
+    assert_eq!(r.status, "completed", "{:?}", r.error_message);
+
+    let argv = std::fs::read_to_string(f.dir.path().join("argv.txt")).unwrap();
+    assert!(argv.contains(r#"--mcp-config {"mcpServers":{"cordata_bus":{"command":"/usr/local/bin/cordata-bus","args":["mcp"]}}}"#), "{argv}");
+    assert!(argv.contains("--strict-mcp-config") && argv.contains("mcp__cordata_bus__post") && !argv.contains(&grant.token), "the token is never on argv");
+    let env = std::fs::read_to_string(f.dir.path().join("env.txt")).unwrap();
+    assert!(env.contains(&format!("CORDATA_BUS_TOKEN={}", grant.token)) && env.contains("CORDATA_BUS_SOCKET="));
+    assert!(std::fs::read_to_string(f.dir.path().join("stdin.txt")).unwrap().contains("cordata_bus"));
+    assert_ne!(grant.pid.get(), 0, "the pass is bound to the worker's process");
+    let said = bus.messages();
+    assert_eq!(said.len(), 1, "the worker's own process reached the bus: {}", std::fs::read_to_string(f.dir.path().join("bus.txt")).unwrap_or_default());
+    assert_eq!((said[0].from_step.as_str(), said[0].body.as_str()), ("s1", "the API answers on 8080"));
+}

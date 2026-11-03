@@ -26,6 +26,7 @@ use crate::theme::{c, ca, line, tk};
 use crate::transcript::{self, GroupEdge};
 use crate::ui::{self, Dot, Kind};
 
+mod agents;
 mod attachments;
 mod conversation;
 pub(crate) use conversation::prompt_mark;
@@ -33,6 +34,8 @@ mod editor;
 mod git_ops;
 mod palette;
 mod picker;
+mod meter;
+mod resize;
 mod review;
 mod settings_modal;
 mod settings_view;
@@ -47,6 +50,7 @@ pub enum DockTab {
     Editor,
     Review,
     Terminal,
+    Agents,
 }
 
 /// What floats over the window; the last one is on top and esc closes it first.
@@ -200,6 +204,13 @@ pub struct Workspace {
     search_for: String,
     /// `--selftest`: answer every approval with Allow and quit with a summary once the first turn ends.
     selftest: Option<SelfTest>,
+    pub(super) agents: agents::Agents,
+    /// The column edge being dragged.
+    resizing: Option<resize::Edge>,
+    /// The meter's readout or the model switcher, when one is open.
+    popup: Option<meter::Popup>,
+    keys: meter::Keys,
+    model_filter: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -249,7 +260,7 @@ impl Workspace {
         }
         let prefs = cx.try_global::<Prefs>().cloned().unwrap_or_default();
         let composer = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, 10).submit_on_enter(prefs.send_with != "cmd-enter").placeholder("Ask anything, @mention files, or type / for commands…"));
-        let first = cx.new(|cx| Session::start(&connection, cwd.clone(), initial_prompt, cx));
+        let first = cx.new(|cx| Session::start(&connection, cwd.clone(), initial_prompt, prefs.model.clone(), cx));
         let file_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter files…"));
         let palette_input = cx.new(|cx| InputState::new(window, cx).placeholder("Type a command or search conversations…"));
         let picker_input = cx.new(|cx| InputState::new(window, cx).placeholder("Search projects or paste a path…"));
@@ -258,6 +269,7 @@ impl Workspace {
         let api_key_input = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("sk-ant-…"));
         let settings_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search settings…"));
         let rename_input = cx.new(|cx| InputState::new(window, cx).placeholder("Conversation title"));
+        let model_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter, or type any model id…"));
         let git = git_ops::Git::new(window, cx);
         let terminal = terminal::Terminal::new(window, cx);
         let settings_view = settings_view::SettingsView::default();
@@ -279,6 +291,7 @@ impl Workspace {
                     cx.notify();
                 }
             }),
+            cx.subscribe_in(&model_filter, window, |this: &mut Self, _, event: &InputEvent, _, cx| this.on_model_filter(event, cx)),
             cx.subscribe_in(&rename_input, window, |this: &mut Self, _, event: &InputEvent, window, cx| {
                 if matches!(event, InputEvent::PressEnter { .. }) {
                     this.finish_rename(window, cx);
@@ -369,6 +382,11 @@ impl Workspace {
             row_menu: None,
             search_for: String::new(),
             selftest: selftest.then(SelfTest::default),
+            resizing: None,
+            agents: agents::Agents::default(),
+            popup: None,
+            keys: meter::Keys::default(),
+            model_filter,
             _subscriptions: subscriptions,
         };
         let cwd = this.cwd.clone();
@@ -377,6 +395,7 @@ impl Workspace {
         this.adopt(first, window, cx);
         this.schedule_git(cx);
         this.watch_hotkey(window, cx);
+        this.start_meter(window, cx);
         this.load_tree(cx);
         this.load_review(cx);
         if picker {
@@ -397,6 +416,8 @@ impl Workspace {
                 self.open_overlay(Overlay::Settings, window, cx);
             }
             _ if what == "about" => self.open_overlay(Overlay::About, window, cx),
+            _ if what == "agents" => self.switch_dock(DockTab::Agents, cx),
+            _ if what == "models" => self.popup = Some(meter::Popup::Models),
             _ if what == "terminal" => {
                 self.panel_open = true;
                 self.dock_tab = DockTab::Terminal;
@@ -564,6 +585,10 @@ impl Workspace {
                     window.request_attention();
                 }
                 SessionEvent::Window(request) => this.on_window_request(request.clone(), window, cx),
+                SessionEvent::ModelChosen(model) => {
+                    this.prefs.model = Some(model.clone());
+                    this.prefs.save();
+                }
             }),
         ];
         self.subscriptions.push((id, subs));
@@ -581,8 +606,8 @@ impl Workspace {
     }
 
     pub(super) fn open_new(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (connection, cwd) = (self.connection.clone(), self.cwd.clone());
-        let session = cx.new(|cx| Session::start(&connection, cwd, None, cx));
+        let (connection, cwd, model) = (self.connection.clone(), self.cwd.clone(), self.prefs.model.clone());
+        let session = cx.new(|cx| Session::start(&connection, cwd, None, model, cx));
         self.adopt(session, window, cx);
         self.focus_composer(&FocusComposer, window, cx);
     }
@@ -646,8 +671,8 @@ impl Workspace {
     /// the conversation lived in the stopped engine.
     pub(super) fn reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let id = self.session.entity_id();
-        let (connection, cwd) = (self.connection.clone(), self.cwd.clone());
-        let fresh = cx.new(|cx| Session::start(&connection, cwd, None, cx));
+        let (connection, cwd, model) = (self.connection.clone(), self.cwd.clone(), self.prefs.model.clone());
+        let fresh = cx.new(|cx| Session::start(&connection, cwd, None, model, cx));
         self.sessions.retain(|s| s.entity_id() != id);
         self.subscriptions.retain(|(sid, _)| *sid != id);
         self.adopt(fresh, window, cx);
@@ -793,6 +818,7 @@ impl Workspace {
         match tab {
             DockTab::Files => self.load_tree(cx),
             DockTab::Review => self.load_review(cx),
+            DockTab::Agents if self.agents.found.is_none() => self.load_agents(cx),
             // The shell starts the first time the pane is shown (tests click to start one).
             DockTab::Terminal if self.shell_on_show => self.ensure_terminal(cx),
             _ => {}
@@ -1281,8 +1307,8 @@ impl Workspace {
         self.review = review::Review::default();
         self.git.pr = None;
         self.git.note = None;
-        let (connection, cwd) = (self.connection.clone(), self.cwd.clone());
-        let session = cx.new(|cx| Session::start(&connection, cwd, None, cx));
+        let (connection, cwd, model) = (self.connection.clone(), self.cwd.clone(), self.prefs.model.clone());
+        let session = cx.new(|cx| Session::start(&connection, cwd, None, model, cx));
         self.adopt(session, window, cx);
         self.load_tree(cx);
         self.load_review(cx);
@@ -1605,8 +1631,8 @@ impl Render for Workspace {
         let tk = tk(cx);
         let size = window.viewport_size();
         let window_w = size.width.as_f32();
-        let sidebar_w = if self.sidebar_open { t::SIDEBAR_W } else { 0. };
-        let panel_w = if self.panel_open { side_panel::panel_width(self.dock_tab, window_w) } else { 0. };
+        let sidebar_w = self.rail_w();
+        let panel_w = self.dock_w(window_w);
         let column_w = (window_w - sidebar_w - panel_w).max(0.);
         let session = self.session.clone();
         let expanded = self.expanded.clone();
@@ -1680,6 +1706,7 @@ impl Render for Workspace {
         let composer = self.composer(cx);
         let panel = self.panel_open.then(|| self.side_panel(window_w, window, cx));
         let overlays = self.overlay_layer(window, cx);
+        let grips = self.resize_grips(window_w, cx);
         let drop_ring = crate::theme::amber(cx, t::AMBER_BORDER_STRONG);
         let body: AnyElement = if has_conversation {
             div().id("transcript").role(gpui::Role::Log).aria_label("Transcript").flex_1().min_h_0().child(transcript_list).into_any_element()
@@ -1738,6 +1765,10 @@ impl Render for Workspace {
                     .flex()
                     .flex_1()
                     .min_h_0()
+                    .relative()
+                    .when(self.resizing.is_some(), |el| el.cursor_col_resize())
+                    .on_mouse_move(cx.listener(move |this, event: &gpui::MouseMoveEvent, _, cx| this.on_resize_move(event, window_w, cx)))
+                    .on_mouse_up(gpui::MouseButton::Left, cx.listener(|this, _, _, cx| this.end_resize(cx)))
                     .children(sidebar)
                     .child(
                         div()
@@ -1764,7 +1795,8 @@ impl Render for Workspace {
                             )
 
                     )
-                    .children(panel),
+                    .children(panel)
+                    .children(grips),
             )
             .children(overlays)
             .child(div().absolute().bottom(px(36.)).right(px(panel_w + 12.)).when(std::env::var_os("CORDATA_FPS").is_some(), |this| this.child(gpui_fps::fps_monitor(window, cx))))

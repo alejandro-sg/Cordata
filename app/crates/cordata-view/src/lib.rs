@@ -10,6 +10,7 @@
 //! path, so its renderers and tests did not change.
 
 pub mod app;
+pub mod assistants;
 pub mod commands;
 pub mod config_ui;
 pub mod custom;
@@ -18,11 +19,13 @@ pub mod input;
 pub mod key;
 pub mod mentions;
 pub mod menu;
+pub mod models;
 pub mod overlay;
 pub mod redact;
 pub mod review;
 pub mod settings;
 pub mod shell;
+pub mod telemetry;
 pub mod tree;
 pub mod view;
 

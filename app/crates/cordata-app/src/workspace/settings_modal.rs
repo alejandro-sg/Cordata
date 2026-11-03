@@ -38,7 +38,7 @@ impl Section {
     /// Words the settings search matches beyond the title and description: the rows each section holds.
     fn keywords(self) -> &'static str {
         match self {
-            Section::General => "launch startup quick ask hotkey send enter cost notifications sound",
+            Section::General => "launch startup quick ask hotkey send enter cost notifications sound meter context tokens latency instruments",
             Section::Appearance => "theme dark light ink paper density font size",
             Section::Shortcuts => "keys keyboard bindings hotkeys",
             Section::Account => "api key anthropic sign out usage keychain",
@@ -417,6 +417,14 @@ impl Workspace {
                 this.settings_view.set_notice(format!("{} is taken by another app.", this.quick_ask_combo().label), true);
             }
         }, cx);
+        let meter = self.toggle("show-meter", self.prefs.show_meter, "Turn meter", |this, on, cx| {
+            this.prefs.show_meter = on;
+            this.save_prefs(cx);
+        }, cx);
+        let context = self.toggle("show-context", self.prefs.show_context, "Context gauge", |this, on, cx| {
+            this.prefs.show_context = on;
+            this.save_prefs(cx);
+        }, cx);
         let combo = self.quick_ask_combo();
         let mut keys: Vec<(String, String)> = crate::platform::COMBO_PRESETS.iter().filter_map(|p| crate::platform::Combo::parse(p).ok().map(|c| ((*p).to_owned(), c.label))).collect();
         if !crate::platform::COMBO_PRESETS.contains(&self.prefs.quick_ask_key.as_str()) {
@@ -432,6 +440,9 @@ impl Workspace {
             setting_row("Notify when approval is needed", "A system notification when a command waits for you and the window is in the back.", notify, cx),
             setting_row("Notify when a thread finishes", "A system notification when a thread finishes while the window is in the back; it stays marked Done until you look (⌘J goes there).", notify_done, cx),
             setting_row("Sounds", "Two soft cues, only for what you cannot see: a rising one when something needs you, a falling one when a thread finishes elsewhere.", sound, cx),
+            sub_heading("instruments", cx),
+            setting_row("Turn meter", "Under the composer: time to the first word, the whole turn, output speed. Click it for the last turns, medians, tokens and cache.", meter, cx),
+            setting_row("Context gauge", "How full the model's context window is; it turns ochre past 80%.", context, cx),
         ]
     }
 

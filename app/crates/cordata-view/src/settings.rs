@@ -445,6 +445,43 @@ impl Store {
         }
     }
 
+    /// Write one setting (`a.b.c` → nested objects) into a scope's file, keeping everything else in it. The value is
+    /// checked against the schema first; the file is replaced atomically and kept private (0600).
+    pub fn set(&self, scope: Scope, key: &str, value: Value) -> Result<(), String> {
+        check(key, &value, scope.name())?;
+        if scope != Scope::User && USER_ONLY_PREFIXES.iter().any(|prefix| key.starts_with(prefix)) {
+            return Err(format!("'{key}' is only read from the user file"));
+        }
+        let path = self.path(scope);
+        let mut warnings = Vec::new();
+        let mut root = read_json(&path, &mut warnings);
+        if let Some(problem) = warnings.into_iter().next() {
+            return Err(format!("not overwriting a file that does not parse: {problem}"));
+        }
+        let mut parts: Vec<&str> = key.split('.').collect();
+        let last = parts.pop().ok_or("empty key")?;
+        let mut node = &mut root;
+        for part in parts {
+            let next = node.entry(part.to_owned()).or_insert_with(|| Value::Object(Map::new()));
+            if !next.is_object() {
+                *next = Value::Object(Map::new());
+            }
+            node = next.as_object_mut().expect("just made an object");
+        }
+        node.insert(last.to_owned(), value);
+        let dir = path.parent().ok_or("no folder")?;
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        let tmp = dir.join(format!(".settings.{}.tmp", std::process::id()));
+        let text = serde_json::to_string_pretty(&Value::Object(root)).map_err(|e| e.to_string())?;
+        fs::write(&tmp, text + "\n").map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
+        }
+        fs::rename(&tmp, &path).map_err(|e| e.to_string())
+    }
+
     /// Merge the three files. Never fails: a bad file or value is skipped and
     /// reported in `warnings`.
     pub fn load(&self) -> Settings {

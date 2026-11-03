@@ -79,9 +79,11 @@ type Commands = mpsc::UnboundedReceiver<Command>;
 /// `CORDATA_NATIVE_MODEL` picks the model (a genai name: `claude-…`, `gemini-…`, `gpt-…`, a local Ollama tag, or
 /// `ollama_cloud::<tag>` for Ollama's cloud); unset, it follows whichever provider key exists (`default_model`).
 pub(crate) async fn run(options: SessionOptions, commands: Commands, events: Events) {
-    let model = std::env::var("CORDATA_NATIVE_MODEL")
-        .ok()
+    let model = options
+        .model
+        .clone()
         .filter(|m| !m.trim().is_empty())
+        .or_else(|| std::env::var("CORDATA_NATIVE_MODEL").ok().filter(|m| !m.trim().is_empty()))
         .unwrap_or_else(|| default_model(super::keys::resolve("anthropic").is_some(), super::keys::resolve("ollama_cloud").is_some()).into());
     match GenaiProvider::new(model) {
         Ok(provider) => {
@@ -90,7 +92,7 @@ pub(crate) async fn run(options: SessionOptions, commands: Commands, events: Eve
             let policy = Policy::load(&options.cwd);
             let sessions_home = policy::cordata_home();
             let history_home = if policy.history { sessions_home.clone() } else { None };
-            drive(&provider, options, commands, events, Setup { offload: tools::offload_dir(), state_dir, policy, history_home, sessions_home }).await
+            drive(&provider, options, commands, events, Setup { offload: tools::offload_dir(), state_dir, policy, history_home, sessions_home, switch: genai_provider }).await
         }
         Err(error) => {
             let _ = events.send(AppEvent::ConnectionError(format!("could not start the native agent: {error}")));
@@ -102,11 +104,17 @@ pub(crate) async fn run(options: SessionOptions, commands: Commands, events: Eve
 /// What a session starts from besides the provider: where offloaded output goes, the economizer's state, the person's
 /// rules, where sessions are saved (`None`: nowhere), and where saved ones live for `/forget` (even with saving off).
 pub(crate) struct Setup {
+    /// Builds the provider for a model the person switches to.
+    pub(crate) switch: fn(&str) -> Result<Box<dyn Provider>, String>,
     pub(crate) offload: PathBuf,
     pub(crate) state_dir: Option<PathBuf>,
     pub(crate) policy: Policy,
     pub(crate) history_home: Option<PathBuf>,
     pub(crate) sessions_home: Option<PathBuf>,
+}
+
+fn genai_provider(model: &str) -> Result<Box<dyn Provider>, String> {
+    Ok(Box::new(GenaiProvider::new(model)?))
 }
 
 enum Interrupt {
@@ -123,7 +131,7 @@ async fn interruptible<F: Future>(fut: F, commands: &mut Commands, events: &Even
             command = commands.recv() => match command {
                 Some(Command::Cancel) => return Err(Interrupt::Cancel),
                 Some(Command::Shutdown) | None => return Err(Interrupt::Shutdown),
-                Some(Command::Prompt(..) | Command::Resume(_) | Command::Forget) => {
+                Some(Command::Prompt(..) | Command::Resume(_) | Command::Forget | Command::SetModel(_)) => {
                     let _ = events.send(AppEvent::Notice("a turn is still running; wait or cancel it first".into()));
                 }
             },
@@ -134,6 +142,8 @@ async fn interruptible<F: Future>(fut: F, commands: &mut Commands, events: &Even
 
 struct Agent<'a> {
     provider: &'a dyn Provider,
+    /// The model the person switched to, in place of `provider`.
+    switched: Option<Box<dyn Provider>>,
     cwd: PathBuf,
     offload: PathBuf,
     /// Tools the user chose "always allow" for, this session (`approval::always_key`).
@@ -239,7 +249,7 @@ pub(crate) async fn drive(
     events: Events,
     setup: Setup,
 ) {
-    let Setup { offload, state_dir, policy, history_home, sessions_home } = setup;
+    let Setup { offload, state_dir, policy, history_home, sessions_home, switch } = setup;
     let mut keeper = Keeper { home: history_home, id: history::new_id(), warned: false };
     let _ = events.send(AppEvent::Connected(SessionInfo {
         session_id: keeper.id.clone(),
@@ -252,14 +262,14 @@ pub(crate) async fn drive(
     }
 
     let economizer = Economizer::new(provider.model(), state_dir);
-    let mut agent = Agent { provider, cwd: options.cwd.clone(), offload, always: HashSet::new(), economizer, policy };
+    let mut agent = Agent { provider, switched: None, cwd: options.cwd.clone(), offload, always: HashSet::new(), economizer, policy };
     let mut history: Vec<Msg> = Vec::new();
     while let Some(command) = commands.recv().await {
         match command {
             Command::Prompt(text, attachments) => {
                 history.push(Msg::User { text: with_attachments(text, &attachments) });
                 let ended = agent.turn(&mut history, &mut commands, &events).await;
-                keeper.save(&options.cwd, provider.model(), &history, &events);
+                keeper.save(&options.cwd, agent.llm().model(), &history, &events);
                 if let Err(Interrupt::Shutdown) = ended {
                     break;
                 }
@@ -295,6 +305,17 @@ pub(crate) async fn drive(
                 };
                 let _ = events.send(AppEvent::Notice(note));
             }
+            Command::SetModel(model) => match switch(model.trim()) {
+                Ok(next) => {
+                    agent.economizer.profile = Profile::for_model(next.model());
+                    let name = next.model().to_owned();
+                    agent.switched = Some(next);
+                    let _ = events.send(AppEvent::ModelChanged(name));
+                }
+                Err(error) => {
+                    let _ = events.send(AppEvent::Notice(format!("could not switch to {model}: {error}")));
+                }
+            },
             Command::Cancel => {}
             Command::Shutdown => break,
         }
@@ -304,6 +325,11 @@ pub(crate) async fn drive(
 }
 
 impl Agent<'_> {
+    /// The model answering now.
+    fn llm(&self) -> &dyn Provider {
+        self.switched.as_deref().unwrap_or(self.provider)
+    }
+
     /// One prompt: model round-trips until an answer with no tool calls. `Err(Shutdown)` ends the session;
     /// a cancel is reported to the UI and returns `Ok`.
     async fn turn(&mut self, history: &mut Vec<Msg>, commands: &mut Commands, events: &Events) -> Result<(), Interrupt> {
@@ -314,7 +340,7 @@ impl Agent<'_> {
         let tools_json = specs.iter().map(|s| format!("{}{}", s.name, s.schema)).collect::<String>();
         self.economizer.prefix.observe(&system, &tools_json);
         for _ in 0..MAX_ROUNDS {
-            let stream = match interruptible(self.provider.stream(&system, history.clone(), &specs), commands, events).await {
+            let stream = match interruptible(self.llm().stream(&system, history.clone(), &specs), commands, events).await {
                 Ok(Ok(stream)) => stream,
                 Ok(Err(error)) => return {
                     self.fail(history, events, error);
@@ -338,6 +364,9 @@ impl Agent<'_> {
                         let _ = events.send(AppEvent::AgentThought(t));
                     }
                     Some(Ok(Delta::Call(call))) => calls.push(call),
+                    Some(Ok(Delta::Usage(usage))) => {
+                        let _ = events.send(AppEvent::Usage(usage));
+                    }
                     Some(Err(error)) => {
                         if !text.is_empty() {
                             history.push(Msg::Assistant { text, calls: Vec::new() });
@@ -350,6 +379,8 @@ impl Agent<'_> {
                     None => break,
                 }
             }
+            // The reply is read; the stream borrows the model, and running the calls needs the agent.
+            drop(stream);
             if calls.is_empty() {
                 if !text.is_empty() {
                     history.push(Msg::Assistant { text, calls });
@@ -544,6 +575,7 @@ mod tests {
 
     use super::super::tools::ToolSpec;
     use super::*;
+    use crate::events::TokenUsage;
 
     /// Replays one scripted round per `stream` call and records the history it was given.
     struct Fake {
@@ -581,9 +613,31 @@ mod tests {
         Ok(Delta::Call(Call { id: id.into(), name: name.into(), args, thought_signatures: None }))
     }
 
+    /// A model the person switched to: it says who it is and how much conversation it was handed.
+    struct Named(String);
+
+    impl Provider for Named {
+        fn model(&self) -> &str {
+            &self.0
+        }
+        fn stream<'a>(
+            &'a self,
+            _system: &'a str,
+            history: Vec<Msg>,
+            _tools: &'a [ToolSpec],
+        ) -> BoxFuture<'a, Result<BoxStream<'a, Result<Delta, String>>, String>> {
+            let reply = format!("{} saw {} messages", self.0, history.len());
+            Box::pin(async move { Ok(stream::iter(vec![Ok(Delta::Text(reply))]).boxed()) })
+        }
+    }
+
+    fn fake_switch(model: &str) -> Result<Box<dyn Provider>, String> {
+        if model.is_empty() { Err("no model named".into()) } else { Ok(Box::new(Named(model.into()))) }
+    }
+
     /// No rules, nothing saved, no economizer state.
     fn plain(cwd: &std::path::Path) -> Setup {
-        Setup { offload: cwd.join(".offload"), state_dir: None, policy: Policy::default(), history_home: None, sessions_home: None }
+        Setup { switch: fake_switch, offload: cwd.join(".offload"), state_dir: None, policy: Policy::default(), history_home: None, sessions_home: None }
     }
 
     fn rules(doc: serde_json::Value) -> Policy {
@@ -606,7 +660,7 @@ mod tests {
                         out.push(AppEvent::Notice(format!("asked:{}", info.tool_name)));
                         continue;
                     }
-                    let answered = matches!(event, AppEvent::TurnComplete(_) | AppEvent::TurnFailed(_) | AppEvent::SessionRestored { .. })
+                    let answered = matches!(event, AppEvent::TurnComplete(_) | AppEvent::TurnFailed(_) | AppEvent::SessionRestored { .. } | AppEvent::ModelChanged(_))
                         || matches!(&event, AppEvent::Notice(n) if !n.contains("without asking"));
                     out.push(event);
                     if answered {
@@ -630,6 +684,27 @@ mod tests {
 
     fn notices(events: &[AppEvent]) -> Vec<String> {
         events.iter().filter_map(|e| if let AppEvent::Notice(n) = e { Some(n.clone()) } else { None }).collect()
+    }
+
+    #[tokio::test]
+    async fn usage_is_reported_per_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let usage = TokenUsage { input: 1200, output: 40, cached: 1000 };
+        let fake = Fake::new(vec![vec![text("hi"), Ok(Delta::Usage(usage))]]);
+        let events = script(&fake, dir.path(), plain(dir.path()), vec![prompt("go")]).await;
+        assert!(events.iter().any(|e| matches!(e, AppEvent::Usage(u) if *u == usage)));
+    }
+
+    #[tokio::test]
+    async fn switching_the_model_keeps_the_conversation() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Fake::new(vec![vec![text("first")]]);
+        let commands = vec![prompt("one"), Command::SetModel("other-model".into()), prompt("two"), Command::SetModel("  ".into())];
+        let events = script(&fake, dir.path(), plain(dir.path()), commands).await;
+        assert!(events.iter().any(|e| matches!(e, AppEvent::ModelChanged(m) if m == "other-model")));
+        let said: String = events.iter().filter_map(|e| if let AppEvent::AgentText(t) = e { Some(t.as_str()) } else { None }).collect();
+        assert!(said.contains("other-model saw 3 messages"), "the new model got the whole conversation: {said}");
+        assert!(notices(&events).iter().any(|n| n.starts_with("could not switch")));
     }
 
     #[tokio::test]
@@ -723,6 +798,7 @@ mod tests {
 
     fn options(cwd: &std::path::Path) -> SessionOptions {
         SessionOptions {
+            model: None,
             cwd: cwd.to_path_buf(),
             transport: crate::transport::BackendTransport::Native,
             debug_log: None,

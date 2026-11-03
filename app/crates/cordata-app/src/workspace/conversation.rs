@@ -634,7 +634,8 @@ impl Workspace {
                     )
                     .child(div().flex_1().min_w_0().truncate().children(view.hint.clone().map(|hint| SharedString::from(shown(&hint)))))
                     .when_some(esc, |row, hint| row.child(div().flex_shrink_0().text_color(c(tk.attention)).child(hint)))
-                    .when_some(model, |row, model| row.child(div().font_family(mono(cx)).child(SharedString::from(model))))
+                    .children(self.meter(cx))
+                    .when_some(model, |row, model| row.child(self.model_trigger(model, cx)))
                     .children(action),
             )
             .into_any_element()

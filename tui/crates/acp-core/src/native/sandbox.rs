@@ -123,12 +123,11 @@ pub(crate) fn profile(home: &str, confinement: &Confinement<'_>) -> String {
     // Unix sockets lead to local daemons that act outside this sandbox (herdr and other multiplexers start programs,
     // Docker runs containers, ssh-agent signs): a command may reach only the sockets under the roots it may write,
     // which is where a test's own server listens, online or not. The rules follow the network rules so they win.
-    let socket_roots = roots.iter().filter(|r| *r != "/dev").map(|r| format!("(subpath {})", quote(r))).collect::<Vec<_>>().join(" ");
-    lines.extend([
-        "(deny network-outbound (remote unix-socket))".to_owned(),
-        format!("(allow network-outbound (remote unix-socket {socket_roots}))"),
-        LAUNCHD_SOCKETS_DENY.to_owned(),
-    ]);
+    // One rule per root: Seatbelt does not OR several filters inside one `(remote unix-socket …)`, so a combined
+    // rule matches nothing and shuts every socket.
+    lines.push("(deny network-outbound (remote unix-socket))".to_owned());
+    lines.extend(roots.iter().filter(|r| *r != "/dev").map(|r| format!("(allow network-outbound (remote unix-socket (subpath {})))", quote(r))));
+    lines.push(LAUNCHD_SOCKETS_DENY.to_owned());
     let sockets = DENY_SOCKETS.iter().map(|s| (*s).to_owned()).chain(DENY_HOME_SOCKETS.iter().map(|s| format!("{home}/{s}")));
     lines.extend(sockets.map(|s| format!("(deny network-outbound (remote unix-socket (path-literal {})))", quote(&s))));
     if confinement.network {
@@ -273,7 +272,8 @@ mod tests {
             let deny = prof.find("(deny network-outbound (remote unix-socket))").expect("every unix socket is refused first");
             let allow = prof.find("(allow network-outbound (remote unix-socket (subpath").unwrap();
             assert!(deny < allow && prof.contains(LAUNCHD_SOCKETS_DENY));
-            assert!(!prof[allow..].lines().next().unwrap().contains("\"/dev\""));
+            assert!(!prof.lines().any(|l| l.starts_with("(allow network-outbound (remote unix-socket") && l.contains("\"/dev\"")));
+            assert!(!prof.lines().any(|l| l.contains("(remote unix-socket (subpath") && l.matches("(subpath").count() > 1), "one place per rule");
         }
         assert!(online.contains(MDNS_SOCKET) && !p.contains(MDNS_SOCKET));
         assert!(p.find("(deny network-outbound)\n").unwrap() < p.find("(deny network-outbound (remote unix-socket))").unwrap(), "the socket rules come last, so they win");

@@ -81,6 +81,8 @@ pub enum Effect {
     Resume(String),
     /// Delete this project's saved sessions and stop saving the shown one (`SessionHandle::forget`).
     Forget,
+    /// Answer with another model from the next turn (`SessionHandle::set_model`).
+    SetModel(String),
     /// A command run in the project folder, reported back as a `LocalEvent`. `share` hands its output to the agent
     /// with the next prompt (`!command`); `as_diff` shows it as a coloured diff (`/diff`).
     Shell {
@@ -210,6 +212,8 @@ pub struct App {
     /// Tokens in and out over this client's session, and the turns that spent them.
     pub session_tokens: (u64, u64),
     pub turns_done: u64,
+    /// Latency, tokens and context fill, per turn (`telemetry`).
+    pub telemetry: crate::telemetry::Telemetry,
     /// The project's git branch, for the footer.
     pub branch: Option<String>,
     /// A prompt offered as grey text in the empty box after a turn; Tab takes it, typing replaces it.
@@ -274,6 +278,7 @@ impl App {
             shell_context: Vec::new(),
             session_tokens: (0, 0),
             turns_done: 0,
+            telemetry: crate::telemetry::Telemetry::default(),
             branch: None,
             suggestion: None,
             last_turn_secs: 0.0,
@@ -389,6 +394,7 @@ impl App {
         self.suggestion = None;
         self.turn_active = true;
         self.turn_started = Some(Instant::now());
+        self.telemetry.begin(Instant::now());
         self.turn_tools = 0;
         Effect::SendPrompt(text)
     }
@@ -412,9 +418,27 @@ impl App {
                 }
                 self.session = Some(info);
             }
-            AppEvent::AgentText(text) => self.append_agent(&text),
-            AppEvent::AgentThought(text) => self.append_thought(&text),
+            AppEvent::AgentText(text) => {
+                self.telemetry.output(Instant::now());
+                self.append_agent(&text)
+            }
+            AppEvent::AgentThought(text) => {
+                self.telemetry.output(Instant::now());
+                self.append_thought(&text)
+            }
+            AppEvent::Usage(usage) => {
+                self.telemetry.usage(usage);
+                self.session_tokens = (self.telemetry.session_in, self.telemetry.session_out);
+            }
+            AppEvent::ModelChanged(model) => {
+                self.messages.push(Message::Info(format!("model: {} — the conversation carries on", sanitize(&model))));
+                if let Some(session) = &mut self.session {
+                    session.transport = format!("native · {model}");
+                    session.model = model;
+                }
+            }
             AppEvent::ToolCallStarted(info) => {
+                self.telemetry.output(Instant::now());
                 self.turn_tools += 1;
                 self.messages.push(Message::Tool(card_from(info)));
             }
@@ -453,6 +477,7 @@ impl App {
                     self.turns_done += 1;
                 }
                 self.last_turn_secs = self.turn_started.map_or(0.0, |t| t.elapsed().as_secs_f64());
+                self.telemetry.end(Instant::now(), self.turn_tools, !matches!(reason, StopReason::Cancelled));
                 self.end_turn();
                 // A turn may have switched branches.
                 self.branch = crate::extras::git_branch(&self.project_dir());
@@ -472,6 +497,7 @@ impl App {
                 }
             }
             AppEvent::TurnFailed(error) => {
+                self.telemetry.end(Instant::now(), self.turn_tools, false);
                 self.end_turn();
                 self.unseen = true;
                 self.want_attention("the turn failed".into());
@@ -943,6 +969,32 @@ impl App {
         }
     }
 
+    /// `/model`: list the known models (the current one marked), or switch to one between turns.
+    fn run_model(&mut self, arg: Option<String>) -> Option<Effect> {
+        let current = self.session.as_ref().map(|s| s.model.clone()).unwrap_or_default();
+        let Some(name) = arg else {
+            let mut lines = vec!["models — /model <name> switches; any genai name works".to_owned()];
+            for m in crate::models::CATALOG {
+                let mark = if m.id == current { "›" } else { " " };
+                lines.push(format!("{mark} {:<32} {:<18} {} ctx · {}", m.id, m.label, crate::telemetry::tokens(m.window), m.note));
+            }
+            if !current.is_empty() && crate::models::find(&current).is_none() {
+                lines.push(format!("› {current}"));
+            }
+            self.info(lines.join("\n"));
+            return None;
+        };
+        if self.turn_active {
+            self.info("a turn is running; switch the model when it ends");
+            return None;
+        }
+        if name == current {
+            self.info(format!("already answering with {name}"));
+            return None;
+        }
+        Some(Effect::SetModel(name))
+    }
+
     pub fn info(&mut self, text: impl Into<String>) {
         self.messages.push(Message::Info(text.into()));
     }
@@ -1003,6 +1055,7 @@ impl App {
             Command::Resume(arg) => return self.run_resume(arg),
             Command::Forget(arg) => return self.run_forget(arg),
             Command::Permissions => self.run_permissions(),
+            Command::Model(arg) => return self.run_model(arg),
             Command::Unknown(name) => self.info(format!("unknown command /{name} — try /help")),
         }
         None

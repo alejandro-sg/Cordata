@@ -249,10 +249,19 @@ pub fn base_profile(home: &str) -> Vec<String> {
 /// The base profile with the scope rules spliced in after `(allow default)` and before the secret denials, so the
 /// denials still win (Seatbelt takes the last matching rule).
 pub fn scoped_profile<S: AsRef<str>>(root: &str, scope: &[S], home: &str) -> String {
+    scoped_profile_with_bus(root, scope, home, None)
+}
+
+/// The scoped profile, plus a connect allowance for this run's bus socket. It lives under `~/.cordata`, which stays
+/// unreadable and unwritable: the worker can talk to its own bus but not replace it or reach another run's.
+pub fn scoped_profile_with_bus<S: AsRef<str>>(root: &str, scope: &[S], home: &str, bus_socket: Option<&str>) -> String {
     let base = base_profile(home);
     let (head, tail) = base.split_at(2);
     let rules = seatbelt_rules(root, scope);
-    let sockets = socket_rules(root);
+    let mut sockets = socket_rules(root);
+    if let Some(socket) = bus_socket {
+        sockets.push(format!("(allow network-outbound (remote unix-socket (path-literal {})))", sb_string(socket)));
+    }
     head.iter().chain(rules.iter()).chain(tail.iter()).chain(sockets.iter()).cloned().collect::<Vec<_>>().join("\n") + "\n"
 }
 
@@ -261,14 +270,12 @@ pub fn scoped_profile<S: AsRef<str>>(root: &str, scope: &[S], home: &str) -> Str
 /// mDNSResponder's for name resolution; launchd's per-login sockets under `/private/tmp` stay shut.
 pub fn socket_rules(root: &str) -> Vec<String> {
     let real = std::fs::canonicalize(root).map_or_else(|_| root.to_owned(), |p| p.to_string_lossy().into_owned());
-    vec![
-        "(deny network-outbound (remote unix-socket))".to_owned(),
-        format!(
-            "(allow network-outbound (remote unix-socket (subpath {}) (subpath \"/private/tmp\") (subpath \"/private/var/folders\") (path-literal \"/private/var/run/mDNSResponder\")))",
-            sb_string(&real)
-        ),
-        r#"(deny network-outbound (remote unix-socket (path-regex #"^/private/tmp/com\.apple\.launchd\.[^/]+/")))"#.to_owned(),
-    ]
+    // One rule per place: Seatbelt does not OR several filters inside one `(remote unix-socket …)`; a combined rule
+    // matched nothing, which shut DNS and left every confined worker unable to reach its provider.
+    let mut rules = vec!["(deny network-outbound (remote unix-socket))".to_owned()];
+    rules.extend([format!("(subpath {})", sb_string(&real)), "(subpath \"/private/tmp\")".into(), "(subpath \"/private/var/folders\")".into(), "(path-literal \"/private/var/run/mDNSResponder\")".into()].iter().map(|f| format!("(allow network-outbound (remote unix-socket {f}))")));
+    rules.push(r#"(deny network-outbound (remote unix-socket (path-regex #"^/private/tmp/com\.apple\.launchd\.[^/]+/")))"#.to_owned());
+    rules
 }
 
 #[cfg(test)]
@@ -334,6 +341,36 @@ mod tests {
         assert!(allow.contains(r"add\.py\.[^/]*$"), "editor temp siblings: {allow}");
     }
 
+    /// The profile as Seatbelt reads it, not as text: a worker reaches a socket in its project and the DNS resolver,
+    /// and not one elsewhere. (A combined allow rule once matched nothing and passed every text check.)
+    #[test]
+    fn under_sandbox_exec_the_project_socket_and_dns_are_reachable_and_others_are_not() {
+        if !crate::workers::cli::seatbelt_works() || !std::path::Path::new("/usr/bin/nc").exists() {
+            return;
+        }
+        let project = tempfile::Builder::new().prefix("sb").tempdir_in("/tmp").unwrap();
+        let outside = tempfile::Builder::new().prefix("so").tempdir_in(std::env::var("HOME").unwrap()).unwrap();
+        let inside_sock = project.path().join("s.sock");
+        let outside_sock = outside.path().join("s.sock");
+        let _a = std::os::unix::net::UnixListener::bind(&inside_sock).unwrap();
+        let _b = std::os::unix::net::UnixListener::bind(&outside_sock).unwrap();
+        let root = project.path().to_str().unwrap();
+        let profile = scoped_profile(root, &["a.txt"], "/Users/nobody");
+        let reach = |path: &std::path::Path| {
+            std::process::Command::new("/usr/bin/sandbox-exec")
+                .args(["-p", &profile, "/usr/bin/nc", "-U", "-w", "1", &path.to_string_lossy()])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap()
+                .success()
+        };
+        assert!(reach(&inside_sock), "a socket in the project");
+        assert!(reach(std::path::Path::new("/private/var/run/mDNSResponder")), "DNS, or no provider is reachable");
+        assert!(!reach(&outside_sock), "a socket elsewhere in the home folder");
+    }
+
     #[test]
     fn workers_reach_only_their_own_unix_sockets_and_git_stays_read_only() {
         let dir = tempfile::tempdir().unwrap();
@@ -341,9 +378,14 @@ mod tests {
         let real = std::fs::canonicalize(root).unwrap().to_string_lossy().into_owned();
         let profile = scoped_profile(root, &["src/"], "/Users/x");
         let deny = profile.find("(deny network-outbound (remote unix-socket))").expect("sockets are refused first");
-        let allow = profile.find(&format!("(allow network-outbound (remote unix-socket (subpath \"{real}\")")).unwrap();
+        let allow = profile.find(&format!("(allow network-outbound (remote unix-socket (subpath \"{real}\")))")).unwrap();
+        assert!(profile.contains("(allow network-outbound (remote unix-socket (path-literal \"/private/var/run/mDNSResponder\")))"), "DNS has its own rule");
         assert!(deny < allow && profile.contains("mDNSResponder") && profile.contains("com\\.apple\\.launchd"));
         assert!(profile.trim_end().ends_with("[^/]+/\")))"), "the socket rules are last, so they win");
         assert!(profile.contains(r"/\.git/(config|hooks"));
+        let with_bus = scoped_profile_with_bus(root, &["src/"], "/Users/x", Some("/Users/x/.cordata/bus/ab/bus.sock"));
+        let bus = with_bus.find("(allow network-outbound (remote unix-socket (path-literal \"/Users/x/.cordata/bus/ab/bus.sock\")))").expect("the bus is allowed");
+        assert!(bus > with_bus.find("(deny network-outbound (remote unix-socket))").unwrap(), "after the blanket refusal, so it wins");
+        assert!(with_bus.contains("(deny file-read* file-write* (subpath \"/Users/x/.cordata\"))"), "the folder stays shut");
     }
 }

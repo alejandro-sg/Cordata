@@ -58,7 +58,7 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn start(connection: &Connection, cwd: PathBuf, initial_prompt: Option<String>, cx: &mut Context<Self>) -> Self {
+    pub fn start(connection: &Connection, cwd: PathBuf, initial_prompt: Option<String>, model: Option<String>, cx: &mut Context<Self>) -> Self {
         let (local_tx, mut local_rx) = mpsc::unbounded_channel::<LocalEvent>();
         let mut view = View::new();
         view.attach_store(cordata_view::settings::Store::discover(&cwd));
@@ -77,6 +77,7 @@ impl Session {
                 cwd,
                 transport: connection.transport.clone(),
                 debug_log: std::env::var_os("CORDATA_APP_DEBUG_LOG").map(PathBuf::from),
+                model,
             })
         };
         session.handle = Some(handle);
@@ -201,6 +202,11 @@ impl Session {
         self.settle(Vec::new(), cx);
     }
 
+    /// The model switcher: same path as `/model <name>`, so the reducer's checks apply.
+    pub fn set_model(&mut self, model: &str, cx: &mut Context<Self>) {
+        self.submit(&format!("/model {model}"), cx);
+    }
+
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
         self.settle(vec![Effect::Cancel], cx);
     }
@@ -214,6 +220,13 @@ impl Session {
             Effect::Cancel => self.with_handle(SessionHandle::cancel),
             Effect::Resume(wanted) => self.with_handle(|h| h.resume(wanted)),
             Effect::Forget => self.with_handle(SessionHandle::forget),
+            Effect::SetModel(model) => {
+                let sent = self.with_handle(|h| h.set_model(model.clone()));
+                if sent.is_ok() {
+                    cx.emit(SessionEvent::ModelChosen(model));
+                }
+                sent
+            }
             Effect::Copy(text) => {
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
                 Ok(())
@@ -273,6 +286,8 @@ pub enum SessionEvent {
     NeedsAttention,
     /// A `/new`, `/close` or session switch: the window's to carry out.
     Window(WindowRequest),
+    /// The person picked a model: new threads start with it too (the window keeps it in prefs).
+    ModelChosen(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

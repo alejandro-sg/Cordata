@@ -184,6 +184,9 @@ pub struct PoolState {
     pub to_hard: Option<f64>,
     pub to_soft: Option<f64>,
     pub provider_pct: Option<f64>,
+    /// When the pool next frees up (epoch seconds): a limit's end, the provider's reset, or the oldest metered use
+    /// leaving the window. `None` with nothing to free.
+    pub resets_at: Option<f64>,
     /// `meter` | `provider`
     pub source: &'static str,
 }
@@ -465,6 +468,14 @@ impl Ledger {
         latest.values().copied().reduce(f64::max)
     }
 
+    /// The soonest reset the provider announced that is still ahead.
+    fn provider_reset(&self, pool: &Pool, now: f64) -> Option<f64> {
+        self.conn
+            .query_row("SELECT MIN(resets_at) FROM quota_signals WHERE pool_id = ? AND resets_at > ?", params![pool.pool_id, now], |r| r.get::<_, Option<f64>>(0))
+            .ok()
+            .flatten()
+    }
+
     /// One worker result → one usage row in the pool it belongs to (and the provider's window readings).
     #[allow(clippy::too_many_arguments)]
     pub fn record_result(
@@ -526,6 +537,7 @@ impl Ledger {
                 to_hard: None,
                 to_soft: None,
                 provider_pct: None,
+                resets_at: None,
                 source: "meter",
             };
         };
@@ -583,6 +595,8 @@ impl Ledger {
         if level == "exhausted" {
             to_hard = Some(0.0);
         }
+        let oldest_in_window = rows.iter().filter(|r| r.ts > window_start && amount(r) > 0.0).map(|r| r.ts).reduce(f64::min);
+        let resets_at = limited_until.or_else(|| self.provider_reset(pool, now)).or(oldest_in_window.map(|ts| ts + pool.window_seconds as f64));
         PoolState {
             pool_id: pool.pool_id.clone(),
             family: pool.family.clone(),
@@ -598,6 +612,7 @@ impl Ledger {
             to_hard,
             to_soft,
             provider_pct: provider,
+            resets_at,
             source,
         }
     }

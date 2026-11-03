@@ -19,6 +19,8 @@ pub struct SessionOptions {
     pub transport: BackendTransport,
     /// Append diagnostics here. Never stdout/stdin — the TUI owns those.
     pub debug_log: Option<PathBuf>,
+    /// The model to start with; `None` follows `CORDATA_NATIVE_MODEL`, then whichever provider key exists.
+    pub model: Option<String>,
 }
 
 /// Something sent with a prompt: an image (a pasted screenshot, a dropped picture) or a file's text.
@@ -38,6 +40,8 @@ pub(crate) enum Command {
     Resume(String),
     /// Delete this project's saved sessions and stop saving this one.
     Forget,
+    /// Answer with this model from the next request on (between turns).
+    SetModel(String),
     Cancel,
     Shutdown,
 }
@@ -88,6 +92,12 @@ impl SessionHandle {
     /// Deletes every saved session of this project, and keeps this one from being saved. Answered with a `Notice`.
     pub fn forget(&self) -> Result<()> {
         self.send(Command::Forget)
+    }
+
+    /// Switches the model (a genai name, as `CORDATA_NATIVE_MODEL` takes) between turns, keeping the conversation.
+    /// Answered with `ModelChanged`, or a `Notice` saying why not.
+    pub fn set_model(&self, model: impl Into<String>) -> Result<()> {
+        self.send(Command::SetModel(model.into()))
     }
 
     /// Stops a running turn, between streamed events. Inert while an approval is unanswered: answer it first.

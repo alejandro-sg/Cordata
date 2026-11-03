@@ -1,0 +1,21 @@
+[package]
+name = "cordata-bus"
+description = "The run-scoped message bus delegated workers use to talk to each other (and its MCP stdio shim)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "cordata-bus"
+path = "src/main.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+libc.workspace = true
+regex.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

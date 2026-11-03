@@ -38,6 +38,15 @@ pub struct Prefs {
     pub quick_ask_hotkey: bool,
     /// Which combination it is, `ctrl-alt-space` form (`platform::Combo::parse`).
     pub quick_ask_key: String,
+    /// The chat model new threads start with (the switcher's last pick); `None` follows the engine's default.
+    pub model: Option<String>,
+    /// The rail's and the side panel's widths, as the person dragged them; `None` is the layout's default.
+    pub rail_w: Option<f32>,
+    pub dock_w: Option<f32>,
+    /// The meter under the header: time to first word, turn time, tokens, context fill.
+    pub show_meter: bool,
+    /// The context gauge in the meter (how full the model's window is).
+    pub show_context: bool,
     /// Most recent first.
     pub recents: Vec<RecentProject>,
 }
@@ -64,6 +73,11 @@ impl Default for Prefs {
             sound_on_completion: false,
             quick_ask_hotkey: true,
             quick_ask_key: "ctrl-alt-space".into(),
+            model: None,
+            rail_w: None,
+            dock_w: None,
+            show_meter: true,
+            show_context: true,
             recents: Vec::new(),
         }
     }

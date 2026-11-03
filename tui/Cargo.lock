@@ -492,6 +492,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cordata-bus"
+version = "0.2.0"
+dependencies = [
+ "libc",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "cordata-checkpoints"
 version = "0.2.0"
 dependencies = [
@@ -561,6 +573,7 @@ dependencies = [
 name = "cordata-orchestrator"
 version = "0.2.0"
 dependencies = [
+ "cordata-bus",
  "cordata-checkpoints",
  "cordata-guard",
  "cordata-ledger",

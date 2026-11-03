@@ -22,7 +22,7 @@ impl Workspace {
             .id("sidebar")
             .role(gpui::Role::Navigation)
             .aria_label("Project and threads")
-            .w(px(t::SIDEBAR_W))
+            .w(px(self.rail_w()))
             .h_full()
             .flex_shrink_0()
             .flex()

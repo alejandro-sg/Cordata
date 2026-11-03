@@ -39,6 +39,8 @@ pub enum Command {
     Forget(Option<String>),
     /// The rules, network and write scope the agent runs under.
     Permissions,
+    /// Switch the chat model (`/model <name>`), or list the known ones.
+    Model(Option<String>),
     Clear,
     Quit,
     Unknown(String),
@@ -62,6 +64,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("/memory", "show the instruction files the agent reads"),
     ("/init", "have the agent draft CORDATA.md"),
     ("/status", "session, mode, model, rules, quota pools"),
+    ("/model [name]", "switch the chat model, keeping the conversation; no name lists them"),
     ("/diff", "what is changed in the working tree"),
     ("/copy", "copy the last reply to the clipboard"),
     ("/export [file]", "save this conversation as markdown"),
@@ -102,6 +105,7 @@ pub fn parse(input: &str) -> Option<Command> {
         "resume" | "continue" => Command::Resume(arg),
         "forget" => Command::Forget(arg),
         "permissions" | "rules" => Command::Permissions,
+        "model" | "models" => Command::Model(arg),
         "clear" | "cls" => Command::Clear,
         "quit" | "exit" | "q" => Command::Quit,
         other => Command::Unknown(other.to_owned()),
@@ -142,6 +146,7 @@ mod tests {
         assert_eq!(parse("/resume 19a"), Some(Command::Resume(Some("19a".into()))));
         assert_eq!(parse("/continue"), Some(Command::Resume(None)));
         assert_eq!(parse("/forget confirm"), Some(Command::Forget(Some("confirm".into()))));
+        assert_eq!(parse("/model gpt-5"), Some(Command::Model(Some("gpt-5".into()))));
     }
 
     #[test]

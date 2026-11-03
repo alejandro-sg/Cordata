@@ -391,7 +391,8 @@ impl CliWorker {
     ) {
         let wrapped: Vec<String> = if confined {
             let home = self.environ.get("HOME").cloned().unwrap_or_default();
-            [SANDBOX_EXEC.to_owned(), "-p".into(), scope::scoped_profile(root_str, writable, &home)].into_iter().chain(argv.iter().cloned()).collect()
+            let bus = task.bus.as_ref().map(|b| b.socket.display().to_string());
+            [SANDBOX_EXEC.to_owned(), "-p".into(), scope::scoped_profile_with_bus(root_str, writable, &home, bus.as_deref())].into_iter().chain(argv.iter().cloned()).collect()
         } else {
             argv.to_vec()
         };
@@ -399,7 +400,8 @@ impl CliWorker {
         if !child_env.iter().any(|(k, _)| k == "PATH") {
             child_env.push(("PATH".into(), "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin".into()));
         }
-        for (k, v) in env {
+        let bus_env = task.bus.as_ref().map(cordata_bus::BusGrant::env).unwrap_or_default();
+        for (k, v) in env.into_iter().chain(bus_env) {
             if !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !k.starts_with(|c: char| c.is_ascii_digit()) {
                 child_env.retain(|(existing, _)| *existing != k);
                 child_env.push((k, v));
@@ -429,6 +431,10 @@ impl CliWorker {
             }
         };
         let pid = child.id();
+        // The bus serves this token only to this process and what it starts (its MCP server).
+        if let (Some(bus), Some(pid)) = (&task.bus, pid) {
+            bus.pid.set(pid);
+        }
         self.running.lock().unwrap().insert(task.task_id.clone(), Running { pid, cancelled: false });
         if let (Some(mut pipe), Some(text)) = (child.stdin.take(), stdin) {
             tokio::spawn(async move {

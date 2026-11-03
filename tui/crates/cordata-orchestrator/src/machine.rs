@@ -477,6 +477,8 @@ pub struct Machine<'a> {
     recovery_note: String,
     /// Every command screened this run, so a re-audit after a fix pass only sends the new ones.
     screened: audit::Screen,
+    /// The run's message bus, started with the first execute phase; it closes when the run ends.
+    bus: Option<Arc<cordata_bus::Bus>>,
 }
 
 /// Everything a machine needs from the world besides its goal.
@@ -534,6 +536,7 @@ impl<'a> Machine<'a> {
             last_report: None,
             recovery_note: String::new(),
             screened: audit::Screen::default(),
+            bus: None,
         }
     }
 
@@ -814,6 +817,19 @@ impl<'a> Machine<'a> {
         false
     }
 
+    /// The run's bus, started on first use: under `<home>/bus` (unreadable to workers), when the `cordata-bus` binary is
+    /// there to serve it and `CORDATA_BUS` is not `off`. A bus that cannot start leaves the run as it was without one.
+    fn run_bus(&mut self) -> Option<Arc<cordata_bus::Bus>> {
+        if self.bus.is_none() && std::env::var_os("CORDATA_BUS").is_none_or(|v| v != "off") {
+            let command = cordata_bus::binary()?;
+            match cordata_bus::Bus::start(&self.home.join("bus"), &self.record.run_id, &command) {
+                Ok(bus) => self.bus = Some(Arc::new(bus)),
+                Err(error) => self.emit("bus_unavailable", json!({"error": error.to_string()})),
+            }
+        }
+        self.bus.clone()
+    }
+
     async fn execute_phase(&mut self, extra_prompt: &str, steps: Option<Vec<Step>>) -> ExecResult {
         let base = self.plan.clone().expect("a plan exists");
         let fix_pass = steps.is_some();
@@ -840,6 +856,7 @@ impl<'a> Machine<'a> {
             isolation: self.isolation.clone(),
             on_event: listener.map(|l| Box::new(move |e| l(e)) as Box<dyn Fn(Value) + Send + Sync>),
             controls: self.controls.clone().map(|c| Arc::new(ExecControls(c)) as Arc<dyn executor::Controls>),
+            bus: self.run_bus(),
             ..ExecConfig::default()
         };
         let executor = StepExecutor::new(&self.record.run_id, Path::new(&self.project), plan, candidates, self.ledger, self.checkpoints, cfg);

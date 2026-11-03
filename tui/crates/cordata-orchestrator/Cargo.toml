@@ -9,6 +9,7 @@ rust-version.workspace = true
 cordata-checkpoints = { path = "../cordata-checkpoints" }
 cordata-guard = { path = "../cordata-guard" }
 cordata-ledger = { path = "../cordata-ledger" }
+cordata-bus = { path = "../cordata-bus" }
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true

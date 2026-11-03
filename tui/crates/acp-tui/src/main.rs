@@ -85,6 +85,7 @@ impl Workspace {
             cwd: self.cwd.clone(),
             transport: self.transport.clone(),
             debug_log: self.debug_log.clone(),
+            model: None,
         });
         let number = self.next_number;
         self.next_number += 1;
@@ -533,6 +534,7 @@ async fn run(
                 Effect::SendPrompt(text) => with_handle(workspace, |h| h.send_prompt(text)),
                 Effect::Cancel => with_handle(workspace, SessionHandle::cancel),
                 Effect::Resume(wanted) => with_handle(workspace, |h| h.resume(wanted)),
+                Effect::SetModel(model) => with_handle(workspace, |h| h.set_model(model)),
                 // Every open session stops saving, or one of them would write the folder back.
                 Effect::Forget => workspace.slots.iter().filter_map(|slot| slot.handle.as_ref()).try_for_each(SessionHandle::forget),
             };

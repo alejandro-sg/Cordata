@@ -123,6 +123,15 @@ pub struct SessionInfo {
     pub transport: String,
 }
 
+/// What one model request cost. `input` is the whole prompt (cached part included): it is how full the context is.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TokenUsage {
+    pub input: u64,
+    pub output: u64,
+    /// The part of `input` read from the provider's prompt cache.
+    pub cached: u64,
+}
+
 /// One entry of a resumed session, for the front end to redraw.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Restored {
@@ -144,6 +153,10 @@ pub enum AppEvent {
         info: PermissionInfo,
         decision: oneshot::Sender<ApprovalDecision>,
     },
+    /// One model request of the turn finished; a turn with tool calls has several.
+    Usage(TokenUsage),
+    /// The session now answers with another model (`SessionHandle::set_model`); the conversation carries on.
+    ModelChanged(String),
     TurnComplete(StopReason),
     /// The turn failed; the session stays usable.
     TurnFailed(String),

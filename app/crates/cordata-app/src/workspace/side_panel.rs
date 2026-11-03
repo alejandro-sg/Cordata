@@ -15,8 +15,10 @@ pub fn strip_tabs(window_w: f32) -> (Vec<DockTab>, Vec<DockTab>) {
     let mut overflow = Vec::new();
     if window_w >= t::TERMINAL_OVERFLOW_W {
         strip.push(DockTab::Terminal);
+        strip.push(DockTab::Agents);
     } else {
         overflow.insert(0, DockTab::Terminal);
+        overflow.push(DockTab::Agents);
     }
     (strip, overflow)
 }
@@ -40,6 +42,10 @@ impl Workspace {
             }),
             DockTab::Review => ("Changes", "Diff review & Git  ⌘⌥4", (self.review.file_count() > 0).then(|| self.review.file_count().to_string())),
             DockTab::Terminal => ("Terminal", "Project terminal  ⌘⌥5 · ⌃`", None),
+            DockTab::Agents => ("Agents", "Coding assistants, delegation and quota", {
+                let on = self.agents.enabled.len();
+                (on > 0 && self.agents.found.is_some()).then(|| on.to_string())
+            }),
         }
     }
 
@@ -123,13 +129,14 @@ impl Workspace {
                 div().size_full().flex().flex_col().children(git).child(div().flex_1().min_h_0().child(self.review_panel(cx))).into_any_element()
             }
             DockTab::Terminal => editor::pane("terminal", self.terminal_panel(window, cx), cx),
+            DockTab::Agents => editor::pane("agents", self.agents_panel(cx), cx),
         };
         div()
             .id("side-panel")
             .role(gpui::Role::Complementary)
             .aria_label("Side panel")
             .relative()
-            .w(px(panel_width(self.dock_tab, window_w)))
+            .w(px(self.dock_w(window_w)))
             .h_full()
             .flex_shrink_0()
             .flex()

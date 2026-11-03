@@ -92,6 +92,25 @@ acts as `off`; `live` acts on it.
 - The audit sandbox denies writes to anything named `.env`, so a test fixture that writes one fails as an acceptance
   criterion; prefer `command` or `file_exists` criteria for such suites.
 
+## The run bus (workers talking to each other)
+
+Parallel steps coordinate through one message bus per run (`tui/crates/cordata-bus`), modelled on herdr's socket API
+but built for untrusted workers:
+
+- The orchestrator owns a unix socket at `~/.cordata/bus/<random>/bus.sock` for the life of the run (no daemon). The
+  worker Seatbelt profile still denies `~/.cordata`. It gets one `path-literal` connect allowance for its own run's
+  socket, so it cannot replace that socket, bind a fake one, or reach another run's.
+- Each Claude Code step gets a 256-bit token in its environment (`CORDATA_BUS_TOKEN`, never argv) and
+  `--mcp-config` naming `cordata-bus mcp`. `--strict-mcp-config` keeps every other MCP server out. The bus serves a
+  token only to the worker process it was issued to, or one of that process's descendants. It stamps the sender itself.
+- Tools: `read` (long-poll up to 30 s), `post` (note/question/answer/finding, ≤4 KiB, scrubbed, 20/min), `status`,
+  `peers`, `claim`/`release`. Claims are advisory and only allowed inside the step's own scope.
+  Plan and audit steps may only read and set status.
+- Read results are fenced as peer data. Peer messages cannot grant permission, widen a scope or approve anything.
+  No tool can type into another worker; only the orchestrator starts workers.
+- Antigravity has no per-run MCP flag. Steps run there (and any retry) get a digest of the bus in their prompt instead.
+  Each wave's messages are emitted as a `bus_messages` event. `CORDATA_BUS=off` disables the bus.
+
 ## Code
 
 `tui/crates/cordata-orchestrator`: `machine.rs` (the durable state machine in `state.db`), `research.rs`, `plan.rs`,

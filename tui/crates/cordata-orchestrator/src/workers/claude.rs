@@ -35,6 +35,13 @@ pub const DENIED_TOOLS: [&str; 14] = [
     "Read(**/.env)", "Read(**/.env.*)", "Edit(**/.env)", "Edit(**/.env.*)", "Write(**/.env)", "Write(**/.env.*)", "WebFetch", "WebSearch", "Bash(curl:*)", "Bash(wget:*)",
     "Bash(nc:*)", "Bash(ssh:*)", "Bash(scp:*)", "Bash(git push:*)",
 ];
+/// The run bus's tools (`cordata_bus`), allowed only when the step has a pass to it.
+pub const BUS_TOOLS: [&str; 6] = [
+    "mcp__cordata_bus__read", "mcp__cordata_bus__status", "mcp__cordata_bus__peers", "mcp__cordata_bus__post", "mcp__cordata_bus__claim", "mcp__cordata_bus__release",
+];
+/// What a read-only step may use of them.
+pub const BUS_READ_TOOLS: [&str; 3] = ["mcp__cordata_bus__read", "mcp__cordata_bus__status", "mcp__cordata_bus__peers"];
+
 // `sudo` and `rm -rf` are denied too; kept separate so the table above stays aligned with the Python tuple's first block.
 const DENIED_MORE: [&str; 2] = ["Bash(sudo:*)", "Bash(rm -rf:*)"];
 
@@ -252,7 +259,10 @@ impl Dialect for ClaudeDialect {
 
     fn build_argv(&self, binary: &str, task: &TaskPacket, resume: Option<&str>, model: Option<&str>) -> Vec<String> {
         let read_only = task.writable_scope().is_empty();
-        let allowed: Vec<&str> = if read_only { READ_ONLY_TOOLS.to_vec() } else { ALLOWED_TOOLS.to_vec() };
+        let mut allowed: Vec<&str> = if read_only { READ_ONLY_TOOLS.to_vec() } else { ALLOWED_TOOLS.to_vec() };
+        if task.bus.is_some() {
+            allowed.extend(if read_only { &BUS_READ_TOOLS[..] } else { &BUS_TOOLS[..] });
+        }
         let denied: Vec<&str> = DENIED_TOOLS.iter().chain(DENIED_MORE.iter()).copied().collect();
         let mut argv: Vec<String> = [
             binary, "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", if read_only { "plan" } else { "acceptEdits" }, "--permission-prompts", "none",
@@ -262,6 +272,10 @@ impl Dialect for ClaudeDialect {
         .iter()
         .map(|s| (*s).to_owned())
         .collect();
+        // `--strict-mcp-config` above keeps the person's own MCP servers out; this is the only one the worker gets.
+        if let Some(bus) = &task.bus {
+            argv.extend(["--mcp-config".into(), bus.mcp_config().to_string()]);
+        }
         if let Some(usd) = task.budget_usd {
             argv.extend(["--max-budget-usd".into(), py_g(usd)]);
         }

@@ -30,6 +30,8 @@ pub struct TaskPacket {
     pub checkpoint_hash: Option<String>,
     pub handoff_context: Option<Value>,
     pub json_schema: Option<Value>,
+    /// This step's pass to the run bus (`cordata_bus`), when the run has one and the worker can speak MCP.
+    pub bus: Option<cordata_bus::BusGrant>,
 }
 
 impl TaskPacket {
@@ -48,6 +50,7 @@ impl TaskPacket {
             checkpoint_hash: None,
             handoff_context: None,
             json_schema: None,
+            bus: None,
         }
     }
 

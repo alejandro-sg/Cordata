@@ -41,6 +41,8 @@ fn the_ledger_scenario() {
     assert_eq!(l.step_allowance("claude_code", Some("sonnet")), Allowance::Usd(((9.5f64 - 8.2) * 1e6).round() / 1e6));
     l.record_result("s1", Some("b"), "claude_code", Some("sonnet"), &spend(1.4), None, None);
     assert_eq!(l.state_of("cc").level, "hard");
+    let first_use = l.state_of("cc").resets_at.expect("metered use frees up as it leaves the window");
+    assert!(first_use > at() && first_use <= at() + 5.0 * 3600.0, "{first_use}");
     advance(5.0 * 3600.0 + 1.0);
     assert_eq!(l.state_of("cc").level, "ok", "the five-hour window rolls past the old usage");
     for _ in 0..3 {
@@ -65,6 +67,7 @@ fn the_ledger_scenario() {
     l.record_result("s4", Some("e"), "claude_code", Some("sonnet"), &o, None, None);
     let s = l.state_of("cc");
     assert_eq!((s.level, s.source, s.provider_pct), ("soft", "provider", Some(0.91)));
+    assert_eq!(s.resets_at, Some(at() + 3600.0), "the provider's soonest reset");
     let Allowance::Usd(budget) = l.step_allowance("claude_code", Some("sonnet")) else { panic!("usd allowance") };
     assert!((budget - (0.95 - 0.91) * 10.0).abs() < 1e-6, "{budget}");
     advance(3601.0);
@@ -74,6 +77,7 @@ fn the_ledger_scenario() {
     let rejected = Outcome { rate_limited: true, provider_quota: json!({"status":"rejected","resets_at":reset,"windows":{}}), ..Default::default() };
     l.record_result("s5", Some("f"), "claude_code", Some("sonnet"), &rejected, None, None);
     assert_eq!(l.state_of("cc").limited_until, Some(reset));
+    assert_eq!(l.state_of("cc").resets_at, Some(reset), "a limit's end comes first");
 
     for _ in 0..4 {
         l.record_result("s6", Some("g"), "ollama", Some("glm-5.3-flash"), &Outcome::default(), None, None);

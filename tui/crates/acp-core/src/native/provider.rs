@@ -30,6 +30,8 @@ pub(crate) enum Delta {
     Text(String),
     Thought(String),
     Call(Call),
+    /// What the request cost, reported once at the end of the reply (when the provider says).
+    Usage(crate::events::TokenUsage),
 }
 
 /// One entry of the conversation handed to the provider (and kept on disk, `crate::history`).
@@ -118,7 +120,7 @@ impl Provider for GenaiProvider {
             let genai_tools: Vec<Tool> =
                 tools.iter().map(|t| Tool::new(t.name).with_description(t.description).with_schema(t.schema.clone())).collect();
             let request = ChatRequest::new(cached_messages(system, &history)).with_tools(genai_tools);
-            let options = ChatOptions::default().with_capture_tool_calls(true);
+            let options = ChatOptions::default().with_capture_tool_calls(true).with_capture_usage(true);
             let response = self.client.exec_chat_stream(&self.model, request, Some(&options)).await.map_err(|e| e.to_string())?;
             let stream = response.stream.flat_map(|event| {
                 let items: Vec<Result<Delta, String>> = match event {
@@ -126,11 +128,17 @@ impl Provider for GenaiProvider {
                     Ok(ChatStreamEvent::ReasoningChunk(c)) => vec![Ok(Delta::Thought(c.content))],
                     // Tool calls arrive whole at the end, never as partial argument fragments.
                     Ok(ChatStreamEvent::End(end)) => end
-                        .captured_content
-                        .map(|content| content.into_tool_calls())
-                        .unwrap_or_default()
+                        .captured_usage
+                        .as_ref()
+                        .map(|u| Ok(Delta::Usage(usage_of(u))))
                         .into_iter()
-                        .map(|c| Ok(Delta::Call(Call { id: c.call_id, name: c.fn_name, args: c.fn_arguments, thought_signatures: c.thought_signatures })))
+                        .chain(
+                            end.captured_content
+                                .map(|content| content.into_tool_calls())
+                                .unwrap_or_default()
+                                .into_iter()
+                                .map(|c| Ok(Delta::Call(Call { id: c.call_id, name: c.fn_name, args: c.fn_arguments, thought_signatures: c.thought_signatures }))),
+                        )
                         .collect(),
                     Ok(_) => Vec::new(),
                     Err(e) => vec![Err(e.to_string())],
@@ -139,6 +147,16 @@ impl Provider for GenaiProvider {
             });
             Ok(stream.boxed())
         })
+    }
+}
+
+/// genai's usage in the engine's terms. `prompt_tokens` already counts cached input; Anthropic reports reads and writes apart.
+fn usage_of(u: &genai::chat::Usage) -> crate::events::TokenUsage {
+    let cached = u.prompt_tokens_details.as_ref().map_or(0, |d| d.cached_tokens.unwrap_or(0).max(0) as u64);
+    crate::events::TokenUsage {
+        input: u.prompt_tokens.unwrap_or(0).max(0) as u64,
+        output: u.completion_tokens.unwrap_or(0).max(0) as u64,
+        cached,
     }
 }
 
