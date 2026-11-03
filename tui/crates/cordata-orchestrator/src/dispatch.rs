@@ -98,7 +98,9 @@ pub struct Candidate {
 
 impl Candidate {
     pub fn key(&self) -> String {
-        format!("{}:{}", self.worker_id, self.model.as_deref().unwrap_or("default"))
+        // Effort is part of the arm: `opus@high` earns its own record apart from `opus@medium`.
+        let effort = self.effort.as_deref().filter(|e| !e.is_empty()).map_or(String::new(), |e| format!("@{e}"));
+        format!("{}:{}{effort}", self.worker_id, self.model.as_deref().unwrap_or("default"))
     }
 }
 

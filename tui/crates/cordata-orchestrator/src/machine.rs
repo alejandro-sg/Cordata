@@ -792,7 +792,7 @@ impl<'a> Machine<'a> {
         if let Some(preferred) = self.record.planner.clone() {
             planners.sort_by_key(|c| c.key() != preferred); // the worker that researched the project plans it, when it still can
         }
-        for candidate in planners.into_iter().take(2) {
+        for candidate in across_families(planners).into_iter().take(3) {
             let timeout = self.config.plan_timeout_s;
             let result = self.one_shot("plan", &candidate, &prompt, Some(draft_schema()), Vec::new(), timeout, "plan").await;
             if result.status != "completed" {
@@ -1453,4 +1453,20 @@ pub async fn resume(run_id: &str, config: RunConfig, world: World<'_>) -> Option
     let mut machine = Machine::with_record(record, config, world);
     machine.run().await;
     Some(machine.record)
+}
+
+/// `ranked` reordered so each family's best comes before any family's second: when one CLI cannot plan (a model it no
+/// longer offers, an answer it will not shape as JSON), the next attempt goes to another CLI, not its sibling.
+pub fn across_families(ranked: Vec<Runnable>) -> Vec<Runnable> {
+    let mut rounds: Vec<Vec<Runnable>> = Vec::new();
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    for c in ranked {
+        let n = seen.entry(c.candidate.family.clone()).or_insert(0);
+        if rounds.len() <= *n {
+            rounds.push(Vec::new());
+        }
+        rounds[*n].push(c);
+        *n += 1;
+    }
+    rounds.into_iter().flatten().collect()
 }

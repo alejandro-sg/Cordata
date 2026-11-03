@@ -242,9 +242,11 @@ pub async fn run(args: RunArgs) -> i32 {
     };
     let home = cordata_home(&environ);
     let mode = mode_of(&args.dispatch.clone().unwrap_or_else(|| config::setting(&settings, "orchestrator.dispatch").and_then(Value::as_str).unwrap_or("shadow").to_owned()), &mut notes);
+    let (specs, dropped) = config::live_specs(config::specs(&requested), &environ);
+    notes.extend(dropped);
     let env_for_avail = environ.clone();
     let mut roster = LearnedRoster::new(
-        config::specs(&requested),
+        specs,
         Bandit::open(&bandit_path(&home, &cwd)),
         &ledger,
         config::workers(&settings, &environ),
@@ -313,9 +315,10 @@ pub async fn resume(run_id: &str, workers: Option<String>, allow_direct: bool, m
         eprintln!("cordata-run: {reason}");
         return NO_EGRESS;
     }
+    let (specs, _) = config::live_specs(config::specs(&families), &environ);
     let env_for_avail = environ.clone();
     let mut roster = LearnedRoster::new(
-        config::specs(&families),
+        specs,
         Bandit::open(&bandit_path(&home, &cwd)),
         &ledger,
         config::workers(&settings, &environ),

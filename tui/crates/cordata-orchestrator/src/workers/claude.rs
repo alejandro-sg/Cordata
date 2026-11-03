@@ -19,7 +19,7 @@ use super::vault::Egress;
 use crate::worker::{TaskPacket, WorkerEvent};
 
 pub const BINARY_ENV: &str = "CORDATA_CLAUDE_BIN";
-pub const CLAUDE_MODELS: [&str; 6] = ["haiku", "sonnet", "opus", "claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"];
+pub const CLAUDE_MODELS: [&str; 8] = ["haiku", "sonnet", "opus", "fable", "claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"];
 
 pub const READ_ONLY_TOOLS: [&str; 9] = [
     "Read", "Glob", "Grep", "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git ls-files:*)", "Bash(ls:*)",
