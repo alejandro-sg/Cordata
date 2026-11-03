@@ -13,6 +13,8 @@ use serde_json::Value;
 
 pub const READ_ONLY_ROLES: [&str; 2] = ["plan", "audit"];
 pub const STATUSES: [&str; 4] = ["completed", "failed", "cancelled", "quota_limit"];
+/// How a failed result starts when the worker changed nothing after being refused something: it will do the same again.
+pub const GAVE_UP: &str = "the worker made no change and was refused";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TaskPacket {

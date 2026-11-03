@@ -44,7 +44,7 @@ pub enum Unit {
 }
 
 impl Unit {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Usd => "usd",
             Self::Tokens => "tokens",
@@ -251,6 +251,13 @@ pub struct Outcome {
     pub rate_limited: bool,
     /// `{"status": …, "resets_at": …, "windows": {name: {"utilization": f, "resets_at": f}}}`
     pub provider_quota: Value,
+}
+
+/// `Ledger::headroom`: room for one more typical step on a pool, or how short it is.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Headroom {
+    Fits,
+    Short { pool_id: String, unit: Unit, left: f64, typical: f64, resets_at: Option<f64> },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -517,6 +524,14 @@ impl Ledger {
         self.state(&pool)
     }
 
+    /// About how many typical steps fit before this pool's hard line; `None` without a cap or a history.
+    pub fn steps_left(&self, pool_id: &str) -> Option<i64> {
+        let pool = self.pools.iter().find(|p| p.pool_id == pool_id)?;
+        let left = self.state(pool).to_hard?;
+        let typical = self.typical_step(pool)?;
+        Some((left / typical).floor() as i64)
+    }
+
     pub fn state(&self, pool: &Pool) -> PoolState {
         let now = (self.clock)();
         let horizon = (pool.window_seconds as f64).max(if pool.weekly_limit.is_some() { WEEK } else { 0.0 });
@@ -634,6 +649,38 @@ impl Ledger {
             (None, _) | (_, Unit::Requests) => Allowance::Unbounded,
             (Some(h), Unit::Usd) => Allowance::Usd(round(h, 6)),
             (Some(h), Unit::Tokens) => Allowance::Tokens(h as i64),
+        }
+    }
+
+    /// What one step usually spends on this pool, in its unit: the 75th percentile of the last 20 steps metered here
+    /// (every attempt at a step summed). `None` under 3 such steps, or for a pool counted in requests.
+    pub fn typical_step(&self, pool: &Pool) -> Option<f64> {
+        let amount = match pool.unit {
+            Unit::Usd => "SUM(cost_usd)",
+            Unit::Tokens => "CAST(SUM(tokens_in + tokens_out) AS REAL)",
+            Unit::Requests => return None,
+        };
+        let sql = format!(
+            "SELECT {amount} FROM quota_usage WHERE pool_id = ? AND step_id IS NOT NULL AND is_error_limit = 0 \
+             AND (role IS NULL OR role IN ('execute', 'harden')) GROUP BY session_id, step_id ORDER BY MAX(ts) DESC LIMIT 20"
+        );
+        let mut stmt = self.conn.prepare(&sql).ok()?;
+        let mut spends: Vec<f64> = stmt.query_map(params![pool.pool_id], |r| r.get::<_, f64>(0)).ok()?.filter_map(|r| r.ok()).filter(|v| *v > 0.0).collect();
+        if spends.len() < 3 {
+            return None;
+        }
+        spends.sort_by(f64::total_cmp);
+        Some(spends[(spends.len() * 3).div_ceil(4) - 1])
+    }
+
+    /// Whether a typical step still fits under this pool's hard line. A run checks before it starts a step, so it can
+    /// stop at a step boundary instead of being cut off halfway through one.
+    pub fn headroom(&self, family: &str, model: Option<&str>) -> Headroom {
+        let pool = self.pool_for(family, model);
+        let state = self.state(&pool);
+        match (state.to_hard, self.typical_step(&pool)) {
+            (Some(left), Some(typical)) if left < typical => Headroom::Short { pool_id: pool.pool_id, unit: pool.unit, left, typical, resets_at: state.resets_at },
+            _ => Headroom::Fits,
         }
     }
 

@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use cordata_ledger::{Allowance, Ledger};
+use cordata_ledger::{Allowance, Headroom, Ledger, Unit};
 use serde_json::{Value, json};
 
 use crate::checkpoints::Checkpoints;
@@ -55,6 +55,8 @@ pub struct ExecResult {
     /// Files copied back from isolated steps' sandboxes, and harvest conflicts seen on the way.
     pub harvested: Vec<String>,
     pub conflicts: Vec<String>,
+    /// Workers that gave up after a refusal (`worker::GAVE_UP`), this run: passed over while another can take the step.
+    pub benched: Vec<String>,
 }
 
 /// The person's pause/cancel (`control.Controls`): asked before each worker call and between waves.
@@ -106,6 +108,8 @@ pub struct Config {
     pub rerank: Option<Rerank>,
     /// The run's message bus: workers that speak MCP get a pass to it; the others see a digest of it in their prompt.
     pub bus: Option<Arc<cordata_bus::Bus>>,
+    /// Workers benched by an earlier pass of this run (`ExecResult::benched`).
+    pub benched: Vec<String>,
 }
 
 impl Default for Config {
@@ -125,6 +129,7 @@ impl Default for Config {
             isolation: None,
             rerank: None,
             bus: None,
+            benched: Vec::new(),
         }
     }
 }
@@ -200,6 +205,7 @@ impl<'a> StepExecutor<'a> {
     pub fn new(run_id: &str, project: &Path, plan: Plan, candidates: Vec<Runnable>, ledger: &'a Ledger, checkpoints: &'a dyn Checkpoints, mut cfg: Config) -> Self {
         cfg.max_parallel = cfg.max_parallel.max(1);
         let packet = cfg.start_packet.take();
+        let benched = cfg.benched.clone();
         Self {
             run_id: run_id.into(),
             project: project.to_owned(),
@@ -210,7 +216,7 @@ impl<'a> StepExecutor<'a> {
             cfg,
             current: Mutex::new(None),
             packet: Mutex::new(packet),
-            out: Mutex::new(ExecResult { status: "completed".into(), ..Default::default() }),
+            out: Mutex::new(ExecResult { status: "completed".into(), benched, ..Default::default() }),
             inflight: Mutex::new(HashMap::new()),
             bus_reported: Mutex::new(0),
         }
@@ -296,6 +302,16 @@ impl<'a> StepExecutor<'a> {
         None
     }
 
+    /// `pick` past the workers that failed this step or are benched for the run, while any other is usable: a retry by
+    /// the same worker that just failed mostly fails the same way.
+    fn pick_fresh(&self, exclude_pools: &HashSet<String>, failed: &HashSet<String>, complexity: &str, candidates: &[Runnable]) -> Option<Runnable> {
+        let benched = self.out(|o| o.benched.clone());
+        let fresh: Vec<Runnable> = candidates.iter().filter(|c| !failed.contains(&c.key()) && !benched.contains(&c.key())).cloned().collect();
+        // A benched worker is never the fallback: with only benched workers left the step pauses instead of looping.
+        let unbenched: Vec<Runnable> = candidates.iter().filter(|c| !benched.contains(&c.key())).cloned().collect();
+        self.pick(exclude_pools, complexity, &fresh).or_else(|| self.pick(exclude_pools, complexity, &unbenched))
+    }
+
     // ------------------------------------------------------------------ the person's controls
 
     /// Stops every worker call in flight (a request to pause or cancel *now*): each worker kills its process group and
@@ -330,7 +346,7 @@ impl<'a> StepExecutor<'a> {
     // ------------------------------------------------------------------ the loop
 
     pub async fn run(&self) -> ExecResult {
-        self.out(|o| *o = ExecResult { status: "completed".into(), ..Default::default() });
+        self.out(|o| *o = ExecResult { status: "completed".into(), benched: self.cfg.benched.clone(), ..Default::default() });
         if self.plan.lock().unwrap().steps.iter().any(|s| !s.depends_on.is_empty()) {
             self.run_waves().await;
         } else {
@@ -492,6 +508,7 @@ impl<'a> StepExecutor<'a> {
         self.emit("step_start", json!({"step_id": initial.step_id, "index": index, "checkpoint": self.step(index).checkpoint_hash}));
         let mut failures: Vec<String> = Vec::new();
         let mut excluded: HashSet<String> = HashSet::new();
+        let mut failed: HashSet<String> = HashSet::new();
         loop {
             match self.requested().as_deref() {
                 Some("pause") => {
@@ -513,13 +530,25 @@ impl<'a> StepExecutor<'a> {
                 self.emit("budget_exhausted", json!({"step_id": step.step_id, "envelope": envelope}));
                 return "budget_exhausted";
             }
-            let Some(candidate) = self.pick(&excluded, &step.complexity, &ctx.candidates) else {
-                let reason = self.out(|o| o.handoffs.last().map_or("worker_unavailable".to_owned(), |h| h.reason.clone()));
+            // Only a worker whose pool still has room for a typical step: starting one that the limit cuts off halfway
+            // loses the step's work, stopping here loses nothing.
+            let mut short: Vec<Headroom> = Vec::new();
+            let mut roomy: Vec<Runnable> = Vec::new();
+            for c in &ctx.candidates {
+                match self.ledger.headroom(&c.candidate.family, c.candidate.model.as_deref()) {
+                    Headroom::Fits => roomy.push(c.clone()),
+                    tight => short.push(tight),
+                }
+            }
+            let Some(candidate) = self.pick_fresh(&excluded, &failed, &step.complexity, &roomy) else {
+                let usage_low = !short.is_empty() && self.pick_fresh(&excluded, &failed, &step.complexity, &ctx.candidates).is_some();
+                let reason = if usage_low { "usage_low".to_owned() } else { self.out(|o| o.handoffs.last().map_or("worker_unavailable".to_owned(), |h| h.reason.clone())) };
                 let packet = self.packet_for(index, &step, &reason, ctx.current.as_ref(), None, &failures, false, None);
                 ctx.last_packet = Some(packet.clone());
                 self.out(|o| o.last_packet = Some(packet.clone()));
-                self.fail_with(ctx, "no worker has quota left; the run is paused at a safe point");
-                self.emit("paused", json!({"step_id": step.step_id, "handoff_id": packet.handoff_id}));
+                let why = if usage_low { usage_low_note(&step.step_id, &short) } else { "no worker has quota left; the run is paused at a safe point".to_owned() };
+                self.fail_with(ctx, why);
+                self.emit("paused", json!({"step_id": step.step_id, "handoff_id": packet.handoff_id, "reason": reason}));
                 return "paused";
             };
             if ctx.packet.is_none() && !self.out(|o| o.workers_used.is_empty())
@@ -686,6 +715,10 @@ impl<'a> StepExecutor<'a> {
                 why = format!("wrote outside the step's scope: {}", result.out_of_scope.iter().take(10).cloned().collect::<Vec<_>>().join(", "));
             }
             failures.push(format!("{}: {why}", candidate.key()));
+            failed.insert(candidate.key());
+            if why.starts_with(crate::worker::GAVE_UP) {
+                self.out(|o| if !o.benched.contains(&candidate.key()) { o.benched.push(candidate.key()) });
+            }
             let step = self.step(index);
             self.undo(&step, ctx);
             if failures.len() >= self.cfg.max_attempts {
@@ -815,4 +848,27 @@ pub fn form_wave(pending: &[Step], done: &HashSet<String>, max_parallel: usize) 
 /// Whole seconds since the epoch, for task ids.
 pub fn unix_seconds() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// Why a run stopped before `step_id`: each pool's room against what a step usually takes, and when it frees up.
+fn usage_low_note(step_id: &str, short: &[Headroom]) -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+    let amount = |unit: Unit, v: f64| match unit {
+        Unit::Usd => format!("${v:.2}"),
+        _ if v >= 1e6 => format!("{:.1}M {}", v / 1e6, unit.as_str()),
+        _ if v >= 1e3 => format!("{:.0}k {}", v / 1e3, unit.as_str()),
+        _ => format!("{v:.0} {}", unit.as_str()),
+    };
+    let duration = |secs: f64| if secs >= 3600.0 { format!("{}h{:02}m", (secs / 3600.0) as i64, ((secs % 3600.0) / 60.0) as i64) } else { format!("{}m", (secs / 60.0).ceil() as i64) };
+    let pools: Vec<String> = short
+        .iter()
+        .filter_map(|h| match h {
+            Headroom::Short { pool_id, unit, left, typical, resets_at } => {
+                let frees = resets_at.filter(|t| *t > now).map_or(String::new(), |t| format!(", frees up in {}", duration(t - now)));
+                Some(format!("{pool_id} has {} left before its hard line, a step takes about {}{frees}", amount(*unit, *left), amount(*unit, *typical)))
+            }
+            Headroom::Fits => None,
+        })
+        .collect();
+    format!("stopped at a safe point before step {step_id}: usage is running low ({}). Nothing was cut off; resume when a pool frees up", pools.join("; "))
 }

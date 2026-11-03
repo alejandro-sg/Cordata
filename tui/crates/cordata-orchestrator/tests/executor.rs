@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use cordata_ledger::{Ledger, Outcome, Pool};
+use cordata_ledger::{Ledger, Outcome, Pool, Unit};
 use cordata_orchestrator::executor::{Config, Controls, ExecResult, Runnable, StepExecutor, form_wave};
 use cordata_orchestrator::handoff;
 use cordata_orchestrator::plan::{self, Options, Plan};
@@ -300,6 +300,59 @@ async fn a_pause_request_stops_at_the_next_safe_point_with_a_resume_packet() {
     let again = exec(&e, plan, vec![runnable(&a, "m", "claude_code", "anthropic")], &cp, Config::default());
     assert_eq!(again.run().await.status, "completed");
     assert_eq!(read(&e, "calc/s3.txt").unwrap(), "ok s3");
+}
+
+#[tokio::test]
+async fn a_worker_that_gives_up_after_a_refusal_is_not_retried_and_is_benched_for_the_run() {
+    let e = env(two_pools(100_000.0));
+    // The strongest tier wins every high step on rank alone; it gives up on all of them, as agy did refusing RunCommand.
+    let quitter = worker("quitter", 1, 0.0, |_, _| {
+        let mut r = WorkerResult::new("quitter", "failed");
+        r.error_message = Some(format!("{} command:RunCommand: it stopped instead of finishing the step", cordata_orchestrator::worker::GAVE_UP));
+        Some(r)
+    });
+    let steady = worker("steady", 1, 0.0, |_, _| None);
+    let cp = CopyCheckpoints::new(&e.store);
+    let mut draft = draft(2, "rollback_checkpoint");
+    draft["steps"][0]["complexity"] = json!("high");
+    draft["steps"][1]["complexity"] = json!("high");
+    let plan = plan::from_draft(&draft, "/x", Options::default(), None).unwrap();
+    let profile = HashMap::from([("quitter:m".to_owned(), (3, 0.1)), ("steady:m".to_owned(), (2, 1.0))]);
+    let cands = vec![runnable(&quitter, "m", "antigravity", "google"), runnable(&steady, "m", "claude_code", "anthropic")];
+    let ex = exec(&e, plan, cands, &cp, Config { profile, max_parallel: 1, ..Default::default() });
+    let out = ex.run().await;
+    assert_eq!(out.status, "completed", "{}", out.reason);
+    assert_eq!(quitter.calls.lock().unwrap().len(), 1, "one give-up, then never again this run");
+    assert_eq!(steady.calls.lock().unwrap().len(), 2);
+    assert_eq!(out.benched, ["quitter:m"]);
+
+    // A later pass of the same run (recovery, replan) starts with it benched, even ranked strongest-first.
+    let e2 = env(two_pools(100_000.0));
+    let cp2 = CopyCheckpoints::new(&e2.store);
+    let cands = vec![runnable(&quitter, "m", "antigravity", "google"), runnable(&steady, "m", "claude_code", "anthropic")];
+    let ex = exec(&e2, plan_of(1, "rollback_checkpoint", 2.0), cands, &cp2, Config { strongest_first: true, benched: vec!["quitter:m".into()], ..Default::default() });
+    assert_eq!(ex.run().await.status, "completed");
+    assert_eq!(quitter.calls.lock().unwrap().len(), 1, "still benched");
+}
+
+#[tokio::test]
+async fn a_run_stops_at_a_step_boundary_when_the_pool_has_no_room_for_a_typical_step() {
+    let e = env(vec![Pool::new("pa", "claude_code").unit(Unit::Usd).limit(10.0)]);
+    // History: a step on this pool costs about $2.
+    for step in ["h1", "h2", "h3"] {
+        e.ledger.record_result("old-run", Some(step), "claude_code", None, &Outcome { cost_usd: 2.0, ..Default::default() }, Some("execute"), None);
+    }
+    let w = worker("w", 1, 2.0, |_, _| None);
+    let cp = CopyCheckpoints::new(&e.store);
+    let ex = exec(&e, plan_of(3, "rollback_checkpoint", 50.0), vec![runnable(&w, "m", "claude_code", "anthropic")], &cp, Config { max_parallel: 1, ..Default::default() });
+    let out = ex.run().await;
+    // $6 used: s1 fits under the $9.50 hard line ($3.50 left); after it $1.50 is left, short of a $2 step.
+    assert_eq!(out.status, "paused", "{}", out.reason);
+    assert!(out.reason.starts_with("stopped at a safe point before step s2: usage is running low (pa has $1.50 left before its hard line, a step takes about $2.00"), "{}", out.reason);
+    assert_eq!(w.calls.lock().unwrap().len(), 1, "s2 never started, so nothing was cut off");
+    assert_eq!(read(&e, "calc/s1.txt").as_deref(), Some("ok s1"), "s1's work is kept");
+    assert_eq!(kinds(&e, "paused")[0]["reason"], "usage_low");
+    assert_eq!(out.last_packet.as_ref().unwrap().reason, "usage_low", "the resume packet says why");
 }
 
 #[tokio::test]

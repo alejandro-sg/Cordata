@@ -48,6 +48,9 @@ pub struct RunArgs {
 /// Exit status of `run`/`resume` when no worker can run (`EX_CONFIG`): nothing has been done at that point.
 pub const NO_NATIVE_WORKER: i32 = 78;
 
+/// Exit status of `run`/`resume` when the coding CLIs have no egress (no vault, no `--allow-direct`): also `EX_CONFIG`.
+pub const NO_EGRESS: i32 = 78;
+
 /// Does the roster have a native worker whose CLI is installed?
 fn has_native_worker(families: &[String], environ: &HashMap<String, String>) -> bool {
     config::specs(families).iter().any(|s| config::family_available(&s.candidate.family, environ))
@@ -95,13 +98,20 @@ pub fn usage_summary(rows: &[Value]) -> String {
 
 /// The event listener for a run on a terminal: one line per state change or worker dispatch, or NDJSON.
 pub fn printer(as_json: bool) -> machine::EventListener {
+    // A usage event fires on every pod update; a line that says what the last one said is noise.
+    let last_usage = std::sync::Mutex::new(String::new());
     Arc::new(move |event: Value| {
         let kind = event.get("kind").and_then(Value::as_str).unwrap_or("");
         if as_json {
             println!("{event}");
         } else if kind == "usage" {
             let pods = event.get("pods").and_then(Value::as_array).cloned().unwrap_or_default();
-            println!("  {}", usage_summary(&pods));
+            let line = usage_summary(&pods);
+            let mut last = last_usage.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if *last != line {
+                println!("  {line}");
+                *last = line;
+            }
         } else if kind == "state" {
             println!("[{}]{}", event.get("state").and_then(Value::as_str).unwrap_or(""), kv(&event, &["kind", "run_id", "state", "ts"]));
         } else if ["step_dispatch", "step_result", "handoff", "rollback", "paused", "budget_exhausted"].contains(&kind) {
@@ -218,6 +228,11 @@ pub async fn run(args: RunArgs) -> i32 {
         eprintln!("cordata-run: no worker is available for {} (claude or agy must be installed)", if requested.is_empty() { "an empty roster".to_owned() } else { requested.join(", ") });
         return NO_NATIVE_WORKER;
     }
+    // Every worker shares one egress: refuse here, not after research and planning have each tried every worker.
+    if let Err(reason) = config::egress_preflight(&settings, &environ) {
+        eprintln!("cordata-run: {reason}");
+        return NO_EGRESS;
+    }
     let ledger = match open_ledger(&settings) {
         Ok(l) => l,
         Err(e) => {
@@ -293,6 +308,10 @@ pub async fn resume(run_id: &str, workers: Option<String>, allow_direct: bool, m
     if !machine::TERMINAL.contains(&record.state.as_str()) && !has_native_worker(&families, &environ) {
         eprintln!("cordata-run: no worker is available to resume {run_id}");
         return NO_NATIVE_WORKER;
+    }
+    if !machine::TERMINAL.contains(&record.state.as_str()) && let Err(reason) = config::egress_preflight(&settings, &environ) {
+        eprintln!("cordata-run: {reason}");
+        return NO_EGRESS;
     }
     let env_for_avail = environ.clone();
     let mut roster = LearnedRoster::new(

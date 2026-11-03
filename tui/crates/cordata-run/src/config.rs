@@ -120,6 +120,11 @@ pub fn workers(settings: &Settings, environ: &HashMap<String, String>) -> HashMa
     out
 }
 
+/// The coding CLIs' egress, checked once before a run spends anything: `Err` is the refusal every worker would hit.
+pub fn egress_preflight(settings: &Settings, environ: &HashMap<String, String>) -> Result<(), String> {
+    VaultEgress::new(JsonPrefs(settings.merged().clone()), environ.clone()).env().map(|_| ())
+}
+
 /// Which of the named families are dropped and why (for a warning).
 pub fn unsupported(families: &[String]) -> Vec<String> {
     let native: HashSet<&str> = NATIVE_FAMILIES.into_iter().collect();
