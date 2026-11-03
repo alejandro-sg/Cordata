@@ -571,3 +571,17 @@ async fn an_unanswered_screen_leaves_the_pattern_guard_in_charge_and_warns() {
     assert!(record.warnings.iter().any(|w| w.contains("the command screen gave no answer")), "{:?}", record.warnings);
     assert!(record.audit.as_ref().unwrap()["failures"].to_string().contains("refused to run (pattern guard 0.95: privilege escalation)"));
 }
+
+#[test]
+fn planners_alternate_families_so_a_retry_goes_to_another_cli() {
+    use cordata_orchestrator::testkit::{ScriptedWorker, runnable};
+    let w = ScriptedWorker::new("w", |_, _| cordata_orchestrator::worker::WorkerResult::new("w", "completed"));
+    let ranked = vec![
+        runnable(&w, "flash", "antigravity", "google"),
+        runnable(&w, "pro", "antigravity", "google"),
+        runnable(&w, "sonnet", "claude_code", "anthropic"),
+        runnable(&w, "opus", "claude_code", "anthropic"),
+    ];
+    let order: Vec<String> = cordata_orchestrator::machine::across_families(ranked).iter().map(|c| c.candidate.model.clone().unwrap()).collect();
+    assert_eq!(order, ["flash", "sonnet", "pro", "opus"]);
+}

@@ -21,23 +21,34 @@ pub const KNOWN_FAMILIES: [&str; 3] = ["claude_code", "antigravity", "ollama"];
 /// Families this binary can run.
 pub const NATIVE_FAMILIES: [&str; 2] = ["claude_code", "antigravity"];
 
-type Row = (&'static str, &'static str, &'static str, f64, Option<&'static [&'static str]>);
+type Row = (&'static str, &'static str, Option<&'static str>, &'static str, f64, Option<&'static [&'static str]>);
 
-/// family, model, tier, price, roles (`None` = every role)
-pub const ROSTER: [Row; 13] = [
-    ("claude_code", "haiku", "fast", 0.10, None),
-    ("claude_code", "sonnet", "standard", 0.35, None),
-    ("claude_code", "opus", "strong", 1.00, None),
-    ("antigravity", "gemini-3.8-flash-medium", "fast", 0.05, None),
-    ("antigravity", "claude-sonnet-5-5-medium", "standard", 0.30, None),
-    ("antigravity", "gemini-3.1-pro-high", "strong", 0.60, None),
-    ("ollama", "deepseek-v4.1-flash", "fast", 0.02, Some(&["execute", "harden", "audit"])),
-    ("ollama", "glm-5.3-flash", "fast", 0.03, Some(&["plan", "execute", "audit"])),
-    ("ollama", "kimi-k3", "standard", 0.05, None),
-    ("ollama", "qwen3-coder:480b", "strong", 0.08, None),
-    ("ollama", "minimax-m3.1-flash", "fast", 0.02, Some(&["execute", "audit"])),
-    ("ollama", "gemma4:31b", "standard", 0.04, Some(&["plan", "audit"])),
-    ("ollama", "mistral-large-4", "strong", 0.10, None),
+/// family, model, effort, tier, price, roles (`None` = every role). Checked 2026-11-03 against the providers' docs:
+/// Anthropic recommends one strong model tuned by effort over splitting work across models, so Claude Code is listed
+/// at two efforts per model and the bandit learns which earns its price per role. Claude Code's own default is
+/// `medium`; Haiku at `low` skips checks on long agent prompts, so it runs at `medium`. agy bakes effort into the
+/// model id (`agy models`), and ids the installed CLI does not list are dropped at run time (`live_specs`). Ollama
+/// Cloud ids are the bare API names from `ollama.com/api/tags`.
+pub const ROSTER: [Row; 19] = [
+    ("claude_code", "haiku", Some("medium"), "fast", 0.10, None),
+    ("claude_code", "sonnet", Some("medium"), "standard", 0.35, None),
+    ("claude_code", "sonnet", Some("high"), "standard", 0.45, None),
+    ("claude_code", "opus", Some("medium"), "strong", 1.00, None),
+    ("claude_code", "opus", Some("high"), "strong", 1.30, None),
+    ("claude_code", "fable", Some("high"), "strong", 2.00, Some(&["plan", "research", "conformance"])),
+    ("antigravity", "gemini-3.8-flash-medium", None, "fast", 0.05, None),
+    ("antigravity", "claude-sonnet-5-5-medium", None, "standard", 0.30, None),
+    ("antigravity", "gpt-oss-120b-medium", None, "standard", 0.10, Some(&["plan", "audit"])),
+    ("antigravity", "claude-opus-5-5-high", None, "strong", 0.70, None),
+    ("antigravity", "gemini-4-argon-high", None, "strong", 0.60, None),
+    ("ollama", "deepseek-v4.1-flash", None, "fast", 0.02, Some(&["execute", "harden", "audit"])),
+    ("ollama", "glm-5.3-flash", None, "fast", 0.03, Some(&["plan", "execute", "audit"])),
+    ("ollama", "minimax-m3.1-flash", None, "fast", 0.02, Some(&["execute", "audit"])),
+    ("ollama", "kimi-k3", None, "standard", 0.05, None),
+    ("ollama", "gpt-oss:120b", Some("medium"), "standard", 0.04, Some(&["plan", "audit"])),
+    ("ollama", "glm-5.3", None, "strong", 0.08, None),
+    ("ollama", "kimi-k2.7-code", None, "strong", 0.08, Some(&["execute", "harden"])),
+    ("ollama", "deepseek-v4-pro:0813", None, "strong", 0.10, None),
 ];
 
 pub fn setting<'a>(settings: &'a Settings, key: &str) -> Option<&'a Value> {
@@ -93,12 +104,12 @@ pub fn specs(families: &[String]) -> Vec<Spec> {
     ROSTER
         .iter()
         .filter(|(family, ..)| families.iter().any(|f| f == family) && NATIVE_FAMILIES.contains(family))
-        .map(|(family, model, tier, price, roles)| {
+        .map(|(family, model, effort, tier, price, roles)| {
             let candidate = Candidate {
                 worker_id: (*family).into(),
                 family: (*family).into(),
                 model: Some((*model).into()),
-                effort: None,
+                effort: effort.map(str::to_owned),
                 model_family: model_family_of(family, Some(model)),
             };
             let mut spec = Spec::new(candidate, tier);
@@ -123,6 +134,18 @@ pub fn workers(settings: &Settings, environ: &HashMap<String, String>) -> HashMa
 /// The coding CLIs' egress, checked once before a run spends anything: `Err` is the refusal every worker would hit.
 pub fn egress_preflight(settings: &Settings, environ: &HashMap<String, String>) -> Result<(), String> {
     VaultEgress::new(JsonPrefs(settings.merged().clone()), environ.clone()).env().map(|_| ())
+}
+
+/// `specs` without the agy models the installed CLI does not offer (`agy models`), and a note naming them. When the
+/// CLI cannot be asked, nothing is dropped: a wrong guess fails one step, a missing worker fails the run.
+pub fn live_specs(specs: Vec<Spec>, environ: &HashMap<String, String>) -> (Vec<Spec>, Option<String>) {
+    if !specs.iter().any(|s| s.candidate.family == "antigravity") || !family_available("antigravity", environ) {
+        return (specs, None);
+    }
+    let Some(offered) = agy::live_models(environ) else { return (specs, None) };
+    let (kept, dropped): (Vec<Spec>, Vec<Spec>) = specs.into_iter().partition(|s| s.candidate.family != "antigravity" || s.candidate.model.as_ref().is_some_and(|m| offered.contains(m)));
+    let note = (!dropped.is_empty()).then(|| format!("agy does not offer {}; left out of this run", dropped.iter().filter_map(|s| s.candidate.model.clone()).collect::<Vec<_>>().join(", ")));
+    (kept, note)
 }
 
 /// Which of the named families are dropped and why (for a warning).

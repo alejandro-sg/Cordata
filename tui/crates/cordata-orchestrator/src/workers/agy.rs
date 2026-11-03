@@ -17,11 +17,47 @@ use crate::worker::{TaskPacket, WorkerEvent};
 
 pub const BINARY_ENV: &str = "CORDATA_AGY_BIN";
 
-pub const AGY_MODELS: [&str; 18] = [
+pub const AGY_MODELS: [&str; 21] = [
+    "gemini-4-argon-low", "gemini-4-argon-medium", "gemini-4-argon-high",
     "gemini-3.8-flash-low", "gemini-3.8-flash-medium", "gemini-3.8-flash-high", "gemini-3.7-flash-low", "gemini-3.7-flash-medium", "gemini-3.7-flash-high",
     "gemini-3.6-flash-low", "gemini-3.6-flash-medium", "gemini-3.6-flash-high", "gemini-3.1-pro-low", "gemini-3.1-pro-high", "claude-opus-5-5-low",
     "claude-opus-5-5-medium", "claude-opus-5-5-high", "claude-sonnet-5-5-low", "claude-sonnet-5-5-medium", "claude-sonnet-5-5-high", "gpt-oss-120b-medium",
 ];
+
+/// The model ids the installed `agy` offers (`agy models`, first column), or `None` when it cannot be asked within a
+/// few seconds. Plans and paid tiers change what an account may use, so the roster is checked against this.
+pub fn live_models(environ: &std::collections::HashMap<String, String>) -> Option<Vec<String>> {
+    use std::path::Path;
+    let candidates = [
+        environ.get(BINARY_ENV).cloned(),
+        environ.get("PATH").and_then(|p| p.split(':').map(|d| Path::new(d).join("agy")).find(|b| b.is_file()).map(|b| b.to_string_lossy().into_owned())),
+        environ.get("HOME").map(|h| format!("{h}/.local/bin/agy")),
+    ];
+    let binary = candidates.into_iter().flatten().find(|b| !b.is_empty() && Path::new(b).is_file())?;
+    let mut child = std::process::Command::new(binary)
+        .arg("models")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => break,
+            Ok(Some(_)) | Err(_) => return None,
+            Ok(None) if std::time::Instant::now() > deadline => {
+                let _ = child.kill();
+                return None;
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+        }
+    }
+    let mut out = String::new();
+    std::io::Read::read_to_string(&mut child.stdout.take()?, &mut out).ok()?;
+    let ids: Vec<String> = out.lines().filter_map(|l| l.split_whitespace().next()).filter(|id| id.contains('-')).map(str::to_owned).collect();
+    (!ids.is_empty()).then_some(ids)
+}
 
 /// The vendor behind an agy model id — what the harden role's "different family" rule compares.
 pub fn model_family(model: Option<&str>) -> &'static str {
