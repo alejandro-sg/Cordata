@@ -6,13 +6,13 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-cordata-economizer = { path = "../cordata-economizer", version = "0.2.0" }
-cordata-guard = { path = "../cordata-guard", version = "0.2.0" }
+cordata-economizer = { path = "../cordata-economizer", version = "0.3.0" }
+cordata-guard = { path = "../cordata-guard", version = "0.3.0" }
 futures.workspace = true
 genai.workspace = true
 ignore.workspace = true
 libc.workspace = true
-cordata-repomap = { path = "../cordata-repomap", version = "0.2.0", features = ["embed"] }
+cordata-repomap = { path = "../cordata-repomap", version = "0.3.0", features = ["embed"] }
 sha2.workspace = true
 regex.workspace = true
 serde.workspace = true
