@@ -477,6 +477,8 @@ pub struct Machine<'a> {
     recovery_note: String,
     /// Workers that gave up after a refusal in an earlier pass: later passes go to the others first.
     benched: Vec<String>,
+    /// What earlier runs on this project learned; this run adds to it when it ends.
+    knowledge: crate::knowledge::Knowledge,
     /// Every command screened this run, so a re-audit after a fix pass only sends the new ones.
     screened: audit::Screen,
     /// The run's message bus, started with the first execute phase; it closes when the run ends.
@@ -518,7 +520,9 @@ impl<'a> Machine<'a> {
     pub fn with_record(record: RunRecord, config: RunConfig, world: World<'a>) -> Self {
         let plan = record.plan.as_ref().and_then(|p| Plan::from_json(p).ok());
         let project = std::fs::canonicalize(&record.cwd).map_or_else(|_| record.cwd.clone(), |p| p.to_string_lossy().into_owned());
+        let knowledge = crate::knowledge::Knowledge::load(crate::knowledge::Knowledge::path_for(&world.home, Path::new(&project)));
         Self {
+            knowledge,
             project,
             plan,
             record,
@@ -777,6 +781,10 @@ impl<'a> Machine<'a> {
 
     async fn plan_phase(&mut self, feedback: &[String]) -> bool {
         let mut prompt = format!("{PLAN_BRIEF}\n\nThe work:\n{}", self.record.goal);
+        let learned = self.knowledge.brief();
+        if !learned.is_empty() {
+            prompt.push_str(&format!("\n\n{learned}"));
+        }
         let mut findings: Option<HashSet<String>> = None;
         if let Some(brief) = self.record.research.clone() {
             findings = Some(brief.get("findings").and_then(Value::as_array).into_iter().flatten().filter_map(|f| f.get("id").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned)).collect());
@@ -848,7 +856,10 @@ impl<'a> Machine<'a> {
         let listener = self.on_event.clone();
         let cfg = ExecConfig {
             timeout_s: self.config.step_timeout_s,
-            extra_prompt: if extra_prompt.is_empty() && recovering { self.recovery_note.clone() } else { extra_prompt.to_owned() },
+            extra_prompt: {
+                let own = if extra_prompt.is_empty() && recovering { self.recovery_note.clone() } else { extra_prompt.to_owned() };
+                [own, self.knowledge.brief()].into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join("\n\n")
+            },
             start_packet: start,
             profile: self.roster.profile(),
             max_parallel: self.config.max_parallel,
@@ -1300,7 +1311,23 @@ impl<'a> Machine<'a> {
             self.transition(&back_to, json!({"resumed": true, "handoff": packet}));
         }
         self.run_loop().await;
+        self.remember();
         &self.record
+    }
+
+    /// Adds what this run taught to the project's knowledge (`knowledge::lessons`). A run that only paused for the
+    /// person teaches nothing new.
+    fn remember(&mut self) {
+        if self.record.state == "paused" && self.record.reason.is_empty() {
+            return;
+        }
+        let now = cordata_checkpoints::now();
+        for (key, summary) in crate::knowledge::lessons(&self.record) {
+            self.knowledge.learn(&key, &summary, &self.record.run_id, now);
+        }
+        if let Err(e) = self.knowledge.save() {
+            self.record.warnings.push(format!("could not save what this run learned: {e}"));
+        }
     }
 
     async fn run_loop(&mut self) {

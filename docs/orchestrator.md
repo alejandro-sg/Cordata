@@ -129,3 +129,11 @@ but built for untrusted workers:
 `executor.rs`, `audit.rs`, `handoff.rs`, `dispatch.rs` and `bandit.rs`, `synthesizer.rs`, `scope.rs`, `checkpoints.rs`,
 and `workers/` (one streaming contract, adapters for `claude` and `agy`, the Seatbelt profile and the vault gate).
 `tui/crates/cordata-run` is the command; `cordata-ledger` holds the quota pools and run records.
+
+## What a project teaches
+
+Each run ends by adding what it taught to `~/.cordata/knowledge/<project key>.jsonl` (Antigravity's knowledge items in
+miniature): a worker that gave up on refused commands, models the installed agy does not offer, the check commands that
+passed on a finished run, and why a run failed or stopped. Lessons are read off the run record, with no model call. A
+lesson seen again counts up; at most 40 are kept. The planner and every worker get the eight most-seen as "What earlier
+runs on this project learned". Delete the file to start over.
