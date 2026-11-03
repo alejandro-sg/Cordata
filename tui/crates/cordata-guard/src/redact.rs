@@ -54,10 +54,48 @@ fn replace_where(re: &Regex, text: &str, count: &mut usize, f: impl Fn(&Captures
     .into_owned()
 }
 
+/// Zero-allocation case-insensitive substring search in byte slices.
+#[inline]
+fn contains_ignore_case(haystack: &str, needle: &str) -> bool {
+    let h_bytes = haystack.as_bytes();
+    let n_bytes = needle.as_bytes();
+    if n_bytes.len() > h_bytes.len() {
+        return false;
+    }
+    h_bytes.windows(n_bytes.len()).any(|window| window.eq_ignore_ascii_case(n_bytes))
+}
+
+/// Fast pre-filter: returns false if text cannot possibly match any secret pattern.
+#[inline]
+fn may_contain_secrets(text: &str) -> bool {
+    if text.contains("sk-")
+        || text.contains("ghp_")
+        || text.contains("gho_")
+        || text.contains("ghs_")
+        || text.contains("github_pat_")
+        || text.contains("xox")
+        || text.contains("AKIA")
+        || text.contains("AIza")
+        || text.contains("hf_")
+        || text.contains("eyJ")
+        || text.contains("-----BEGIN")
+    {
+        return true;
+    }
+
+    const KEYWORDS: [&str; 7] = ["bearer", "auth", "key", "token", "secret", "passw", "credential"];
+    for kw in KEYWORDS {
+        if contains_ignore_case(text, kw) {
+            return true;
+        }
+    }
+    false
+}
+
 /// `text` with every credential-shaped span masked, and how many were masked.
 pub fn scrub(text: &str) -> (String, usize) {
-    if text.is_empty() {
-        return (String::new(), 0);
+    if text.is_empty() || !may_contain_secrets(text) {
+        return (text.to_owned(), 0);
     }
     let p = &*PATTERNS;
     let mut count = 0;
