@@ -191,6 +191,9 @@ struct Keeper {
     id: String,
     /// The first failure is reported; later ones are not.
     warned: bool,
+    /// Held while this engine writes `id`: no other window or terminal can resume the same conversation under it.
+    /// Taken at the first save (a thread that never gets one leaves nothing behind) or when a conversation is resumed.
+    claim: Option<history::Claim>,
 }
 
 impl Keeper {
@@ -198,6 +201,9 @@ impl Keeper {
         let Some(home) = &self.home else { return };
         if history.is_empty() {
             return;
+        }
+        if self.claim.is_none() {
+            self.claim = history::claim_in(home, cwd, &self.id).ok();
         }
         if let Err(error) = history::save_in(home, cwd, &self.id, model, history)
             && !std::mem::replace(&mut self.warned, true)
@@ -283,7 +289,7 @@ pub(crate) async fn drive(
     setup: Setup,
 ) {
     let Setup { offload, state_dir, policy, history_home, sessions_home, mcp_home, switch } = setup;
-    let mut keeper = Keeper { home: history_home, id: history::new_id(), warned: false };
+    let mut keeper = Keeper { home: history_home, id: history::new_id(), warned: false, claim: None };
     let _ = events.send(AppEvent::Connected(SessionInfo {
         session_id: keeper.id.clone(),
         cwd: options.cwd.display().to_string(),
@@ -323,6 +329,17 @@ pub(crate) async fn drive(
                 };
                 match history::load_in(&home, &options.cwd, &wanted) {
                     Ok(saved) => {
+                        if saved.id != keeper.id {
+                            match history::claim_in(&home, &options.cwd, &saved.id) {
+                                Ok(claim) => keeper.claim = Some(claim),
+                                Err(history::ClaimError::Busy) => {
+                                    let why = format!("that conversation ({}) is open in another window or thread; it stays there", saved.id);
+                                    let _ = events.send(AppEvent::ResumeRefused { session_id: saved.id, why });
+                                    continue;
+                                }
+                                Err(history::ClaimError::Unavailable) => keeper.claim = None,
+                            }
+                        }
                         history = saved.messages;
                         keeper.id = saved.id;
                         let _ = events.send(AppEvent::SessionRestored { session_id: keeper.id.clone(), entries: restored(&history) });
@@ -338,6 +355,7 @@ pub(crate) async fn drive(
                     None => "no home folder, so nothing was saved".to_owned(),
                     Some(Ok(n)) => {
                         keeper.home = None;
+                        keeper.claim = None;
                         format!(
                             "deleted {n} saved session{} of this project; this session will not be saved",
                             if n == 1 { "" } else { "s" }
@@ -721,7 +739,7 @@ mod tests {
                         out.push(AppEvent::Notice(format!("asked:{}", info.tool_name)));
                         continue;
                     }
-                    let answered = matches!(event, AppEvent::TurnComplete(_) | AppEvent::TurnFailed(_) | AppEvent::SessionRestored { .. } | AppEvent::ModelChanged(_))
+                    let answered = matches!(event, AppEvent::TurnComplete(_) | AppEvent::TurnFailed(_) | AppEvent::SessionRestored { .. } | AppEvent::ResumeRefused { .. } | AppEvent::ModelChanged(_))
                         || matches!(&event, AppEvent::Notice(n) if !n.contains("without asking"));
                     out.push(event);
                     if answered {
@@ -847,6 +865,27 @@ mod tests {
         let events = script(&Fake::new(vec![]), dir.path(), off, vec![Command::Forget]).await;
         assert!(notices(&events).iter().any(|n| n.starts_with("deleted 1 saved session")), "{:?}", notices(&events));
         assert!(history::load_in(&home, dir.path(), "last").is_err());
+    }
+
+    #[tokio::test]
+    async fn a_conversation_open_elsewhere_is_not_resumed_underneath_its_writer() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let saving = |cwd: &std::path::Path| Setup { history_home: Some(home.clone()), sessions_home: Some(home.clone()), ..plain(cwd) };
+        let events = script(&Fake::new(vec![vec![text("first answer")]]), dir.path(), saving(dir.path()), vec![prompt("remember 42")]).await;
+        let Some(AppEvent::Connected(info)) = events.first() else { panic!("connected first") };
+        let id = info.session_id.clone();
+
+        // Another window is writing it now.
+        let elsewhere = history::claim_in(&home, dir.path(), &id).expect("free once the first engine ended");
+        let events = script(&Fake::new(vec![]), dir.path(), saving(dir.path()), vec![Command::Resume(id.clone())]).await;
+        assert!(events.iter().any(|e| matches!(e, AppEvent::ResumeRefused { session_id, why } if session_id == &id && why.contains("open in another window"))), "refused, with the reason");
+        assert!(!events.iter().any(|e| matches!(e, AppEvent::SessionRestored { .. })), "nothing was restored");
+
+        // Closed there: this one can take it.
+        drop(elsewhere);
+        let events = script(&Fake::new(vec![]), dir.path(), saving(dir.path()), vec![Command::Resume(id)]).await;
+        assert!(events.iter().any(|e| matches!(e, AppEvent::SessionRestored { .. })));
     }
 
     #[tokio::test]

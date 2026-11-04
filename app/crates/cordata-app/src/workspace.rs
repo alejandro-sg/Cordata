@@ -208,7 +208,7 @@ pub struct Workspace {
     saved: Vec<acp_core::history::Summary>,
     /// What `threads.toml` holds now, and the (conversation, turns finished) each thread had when it was written: a
     /// thread is written again only when one of those moved, not on every streamed token.
-    threads_saved: threads::Layout,
+    threads: threads::Store,
     thread_marks: HashMap<EntityId, (String, u64)>,
     /// An empty list is written only once the window has had something to list (or a thread was closed): a window
     /// that has just opened on a fresh folder must not erase what the last run left until it has its own.
@@ -253,6 +253,8 @@ pub struct Launch {
     pub shell: bool,
     /// The threads the last run left open (`threads.rs`), already checked against disk. Empty: start one fresh thread.
     pub restore: threads::Layout,
+    /// Where the open-thread list is kept; in memory only unless given a folder.
+    pub store: threads::Store,
     /// A folder was named at launch: with threads restored, it is shown too (its open thread, else a new one).
     pub open_folder: bool,
 }
@@ -281,7 +283,7 @@ pub fn cordata_home() -> PathBuf {
 impl Workspace {
     pub fn new(connection: Connection, cwd: PathBuf, launch: Launch, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let cwd = cwd.canonicalize().unwrap_or(cwd);
-        let Launch { prompt: initial_prompt, selftest, picker, show, control, shell, restore, open_folder } = launch;
+        let Launch { prompt: initial_prompt, selftest, picker, show, control, shell, restore, store, open_folder } = launch;
         let launch_cwd = cwd.clone();
         if control {
             Self::serve_control(window, cx);
@@ -420,7 +422,7 @@ impl Workspace {
             renaming: None,
             git,
             saved: Vec::new(),
-            threads_saved: threads::Layout::default(),
+            threads: store,
             thread_marks: HashMap::new(),
             threads_armed: false,
             session_exists: acp_core::history::exists,
@@ -680,6 +682,9 @@ impl Workspace {
     /// Writes which conversations are open, in order, and which is shown — when that changed. Only conversations that
     /// exist on disk are listed: a thread that has not finished a turn has nothing to come back to.
     fn persist_threads(&mut self, cx: &mut Context<Self>) {
+        if !self.prefs.restore_threads {
+            return;
+        }
         let exists = self.session_exists;
         let shown = self.session.read(cx).saved_id().map(str::to_owned);
         let mut marks = HashMap::new();
@@ -694,10 +699,8 @@ impl Workspace {
         }
         self.thread_marks = marks;
         self.threads_armed |= !open.is_empty();
-        let layout = threads::Layout::new(shown, open);
-        if self.threads_armed && layout != self.threads_saved {
-            layout.save();
-            self.threads_saved = layout;
+        if self.threads_armed {
+            self.threads.update(threads::Layout::new(shown, open));
         }
     }
 
@@ -2304,7 +2307,7 @@ mod window_tests {
     #[gpui::test]
     fn open_threads_are_written_when_they_change_and_not_before_they_exist_on_disk(cx: &mut TestAppContext) {
         let (view, cx) = workspace(cx);
-        let listed = |view: &gpui::Entity<Workspace>, cx: &mut VisualTestContext| view.read_with(cx, |this, _| this.threads_saved.open.iter().map(|o| o.id.clone()).collect::<Vec<_>>());
+        let listed = |view: &gpui::Entity<Workspace>, cx: &mut VisualTestContext| view.read_with(cx, |this, _| this.threads.last().open.iter().map(|o| o.id.clone()).collect::<Vec<_>>());
         // A conversation with no file on disk (a thread that has not finished a turn) is not listed.
         view.update_in(cx, |this, window, cx| this.open_saved("19ab-000001".into(), window, cx));
         assert!(listed(&view, cx).is_empty(), "nothing on disk, nothing to come back to");
@@ -2312,10 +2315,26 @@ mod window_tests {
         view.update(cx, |this, _| this.session_exists = |_, _| true);
         view.update_in(cx, |this, window, cx| this.open_saved("19ab-000002".into(), window, cx));
         assert_eq!(listed(&view, cx), vec!["19ab-000001".to_owned(), "19ab-000002".to_owned()]);
-        assert_eq!(view.read_with(cx, |this, _| this.threads_saved.active.clone()).as_deref(), Some("19ab-000002"));
+        assert_eq!(view.read_with(cx, |this, _| this.threads.last().active.clone()).as_deref(), Some("19ab-000002"));
         // Closing a thread takes it off the list.
         view.update(cx, |this, cx| this.close_session_at(1, cx));
         assert_eq!(listed(&view, cx), vec!["19ab-000002".to_owned()]);
+    }
+
+    #[gpui::test]
+    fn with_reopen_turned_off_no_list_is_kept_and_turning_it_on_keeps_it_again(cx: &mut TestAppContext) {
+        let (view, cx) = workspace(cx);
+        view.update(cx, |this, _| {
+            this.prefs.restore_threads = false;
+            this.session_exists = |_, _| true;
+        });
+        view.update_in(cx, |this, window, cx| this.open_saved("19ab-000003".into(), window, cx));
+        assert!(view.read_with(cx, |this, _| this.threads.last().is_empty()), "off: nothing is remembered");
+        view.update(cx, |this, cx| {
+            this.prefs.restore_threads = true;
+            this.persist_threads(cx);
+        });
+        assert_eq!(view.read_with(cx, |this, _| this.threads.last().open.len()), 1, "on again: the open thread is listed");
     }
 
     #[gpui::test]

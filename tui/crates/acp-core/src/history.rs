@@ -5,6 +5,9 @@
 //! (the sandbox denies `~/.cordata`); credential-shaped text (keys, tokens, private keys, passwords) is masked before
 //! anything is written, so a key pasted into a prompt or printed by a command never lands on disk; a project keeps its
 //! newest [`KEEP`] sessions. `chat.history: "off"` keeps nothing, `/forget` (or [`forget`]) deletes a project's sessions.
+//!
+//! A conversation is written by one process at a time: whoever writes it holds a [`Claim`] on it, so a second window
+//! or terminal asked to resume it is told it is open elsewhere instead of both appending to one file.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -131,6 +134,43 @@ fn masked(messages: &[Msg]) -> Vec<Msg> {
         .collect()
 }
 
+/// Why a conversation could not be claimed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClaimError {
+    /// Another process (or another engine in this one) holds it.
+    Busy,
+    /// Locking is not available here (a read-only folder, say): carry on unprotected rather than refuse.
+    Unavailable,
+}
+
+/// This process is the one writing a conversation: an exclusive advisory lock on `<id>.lock`, beside the saved file.
+/// The lock belongs to the open file, so it goes when the engine ends or the process dies — a crash never leaves a
+/// conversation stuck, and there is no pid to go stale (the same shape Antigravity uses for `presence/<id>.lock`).
+#[derive(Debug)]
+pub(crate) struct Claim(#[allow(dead_code)] std::fs::File);
+
+pub(crate) fn claim_in(home: &Path, cwd: &Path, id: &str) -> Result<Claim, ClaimError> {
+    use std::os::unix::fs::OpenOptionsExt;
+    if !valid_id(id) {
+        return Err(ClaimError::Unavailable);
+    }
+    let dir = folder_in(home, cwd);
+    private_dir(&dir).map_err(|_| ClaimError::Unavailable)?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(dir.join(format!("{id}.lock")))
+        .map_err(|_| ClaimError::Unavailable)?;
+    match file.try_lock() {
+        Ok(()) => Ok(Claim(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Err(ClaimError::Busy),
+        Err(_) => Err(ClaimError::Unavailable),
+    }
+}
+
 fn private_dir(dir: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
     std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
@@ -169,6 +209,7 @@ fn prune(dir: &Path) {
     }
     files.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
     for (_, path) in files.into_iter().skip(KEEP) {
+        let _ = std::fs::remove_file(path.with_extension("lock"));
         let _ = std::fs::remove_file(path);
     }
 }
@@ -320,6 +361,35 @@ mod tests {
         assert!(load_in(home.path(), a.path(), "last").is_err());
         assert!(load_in(home.path(), b.path(), "last").is_ok());
         assert_eq!(forget_in(home.path(), a.path()).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_conversation_has_one_writer_at_a_time_and_a_claim_goes_with_its_holder() {
+        let home = tempfile::tempdir().unwrap();
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let first = claim_in(home.path(), a.path(), "a-000001").expect("free");
+        assert_eq!(claim_in(home.path(), a.path(), "a-000001").unwrap_err(), ClaimError::Busy, "a second holder is refused");
+        assert!(claim_in(home.path(), a.path(), "a-000002").is_ok(), "another conversation is free");
+        assert!(claim_in(home.path(), b.path(), "a-000001").is_ok(), "the same id in another project is another conversation");
+        drop(first);
+        assert!(claim_in(home.path(), a.path(), "a-000001").is_ok(), "released with its holder, nothing to clean up");
+        assert_eq!(claim_in(home.path(), a.path(), "../x").unwrap_err(), ClaimError::Unavailable, "a path is not an id");
+        let mode = std::fs::metadata(folder_in(home.path(), a.path()).join("a-000001.lock")).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn pruning_a_session_takes_its_lock_file_along() {
+        let home = tempfile::tempdir().unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+        for i in 0..KEEP + 2 {
+            let id = format!("{i:04x}-aa");
+            save_in(home.path(), cwd.path(), &id, "m", &[user("x")]).unwrap();
+            drop(claim_in(home.path(), cwd.path(), &id));
+        }
+        let dir = folder_in(home.path(), cwd.path());
+        let count = |ext: &str| std::fs::read_dir(&dir).unwrap().flatten().filter(|e| e.path().extension().is_some_and(|x| x == ext)).count();
+        assert_eq!((count("json"), count("lock")), (KEEP, KEEP));
     }
 
     #[test]

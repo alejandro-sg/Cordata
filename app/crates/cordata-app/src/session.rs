@@ -133,6 +133,10 @@ impl Session {
 
     fn apply(&mut self, events: Vec<AppEvent>, cx: &mut Context<Self>) {
         for event in events {
+            // The engine answers a resume with the conversation or with why not (it is open in another window).
+            if matches!(event, AppEvent::ResumeRefused { .. }) {
+                self.resuming = None;
+            }
             self.view.on_event(event)
         }
         // Confirmed: the engine now reports the conversation itself.

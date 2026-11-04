@@ -7,6 +7,12 @@
 //! Treated as untrusted on the way in (a stray or hand-edited file must not make the app do more than open a
 //! conversation it already has): read at most [`MAX_BYTES`], at most [`CAP`] threads, each folder an existing absolute
 //! directory, each id well-formed and naming a session file that exists for that folder, none twice.
+//!
+//! One window owns the list. The owner holds an exclusive lock on `threads.lock` for as long as it lives; a second copy
+//! of the app (or a dev build beside the installed one) cannot take it, so it starts clean and never writes the list —
+//! two windows resuming the same conversations would otherwise both append to the same files, and the last writer would
+//! decide what comes back. The lock belongs to the open file: it goes when the process does, a crash leaves nothing
+//! stale, and the other copy takes over the next time its own list changes.
 
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -57,15 +63,6 @@ impl Layout {
         self.active.as_ref().and_then(|id| self.open.iter().position(|o| &o.id == id)).unwrap_or(0)
     }
 
-    pub fn path() -> Option<PathBuf> {
-        crate::prefs::dir().map(|d| d.join("threads.toml"))
-    }
-
-    /// What the last run left, checked against the sessions on disk. Nothing, if there is no file or it is unusable.
-    pub fn load() -> Self {
-        Self::path().map(|p| Self::load_from(&p, acp_core::history::exists)).unwrap_or_default()
-    }
-
     pub fn load_from(path: &Path, exists: impl Fn(&Path, &str) -> bool) -> Self {
         let mut text = String::new();
         let read = std::fs::File::open(path).and_then(|f| f.take(MAX_BYTES).read_to_string(&mut text));
@@ -87,16 +84,83 @@ impl Layout {
         Self { version: VERSION, active: raw.active, open }
     }
 
-    pub fn save(&self) {
-        if let Some(p) = Self::path()
-            && let Err(error) = self.save_to(&p)
-        {
-            eprintln!("cordata: could not save {} ({error})", p.display());
+    pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
+        crate::prefs::write_private(path, toml::to_string_pretty(self).map_err(std::io::Error::other)?.as_bytes())
+    }
+}
+
+/// Where the list lives and who may write it (see the module docs). Nothing touches the disk until it is asked to.
+#[derive(Default)]
+pub struct Store {
+    /// `None`: a store that keeps the list in memory only (tests, and the fallback when there is no home folder).
+    dir: Option<PathBuf>,
+    owner: Option<std::fs::File>,
+    /// The list as this window last had it, and whether the file still has to catch up.
+    last: Layout,
+    dirty: bool,
+}
+
+impl Store {
+    pub fn open(dir: Option<PathBuf>) -> Self {
+        Self { dir, ..Self::default() }
+    }
+
+    fn file(&self) -> Option<PathBuf> {
+        self.dir.as_ref().map(|d| d.join("threads.toml"))
+    }
+
+    /// Whether this window may read and write the list; takes the lock if it is free.
+    pub fn owns(&mut self) -> bool {
+        let Some(dir) = &self.dir else { return true };
+        if self.owner.is_some() {
+            return true;
+        }
+        use std::os::unix::fs::OpenOptionsExt;
+        let locked = std::fs::create_dir_all(dir)
+            .and_then(|()| std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600).open(dir.join("threads.lock")))
+            .ok()
+            .filter(|file| file.try_lock().is_ok());
+        self.owner = locked;
+        self.owner.is_some()
+    }
+
+    /// What the last run left, if this window is the one that owns the list; nothing otherwise.
+    pub fn load(&mut self) -> Layout {
+        match self.file() {
+            Some(file) if self.owns() => Layout::load_from(&file, acp_core::history::exists),
+            _ => Layout::default(),
         }
     }
 
-    pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
-        crate::prefs::write_private(path, toml::to_string_pretty(self).map_err(std::io::Error::other)?.as_bytes())
+    /// The list as it stands now. Written when it changed, if this window owns the list; kept until it does.
+    pub fn update(&mut self, layout: Layout) {
+        if layout != self.last {
+            self.last = layout;
+            self.dirty = true;
+        }
+        if self.dirty && self.owns() {
+            self.dirty = false;
+            if let Some(file) = self.file()
+                && let Err(error) = self.last.save_to(&file)
+            {
+                eprintln!("cordata: could not save {} ({error})", file.display());
+            }
+        }
+    }
+
+    /// Forget the list (the switch was turned off): the file goes, if this window owns it.
+    pub fn clear(&mut self) {
+        self.last = Layout::default();
+        self.dirty = false;
+        if let Some(file) = self.file()
+            && self.owns()
+        {
+            let _ = std::fs::remove_file(file);
+        }
+    }
+
+    pub fn last(&self) -> &Layout {
+        &self.last
     }
 }
 
@@ -206,5 +270,50 @@ mod tests {
         for id in ["../../etc/passwd", "a/b", "", "zz", &"a".repeat(65)] {
             assert!(!acp_core::history::exists(&dir.0, id), "{id:?}");
         }
+    }
+
+    #[test]
+    fn only_one_window_owns_the_list_and_the_other_takes_over_when_it_ends() {
+        let dir = Dir::new("owner");
+        let list = |ids: &[&str]| Layout::new(None, ids.iter().map(|id| open(id, &dir.0)).collect());
+        let (mut first, mut second) = (Store::open(Some(dir.0.clone())), Store::open(Some(dir.0.clone())));
+        first.update(list(&["a-1"]));
+        assert!(first.owns() && !second.owns());
+        // The second window neither restores the first's threads nor overwrites its list.
+        assert!(second.load().is_empty());
+        second.update(list(&["z-9"]));
+        assert_eq!(Layout::load_from(&dir.0.join("threads.toml"), always).open, vec![open("a-1", &dir.0)]);
+        // Once the first is gone, the second's next change takes the list over, with its current state.
+        drop(first);
+        second.update(list(&["z-9", "y-8"]));
+        assert!(second.owns());
+        assert_eq!(Layout::load_from(&dir.0.join("threads.toml"), always).open.len(), 2);
+    }
+
+    #[test]
+    fn a_detached_store_remembers_in_memory_and_writes_nothing() {
+        let mut store = Store::default();
+        store.update(Layout::new(Some("a-1".into()), vec![open("a-1", Path::new("/tmp"))]));
+        assert_eq!(store.last().open.len(), 1);
+        assert!(store.owns());
+    }
+
+    #[test]
+    fn clearing_removes_the_file_and_what_was_remembered() {
+        let dir = Dir::new("clear");
+        let mut store = Store::open(Some(dir.0.clone()));
+        store.update(Layout::new(None, vec![open("a-1", &dir.0)]));
+        assert!(dir.0.join("threads.toml").is_file());
+        store.clear();
+        assert!(!dir.0.join("threads.toml").exists() && store.last().is_empty());
+    }
+
+    #[test]
+    fn the_lock_file_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = Dir::new("lockmode");
+        let mut store = Store::open(Some(dir.0.clone()));
+        assert!(store.owns());
+        assert_eq!(std::fs::metadata(dir.0.join("threads.lock")).unwrap().permissions().mode() & 0o777, 0o600);
     }
 }

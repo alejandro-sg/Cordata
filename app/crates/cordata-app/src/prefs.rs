@@ -28,6 +28,8 @@ pub struct Prefs {
     pub send_with: String,
     /// `last` (the last project) · `home` · `picker` (open the project picker).
     pub open_on_launch: String,
+    /// Put the threads that were open back at launch (`threads.rs`). Off: a launch starts one new thread.
+    pub restore_threads: bool,
     pub notify_approval: bool,
     /// A notification when a thread finishes while the window is in the background.
     pub notify_done: bool,
@@ -68,6 +70,7 @@ impl Default for Prefs {
             code_font_size: 13.0,
             send_with: "enter".into(),
             open_on_launch: "last".into(),
+            restore_threads: true,
             notify_approval: true,
             notify_done: true,
             sound_on_completion: false,

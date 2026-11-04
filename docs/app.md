@@ -35,14 +35,20 @@ of its own; **Other checkouts** (folded) are the repository's other git worktree
 checkout is a place with files, not a conversation: it is named by its branch, and a click moves the window to that
 folder. The header says `needs you`, `working` or `unread` only when there is something to say.
 
-Open threads survive a relaunch. The conversations themselves are the engine's session files
-(`~/.cordata/sessions/<project>/<id>.json`, written after every turn, owner-only, secrets masked, newest 50 per
-project). The window keeps only a list of which were open, in order, and which was shown, in
-`~/Library/Application Support/Cordata/threads.toml` — ids and folders, never text, at most 12, rewritten only when the
-list changes. On launch each entry is checked (existing folder, well-formed id, session file present) and resumed; a
-thread that never finished a turn has no file and is not restored. A folder named on the command line is shown on top
-of them; a prompt, `--selftest`, the picker or "Open on launch: home" start clean. Losing `threads.toml` costs nothing:
-everything is still under **Earlier**.
+Open threads survive a relaunch (Settings → General → Reopen threads on launch; on by default). The conversations
+themselves are the engine's session files (`~/.cordata/sessions/<project>/<id>.json`, written after every turn,
+owner-only, secrets masked, newest 50 per project). The window keeps only a list of which were open, in order, and which
+was shown, in `~/Library/Application Support/Cordata/threads.toml` — ids and folders, never text, at most 12, rewritten
+only when the list changes. On launch each entry is checked (existing folder, well-formed id, session file present) and
+resumed; a thread that never finished a turn has no file and is not restored. A folder named on the command line is
+shown on top of them; a prompt, `--selftest` or the picker start clean. Turned off, nothing is remembered and the file
+is deleted. Losing `threads.toml` costs nothing: everything is still under **Earlier**.
+
+Two copies of the app do not fight over it. The window that holds `threads.lock` (an advisory lock that goes with the
+process, so a crash leaves nothing stale) owns the list; a second copy starts clean, never writes it, and takes it over
+the next time its own threads change after the first has quit. Below that, a conversation has one writer: the engine
+holds `<id>.lock` beside the session file while it writes it, so resuming a conversation that is open in another window,
+thread or terminal is refused with a note instead of two engines appending to one file.
 
 Every thread in the rail shows what it is doing; one that finished while you were elsewhere is marked **Done** until
 you look, and ⌘J (Go → Thread That Needs You) goes to the next one waiting on an approval, then the next Done one. A

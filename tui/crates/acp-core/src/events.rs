@@ -171,6 +171,8 @@ pub enum AppEvent {
     Notice(String),
     /// A saved session was loaded (`/resume`): the conversation so far, and the id it keeps being saved under.
     SessionRestored { session_id: String, entries: Vec<Restored> },
+    /// A resume was refused because that conversation is open in another window or thread; the session carries on as it was.
+    ResumeRefused { session_id: String, why: String },
     /// The connection died; no more events follow except `Closed`.
     ConnectionError(String),
     Closed,

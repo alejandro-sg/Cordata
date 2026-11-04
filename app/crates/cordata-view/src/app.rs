@@ -556,6 +556,9 @@ impl App {
                     session.session_id = session_id;
                 }
             }
+            AppEvent::ResumeRefused { why, .. } => {
+                self.messages.push(Message::Info(sanitize(&why)));
+            }
             AppEvent::ConnectionError(error) => {
                 self.close(Some(error.clone()));
                 self.messages.push(Message::Error(format!(

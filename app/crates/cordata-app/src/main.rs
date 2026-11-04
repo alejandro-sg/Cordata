@@ -159,9 +159,9 @@ fn main() {
             _ => {}
         }
     }
-    // Threads the last run left open come back, unless this launch was asked for something else: a prompt, a self-test,
-    // the picker, or "open on launch: home". A folder named on the command line is shown on top of them.
-    let restore = if args.prompt.is_none() && !args.selftest && !open_picker && prefs.open_on_launch != "home" { threads::Layout::load() } else { threads::Layout::default() };
+    // Threads the last run left open come back (Settings → Reopen threads on launch), unless this launch was asked for
+    // something else: a prompt, a self-test or the picker. A folder named on the command line is shown on top of them.
+    let restore_wanted = prefs.restore_threads && args.prompt.is_none() && !args.selftest && !open_picker;
     let connection = Connection::discover();
 
     gpui_platform::application().with_assets(Icons).run(move |cx: &mut App| {
@@ -195,10 +195,12 @@ fn main() {
                         theme::appearance_changed(window.appearance(), cx);
                     })
                     .detach();
+                let mut store = threads::Store::open(prefs::dir());
+                let restore = if restore_wanted { store.load() } else { threads::Layout::default() };
                 let view = cx.new(|cx| Workspace::new(
                     connection.clone(),
                     args.cwd.clone(),
-                    workspace::Launch { prompt: args.prompt.clone(), selftest: args.selftest && args.prompt.is_some(), picker: open_picker, show: std::env::var("CORDATA_APP_SHOW").ok(), control: control::enabled(), shell: true, restore: restore.clone(), open_folder: args.cwd_given },
+                    workspace::Launch { prompt: args.prompt.clone(), selftest: args.selftest && args.prompt.is_some(), picker: open_picker, show: std::env::var("CORDATA_APP_SHOW").ok(), control: control::enabled(), shell: true, restore, store, open_folder: args.cwd_given },
                     window,
                     cx,
                 ));
