@@ -22,6 +22,7 @@ use gpui_component::input::{InputEvent, InputState, TextareaState};
 
 use crate::prefs::{self, Prefs};
 use crate::session::{Connection, Session, SessionEvent, WindowRequest};
+use crate::threads;
 use crate::theme::{c, ca, line, tk};
 use crate::transcript::{self, GroupEdge};
 use cordata_view::fold;
@@ -205,6 +206,15 @@ pub struct Workspace {
     git: git_ops::Git,
     /// This project's saved conversations (read off the UI thread, refreshed when a thread opens, closes or finishes).
     saved: Vec<acp_core::history::Summary>,
+    /// What `threads.toml` holds now, and the (conversation, turns finished) each thread had when it was written: a
+    /// thread is written again only when one of those moved, not on every streamed token.
+    threads_saved: threads::Layout,
+    thread_marks: HashMap<EntityId, (String, u64)>,
+    /// An empty list is written only once the window has had something to list (or a thread was closed): a window
+    /// that has just opened on a fresh folder must not erase what the last run left until it has its own.
+    threads_armed: bool,
+    /// Whether a conversation exists on disk (`acp_core::history::exists`); a test swaps it.
+    session_exists: fn(&Path, &str) -> bool,
     /// The rail's "Earlier" list shows more than its first few.
     rail_more: bool,
     /// The rail's "Other checkouts" list is unfolded.
@@ -241,6 +251,10 @@ pub struct Launch {
     pub control: bool,
     /// Start a real shell when the Terminal tab is first shown. Off in tests, which start one by clicking.
     pub shell: bool,
+    /// The threads the last run left open (`threads.rs`), already checked against disk. Empty: start one fresh thread.
+    pub restore: threads::Layout,
+    /// A folder was named at launch: with threads restored, it is shown too (its open thread, else a new one).
+    pub open_folder: bool,
 }
 
 #[derive(Default)]
@@ -267,13 +281,26 @@ pub fn cordata_home() -> PathBuf {
 impl Workspace {
     pub fn new(connection: Connection, cwd: PathBuf, launch: Launch, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let cwd = cwd.canonicalize().unwrap_or(cwd);
-        let Launch { prompt: initial_prompt, selftest, picker, show, control, shell } = launch;
+        let Launch { prompt: initial_prompt, selftest, picker, show, control, shell, restore, open_folder } = launch;
+        let launch_cwd = cwd.clone();
         if control {
             Self::serve_control(window, cx);
         }
         let prefs = cx.try_global::<Prefs>().cloned().unwrap_or_default();
         let composer = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, 10).submit_on_enter(prefs.send_with != "cmd-enter").placeholder("Ask anything, @mention files, or type / for commands…"));
-        let first = cx.new(|cx| Session::start(&connection, cwd.clone(), initial_prompt, prefs.model.clone(), cx));
+        // Threads left open by the last run come back as they were: the shown one is built first (the window starts in
+        // its folder), the rest are added in their old order below.
+        let restoring = (!restore.is_empty()).then_some(&restore);
+        let (cwd, first) = match restoring {
+            Some(layout) => {
+                let shown = &layout.open[layout.active_index()];
+                (shown.cwd.canonicalize().unwrap_or_else(|_| shown.cwd.clone()), Self::resumed(&connection, shown, prefs.model.clone(), cx))
+            }
+            None => {
+                let first = cx.new(|cx| Session::start(&connection, cwd.clone(), initial_prompt, prefs.model.clone(), cx));
+                (cwd, first)
+            }
+        };
         let file_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter files…"));
         let palette_input = cx.new(|cx| InputState::new(window, cx).placeholder("Type a command or search conversations…"));
         let picker_input = cx.new(|cx| InputState::new(window, cx).placeholder("Search projects or paste a path…"));
@@ -393,6 +420,10 @@ impl Workspace {
             renaming: None,
             git,
             saved: Vec::new(),
+            threads_saved: threads::Layout::default(),
+            thread_marks: HashMap::new(),
+            threads_armed: false,
+            session_exists: acp_core::history::exists,
             rail_more: false,
             rail_checkouts: false,
             rename_input,
@@ -409,7 +440,19 @@ impl Workspace {
         let cwd = this.cwd.clone();
         this.prefs.touch_recent(&cwd, prefs::now());
         this.prefs.save();
-        this.adopt(first, window, cx);
+        if restoring.is_some() {
+            let shown = restore.active_index();
+            for (i, entry) in restore.open.iter().enumerate() {
+                let session = if i == shown { first.clone() } else { Self::resumed(&this.connection, entry, this.prefs.model.clone(), cx) };
+                this.track(session, window, cx);
+            }
+            this.show(first, cx);
+            if open_folder {
+                this.switch_project(launch_cwd, window, cx);
+            }
+        } else {
+            this.adopt(first, window, cx);
+        }
         this.schedule_git(cx);
         this.watch_hotkey(window, cx);
         this.start_meter(window, cx);
@@ -587,11 +630,31 @@ impl Workspace {
 
     /// Watch a session and show it.
     fn adopt(&mut self, session: Entity<Session>, window: &mut Window, cx: &mut Context<Self>) {
+        self.track(session.clone(), window, cx);
+        self.show(session, cx);
+    }
+
+    /// A thread continuing the saved conversation `entry` names, in its folder.
+    fn resumed(connection: &Connection, entry: &threads::Open, model: Option<String>, cx: &mut Context<Self>) -> Entity<Session> {
+        cx.new(|cx| {
+            let mut session = Session::start(connection, entry.cwd.clone(), None, model, cx);
+            session.resume(entry.id.clone(), cx);
+            session
+        })
+    }
+
+    /// Watch a session and add it to the open threads, without showing it.
+    fn track(&mut self, session: Entity<Session>, window: &mut Window, cx: &mut Context<Self>) {
         let id = session.entity_id();
         self.refresh_saved(cx);
         let subs = vec![
             cx.observe_in(&session, window, move |this, observed, window, cx| {
                 this.sound_and_notify(&observed, window, cx);
+                // The conversation's id arrives after the engine starts, and its file appears when a turn ends.
+                let mark = observed.read(cx).saved_id().map(|id| (id.to_owned(), observed.read(cx).view.turns_done));
+                if mark.is_some() && this.thread_marks.get(&observed.entity_id()) != mark.as_ref() {
+                    this.persist_threads(cx);
+                }
                 if observed.entity_id() == this.session.entity_id() {
                     this.step_selftest(cx);
                 }
@@ -611,8 +674,31 @@ impl Workspace {
             }),
         ];
         self.subscriptions.push((id, subs));
-        self.sessions.push(session.clone());
-        self.show(session, cx);
+        self.sessions.push(session);
+    }
+
+    /// Writes which conversations are open, in order, and which is shown — when that changed. Only conversations that
+    /// exist on disk are listed: a thread that has not finished a turn has nothing to come back to.
+    fn persist_threads(&mut self, cx: &mut Context<Self>) {
+        let exists = self.session_exists;
+        let shown = self.session.read(cx).saved_id().map(str::to_owned);
+        let mut marks = HashMap::new();
+        let mut open = Vec::new();
+        for entity in &self.sessions {
+            let session = entity.read(cx);
+            let Some(id) = session.saved_id() else { continue };
+            marks.insert(entity.entity_id(), (id.to_owned(), session.view.turns_done));
+            if exists(&session.cwd, id) {
+                open.push(threads::Open { id: id.to_owned(), cwd: session.cwd.clone() });
+            }
+        }
+        self.thread_marks = marks;
+        self.threads_armed |= !open.is_empty();
+        let layout = threads::Layout::new(shown, open);
+        if self.threads_armed && layout != self.threads_saved {
+            layout.save();
+            self.threads_saved = layout;
+        }
     }
 
     pub(super) fn show(&mut self, session: Entity<Session>, cx: &mut Context<Self>) {
@@ -627,6 +713,7 @@ impl Workspace {
         let len = self.row_count(cx);
         self.transcript.reset(len);
         self.seen = (self.session.entity_id(), len, self.session.read(cx).version);
+        self.persist_threads(cx);
         cx.notify();
     }
 
@@ -650,12 +737,14 @@ impl Workspace {
         }
         let removed = self.sessions.remove(index);
         let removed_id = removed.entity_id();
+        self.threads_armed = true;
         self.refresh_saved(cx);
         self.subscriptions.retain(|(sid, _)| *sid != removed_id);
         if self.session.entity_id() == removed_id {
             let next = self.sessions[index.min(self.sessions.len() - 1)].clone();
             self.show(next, cx);
         } else {
+            self.persist_threads(cx);
             cx.notify();
         }
     }
@@ -1396,11 +1485,7 @@ impl Workspace {
     /// Opens a saved conversation as a thread of its own (the one shown is left alone).
     pub(super) fn open_saved(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
         let (connection, cwd, model) = (self.connection.clone(), self.cwd.clone(), self.prefs.model.clone());
-        let session = cx.new(|cx| {
-            let mut session = Session::start(&connection, cwd, None, model, cx);
-            session.settle(vec![cordata_view::app::Effect::Resume(id)], cx);
-            session
-        });
+        let session = Self::resumed(&connection, &threads::Open { id, cwd }, model, cx);
         self.adopt(session, window, cx);
         self.focus_composer(&FocusComposer, window, cx);
     }
@@ -2124,6 +2209,10 @@ mod window_tests {
     }
 
     fn workspace(cx: &mut TestAppContext) -> (gpui::Entity<Workspace>, &mut VisualTestContext) {
+        workspace_with(cx, super::Launch::default())
+    }
+
+    fn workspace_with(cx: &mut TestAppContext, launch: super::Launch) -> (gpui::Entity<Workspace>, &mut VisualTestContext) {
         // Never the person's own preferences file.
         let prefs_dir = std::env::temp_dir().join(format!("cordata-prefs-test-{}", std::process::id()));
         // SAFETY: set before any thread of this test reads it; every test sets the same value.
@@ -2134,7 +2223,7 @@ mod window_tests {
             cx.set_global(crate::prefs::Prefs::default());
             super::bind_keys(cx);
         });
-        let (view, cx) = cx.add_window_view(|window, cx| Workspace::new(offline(), std::env::temp_dir(), super::Launch::default(), window, cx));
+        let (view, cx) = cx.add_window_view(|window, cx| Workspace::new(offline(), std::env::temp_dir(), launch, window, cx));
         cx.run_until_parked();
         (view, cx)
     }
@@ -2171,6 +2260,62 @@ mod window_tests {
         cx.run_until_parked();
         let after = view.read_with(cx, |this, cx| (this.sessions.len(), this.session.read(cx).cwd.clone()));
         assert_eq!((after.0, after.1), (before.0 + 1, before.2), "one more thread, in the same folder");
+    }
+
+    fn project(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("cordata-restore-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::canonicalize(dir).unwrap()
+    }
+
+    #[gpui::test]
+    fn a_relaunch_brings_back_the_open_threads_in_order_and_shows_the_one_that_was_shown(cx: &mut TestAppContext) {
+        let (a, b) = (project("a"), project("b"));
+        let restore = crate::threads::Layout::new(
+            Some("2-bb".into()),
+            vec![crate::threads::Open { id: "1-aa".into(), cwd: a.clone() }, crate::threads::Open { id: "2-bb".into(), cwd: b.clone() }, crate::threads::Open { id: "3-cc".into(), cwd: a.clone() }],
+        );
+        let (view, cx) = workspace_with(cx, super::Launch { restore, ..Default::default() });
+        let (ids, shown, cwd) = view.read_with(cx, |this, cx| {
+            let ids: Vec<_> = this.sessions.iter().map(|s| s.read(cx).saved_id().map(str::to_owned)).collect();
+            (ids, this.session.read(cx).saved_id().map(str::to_owned), this.cwd.clone())
+        });
+        assert_eq!(ids, vec![Some("1-aa".into()), Some("2-bb".into()), Some("3-cc".into())], "the old order");
+        assert_eq!((shown.as_deref(), cwd), (Some("2-bb"), b), "the shown thread's folder is the window's");
+    }
+
+    #[gpui::test]
+    fn no_saved_threads_means_one_fresh_thread_and_the_old_list_is_left_alone(cx: &mut TestAppContext) {
+        let (view, cx) = workspace(cx);
+        // Nothing to list yet: an empty list is not written over what the last run left.
+        assert_eq!((view.read_with(cx, |this, _| this.sessions.len()), view.read_with(cx, |this, _| this.threads_armed)), (1, false));
+    }
+
+    #[gpui::test]
+    fn a_folder_named_at_launch_is_shown_on_top_of_the_restored_threads(cx: &mut TestAppContext) {
+        let a = project("named-a");
+        let restore = crate::threads::Layout::new(Some("1-aa".into()), vec![crate::threads::Open { id: "1-aa".into(), cwd: a }]);
+        let (view, cx) = workspace_with(cx, super::Launch { restore, open_folder: true, ..Default::default() });
+        let named = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+        let (threads, shown) = view.read_with(cx, |this, cx| (this.sessions.len(), this.session.read(cx).cwd.clone()));
+        assert_eq!((threads, shown), (2, named), "the restored thread, plus one in the folder that was named");
+    }
+
+    #[gpui::test]
+    fn open_threads_are_written_when_they_change_and_not_before_they_exist_on_disk(cx: &mut TestAppContext) {
+        let (view, cx) = workspace(cx);
+        let listed = |view: &gpui::Entity<Workspace>, cx: &mut VisualTestContext| view.read_with(cx, |this, _| this.threads_saved.open.iter().map(|o| o.id.clone()).collect::<Vec<_>>());
+        // A conversation with no file on disk (a thread that has not finished a turn) is not listed.
+        view.update_in(cx, |this, window, cx| this.open_saved("19ab-000001".into(), window, cx));
+        assert!(listed(&view, cx).is_empty(), "nothing on disk, nothing to come back to");
+        // Once its file exists, the next change lists it, and the thread shown is remembered.
+        view.update(cx, |this, _| this.session_exists = |_, _| true);
+        view.update_in(cx, |this, window, cx| this.open_saved("19ab-000002".into(), window, cx));
+        assert_eq!(listed(&view, cx), vec!["19ab-000001".to_owned(), "19ab-000002".to_owned()]);
+        assert_eq!(view.read_with(cx, |this, _| this.threads_saved.active.clone()).as_deref(), Some("19ab-000002"));
+        // Closing a thread takes it off the list.
+        view.update(cx, |this, cx| this.close_session_at(1, cx));
+        assert_eq!(listed(&view, cx), vec!["19ab-000002".to_owned()]);
     }
 
     #[gpui::test]

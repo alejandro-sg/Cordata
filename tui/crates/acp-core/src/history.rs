@@ -201,6 +201,15 @@ fn summaries(dir: &Path) -> Vec<Summary> {
     out
 }
 
+/// Whether `id` names a saved session of this project: a shape check, then one `stat` (nothing is read or parsed).
+pub fn exists(cwd: &Path, id: &str) -> bool {
+    crate::policy::cordata_home().is_some_and(|home| exists_in(&home, cwd, id))
+}
+
+pub(crate) fn exists_in(home: &Path, cwd: &Path, id: &str) -> bool {
+    valid_id(id) && folder_in(home, cwd).join(format!("{id}.json")).is_file()
+}
+
 /// This project's saved sessions, newest first.
 pub fn list(cwd: &Path) -> Vec<Summary> {
     folder(cwd).map(|dir| summaries(&dir)).unwrap_or_default()
@@ -311,6 +320,19 @@ mod tests {
         assert!(load_in(home.path(), a.path(), "last").is_err());
         assert!(load_in(home.path(), b.path(), "last").is_ok());
         assert_eq!(forget_in(home.path(), a.path()).unwrap(), 0);
+    }
+
+    #[test]
+    fn exists_is_one_stat_for_this_project_and_a_well_formed_id() {
+        let home = tempfile::tempdir().unwrap();
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        save_in(home.path(), a.path(), "a-000001", "m", &[user("x")]).unwrap();
+        assert!(exists_in(home.path(), a.path(), "a-000001"));
+        assert!(!exists_in(home.path(), b.path(), "a-000001"), "another project's folder");
+        assert!(!exists_in(home.path(), a.path(), "a-000002"));
+        assert!(!exists_in(home.path(), a.path(), "../a-000001"), "a path is not an id");
+        forget_in(home.path(), a.path()).unwrap();
+        assert!(!exists_in(home.path(), a.path(), "a-000001"));
     }
 
     #[test]

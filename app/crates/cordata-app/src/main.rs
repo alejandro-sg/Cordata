@@ -16,6 +16,7 @@ mod prefs;
 mod session;
 mod sound;
 mod theme;
+mod threads;
 mod transcript;
 mod ui;
 mod vt;
@@ -158,6 +159,9 @@ fn main() {
             _ => {}
         }
     }
+    // Threads the last run left open come back, unless this launch was asked for something else: a prompt, a self-test,
+    // the picker, or "open on launch: home". A folder named on the command line is shown on top of them.
+    let restore = if args.prompt.is_none() && !args.selftest && !open_picker && prefs.open_on_launch != "home" { threads::Layout::load() } else { threads::Layout::default() };
     let connection = Connection::discover();
 
     gpui_platform::application().with_assets(Icons).run(move |cx: &mut App| {
@@ -194,7 +198,7 @@ fn main() {
                 let view = cx.new(|cx| Workspace::new(
                     connection.clone(),
                     args.cwd.clone(),
-                    workspace::Launch { prompt: args.prompt.clone(), selftest: args.selftest && args.prompt.is_some(), picker: open_picker, show: std::env::var("CORDATA_APP_SHOW").ok(), control: control::enabled(), shell: true },
+                    workspace::Launch { prompt: args.prompt.clone(), selftest: args.selftest && args.prompt.is_some(), picker: open_picker, show: std::env::var("CORDATA_APP_SHOW").ok(), control: control::enabled(), shell: true, restore: restore.clone(), open_folder: args.cwd_given },
                     window,
                     cx,
                 ));

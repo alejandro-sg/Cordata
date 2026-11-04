@@ -85,11 +85,16 @@ impl Default for Prefs {
 
 impl gpui::Global for Prefs {}
 
-pub fn path() -> Option<PathBuf> {
+/// The window's state folder: `~/Library/Application Support/Cordata` (`CORDATA_APP_PREFS_DIR` moves it, for tests).
+pub fn dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("CORDATA_APP_PREFS_DIR") {
-        return Some(PathBuf::from(dir).join("prefs.toml"));
+        return Some(PathBuf::from(dir));
     }
-    std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Application Support/Cordata/prefs.toml"))
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Application Support/Cordata"))
+}
+
+pub fn path() -> Option<PathBuf> {
+    dir().map(|d| d.join("prefs.toml"))
 }
 
 impl Prefs {
@@ -124,20 +129,7 @@ impl Prefs {
 
     /// Write to a temporary file beside it and rename over: a crash never leaves half a file.
     pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
-        let text = toml::to_string_pretty(self).map_err(std::io::Error::other)?;
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        // A name of its own: two writers never rename each other's half-written file.
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or_default();
-        let tmp = path.with_extension(format!("toml.{}.{nanos}.tmp", std::process::id()));
-        std::fs::write(&tmp, text)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
-        }
-        std::fs::rename(&tmp, path)
+        write_private(path, toml::to_string_pretty(self).map_err(std::io::Error::other)?.as_bytes())
     }
 
     fn normalise(&mut self) {
@@ -171,6 +163,23 @@ impl Prefs {
     pub fn last_project(&self) -> Option<&Path> {
         self.recents.first().map(|r| r.path.as_path())
     }
+}
+
+/// Writes `bytes` to `path` through a temporary file of its own beside it (owner-only), then renames over: a crash never
+/// leaves half a file, and two writers never rename each other's.
+pub fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or_default();
+    let tmp = path.with_extension(format!("toml.{}.{nanos}.tmp", std::process::id()));
+    std::fs::write(&tmp, bytes)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+    }
+    std::fs::rename(&tmp, path)
 }
 
 /// How many damaged copies are kept beside the file; older ones go only after a new one is safely written.

@@ -35,6 +35,15 @@ of its own; **Other checkouts** (folded) are the repository's other git worktree
 checkout is a place with files, not a conversation: it is named by its branch, and a click moves the window to that
 folder. The header says `needs you`, `working` or `unread` only when there is something to say.
 
+Open threads survive a relaunch. The conversations themselves are the engine's session files
+(`~/.cordata/sessions/<project>/<id>.json`, written after every turn, owner-only, secrets masked, newest 50 per
+project). The window keeps only a list of which were open, in order, and which was shown, in
+`~/Library/Application Support/Cordata/threads.toml` — ids and folders, never text, at most 12, rewritten only when the
+list changes. On launch each entry is checked (existing folder, well-formed id, session file present) and resumed; a
+thread that never finished a turn has no file and is not restored. A folder named on the command line is shown on top
+of them; a prompt, `--selftest`, the picker or "Open on launch: home" start clean. Losing `threads.toml` costs nothing:
+everything is still under **Earlier**.
+
 Every thread in the rail shows what it is doing; one that finished while you were elsewhere is marked **Done** until
 you look, and ⌘J (Go → Thread That Needs You) goes to the next one waiting on an approval, then the next Done one. A
 notification says when a thread finishes or needs you while the window is in the back (Settings → General).

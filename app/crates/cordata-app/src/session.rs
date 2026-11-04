@@ -55,6 +55,10 @@ pub struct Session {
     /// Images and files going out with the prompt being submitted right now (`submit_with`).
     outgoing: Vec<acp_core::Attachment>,
     local: mpsc::UnboundedSender<LocalEvent>,
+    /// The saved conversation this thread was told to continue, until the engine confirms it. The engine first
+    /// announces a fresh id and only then swaps in the resumed one; the window's list of open threads (`threads.rs`)
+    /// must name the conversation throughout, not the placeholder.
+    resuming: Option<String>,
 }
 
 impl Session {
@@ -67,7 +71,7 @@ impl Session {
         view.initial_prompt = initial_prompt;
         // The engine starts in the user file's `chat.mode`; the view shows the same from the start.
         view.mode = acp_core::policy::Policy::load(&cwd).mode;
-        let mut session = Self { view, handle: None, cwd: cwd.clone(), transport: connection.describe(), version: 0, outgoing: Vec::new(), local: local_tx };
+        let mut session = Self { view, handle: None, cwd: cwd.clone(), transport: connection.describe(), version: 0, outgoing: Vec::new(), local: local_tx, resuming: None };
         if let Some(problem) = &connection.problem {
             session.view.messages.push(Message::Error(problem.clone()));
             return session;
@@ -116,9 +120,24 @@ impl Session {
         session
     }
 
+    /// The id of the conversation file this thread writes to, once known (`None` before the engine has said).
+    pub fn saved_id(&self) -> Option<&str> {
+        self.resuming.as_deref().or_else(|| self.view.session.as_ref().map(|s| s.session_id.as_str()))
+    }
+
+    /// Continue the saved conversation `id` in this (new) thread.
+    pub fn resume(&mut self, id: String, cx: &mut Context<Self>) {
+        self.resuming = Some(id.clone());
+        self.settle(vec![Effect::Resume(id)], cx);
+    }
+
     fn apply(&mut self, events: Vec<AppEvent>, cx: &mut Context<Self>) {
         for event in events {
             self.view.on_event(event)
+        }
+        // Confirmed: the engine now reports the conversation itself.
+        if self.resuming.is_some() && self.resuming.as_deref() == self.view.session.as_ref().map(|s| s.session_id.as_str()) {
+            self.resuming = None;
         }
         self.settle(Vec::new(), cx);
     }
@@ -175,7 +194,7 @@ impl Session {
 
     /// After anything changed: what the reducer wants to start on its own (an auto-resume, the first prompt, the next
     /// queued one), then the effects, then a redraw.
-    pub(crate) fn settle(&mut self, mut effects: Vec<Effect>, cx: &mut Context<Self>) {
+    fn settle(&mut self, mut effects: Vec<Effect>, cx: &mut Context<Self>) {
         effects.extend(self.view.take_initial_prompt());
         effects.extend(self.view.take_queued());
         if std::mem::take(&mut self.view.attention) {
