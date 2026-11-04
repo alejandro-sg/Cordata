@@ -1,38 +1,35 @@
-//! The work board: every place an agent works — Cordata's own threads and the other checkouts of the repository
-//! (worktrees Claude Code, agy or a person made) — in one list, ordered by what the person has to do about it.
+//! The rail's data: three kinds of thing, kept apart because they are different things.
 //!
-//! Four lanes, most urgent first: **Needs you** (an approval, a stopped engine), **Working** (longest-running first),
-//! **To review** (finished while unseen, or uncommitted changes in a checkout nobody is driving) and **Quiet**. A row
-//! carries a human title — the thread's own, else the checkout's last commit message, never a generated branch slug —
-//! and one line of why it sits where it does. Pure data in, rows out: the app and the terminal draw the same board.
+//! - **Threads** — conversations with Cordata's own agent that are open in the window. They keep the order they were
+//!   opened in (a row that jumps is a row you misclick); what each is doing shows as a mark, and ⌘J goes to the next
+//!   one that wants you.
+//! - **Earlier** — this project's saved conversations that are not open. Opening one resumes it as a thread.
+//! - **Checkouts** — the repository's other git worktrees (Claude Code, agy or a person made them). They are places
+//!   with files, not conversations: opening one switches the window's folder. Named by branch, never by a commit
+//!   message, so nothing here reads like a thread.
+//!
+//! Pure data in, rows out: no drawing, no I/O.
 
 use std::path::{Path, PathBuf};
 
 use crate::app::TabState;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Lane {
+/// What a thread is doing, as the rail marks it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mark {
+    /// An approval or a stopped engine: the person has to act.
     NeedsYou,
     Working,
-    Review,
-    Quiet,
+    /// Finished while the person was elsewhere.
+    Unread,
+    Idle,
 }
 
-impl Lane {
-    pub fn label(self) -> &'static str {
-        match self {
-            Lane::NeedsYou => "Needs you",
-            Lane::Working => "Working",
-            Lane::Review => "To review",
-            Lane::Quiet => "Quiet",
-        }
-    }
-}
-
-/// One open thread, as the board needs it.
+/// One open thread, as the rail needs it.
 #[derive(Debug, Clone)]
 pub struct ThreadIn {
     pub index: usize,
+    pub session_id: String,
     pub title: String,
     pub folder: PathBuf,
     pub state: TabState,
@@ -40,6 +37,16 @@ pub struct ThreadIn {
     pub waiting_on: Option<String>,
     pub working_secs: Option<u64>,
     pub active: bool,
+}
+
+/// A saved conversation of this project.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedIn {
+    pub id: String,
+    pub title: String,
+    pub prompts: usize,
+    /// Seconds since it was last saved.
+    pub age_secs: u64,
 }
 
 /// Another checkout of the repository (a linked worktree, or the main one seen from a worktree).
@@ -59,104 +66,134 @@ pub struct PlaceIn {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Target {
-    Thread(usize),
-    Place(PathBuf),
+pub struct ThreadRow {
+    pub index: usize,
+    pub title: String,
+    /// Why the mark is what it is, in a few words: `waiting · Run edit_file`, `working 4m`, `finished · unread`.
+    pub detail: String,
+    pub mark: Mark,
+    /// The folder's name when the thread works somewhere other than the window's folder.
+    pub elsewhere: Option<String>,
+    pub active: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Item {
-    pub lane: Lane,
+pub struct SavedRow {
+    pub id: String,
     pub title: String,
-    /// Where: a folder or checkout name, empty for the folder the window shows.
-    pub place: String,
-    /// Why it is in its lane, in a few words: `waiting · Run edit_file`, `working 4m`, `±3 uncommitted · 2h`, `2d`.
+    /// `2h · 3 prompts`.
     pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckoutRow {
+    pub path: PathBuf,
+    /// The branch in words: `Focused cannon`.
+    pub name: String,
+    pub branch: String,
     pub agent: Option<String>,
-    pub target: Target,
-    pub active: bool,
-    /// A merged, clean checkout nobody is working in: the board offers to remove it.
+    /// `±3 uncommitted · 2h`, `2d`, `merged`.
+    pub detail: String,
+    /// The last commit's subject, for the tooltip.
+    pub subject: Option<String>,
+    /// Uncommitted work: worth a look before anything else.
+    pub dirty: bool,
+    /// A merged, clean checkout nobody is working in: the rail offers to remove it.
     pub can_remove: bool,
-    /// The folder the item lives in: a thread's, or the checkout itself.
-    pub folder: PathBuf,
-    /// Sort key inside the lane, smaller first.
-    rank: i64,
 }
 
-/// The board, lanes in order. `here` is the folder the window shows.
-pub fn board(threads: &[ThreadIn], places: &[PlaceIn], here: &Path) -> Vec<Item> {
-    let mut items: Vec<Item> = Vec::new();
-    for t in threads {
-        let place = if t.folder == here { String::new() } else { name_of(&t.folder) };
-        let (lane, detail, rank) = match t.state {
-            TabState::NeedsApproval => (Lane::NeedsYou, t.waiting_on.as_ref().map_or_else(|| "waiting for you".to_owned(), |w| format!("waiting · {w}")), t.index as i64),
-            TabState::Closed => (Lane::NeedsYou, "engine stopped".to_owned(), t.index as i64),
-            TabState::Working => {
-                let secs = t.working_secs.unwrap_or(0);
-                (Lane::Working, if secs < 60 { "working".to_owned() } else { format!("working {}", age(secs)) }, -(secs as i64))
-            }
-            TabState::Done => (Lane::Review, "finished · unread".to_owned(), t.index as i64),
-            TabState::Idle | TabState::Connecting => (Lane::Quiet, String::new(), t.index as i64),
-        };
-        items.push(Item { lane, title: thread_title(&t.title), place, detail, agent: None, target: Target::Thread(t.index), active: t.active, can_remove: false, folder: t.folder.clone(), rank });
-    }
-    for p in places {
-        // A checkout with an open thread is that thread.
-        if threads.iter().any(|t| t.folder == p.path) || p.path == here {
-            continue;
-        }
-        let when = p.last_age_secs.map(age);
-        let (lane, detail) = if p.changes > 0 {
-            (Lane::Review, [Some(format!("±{} uncommitted", p.changes)), when].into_iter().flatten().collect::<Vec<_>>().join(" · "))
-        } else if p.merged && !p.is_main {
-            (Lane::Quiet, "merged · can be removed".to_owned())
-        } else {
-            (Lane::Quiet, when.unwrap_or_default())
-        };
-        let title = p.last_subject.clone().filter(|s| !s.trim().is_empty()).unwrap_or_else(|| humane_branch(p.branch.as_deref().unwrap_or(""), &p.path));
-        // The checkout's name in words; the raw branch is in the tooltip.
-        let place = if p.is_main { "main checkout".to_owned() } else { humane_branch(p.branch.as_deref().unwrap_or(""), &p.path) };
-        // Merged checkouts sink below live ones.
-        let rank = p.last_age_secs.map_or(i64::MAX / 2, |a| a as i64) + if p.merged { i64::MAX / 2 } else { 0 };
-        let can_remove = p.merged && p.changes == 0 && !p.is_main;
-        items.push(Item { lane, title, place, detail, agent: p.agent.clone(), target: Target::Place(p.path.clone()), active: false, can_remove, folder: p.path.clone(), rank });
-    }
-    items.sort_by(|a, b| a.lane.cmp(&b.lane).then(matches!(a.target, Target::Place(_)).cmp(&matches!(b.target, Target::Place(_)))).then(a.rank.cmp(&b.rank)));
-    items
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Rail {
+    pub threads: Vec<ThreadRow>,
+    pub earlier: Vec<SavedRow>,
+    pub checkouts: Vec<CheckoutRow>,
 }
 
-/// The same items grouped by checkout: the folder the window shows first, then each other checkout ordered by its
-/// most urgent item. Each group is `(label, items)`, items still in lane order. `here_label` names the window's folder.
-pub fn by_place(items: Vec<Item>, here: &Path, here_label: &str) -> Vec<(String, Vec<Item>)> {
-    let mut groups: Vec<(PathBuf, Vec<Item>)> = Vec::new();
-    for item in items {
-        match groups.iter_mut().find(|(f, _)| *f == item.folder) {
-            Some((_, list)) => list.push(item),
-            None => groups.push((item.folder.clone(), vec![item])),
-        }
-    }
-    groups.sort_by_key(|(folder, list)| (folder != here, list.iter().map(|i| i.lane).min()));
-    groups
-        .into_iter()
-        .map(|(folder, list)| {
-            let label = if folder == here {
-                here_label.to_owned()
-            } else {
-                list.iter().find(|i| matches!(i.target, Target::Place(_))).map_or_else(|| name_of(&folder), |i| i.place.clone())
+/// Builds the rail. `here` is the folder the window shows.
+pub fn rail(threads: &[ThreadIn], saved: &[SavedIn], places: &[PlaceIn], here: &Path) -> Rail {
+    let thread_rows = threads
+        .iter()
+        .map(|t| {
+            let (mark, detail) = match t.state {
+                TabState::NeedsApproval => (Mark::NeedsYou, t.waiting_on.as_ref().map_or_else(|| "waiting for you".to_owned(), |w| format!("waiting · {w}"))),
+                TabState::Closed => (Mark::NeedsYou, "engine stopped".to_owned()),
+                TabState::Working => {
+                    let secs = t.working_secs.unwrap_or(0);
+                    (Mark::Working, if secs < 60 { "working".to_owned() } else { format!("working {}", age(secs)) })
+                }
+                TabState::Done => (Mark::Unread, "finished · unread".to_owned()),
+                TabState::Idle | TabState::Connecting => (Mark::Idle, String::new()),
             };
-            (label, list)
+            ThreadRow { index: t.index, title: thread_title(&t.title), detail, mark, elsewhere: (t.folder != here).then(|| name_of(&t.folder)), active: t.active }
         })
-        .collect()
+        .collect();
+
+    // A saved conversation that is open is that thread, not a second row.
+    let earlier = saved
+        .iter()
+        .filter(|s| s.prompts > 0 && !threads.iter().any(|t| t.session_id == s.id))
+        .map(|s| SavedRow {
+            id: s.id.clone(),
+            title: if s.title.trim().is_empty() { "Untitled".to_owned() } else { s.title.trim().to_owned() },
+            detail: format!("{} · {}", age(s.age_secs), if s.prompts == 1 { "1 prompt".to_owned() } else { format!("{} prompts", s.prompts) }),
+        })
+        .collect();
+
+    // A checkout with an open thread is already in the list above, as that thread's place.
+    let mut checkouts: Vec<(i64, CheckoutRow)> = places
+        .iter()
+        .filter(|p| p.path != here && !threads.iter().any(|t| t.folder == p.path))
+        .map(|p| {
+            let branch = p.branch.clone().unwrap_or_default();
+            let name = if p.is_main { "Main checkout".to_owned() } else { humane_branch(&branch, &p.path) };
+            let when = p.last_age_secs.map(age);
+            let dirty = p.changes > 0;
+            let detail = if dirty {
+                [Some(format!("±{} uncommitted", p.changes)), when].into_iter().flatten().collect::<Vec<_>>().join(" · ")
+            } else if p.merged && !p.is_main {
+                "merged".to_owned()
+            } else {
+                when.unwrap_or_default()
+            };
+            // Uncommitted work first, then by recency; merged ones sink.
+            let rank = i64::from(!dirty) * (i64::MAX / 4) + p.last_age_secs.map_or(i64::MAX / 8, |a| a as i64) + if p.merged { i64::MAX / 4 } else { 0 };
+            let row = CheckoutRow {
+                path: p.path.clone(),
+                name,
+                branch,
+                agent: p.agent.clone(),
+                detail,
+                subject: p.last_subject.clone().filter(|s| !s.trim().is_empty()),
+                dirty,
+                can_remove: p.merged && !dirty && !p.is_main,
+            };
+            (rank, row)
+        })
+        .collect();
+    checkouts.sort_by_key(|(rank, _)| *rank);
+
+    Rail { threads: thread_rows, earlier, checkouts: checkouts.into_iter().map(|(_, r)| r).collect() }
 }
 
-/// One line over the board: `1 needs you · 2 working · 3 to review`, or `All quiet`.
-pub fn brief(items: &[Item]) -> String {
-    let count = |lane| items.iter().filter(|i| i.lane == lane).count();
-    let parts: Vec<String> = [(Lane::NeedsYou, "needs you"), (Lane::Working, "working"), (Lane::Review, "to review")]
-        .into_iter()
-        .filter_map(|(lane, word)| Some(count(lane)).filter(|n| *n > 0).map(|n| format!("{n} {word}")))
-        .collect();
-    if parts.is_empty() { "All quiet".to_owned() } else { parts.join(" · ") }
+impl Rail {
+    /// One line over the threads — `1 needs you · 2 working · 1 unread` — or nothing when there is nothing to say.
+    pub fn brief(&self) -> Option<String> {
+        let count = |mark| self.threads.iter().filter(|t| t.mark == mark).count();
+        let parts: Vec<String> = [(Mark::NeedsYou, "needs you"), (Mark::Working, "working"), (Mark::Unread, "unread")]
+            .into_iter()
+            .filter_map(|(mark, word)| Some(count(mark)).filter(|n| *n > 0).map(|n| format!("{n} {word}")))
+            .collect();
+        (!parts.is_empty()).then(|| parts.join(" · "))
+    }
+
+    pub fn needs_you(&self) -> bool {
+        self.threads.iter().any(|t| t.mark == Mark::NeedsYou)
+    }
+
+    /// Checkouts with uncommitted work: the one number worth showing while the list is folded.
+    pub fn dirty_checkouts(&self) -> usize {
+        self.checkouts.iter().filter(|c| c.dirty).count()
+    }
 }
 
 fn thread_title(title: &str) -> String {
@@ -197,66 +234,78 @@ mod tests {
     use super::*;
 
     fn thread(index: usize, state: TabState, folder: &str) -> ThreadIn {
-        ThreadIn { index, title: format!("t{index}"), folder: folder.into(), state, waiting_on: None, working_secs: None, active: index == 0 }
+        ThreadIn { index, session_id: format!("s{index}"), title: format!("t{index}"), folder: folder.into(), state, waiting_on: None, working_secs: None, active: index == 0 }
     }
 
     #[test]
-    fn lanes_order_by_what_the_person_must_do() {
+    fn threads_keep_the_order_they_were_opened_in() {
         let mut waiting = thread(3, TabState::NeedsApproval, "/r");
         waiting.waiting_on = Some("Run edit_file".into());
         let mut long = thread(1, TabState::Working, "/r");
         long.working_secs = Some(600);
-        let mut short = thread(2, TabState::Working, "/r");
-        short.working_secs = Some(30);
-        let threads = [thread(0, TabState::Idle, "/r"), long, short, waiting, thread(4, TabState::Done, "/r/.claude/worktrees/x")];
-        let items = board(&threads, &[], Path::new("/r"));
-        let order: Vec<(Lane, &str, &str)> = items.iter().map(|i| (i.lane, i.title.as_str(), i.detail.as_str())).collect();
+        let threads = [thread(0, TabState::Idle, "/r"), long, thread(2, TabState::Working, "/r"), waiting, thread(4, TabState::Done, "/r/wt/x")];
+        let rail = rail(&threads, &[], &[], Path::new("/r"));
+        let shape: Vec<(&str, Mark, &str)> = rail.threads.iter().map(|t| (t.title.as_str(), t.mark, t.detail.as_str())).collect();
         assert_eq!(
-            order,
+            shape,
             [
-                (Lane::NeedsYou, "t3", "waiting · Run edit_file"),
-                (Lane::Working, "t1", "working 10m"),
-                (Lane::Working, "t2", "working"),
-                (Lane::Review, "t4", "finished · unread"),
-                (Lane::Quiet, "t0", ""),
+                ("t0", Mark::Idle, ""),
+                ("t1", Mark::Working, "working 10m"),
+                ("t2", Mark::Working, "working"),
+                ("t3", Mark::NeedsYou, "waiting · Run edit_file"),
+                ("t4", Mark::Unread, "finished · unread"),
             ]
         );
-        assert_eq!(items[3].place, "x", "a thread elsewhere says where");
-        assert_eq!(brief(&items), "1 needs you · 2 working · 1 to review");
+        assert_eq!(rail.threads[4].elsewhere.as_deref(), Some("x"), "a thread in another folder says where");
+        assert_eq!(rail.threads[0].elsewhere, None);
+        assert_eq!(rail.brief().as_deref(), Some("1 needs you · 2 working · 1 unread"));
+        assert!(rail.needs_you());
     }
 
     #[test]
-    fn checkouts_read_as_work_not_branch_slugs() {
-        let places = [
-            PlaceIn { path: "/r/.claude/worktrees/a".into(), branch: Some("claude/focused-cannon-21e2fc".into()), agent: Some("Claude".into()), changes: 3, last_age_secs: Some(7200), ..Default::default() },
-            PlaceIn { path: "/r/.claude/worktrees/b".into(), branch: Some("claude/great-meitner-7924a5".into()), agent: Some("Claude".into()), last_subject: Some("fix(ui): stop duplicate labels".into()), last_age_secs: Some(90_000), ..Default::default() },
-            PlaceIn { path: "/r/.claude/worktrees/c".into(), branch: Some("claude/open".into()), ..Default::default() },
-        ];
-        let threads = [thread(0, TabState::Idle, "/r"), thread(1, TabState::Working, "/r/.claude/worktrees/c")];
-        let items = board(&threads, &places, Path::new("/r"));
-        let a = items.iter().find(|i| i.target == Target::Place("/r/.claude/worktrees/a".into())).unwrap();
-        assert_eq!((a.lane, a.title.as_str(), a.place.as_str(), a.detail.as_str(), a.agent.as_deref()), (Lane::Review, "Focused cannon", "Focused cannon", "±3 uncommitted · 2h", Some("Claude")));
-        let b = items.iter().find(|i| i.target == Target::Place("/r/.claude/worktrees/b".into())).unwrap();
-        assert_eq!((b.lane, b.title.as_str(), b.detail.as_str()), (Lane::Quiet, "fix(ui): stop duplicate labels", "1d"));
-        assert!(!items.iter().any(|i| i.target == Target::Place("/r/.claude/worktrees/c".into())), "a checkout with an open thread is that thread");
-        let merged = PlaceIn { path: "/r/m".into(), branch: Some("claude/old-one-abcdef".into()), merged: true, last_age_secs: Some(10), ..Default::default() };
-        let live = PlaceIn { path: "/r/l".into(), branch: Some("claude/live".into()), last_age_secs: Some(999_999), ..Default::default() };
-        let items = board(&[], &[merged, live], Path::new("/r"));
-        assert_eq!(items.iter().map(|i| (i.place.as_str(), i.detail.as_str())).collect::<Vec<_>>(), [("Live", "11d"), ("Old one", "merged · can be removed")]);
-        assert_eq!(items.iter().map(|i| i.can_remove).collect::<Vec<_>>(), [false, true]);
-        assert_eq!(brief(&[]), "All quiet");
+    fn a_quiet_rail_says_nothing() {
+        let rail = rail(&[thread(0, TabState::Idle, "/r")], &[], &[], Path::new("/r"));
+        assert_eq!(rail.brief(), None);
+        assert!(!rail.needs_you());
     }
 
     #[test]
-    fn by_place_puts_this_folder_first_then_the_most_urgent_checkout() {
-        let threads = [thread(0, TabState::Idle, "/r"), thread(1, TabState::NeedsApproval, "/r/wt/b"), thread(2, TabState::Working, "/r")];
-        let places = [
-            PlaceIn { path: "/r/wt/a".into(), branch: Some("claude/alpha-123abc".into()), last_age_secs: Some(5), ..Default::default() },
-            PlaceIn { path: "/r/wt/b".into(), branch: Some("claude/beta".into()), ..Default::default() },
+    fn saved_conversations_are_the_ones_not_open_and_not_empty() {
+        let saved = [
+            SavedIn { id: "s0".into(), title: "open already".into(), prompts: 2, age_secs: 10 },
+            SavedIn { id: "a".into(), title: "fix the sidebar".into(), prompts: 3, age_secs: 7200 },
+            SavedIn { id: "b".into(), title: "  ".into(), prompts: 1, age_secs: 90_000 },
+            SavedIn { id: "c".into(), title: "never asked".into(), prompts: 0, age_secs: 5 },
         ];
-        let groups = by_place(board(&threads, &places, Path::new("/r")), Path::new("/r"), "Cordata");
-        let shape: Vec<(&str, Vec<String>)> = groups.iter().map(|(l, items)| (l.as_str(), items.iter().map(|i| i.title.clone()).collect())).collect();
-        assert_eq!(shape, [("Cordata", vec!["t2".to_owned(), "t0".to_owned()]), ("b", vec!["t1".to_owned()]), ("Alpha", vec!["Alpha".to_owned()])]);
+        let rail = rail(&[thread(0, TabState::Idle, "/r")], &saved, &[], Path::new("/r"));
+        let shape: Vec<(&str, &str, &str)> = rail.earlier.iter().map(|s| (s.id.as_str(), s.title.as_str(), s.detail.as_str())).collect();
+        assert_eq!(shape, [("a", "fix the sidebar", "2h · 3 prompts"), ("b", "Untitled", "1d · 1 prompt")]);
+    }
+
+    #[test]
+    fn checkouts_are_named_by_branch_and_never_by_commit_message() {
+        let places = [
+            PlaceIn { path: "/r/wt/a".into(), branch: Some("claude/focused-cannon-21e2fc".into()), agent: Some("Claude".into()), changes: 3, last_subject: Some("feat: a thing".into()), last_age_secs: Some(7200), ..Default::default() },
+            PlaceIn { path: "/r/wt/b".into(), branch: Some("claude/great-meitner-7924a5".into()), agent: Some("Claude".into()), last_subject: Some("fix(ui): stop duplicate labels".into()), last_age_secs: Some(90_000), ..Default::default() },
+            PlaceIn { path: "/r/wt/c".into(), branch: Some("claude/open".into()), ..Default::default() },
+            PlaceIn { path: "/r/wt/d".into(), branch: Some("claude/old-one-abcdef".into()), merged: true, last_age_secs: Some(10), ..Default::default() },
+            PlaceIn { path: "/r".into(), branch: Some("main".into()), is_main: true, ..Default::default() },
+        ];
+        let threads = [thread(0, TabState::Idle, "/r/wt/e"), thread(1, TabState::Working, "/r/wt/c")];
+        let rail = rail(&threads, &[], &places, Path::new("/r/wt/e"));
+        let shape: Vec<(&str, &str, bool, bool)> = rail.checkouts.iter().map(|c| (c.name.as_str(), c.detail.as_str(), c.dirty, c.can_remove)).collect();
+        assert_eq!(
+            shape,
+            [
+                ("Focused cannon", "±3 uncommitted · 2h", true, false),
+                ("Great meitner", "1d", false, false),
+                ("Main checkout", "", false, false),
+                ("Old one", "merged", false, true),
+            ],
+            "uncommitted first, then newest, undated after dated; a checkout with an open thread is not listed twice; merged sinks"
+        );
+        assert_eq!(rail.checkouts[1].subject.as_deref(), Some("fix(ui): stop duplicate labels"));
+        assert_eq!(rail.dirty_checkouts(), 1);
     }
 
     #[test]

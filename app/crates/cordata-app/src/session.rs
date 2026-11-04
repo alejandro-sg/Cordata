@@ -175,7 +175,7 @@ impl Session {
 
     /// After anything changed: what the reducer wants to start on its own (an auto-resume, the first prompt, the next
     /// queued one), then the effects, then a redraw.
-    fn settle(&mut self, mut effects: Vec<Effect>, cx: &mut Context<Self>) {
+    pub(crate) fn settle(&mut self, mut effects: Vec<Effect>, cx: &mut Context<Self>) {
         effects.extend(self.view.take_initial_prompt());
         effects.extend(self.view.take_queued());
         if std::mem::take(&mut self.view.attention) {

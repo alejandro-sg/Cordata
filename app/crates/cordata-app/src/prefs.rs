@@ -43,8 +43,6 @@ pub struct Prefs {
     /// The rail's and the side panel's widths, as the person dragged them; `None` is the layout's default.
     pub rail_w: Option<f32>,
     pub dock_w: Option<f32>,
-    /// The work board in the rail grouped by checkout instead of by what needs the person.
-    pub board_by_place: bool,
     /// The meter under the header: time to first word, turn time, tokens, context fill.
     pub show_meter: bool,
     /// The context gauge in the meter (how full the model's window is).
@@ -78,7 +76,6 @@ impl Default for Prefs {
             model: None,
             rail_w: None,
             dock_w: None,
-            board_by_place: false,
             show_meter: true,
             show_context: true,
             recents: Vec::new(),

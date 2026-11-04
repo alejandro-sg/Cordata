@@ -62,4 +62,4 @@ process.
 ## Tests
 
 `make tui-test` and `make app-test`, offline. Anything that needs a real CLI or the sandbox skips when it is absent.
-CI runs the same, plus the secrets scan (`.github/workflows/ci.yml`).
+`make secrets` scans for exposed keys.

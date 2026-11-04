@@ -23,11 +23,17 @@ terminal client (`Settings → Account`, service `cordata-*-api-key`). Window pr
 
 ## What it has
 
-Conversation rail (the open threads) and transcript, approval cards with the exact command or diff, composer with `/` and `@` menus,
+Conversation rail and transcript, approval cards with the exact command or diff, composer with `/` and `@` menus,
 command palette (⌘K), project picker (⌘O), settings (⌘,: launch, appearance, shortcuts, your API key), and a side panel
 with Files, Editor, Review (per-hunk keep/revert, git and pull requests) and Terminal. Both clients share one
 conversation reducer. Like the terminal client, sessions are saved and resumable (`/history`, `/resume`, `/forget`),
 edits and commands ask first unless your `chat.allow` rules say otherwise, and there are no modes, undo or goal loops.
+
+The rail keeps three different things apart. **Threads** are the conversations open in the window, in the order you
+opened them (a row never jumps); **Earlier** lists this project's saved conversations, and a click resumes one as a thread
+of its own; **Other checkouts** (folded) are the repository's other git worktrees, made by Claude Code, agy or you. A
+checkout is a place with files, not a conversation: it is named by its branch, and a click moves the window to that
+folder. The header says `needs you`, `working` or `unread` only when there is something to say.
 
 Every thread in the rail shows what it is doing; one that finished while you were elsewhere is marked **Done** until
 you look, and ⌘J (Go → Thread That Needs You) goes to the next one waiting on an approval, then the next Done one. A

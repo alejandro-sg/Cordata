@@ -203,6 +203,12 @@ pub struct Workspace {
     renaming: Option<Naming>,
     /// Git and GitHub state for the Review tab and the header.
     git: git_ops::Git,
+    /// This project's saved conversations (read off the UI thread, refreshed when a thread opens, closes or finishes).
+    saved: Vec<acp_core::history::Summary>,
+    /// The rail's "Earlier" list shows more than its first few.
+    rail_more: bool,
+    /// The rail's "Other checkouts" list is unfolded.
+    rail_checkouts: bool,
     rename_input: Entity<InputState>,
     /// The sidebar row whose ⋯ menu is open (a hub handle).
     row_menu: Option<String>,
@@ -386,6 +392,9 @@ impl Workspace {
             attach_note: None,
             renaming: None,
             git,
+            saved: Vec::new(),
+            rail_more: false,
+            rail_checkouts: false,
             rename_input,
             row_menu: None,
             search_for: String::new(),
@@ -579,6 +588,7 @@ impl Workspace {
     /// Watch a session and show it.
     fn adopt(&mut self, session: Entity<Session>, window: &mut Window, cx: &mut Context<Self>) {
         let id = session.entity_id();
+        self.refresh_saved(cx);
         let subs = vec![
             cx.observe_in(&session, window, move |this, observed, window, cx| {
                 this.sound_and_notify(&observed, window, cx);
@@ -591,6 +601,7 @@ impl Workspace {
                 // The Dock icon bounces when the window is not in front (an approval, a finished turn).
                 SessionEvent::NeedsAttention => {
                     window.request_attention();
+                    this.refresh_saved(cx);
                 }
                 SessionEvent::Window(request) => this.on_window_request(request.clone(), window, cx),
                 SessionEvent::ModelChosen(model) => {
@@ -639,6 +650,7 @@ impl Workspace {
         }
         let removed = self.sessions.remove(index);
         let removed_id = removed.entity_id();
+        self.refresh_saved(cx);
         self.subscriptions.retain(|(sid, _)| *sid != removed_id);
         if self.session.entity_id() == removed_id {
             let next = self.sessions[index.min(self.sessions.len() - 1)].clone();
@@ -1364,6 +1376,35 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Reads this project's saved conversations off the UI thread; the rail lists the ones that are not open.
+    pub(super) fn refresh_saved(&mut self, cx: &mut Context<Self>) {
+        let owner = self.cwd.clone();
+        let cwd = owner.clone();
+        let job = cx.background_executor().spawn(async move { acp_core::history::list(&cwd) });
+        cx.spawn(async move |this, cx| {
+            let saved = job.await;
+            let _ = this.update(cx, |this, cx| {
+                if this.cwd == owner && this.saved != saved {
+                    this.saved = saved;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Opens a saved conversation as a thread of its own (the one shown is left alone).
+    pub(super) fn open_saved(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        let (connection, cwd, model) = (self.connection.clone(), self.cwd.clone(), self.prefs.model.clone());
+        let session = cx.new(|cx| {
+            let mut session = Session::start(&connection, cwd, None, model, cx);
+            session.settle(vec![cordata_view::app::Effect::Resume(id)], cx);
+            session
+        });
+        self.adopt(session, window, cx);
+        self.focus_composer(&FocusComposer, window, cx);
+    }
+
     /// Points the folder-bound panes — tree, review, branch and PR — at `path`. Threads keep their own folders.
     fn retarget(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.cwd = path;
@@ -1372,6 +1413,8 @@ impl Workspace {
         self.git.pr = None;
         self.git.note = None;
         self.git.worktrees.clear();
+        self.saved.clear();
+        self.refresh_saved(cx);
         self.load_tree(cx);
         self.load_review(cx);
         self.refresh_git(true, cx);
@@ -2118,6 +2161,16 @@ mod window_tests {
         cx.run_until_parked();
         let (cwd, threads, shown_in) = view.read_with(cx, |this, cx| (this.cwd.clone(), this.sessions.len(), this.session.read(cx).cwd.clone()));
         assert_eq!((cwd, threads, shown_in), (b.clone(), 2, b));
+    }
+
+    #[gpui::test]
+    fn an_earlier_conversation_opens_as_its_own_thread_and_leaves_the_shown_one_alone(cx: &mut TestAppContext) {
+        let (view, cx) = workspace(cx);
+        let before = view.read_with(cx, |this, cx| (this.sessions.len(), this.session.entity_id(), this.session.read(cx).cwd.clone()));
+        view.update_in(cx, |this, window, cx| this.open_saved("19ab-000001".into(), window, cx));
+        cx.run_until_parked();
+        let after = view.read_with(cx, |this, cx| (this.sessions.len(), this.session.read(cx).cwd.clone()));
+        assert_eq!((after.0, after.1), (before.0 + 1, before.2), "one more thread, in the same folder");
     }
 
     #[gpui::test]

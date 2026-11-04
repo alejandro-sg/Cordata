@@ -154,11 +154,15 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// The work board (`cordata_view::work`): threads and the repository's other checkouts in one list, laned by what
-    /// the person has to do — Needs you, Working, To review, Quiet — under a one-line brief. Scrolls; the footer stays.
+    /// The rail's list, three kinds of thing kept apart (`cordata_view::work`): **Threads** (conversations open in this
+    /// window, in the order they were opened, each marked with what it is doing), **Earlier** (saved conversations of
+    /// this project; a click resumes one as a thread) and **Other checkouts** (git worktrees other agents made; a
+    /// click moves the window to that folder, so they are folded away and drawn as places, not conversations).
     fn work_board(&self, cx: &mut Context<Self>) -> AnyElement {
-        use cordata_view::work::{self, Lane, PlaceIn, Target, ThreadIn};
+        use cordata_view::work::{self, Mark, PlaceIn, SavedIn, ThreadIn};
+        const EARLIER_SHOWN: usize = 5;
         let tk = tk(cx);
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
         let threads: Vec<ThreadIn> = self
             .sessions
             .iter()
@@ -168,6 +172,7 @@ impl Workspace {
                 let view = &s.view;
                 ThreadIn {
                     index,
+                    session_id: view.session.as_ref().map(|i| i.session_id.clone()).unwrap_or_default(),
                     title: view.title(),
                     folder: s.cwd.clone(),
                     state: match (&view.conn, view.tab_state()) {
@@ -180,6 +185,7 @@ impl Workspace {
                 }
             })
             .collect();
+        let saved: Vec<SavedIn> = self.saved.iter().map(|s| SavedIn { id: s.id.clone(), title: s.title.clone(), prompts: s.prompts, age_secs: now.saturating_sub(s.updated) }).collect();
         let places: Vec<PlaceIn> = self
             .git
             .worktrees
@@ -195,14 +201,15 @@ impl Workspace {
                 merged: w.merged,
             })
             .collect();
-        let items = work::board(&threads, &places, &self.cwd);
-        let brief = work::brief(&items);
-        let needs = items.iter().any(|i| i.lane == Lane::NeedsYou);
+        let rail = work::rail(&threads, &saved, &places, &self.cwd);
+        let needs = rail.needs_you();
         let can_close = self.sessions.len() > 1;
         let (hover, selected) = (line(cx, t::HOVER), line(cx, t::HOVER_STRONG));
+        let section = |label: &str| div().pl(px(10.)).pt(px(12.)).pb(px(3.)).truncate().text_size(px(t::TEXT_TAG)).text_color(c(tk.text_faint)).child(SharedString::from(label.to_owned()));
 
         let mut col = div().id("work-board").flex_1().min_h_0().overflow_y_scroll().flex().flex_col().gap(px(1.)).px(px(8.)).pb(px(8.));
-        // The brief: the whole board in one line, and the way to start more work.
+
+        // Threads: the header carries the one-line brief (only when there is something to say) and the way to start more.
         col = col.child(
             div()
                 .flex()
@@ -210,34 +217,18 @@ impl Workspace {
                 .gap(px(6.))
                 .pl(px(10.))
                 .pr(px(2.))
-                .pb(px(6.))
+                .pb(px(3.))
+                .child(div().flex_shrink_0().text_size(px(t::TEXT_TAG)).text_color(c(tk.text_faint)).child("Threads"))
                 .child(
                     div()
                         .id("work-brief")
                         .flex_1()
                         .min_w_0()
                         .truncate()
-                        .text_size(px(t::TEXT_META))
+                        .text_size(px(t::TEXT_TAG))
                         .text_color(c(if needs { tk.attention } else { tk.text_faint }))
                         .when(needs, |d| d.cursor_pointer().tooltip(ui::tip("Go to what needs you  ⌘J")).on_click(cx.listener(|this, _, window, cx| this.next_attention(&super::NextAttention, window, cx))))
-                        .child(SharedString::from(brief)),
-                )
-                .child(
-                    // Two ways to read the same board: by what needs the person, or by checkout.
-                    div()
-                        .id("board-grouping")
-                        .flex_shrink_0()
-                        .cursor_pointer()
-                        .text_size(px(t::TEXT_TAG))
-                        .text_color(c(tk.text_faint))
-                        .hover(|s| s.text_color(c(tk.text_secondary)))
-                        .tooltip(ui::tip(if self.prefs.board_by_place { "Group by what needs you" } else { "Group by checkout" }))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.prefs.board_by_place = !this.prefs.board_by_place;
-                            this.prefs.save();
-                            cx.notify();
-                        }))
-                        .child(if self.prefs.board_by_place { "by place" } else { "by need" }),
+                        .child(SharedString::from(rail.brief().map(|b| format!("· {b}")).unwrap_or_default())),
                 )
                 .child(
                     ui::icon_action("new-session", gpui_kit_assets::IconName::SquarePen, cx)
@@ -247,60 +238,24 @@ impl Workspace {
                         .on_click(cx.listener(|this, _, window, cx| this.new_session(&super::NewSession, window, cx))),
                 ),
         );
-        // Sections: lanes, or checkouts. A single section needs no header — the brief already names it.
-        let sections: Vec<(String, bool, Vec<work::Item>)> = if self.prefs.board_by_place {
-            work::by_place(items, &self.cwd, &self.project_name()).into_iter().map(|(label, list)| (label, false, list)).collect()
-        } else {
-            let mut out: Vec<(String, bool, Vec<work::Item>)> = Vec::new();
-            for item in items {
-                match out.last_mut() {
-                    Some((label, _, list)) if *label == item.lane.label() => list.push(item),
-                    _ => out.push((item.lane.label().to_owned(), item.lane == Lane::NeedsYou, vec![item])),
-                }
-            }
-            out
-        };
-        let headed = sections.len() > 1;
-        let rows = sections.into_iter().enumerate().flat_map(|(n, (label, urgent, list))| {
-            list.into_iter().enumerate().map(move |(k, item)| ((k == 0 && headed).then(|| (label.clone(), urgent, n == 0)), item))
-        });
-        for (ix, (header, item)) in rows.enumerate() {
-            if let Some((label, urgent, first)) = header {
-                let ink = if urgent { tk.attention } else { tk.text_faint };
-                col = col.child(div().pl(px(10.)).pt(px(if first { 0. } else { 8. })).pb(px(2.)).truncate().text_size(px(t::TEXT_TAG)).text_color(c(ink)).child(SharedString::from(shown(&label))));
-            }
-            let lane = item.lane;
-            let mark = match lane {
-                Lane::NeedsYou => Some(c(tk.attention)),
-                Lane::Working => Some(c(tk.amber)),
-                Lane::Review => Some(ca(tk.amber, 0.45)),
-                Lane::Quiet => None,
+        for (ix, row) in rail.threads.iter().enumerate() {
+            let mark = match row.mark {
+                Mark::NeedsYou => Some(c(tk.attention)),
+                Mark::Working => Some(c(tk.amber)),
+                Mark::Unread => Some(ca(tk.amber, 0.45)),
+                Mark::Idle => None,
             };
-            let thread_ix = match &item.target {
-                Target::Thread(i) => Some(*i),
-                Target::Place(_) => None,
-            };
-            let group = SharedString::from(format!("work-row-{ix}"));
+            let index = row.index;
+            let group = SharedString::from(format!("thread-row-{ix}"));
             let close_group = group.clone();
-            let remove_group = group.clone();
-            let tip = match (&item.target, thread_ix) {
-                (_, Some(i @ 0..=8)) => format!("{}  ⌘{}", shown(&item.title), i + 1),
-                (Target::Place(path), _) => {
-                    let branch = self.git.worktrees.iter().find(|w| &w.path == path).and_then(|w| w.branch.clone()).unwrap_or_default();
-                    format!("Open this checkout · {branch}\n{}", super::tilde(path))
-                }
-                _ => shown(&item.title),
-            };
-            // The detail first: in a narrow rail the place is what may be cut.
-            // Grouped by place, the section header already says where.
-            let place = if self.prefs.board_by_place { String::new() } else { item.place.clone() };
-            let meta: Vec<String> = [item.detail.clone(), place].into_iter().filter(|s| !s.is_empty()).collect();
-            let target = item.target.clone();
-            let row = div()
-                .id(("work-item", ix))
+            let tip = if index <= 8 { format!("{}  ⌘{}", shown(&row.title), index + 1) } else { shown(&row.title) };
+            let meta: Vec<String> = [row.detail.clone(), row.elsewhere.clone().unwrap_or_default()].into_iter().filter(|s| !s.is_empty()).collect();
+            let (mark_kind, active) = (row.mark, row.active);
+            let item = div()
+                .id(("thread", ix))
                 .group(group)
                 .role(gpui::Role::Tab)
-                .aria_selected(item.active)
+                .aria_selected(active)
                 .tooltip(ui::tip(SharedString::from(tip)))
                 .relative()
                 .flex()
@@ -311,25 +266,20 @@ impl Workspace {
                 .pr(px(6.))
                 .rounded(px(t::RADIUS_ROW))
                 .cursor_pointer()
-                .when(item.active, move |row| row.bg(selected))
-                .when(!item.active, move |row| row.hover(move |s| s.bg(hover)))
-                .on_click(cx.listener(move |this, _, window, cx| match &target {
-                    Target::Thread(i) => {
-                        if let Some(entity) = this.sessions.get(*i).cloned() {
-                            this.show(entity, cx);
-                        }
+                .when(active, move |r| r.bg(selected))
+                .when(!active, move |r| r.hover(move |s| s.bg(hover)))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(entity) = this.sessions.get(index).cloned() {
+                        this.show(entity, cx);
                     }
-                    Target::Place(path) => this.switch_project(path.clone(), window, cx),
                 }))
-                .when_some(mark, |row, colour| {
+                .when_some(mark, |r, colour| {
                     let bar = div().absolute().left(px(0.)).top(px(8.)).bottom(px(8.)).w(px(2.)).rounded_full().bg(colour);
                     // A working thread's mark breathes: alive, not stuck. Waiting and finished marks hold still.
-                    if lane == Lane::Working && ui::motion(cx) {
-                        row.child(bar.with_animation(("work-breath", ix), Animation::new(Duration::from_millis(1800)).repeat().with_easing(ease_in_out), |el, t| {
-                            el.opacity(0.35 + 0.65 * (1.0 - (2.0 * t - 1.0).powi(2)))
-                        }))
+                    if mark_kind == Mark::Working && ui::motion(cx) {
+                        r.child(bar.with_animation(("thread-breath", ix), Animation::new(Duration::from_millis(1800)).repeat().with_easing(ease_in_out), |el, t| el.opacity(0.35 + 0.65 * (1.0 - (2.0 * t - 1.0).powi(2)))))
                     } else {
-                        row.child(bar)
+                        r.child(bar)
                     }
                 })
                 .child(
@@ -343,55 +293,20 @@ impl Workspace {
                             div()
                                 .truncate()
                                 .text_size(px(t::TEXT_UI))
-                                .font_weight(if item.active { FontWeight::MEDIUM } else { FontWeight::NORMAL })
-                                .text_color(c(match lane {
-                                    Lane::NeedsYou => tk.attention,
-                                    _ if item.active => tk.text_primary,
-                                    Lane::Quiet => tk.text_secondary,
+                                .font_weight(if active { FontWeight::MEDIUM } else { FontWeight::NORMAL })
+                                .text_color(c(match mark_kind {
+                                    Mark::NeedsYou => tk.attention,
+                                    _ if active => tk.text_primary,
                                     _ => tk.text_body,
                                 }))
-                                .child(SharedString::from(shown(&item.title))),
+                                .child(SharedString::from(shown(&row.title))),
                         )
-                        .when(!meta.is_empty() || item.agent.is_some(), |c2| {
-                            c2.child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(5.))
-                                    .min_w_0()
-                                    .font_family(mono(cx))
-                                    .text_size(px(t::TEXT_TAG))
-                                    .text_color(c(tk.text_faint))
-                                    .when_some(item.agent.clone(), |m, agent| m.child(div().flex_shrink_0().text_color(c(tk.teal)).child(SharedString::from(agent))))
-                                    .child(div().min_w_0().truncate().child(SharedString::from(shown(&meta.join(" · "))))),
-                            )
+                        .when(!meta.is_empty(), |c2| {
+                            c2.child(div().min_w_0().truncate().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).text_color(c(tk.text_faint)).child(SharedString::from(shown(&meta.join(" · ")))))
                         }),
                 )
-                .when(item.can_remove, |row| {
-                    let (path, branch) = match &item.target {
-                        Target::Place(p) => (p.clone(), self.git.worktrees.iter().find(|w| &w.path == p).and_then(|w| w.branch.clone())),
-                        Target::Thread(_) => (std::path::PathBuf::new(), None),
-                    };
-                    row.child(
-                        div()
-                            .id(("remove-worktree", ix))
-                            .flex_shrink_0()
-                            .px(px(4.))
-                            .rounded(px(t::RADIUS_BADGE))
-                            .text_size(px(t::TEXT_TAG))
-                            .text_color(c(tk.text_faint))
-                            .opacity(0.)
-                            .group_hover(remove_group.clone(), |s| s.opacity(1.))
-                            .hover(|s| s.text_color(c(tk.danger)))
-                            .tooltip(ui::tip("Remove this merged checkout…"))
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_click(cx.listener(move |this, _, window, cx| this.ask_confirm(super::Confirm::RemoveWorktree { path: path.clone(), branch: branch.clone() }, window, cx)))
-                            .child("Remove"),
-                    )
-                })
-                .when(can_close && thread_ix.is_some(), |row| {
-                    let index = thread_ix.unwrap_or_default();
-                    row.child(
+                .when(can_close, |r| {
+                    r.child(
                         ui::icon_action(("close-session", index), gpui_kit_assets::IconName::X, cx)
                             .size(px(20.))
                             .aria_label("Close thread")
@@ -402,7 +317,150 @@ impl Workspace {
                             .on_click(cx.listener(move |this, _, _, cx| this.close_session_at(index, cx))),
                     )
                 });
-            col = col.child(row);
+            col = col.child(item);
+        }
+
+        // Earlier: saved conversations of this project. A click resumes one as a thread.
+        if !rail.earlier.is_empty() {
+            col = col.child(section("Earlier"));
+            let shown_n = if self.rail_more { rail.earlier.len() } else { EARLIER_SHOWN.min(rail.earlier.len()) };
+            for (ix, row) in rail.earlier.iter().take(shown_n).enumerate() {
+                let id = row.id.clone();
+                col = col.child(
+                    div()
+                        .id(("earlier", ix))
+                        .role(gpui::Role::Button)
+                        .tooltip(ui::tip(SharedString::from(format!("Resume this conversation\n{}", shown(&row.title)))))
+                        .flex()
+                        .flex_col()
+                        .gap(px(1.))
+                        .py(px(5.))
+                        .pl(px(10.))
+                        .pr(px(6.))
+                        .rounded(px(t::RADIUS_ROW))
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(hover))
+                        .on_click(cx.listener(move |this, _, window, cx| this.open_saved(id.clone(), window, cx)))
+                        .child(div().truncate().text_size(px(t::TEXT_UI)).text_color(c(tk.text_secondary)).child(SharedString::from(shown(&row.title))))
+                        .child(div().truncate().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).text_color(c(tk.text_faint)).child(SharedString::from(row.detail.clone()))),
+                );
+            }
+            if rail.earlier.len() > EARLIER_SHOWN {
+                let label = if self.rail_more { "Show fewer".to_owned() } else { format!("Show {} more", rail.earlier.len() - EARLIER_SHOWN) };
+                col = col.child(
+                    div()
+                        .id("earlier-more")
+                        .role(gpui::Role::Button)
+                        .pl(px(10.))
+                        .py(px(4.))
+                        .text_size(px(t::TEXT_TAG))
+                        .text_color(c(tk.text_faint))
+                        .cursor_pointer()
+                        .hover(|s| s.text_color(c(tk.text_secondary)))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.rail_more = !this.rail_more;
+                            cx.notify();
+                        }))
+                        .child(SharedString::from(label)),
+                );
+            }
+        }
+
+        // Other checkouts: places, not conversations. Folded unless the person opens the list.
+        if !rail.checkouts.is_empty() {
+            let open = self.rail_checkouts;
+            let dirty = rail.dirty_checkouts();
+            let summary = if open || dirty == 0 { String::new() } else { format!("{dirty} with changes") };
+            col = col.child(
+                div()
+                    .id("checkouts-toggle")
+                    .role(gpui::Role::Button)
+                    .aria_label("Other checkouts of this repository")
+                    .tooltip(ui::tip("Other git checkouts of this repository — places other agents work in, not conversations"))
+                    .mt(px(10.))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .pl(px(10.))
+                    .pr(px(6.))
+                    .py(px(4.))
+                    .rounded(px(t::RADIUS_ROW))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hover))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.rail_checkouts = !this.rail_checkouts;
+                        cx.notify();
+                    }))
+                    .child(div().flex_shrink_0().text_color(c(tk.text_faint)).child(gpui_component::Icon::new(if open { gpui_kit_assets::IconName::ChevronDown } else { gpui_kit_assets::IconName::ChevronRight }).size(px(12.))))
+                    .child(div().flex_shrink_0().text_size(px(t::TEXT_TAG)).text_color(c(tk.text_faint)).child(SharedString::from(format!("Other checkouts · {}", rail.checkouts.len()))))
+                    .child(div().flex_1().min_w_0().truncate().text_size(px(t::TEXT_TAG)).text_color(c(tk.amber_soft)).child(SharedString::from(summary))),
+            );
+            if open {
+                for (ix, row) in rail.checkouts.iter().enumerate() {
+                    let path = row.path.clone();
+                    let group = SharedString::from(format!("checkout-row-{ix}"));
+                    let remove_group = group.clone();
+                    let tip = format!("Move this window to {}\n{}{}", row.branch, super::tilde(&row.path), row.subject.as_ref().map(|s| format!("\nlast commit: {}", shown(s))).unwrap_or_default());
+                    let remove = row.can_remove.then(|| (row.path.clone(), Some(row.branch.clone()).filter(|b| !b.is_empty())));
+                    col = col.child(
+                        div()
+                            .id(("checkout", ix))
+                            .group(group)
+                            .role(gpui::Role::Button)
+                            .tooltip(ui::tip(SharedString::from(tip)))
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .py(px(4.))
+                            .pl(px(10.))
+                            .pr(px(6.))
+                            .rounded(px(t::RADIUS_ROW))
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(hover))
+                            .on_click(cx.listener(move |this, _, window, cx| this.switch_project(path.clone(), window, cx)))
+                            .child(div().flex_shrink_0().text_color(c(tk.text_faint)).font_family(mono(cx)).text_size(px(t::TEXT_META)).child("⎇"))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(1.))
+                                    .child(div().truncate().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.text_secondary)).child(SharedString::from(shown(&row.name))))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(5.))
+                                            .min_w_0()
+                                            .font_family(mono(cx))
+                                            .text_size(px(t::TEXT_TAG))
+                                            .text_color(c(if row.dirty { tk.amber_soft } else { tk.text_faint }))
+                                            .when_some(row.agent.clone(), |m, agent| m.child(div().flex_shrink_0().text_color(c(tk.teal)).child(SharedString::from(agent))))
+                                            .child(div().min_w_0().truncate().child(SharedString::from(shown(&row.detail)))),
+                                    ),
+                            )
+                            .when_some(remove, |r, (path, branch)| {
+                                r.child(
+                                    div()
+                                        .id(("remove-worktree", ix))
+                                        .flex_shrink_0()
+                                        .px(px(4.))
+                                        .rounded(px(t::RADIUS_BADGE))
+                                        .text_size(px(t::TEXT_TAG))
+                                        .text_color(c(tk.text_faint))
+                                        .opacity(0.)
+                                        .group_hover(remove_group.clone(), |s| s.opacity(1.))
+                                        .hover(|s| s.text_color(c(tk.danger)))
+                                        .tooltip(ui::tip("Remove this merged checkout…"))
+                                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                        .on_click(cx.listener(move |this, _, window, cx| this.ask_confirm(super::Confirm::RemoveWorktree { path: path.clone(), branch: branch.clone() }, window, cx)))
+                                        .child("Remove"),
+                                )
+                            }),
+                    );
+                }
+            }
         }
         col.into_any_element()
     }
