@@ -544,14 +544,39 @@ impl App {
             }
             AppEvent::SessionRestored { session_id, entries } => {
                 self.messages.push(Message::Divider(format!("resumed session {session_id}")));
-                for entry in entries {
+                for (ix, entry) in entries.into_iter().enumerate() {
                     self.messages.push(match entry {
                         Restored::User(text) => Message::User(sanitize(&text)),
                         Restored::Agent(text) => Message::Agent(sanitize(&text)),
-                        Restored::Tool { name, summary } => Message::Info(sanitize(&format!("↳ {name} {summary}"))),
+                        Restored::Tool { name, summary } => {
+                            let kind = match crate::fold::verb(&name) {
+                                "read" => ToolKind::Read,
+                                "search" => ToolKind::Search,
+                                "run" => ToolKind::Execute,
+                                "edit" => ToolKind::Edit,
+                                _ => ToolKind::Other,
+                            };
+                            let raw_input = if name == "run_command" {
+                                Some(serde_json::json!({ "cmd": summary }))
+                            } else if name == "read_file" || name == "code_outline" {
+                                Some(serde_json::json!({ "path": summary }))
+                            } else if name == "code_search" {
+                                Some(serde_json::json!({ "pattern": summary }))
+                            } else {
+                                Some(serde_json::json!({ "summary": summary }))
+                            };
+                            Message::Tool(ToolCard {
+                                id: format!("restored-{ix}"),
+                                name,
+                                raw_input,
+                                content: String::new(),
+                                status: ToolStatus::Completed,
+                                kind,
+                                diffs: Vec::new(),
+                            })
+                        }
                     });
                 }
-                self.messages.push(Message::Divider("continuing".into()));
                 if let Some(session) = &mut self.session {
                     session.session_id = session_id;
                 }

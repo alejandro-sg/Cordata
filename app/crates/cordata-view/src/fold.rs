@@ -85,7 +85,7 @@ enum Quiet {
 }
 
 fn quiet(card: &ToolCard, ctx: &Context) -> Option<Quiet> {
-    if card.status == ToolStatus::Failed || ctx.waiting.iter().any(|id| *id == card.id) {
+    if card.status == ToolStatus::Failed || ctx.waiting.contains(&card.id) {
         return None;
     }
     match verb(&card.name) {
@@ -102,16 +102,27 @@ fn quiet(card: &ToolCard, ctx: &Context) -> Option<Quiet> {
     }
 }
 
+/// Transient filler tokens emitted between tool calls or during turn transitions.
+pub fn is_filler(text: &str) -> bool {
+    let t = text.trim();
+    t.is_empty()
+        || t.eq_ignore_ascii_case("continuing")
+        || t == "..."
+        || t == "…"
+        || t.eq_ignore_ascii_case("thought")
+        || t.eq_ignore_ascii_case("thinking")
+}
+
 /// The transcript as display rows. Rules (docs/auto-mode.md §1.1): consecutive quiet tool cards (read, search, run;
 /// not failed, not waiting for approval) merge with the thoughts and notices between them; anything else flushes;
 /// a group of one tool stays as plain rows.
 pub fn rows_with(messages: &[Message], ctx: &Context) -> Vec<Row> {
     let mut out = Vec::with_capacity(messages.len());
     let mut group: Option<Activity> = None;
-    // Thoughts and notices seen after the group's last card: they join it only if another quiet card follows.
+    // Thoughts, notices, and transient fillers seen after the group's last card: they join it only if another quiet card follows.
     let mut tail: Vec<usize> = Vec::new();
 
-    fn flush(out: &mut Vec<Row>, group: &mut Option<Activity>, tail: &mut Vec<usize>) {
+    fn flush(out: &mut Vec<Row>, group: &mut Option<Activity>, tail: &mut Vec<usize>, messages: &[Message]) {
         if let Some(g) = group.take() {
             if g.tools() > 1 {
                 out.push(Row::Activity(g));
@@ -119,15 +130,22 @@ pub fn rows_with(messages: &[Message], ctx: &Context) -> Vec<Row> {
                 out.extend((g.first..=g.last).map(Row::Message));
             }
         }
-        out.extend(tail.drain(..).map(Row::Message));
+        for t in tail.drain(..) {
+            if matches!(&messages[t], Message::Agent(text) if is_filler(text)) {
+                continue;
+            }
+            out.push(Row::Message(t));
+        }
     }
 
     for (i, message) in messages.iter().enumerate() {
         match message {
             Message::Thought(_) | Message::Info(_) if group.is_some() => tail.push(i),
+            Message::Agent(text) if group.is_some() && is_filler(text) => tail.push(i),
+            Message::Agent(text) if is_filler(text) => continue,
             // The card an open approval belongs to is left out: the approval card stands for it.
-            Message::Tool(card) if ctx.waiting.iter().any(|id| *id == card.id) => {
-                flush(&mut out, &mut group, &mut tail);
+            Message::Tool(card) if ctx.waiting.contains(&card.id) => {
+                flush(&mut out, &mut group, &mut tail, messages);
             }
             Message::Tool(card) => match quiet(card, ctx) {
                 Some(q) => {
@@ -149,17 +167,17 @@ pub fn rows_with(messages: &[Message], ctx: &Context) -> Vec<Row> {
                     g.hint = Some(ctx.shorten(&target(card)));
                 }
                 None => {
-                    flush(&mut out, &mut group, &mut tail);
+                    flush(&mut out, &mut group, &mut tail, messages);
                     out.push(Row::Message(i));
                 }
             },
             _ => {
-                flush(&mut out, &mut group, &mut tail);
+                flush(&mut out, &mut group, &mut tail, messages);
                 out.push(Row::Message(i));
             }
         }
     }
-    flush(&mut out, &mut group, &mut tail);
+    flush(&mut out, &mut group, &mut tail, messages);
     out
 }
 
@@ -296,6 +314,22 @@ mod tests {
 
     fn activity(rows: &[Row]) -> Vec<&Activity> {
         rows.iter().filter_map(|r| if let Row::Activity(a) = r { Some(a) } else { None }).collect()
+    }
+
+    #[test]
+    fn fold_ignores_filler_text_between_tools() {
+        let msgs = vec![
+            read("1", "a.rs"),
+            Message::Agent("continuing".into()),
+            read("2", "b.rs"),
+            Message::Agent("   ".into()),
+            run("3", "cargo test"),
+        ];
+        let rows = rows(&msgs);
+        assert_eq!(rows.len(), 1);
+        let Row::Activity(a) = &rows[0] else { panic!("{rows:?}") };
+        assert_eq!((a.first, a.last), (0, 4));
+        assert_eq!((a.reads, a.runs), (2, 1));
     }
 
     #[test]

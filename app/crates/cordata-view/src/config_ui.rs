@@ -365,7 +365,7 @@ mod tests {
         });
         assert!(matches!(&rig.app.messages[1], Message::User(t) if t == "hi"));
         assert!(matches!(&rig.app.messages[2], Message::Agent(t) if t == "hello"));
-        assert!(matches!(&rig.app.messages[3], Message::Info(t) if t == "↳ run_command ls"));
+        assert!(matches!(&rig.app.messages[3], Message::Tool(card) if card.name == "run_command"));
         assert_eq!(rig.app.session.as_ref().unwrap().session_id, "abc-1");
     }
 }

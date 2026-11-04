@@ -204,7 +204,7 @@ impl Workspace {
         let rail = work::rail(&threads, &saved, &places, &self.cwd);
         let needs = rail.needs_you();
         let can_close = self.sessions.len() > 1;
-        let (hover, selected) = (line(cx, t::HOVER), line(cx, t::HOVER_STRONG));
+        let hover = line(cx, t::HOVER);
         let section = |label: &str| div().pl(px(10.)).pt(px(12.)).pb(px(3.)).truncate().text_size(px(t::TEXT_TAG)).text_color(c(tk.text_faint)).child(SharedString::from(label.to_owned()));
 
         let mut col = div().id("work-board").flex_1().min_h_0().overflow_y_scroll().flex().flex_col().gap(px(1.)).px(px(8.)).pb(px(8.));
@@ -266,7 +266,11 @@ impl Workspace {
                 .pr(px(6.))
                 .rounded(px(t::RADIUS_ROW))
                 .cursor_pointer()
-                .when(active, move |r| r.bg(selected))
+                .when(active, move |r| {
+                    r.bg(ca(tk.amber, if tk.is_dark { 0.12 } else { 0.08 }))
+                        .border_1()
+                        .border_color(ca(tk.amber, if tk.is_dark { 0.28 } else { 0.20 }))
+                })
                 .when(!active, move |r| r.hover(move |s| s.bg(hover)))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     if let Some(entity) = this.sessions.get(index).cloned() {
@@ -282,6 +286,13 @@ impl Workspace {
                         r.child(bar)
                     }
                 })
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .text_size(px(11.))
+                        .text_color(c(if active { tk.amber } else { tk.text_faint }))
+                        .child("💬"),
+                )
                 .child(
                     div()
                         .flex_1()
@@ -332,8 +343,8 @@ impl Workspace {
                         .role(gpui::Role::Button)
                         .tooltip(ui::tip(SharedString::from(format!("Resume this conversation\n{}", shown(&row.title)))))
                         .flex()
-                        .flex_col()
-                        .gap(px(1.))
+                        .items_center()
+                        .gap(px(8.))
                         .py(px(5.))
                         .pl(px(10.))
                         .pr(px(6.))
@@ -341,8 +352,23 @@ impl Workspace {
                         .cursor_pointer()
                         .hover(move |s| s.bg(hover))
                         .on_click(cx.listener(move |this, _, window, cx| this.open_saved(id.clone(), window, cx)))
-                        .child(div().truncate().text_size(px(t::TEXT_UI)).text_color(c(tk.text_secondary)).child(SharedString::from(shown(&row.title))))
-                        .child(div().truncate().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).text_color(c(tk.text_faint)).child(SharedString::from(row.detail.clone()))),
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .text_size(px(11.))
+                                .text_color(c(tk.text_faint))
+                                .child("🕒"),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(1.))
+                                .child(div().truncate().text_size(px(t::TEXT_UI)).text_color(c(tk.text_secondary)).child(SharedString::from(shown(&row.title))))
+                                .child(div().truncate().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).text_color(c(tk.text_faint)).child(SharedString::from(row.detail.clone()))),
+                        ),
                 );
             }
             if rail.earlier.len() > EARLIER_SHOWN {
