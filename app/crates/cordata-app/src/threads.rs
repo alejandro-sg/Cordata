@@ -159,6 +159,7 @@ impl Store {
         }
     }
 
+    #[cfg(test)]
     pub fn last(&self) -> &Layout {
         &self.last
     }
