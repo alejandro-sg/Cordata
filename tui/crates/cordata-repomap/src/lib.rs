@@ -265,6 +265,13 @@ impl RepoMap {
     /// conversation" also searches `save`, `session`, `history`.
     fn expand(&self, terms: &HashSet<String>) -> HashMap<String, f64> {
         let mut out: HashMap<String, f64> = terms.iter().map(|t| (t.clone(), 1.0)).collect();
+        // Morphological stemming & plural variants: e.g. need <-> needs, rule <-> rules
+        for t in terms {
+            let st = stem(t);
+            if st != *t && st.len() >= 3 {
+                out.entry(st).or_insert(0.9);
+            }
+        }
         let Some(e) = &self.embedder else { return out };
         // Every question word, even one the code uses: "persist" is in this repository, but the code that persists says
         // "save".
@@ -491,11 +498,14 @@ impl Bm25 {
                 let path_words = words(&path.to_string_lossy());
                 f.defs.iter().enumerate().map(move |(j, d)| {
                     let mut w = words(&d.name);
-                    // The name counts twice: it is the most deliberate word in the definition.
+                    // The name counts 3x: it is the most deliberate word in the definition.
+                    w.extend(words(&d.name));
                     w.extend(words(&d.name));
                     w.extend(words(&d.sig));
                     w.extend(words(&d.doc));
                     w.extend(path_words.iter().cloned());
+                    let stems: Vec<String> = w.iter().map(|x| stem(x)).filter(|s| s.len() >= 3 && !w.contains(s)).collect();
+                    w.extend(stems);
                     ((i, j), w)
                 })
             })
@@ -522,6 +532,13 @@ impl Bm25 {
                 s += weight * idf * tf * (k1 + 1.0) / (tf + k1 * (1.0 - b + b * len / avg));
             }
             if s > 0.0 {
+                // Boost definitions where the name directly contains query terms or stems
+                let def = &files[key.0].1.defs[key.1];
+                let name_words: Vec<String> = words(&def.name);
+                let name_matches = name_words.iter().filter(|nw| terms.contains_key(*nw) || terms.contains_key(&stem(nw))).count();
+                if name_matches > 0 {
+                    s *= 1.0 + 0.35 * name_matches as f64;
+                }
                 best = best.max(s);
                 scores.insert(*key, s);
             }
@@ -554,6 +571,55 @@ pub fn words(text: &str) -> Vec<String> {
     }
     out.retain(|w| w.len() >= 3 && !STOP.contains(&w.as_str()));
     out
+}
+
+/// Canonical stem / morphological base for English identifiers and query terms.
+/// Fast, deterministic, handles plurals, -ed, -ing, and common derivations.
+pub fn stem(word: &str) -> String {
+    let mut s = word.to_lowercase();
+    if s.len() <= 3 || !s.is_ascii() {
+        return s;
+    }
+    // 1. Plurals and 3rd person singular forms
+    if s.ends_with("ies") && s.len() > 4 {
+        s.truncate(s.len() - 3);
+        s.push('y');
+    } else if s.ends_with("es") && s.len() > 4 && (s.ends_with("shes") || s.ends_with("ches") || s.ends_with("sses") || s.ends_with("xes") || s.ends_with("zes")) {
+        s.truncate(s.len() - 2);
+    } else if s.ends_with('s') && !s.ends_with("ss") && !s.ends_with("us") && !s.ends_with("is") && s.len() > 3 {
+        s.truncate(s.len() - 1);
+    }
+
+    // 2. Past tense and participles (-ed)
+    if s.ends_with("eed") && s.len() > 4 {
+        s.truncate(s.len() - 1);
+    } else if s.ends_with("ed") && s.len() > 4 {
+        s.truncate(s.len() - 2);
+        if s.len() > 3 {
+            let bytes = s.as_bytes();
+            if bytes[bytes.len() - 1] == bytes[bytes.len() - 2] && !matches!(bytes[bytes.len() - 1], b'l' | b's' | b'z') {
+                s.truncate(s.len() - 1);
+            }
+        }
+    }
+
+    // 3. Progressive participle (-ing)
+    if s.ends_with("ing") && s.len() > 5 {
+        s.truncate(s.len() - 3);
+        if s.len() > 3 {
+            let bytes = s.as_bytes();
+            if bytes[bytes.len() - 1] == bytes[bytes.len() - 2] && !matches!(bytes[bytes.len() - 1], b'l' | b's' | b'z') {
+                s.truncate(s.len() - 1);
+            }
+        }
+    }
+
+    // 4. Nominal suffixes (-tion)
+    if s.ends_with("tion") && s.len() > 5 {
+        s.truncate(s.len() - 3);
+    }
+
+    s
 }
 
 /// A file's size and modification time: what tells a refresh it changed.

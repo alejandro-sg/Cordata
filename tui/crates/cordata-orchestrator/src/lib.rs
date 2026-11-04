@@ -14,6 +14,7 @@ pub mod audit;
 pub mod bandit;
 pub mod checkpoints;
 pub mod dispatch;
+pub mod evolution;
 pub mod executor;
 pub mod handoff;
 pub mod knowledge;

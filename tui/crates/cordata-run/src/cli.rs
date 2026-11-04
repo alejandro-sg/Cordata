@@ -11,6 +11,7 @@ use cordata_orchestrator::audit::{AuditEnv, PatternGuard};
 use cordata_orchestrator::bandit::Bandit;
 use cordata_orchestrator::checkpoints::GitCheckpoints;
 use cordata_orchestrator::dispatch::Mode;
+use cordata_orchestrator::evolution::{EvolutionConfig, EvolutionTarget, run_evolution_cycle};
 use cordata_orchestrator::machine::{self, Machine, RunConfig, RunRecord, World};
 use cordata_orchestrator::plan::Plan;
 use cordata_orchestrator::research::FileResearch;
@@ -436,4 +437,50 @@ pub fn show_cmd(run_id: &str, as_json: bool) -> i32 {
         }
     }
     0
+}
+
+pub fn evolve_cmd(target: &str, threshold: f64, dry_run: bool, as_json: bool, cwd: Option<PathBuf>) -> i32 {
+    let target: EvolutionTarget = target.parse().unwrap_or(EvolutionTarget::Repomap);
+    let project_root = cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let config = EvolutionConfig {
+        target,
+        threshold,
+        dry_run,
+        project_root,
+    };
+    if !as_json {
+        println!("Cordata Recursive Self-Improvement Engine (RSI)");
+        println!("Target: {} · Threshold: {:+.4} · Dry run: {}\n", config.target, config.threshold, config.dry_run);
+    }
+
+    match run_evolution_cycle(config) {
+        Ok(report) => {
+            if as_json {
+                println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
+                return if report.promoted { 0 } else { 1 };
+            }
+            println!("Baseline Fitness:  {:.4} ({})", report.baseline_fitness.primary, report.baseline_fitness.details);
+            if let Some(cand) = &report.candidate_fitness {
+                println!("Candidate Fitness: {:.4} ({})", cand.primary, cand.details);
+                println!("Delta Fitness:     {:+.4} (latency: {:.1}ms)", report.delta_fitness, cand.latency_ms);
+            }
+            println!("\nIron Gate Results:");
+            for gate in &report.gates {
+                let mark = if gate.passed { "✓ PASS" } else { "✗ FAIL" };
+                println!("  Gate {}: {:<30} [{}] — {}", gate.gate_number, gate.name, mark, gate.output);
+            }
+            println!();
+            if report.promoted {
+                println!("PROMOTED: Candidate passed all 4 Iron Gates and improved fitness by {:+.4}!", report.delta_fitness);
+                0
+            } else {
+                println!("NOT PROMOTED: Candidate did not satisfy all 4 Iron Gates (or dry-run requested).");
+                1
+            }
+        }
+        Err(e) => {
+            eprintln!("Evolution cycle error: {e}");
+            2
+        }
+    }
 }

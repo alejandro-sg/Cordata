@@ -78,6 +78,22 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// recursive self-improvement cycle across Iron Gates
+    Evolve {
+        /// target subsystem to optimize (repomap, economizer, guard, custom)
+        #[arg(default_value = "repomap")]
+        target: String,
+        /// minimum fitness improvement threshold to promote
+        #[arg(long, default_value_t = 0.001)]
+        threshold: f64,
+        /// run gates without harvesting changes
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 // The machine's futures borrow the SQLite-backed ledger, so they are not `Send`: a current-thread runtime.
@@ -91,6 +107,7 @@ async fn main() -> ExitCode {
         Command::Status { json } => cli::status_cmd(json),
         Command::Show { run_id, json } => cli::show_cmd(&run_id, json),
         Command::Resume { run_id, workers, allow_direct, max_usd, json } => cli::resume(&run_id, workers, allow_direct, max_usd, json).await,
+        Command::Evolve { target, threshold, dry_run, cwd, json } => cli::evolve_cmd(&target, threshold, dry_run, json, cwd),
     };
     ExitCode::from(u8::try_from(code).unwrap_or(1))
 }
