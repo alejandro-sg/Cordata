@@ -503,7 +503,7 @@ impl Workspace {
         ]
     }
 
-    fn mcp_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    pub(super) fn mcp_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let tk = tk(cx);
         let snap = &self.mcp;
         let mut rows = Vec::new();
@@ -539,9 +539,46 @@ impl Workspace {
             rows.push(setting_row_owned(held.name.clone(), what, false, button, cx));
         }
 
-        rows.push(sub_heading("catalog", cx));
-        rows.push(div().text_size(px(t::TEXT_SMALL)).text_color(c(tk.text_muted)).pb(px(8.)).child("Adds the server to ~/.cordata/mcp.json. It runs with your rights; Cordata asks before each call.").into_any_element());
-        for (ix, item) in crate::mcp_catalog::MARKETPLACE_ITEMS.iter().enumerate() {
+        rows.push(sub_heading("marketplace & catalog", cx));
+        rows.push(div().text_size(px(t::TEXT_SMALL)).text_color(c(tk.text_muted)).pb(px(8.)).child("Search and add verified MCP servers to ~/.cordata/mcp.json. Every call asks first.").into_any_element());
+
+        let search_box = div()
+            .h(px(28.))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .px(px(8.))
+            .rounded(px(t::RADIUS_CONTROL))
+            .bg(c(tk.bg_input))
+            .border_1()
+            .border_color(line(cx, t::LINE_CONTROL))
+            .text_size(px(t::TEXT_UI))
+            .child(div().flex_1().min_w_0().child(Input::new(&self.mcp_search).appearance(false).aria_label("Search MCP catalog")));
+        rows.push(setting_row("Search", "Filter by server name, command, or capability.", search_box.into_any_element(), cx));
+
+        let category_pills: Vec<AnyElement> = crate::mcp_catalog::CATEGORIES
+            .iter()
+            .enumerate()
+            .map(|(index, &cat)| {
+                let selected = self.mcp_category == cat;
+                ui::segment(("mcp-cat", index), cat, selected, cx)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.mcp_category = cat;
+                        cx.notify();
+                    }))
+                    .into_any_element()
+            })
+            .collect();
+        rows.push(setting_row("Category", "Filter servers by domain.", ui::segmented_row(cx).children(category_pills).into_any_element(), cx));
+
+        let query = self.mcp_search.read(cx).value().to_string();
+        let items = crate::mcp_catalog::search_marketplace(&query, Some(self.mcp_category));
+
+        if items.is_empty() {
+            rows.push(setting_row("No servers found", "No MCP servers matched your search query.", status_control(Dot::Muted, "none", cx), cx));
+        }
+
+        for (ix, item) in items.iter().enumerate() {
             let installed = snap.servers.iter().any(|s| s.name == item.id);
             let (item_id, item_cmd, item_args) = (item.id, item.command, item.default_args);
             let action: AnyElement = if installed {
@@ -558,7 +595,11 @@ impl Workspace {
                     }))
                     .into_any_element()
             };
-            rows.push(setting_row_owned(item.name.into(), format!("{} · {}", item.category, item.description), false, action, cx));
+            let mut desc = format!("{} · {}", item.category, item.description);
+            if !item.required_env.is_empty() {
+                desc.push_str(&format!(" · Env: {}", item.required_env.join(", ")));
+            }
+            rows.push(setting_row_owned(item.name.into(), desc, false, action, cx));
         }
 
         let user_file = super::cordata_home().join("mcp.json");

@@ -86,6 +86,17 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
                 "tokens":{"type":"integer","description":"size of the map, default 1024"}},
                 "required":["query"]}),
         },
+        ToolSpec {
+            name: Cow::Borrowed("ask_question"),
+            description: Cow::Borrowed("Ask the user one or more multiple-choice or direct questions to clarify requirements, design decisions, or verify architectural intent before implementing."),
+            schema: json!({"type":"object","properties":{
+                "questions":{"type":"array","items":{"type":"object","properties":{
+                    "question":{"type":"string","description":"The question to ask"},
+                    "options":{"type":"array","items":{"type":"string"},"description":"Available choices/options for the user"},
+                    "is_multi_select":{"type":"boolean","description":"Whether multiple options can be chosen"}},
+                    "required":["question","options"]}}},
+                "required":["questions"]}),
+        },
     ]
 }
 
@@ -266,6 +277,10 @@ pub(crate) async fn execute(name: &str, args: &Value, cwd: &Path, writable: &[Pa
             let path = resolve(cwd, arg(args, "path")?, true)?;
             let text = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
             Ok(outline(&text))
+        }
+        "ask_question" => {
+            let fallback = args.get("questions").and_then(|q| serde_json::to_string(q).ok()).unwrap_or_else(|| "question completed".into());
+            Ok(fallback)
         }
         other => Err(format!("unknown tool `{other}`")),
     }

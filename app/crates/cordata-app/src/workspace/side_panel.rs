@@ -11,14 +11,16 @@ use crate::ui::{self};
 
 /// The tabs in the strip, given the window width; the rest are in the ⋯ menu.
 pub fn strip_tabs(window_w: f32) -> (Vec<DockTab>, Vec<DockTab>) {
-    let mut strip = vec![DockTab::Files, DockTab::Editor, DockTab::Review];
+    let mut strip = vec![DockTab::Files, DockTab::Editor, DockTab::Review, DockTab::Artifacts];
     let mut overflow = Vec::new();
     if window_w >= t::TERMINAL_OVERFLOW_W {
         strip.push(DockTab::Terminal);
         strip.push(DockTab::Agents);
+        strip.push(DockTab::McpHub);
     } else {
         overflow.insert(0, DockTab::Terminal);
         overflow.push(DockTab::Agents);
+        overflow.push(DockTab::McpHub);
     }
     (strip, overflow)
 }
@@ -26,7 +28,7 @@ pub fn strip_tabs(window_w: f32) -> (Vec<DockTab>, Vec<DockTab>) {
 /// The panel's width for a window width: `clamp(300, 28vw, 380)`, wider for code.
 pub fn panel_width(tab: DockTab, window_w: f32) -> f32 {
     match tab {
-        DockTab::Editor | DockTab::Review => (window_w * t::PANEL_WIDE_VW).clamp(t::PANEL_WIDE_MIN_W, t::PANEL_WIDE_MAX_W),
+        DockTab::Editor | DockTab::Review | DockTab::Artifacts | DockTab::McpHub => (window_w * t::PANEL_WIDE_VW).clamp(t::PANEL_WIDE_MIN_W, t::PANEL_WIDE_MAX_W),
         _ => (window_w * t::PANEL_VW).clamp(t::PANEL_MIN_W, t::PANEL_MAX_W),
     }
 }
@@ -41,11 +43,16 @@ impl Workspace {
                 (n, _) => Some(format!("{n}●")),
             }),
             DockTab::Review => ("Changes", "Diff review & Git  ⌘⌥4", (self.review.file_count() > 0).then(|| self.review.file_count().to_string())),
+            DockTab::Artifacts => ("Canvas", "Living Artifacts, Plans & Specs  ⌘⌥6", {
+                let total = self.artifacts.total_tasks();
+                (total > 0).then(|| format!("{}/{}", self.artifacts.completed_tasks(), total))
+            }),
             DockTab::Terminal => ("Terminal", "Project terminal  ⌘⌥5 · ⌃`", None),
             DockTab::Agents => ("Agents", "Coding assistants, delegation and quota", {
                 let on = self.agents.enabled.len();
                 (on > 0 && self.agents.found.is_some()).then(|| on.to_string())
             }),
+            DockTab::McpHub => ("MCP Hub", "Dynamic MCP & Extension Hub  ⌘⌥7", None),
         }
     }
 
@@ -128,8 +135,10 @@ impl Workspace {
                 let git = self.git_section(cx);
                 div().size_full().flex().flex_col().children(git).child(div().flex_1().min_h_0().child(self.review_panel(cx))).into_any_element()
             }
+            DockTab::Artifacts => editor::pane("artifacts", self.artifacts_panel(cx), cx),
             DockTab::Terminal => editor::pane("terminal", self.terminal_panel(window, cx), cx),
             DockTab::Agents => editor::pane("agents", self.agents_panel(cx), cx),
+            DockTab::McpHub => editor::pane("mcp-hub", self.mcp_hub_panel(cx), cx),
         };
         div()
             .id("side-panel")

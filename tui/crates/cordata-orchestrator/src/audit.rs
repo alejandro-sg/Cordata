@@ -342,13 +342,28 @@ pub async fn run_command(root: &str, command: &str, guard: &dyn CommandGuard, ti
             let tail = secrets::scrub(&trimmed[tail_start..]).0;
             let ok = code == expected;
             let mut detail = format!("exit {code} (expected {expected}) in {:.1}s", started.elapsed().as_secs_f64());
-            if !tail.is_empty() && !ok {
+            if !tail.is_empty() && (!ok || tail.contains("warning:")) {
                 detail.push('\n');
                 detail.push_str(&tail);
             }
             (ok, detail)
         }
     }
+}
+
+pub fn extract_compiler_warnings(output: &str) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for line in output.lines() {
+        let t = line.trim();
+        if (t.starts_with("warning:") || t.starts_with("warning[")) && !t.contains("conformance check") {
+            let sample: String = t.chars().take(120).collect();
+            if !warnings.contains(&sample) {
+                warnings.push(sample);
+            }
+        }
+    }
+    warnings.truncate(5);
+    warnings
 }
 
 /// A project file as text, or `None` (outside the project, a secrets file, unreadable).
@@ -388,7 +403,13 @@ pub async fn tier1(plan: &Plan, root: &str, start_checkpoint: Option<&str>, env:
         let started = Instant::now();
         let (kind, target) = (criterion.kind.as_str(), criterion.target.as_str());
         let (ok, detail) = match kind {
-            "command" | "test" => run_command(root, target, env.guard, criterion.timeout_s, criterion.expected_exit_code, &env.environ).await,
+            "command" | "test" => {
+                let res = run_command(root, target, env.guard, criterion.timeout_s, criterion.expected_exit_code, &env.environ).await;
+                for w in extract_compiler_warnings(&res.1) {
+                    report.warnings.push(format!("compiler in {}: {w}", criterion.id));
+                }
+                res
+            }
             "file_exists" => {
                 let ok = read_in_project(root, target).is_some() || Path::new(root).join(target).is_dir();
                 (ok, if ok { "exists" } else { "missing" }.to_owned())
@@ -414,6 +435,9 @@ pub async fn tier1(plan: &Plan, root: &str, start_checkpoint: Option<&str>, env:
     for (i, command) in plan.verifier_commands.iter().enumerate() {
         let started = Instant::now();
         let (ok, detail) = run_command(root, command, env.guard, 300.0, 0, &env.environ).await;
+        for w in extract_compiler_warnings(&detail) {
+            report.warnings.push(format!("compiler in verifier-{}: {w}", i + 1));
+        }
         report.checks.push(CheckResult::new(&format!("verifier-{}", i + 1), "verifier", ok, format!("{command}: {detail}"), (started.elapsed().as_secs_f64() * 100.0).round() / 100.0));
     }
 
@@ -556,8 +580,14 @@ pub fn conformance_request(plan: &Plan, brief_text: Option<&str>, report: &Audit
 
 /// Reads the planner's answer: `(verdict, gaps, result)`. The verdict is `""` when the call failed or its answer cannot be
 /// used (no verdict, or `gaps` without any gap) — the machine decides what then.
-pub fn conformance_verdict(result: WorkerResult) -> (String, Vec<Gap>, WorkerResult) {
-    let structured = result.structured.clone().filter(Value::is_object);
+pub fn conformance_verdict(mut result: WorkerResult) -> (String, Vec<Gap>, WorkerResult) {
+    let mut structured = result.structured.clone().filter(Value::is_object);
+    if structured.is_none() && !result.raw_output.is_empty() {
+        structured = crate::workers::prompting::parse_json_answer(&result.raw_output);
+        if structured.is_some() {
+            result.structured = structured.clone();
+        }
+    }
     let Some(structured) = structured.filter(|_| result.status == "completed") else { return (String::new(), Vec::new(), result) };
     let verdict = structured.get("verdict").and_then(Value::as_str).unwrap_or("").to_owned();
     let gaps = parse_gaps(structured.get("gaps"));
@@ -629,6 +659,25 @@ mod tests {
         let raw = json!([{"ref": "s1", "missing": "tests", "severity": "high"}, {"missing": "docs"}, "plain string", {"ref": "x", "missing": "  "}, 7]);
         let gaps = parse_gaps(Some(&raw));
         assert_eq!(gaps.iter().map(|g| (g.reference.as_str(), g.missing.as_str(), g.severity.as_str())).collect::<Vec<_>>(), [("s1", "tests", "high"), ("?", "docs", "medium"), ("?", "plain string", "medium")]);
+    }
+
+    #[test]
+    fn conformance_verdict_recovers_from_raw_output_if_structured_is_missing() {
+        let mut r = WorkerResult::new("w", "completed");
+        r.raw_output = "I checked the code.\n```json\n{\"verdict\": \"accept\", \"gaps\": []}\n```\nAll clear!".into();
+        let (verdict, gaps, res) = conformance_verdict(r);
+        assert_eq!(verdict, "accept");
+        assert!(gaps.is_empty());
+        assert!(res.structured.is_some());
+    }
+
+    #[test]
+    fn compiler_warnings_are_extracted_from_output() {
+        let text = "Compiling crate v0.1\nwarning: unused variable `x`\n --> src/lib.rs:10\nwarning[E0123]: dead code\nFinished";
+        let warnings = extract_compiler_warnings(text);
+        assert_eq!(warnings.len(), 2);
+        assert!(warnings[0].starts_with("warning: unused variable"));
+        assert!(warnings[1].starts_with("warning[E0123]"));
     }
 
     #[test]

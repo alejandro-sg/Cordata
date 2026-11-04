@@ -294,8 +294,57 @@ impl Workspace {
         let diffs = self.session.read(cx).view.card(&info.tool_call_id).map(|card| card.diffs.clone()).filter(|d| !d.is_empty());
         let has_diff = diffs.is_some();
         let tool = info.tool_name.as_str();
+        let is_ask_question = info.tool_name == "ask_question";
         let (_, sentence, block, buttons): (&str, String, Option<String>, Vec<AnyElement>) = {
-            {
+            if is_ask_question {
+                let questions_arr = input.and_then(|i| i.get("questions")).and_then(|q| q.as_array());
+                let mut q_prompts = Vec::new();
+                let mut buttons = Vec::new();
+                if let Some(questions) = questions_arr {
+                    for (q_ix, q) in questions.iter().enumerate() {
+                        if let Some(text) = q.get("question").and_then(|v| v.as_str()) {
+                            q_prompts.push(text.to_string());
+                        }
+                        if let Some(opts) = q.get("options").and_then(|v| v.as_array()) {
+                            for (ix, opt) in opts.iter().enumerate() {
+                                if let Some(opt_str) = opt.as_str() {
+                                    let choice = opt_str.to_string();
+                                    let is_rec = choice.starts_with("(Recommended)");
+                                    buttons.push(
+                                        ui::button(
+                                            ("opt", q_ix * 100 + ix),
+                                            SharedString::from(choice.clone()),
+                                            if is_rec { Kind::Primary } else { Kind::Ghost },
+                                            cx,
+                                        )
+                                        .on_click(answer(ApprovalDecision::Say(choice)))
+                                        .into_any_element(),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                let q_prompt = if q_prompts.is_empty() {
+                    "Clarification requested by agent:".to_string()
+                } else {
+                    format!("✦ {}", q_prompts.join(" · "))
+                };
+                buttons.push(
+                    ui::button("say-why", "Other Answer...", Kind::Ghost, cx)
+                        .tooltip(ui::tip("Type your own answer in the composer  W"))
+                        .on_click(cx.listener(|this, _, window, cx| this.begin_saying(window, cx)))
+                        .into_any_element(),
+                );
+                buttons.push(div().flex_1().into_any_element());
+                buttons.push(
+                    ui::button("reject", "Dismiss", Kind::Ghost, cx)
+                        .tooltip(ui::tip("Dismiss  esc"))
+                        .on_click(answer(ApprovalDecision::Reject))
+                        .into_any_element(),
+                );
+                ("", q_prompt, None, buttons)
+            } else {
                 let sentence = match (&info.reason, &command, info.kind) {
                     // Auto mode let everything else through: say why this one still needs a person.
                     (Some(reason), ..) => format!("Auto mode asks: {}", shown(reason)),

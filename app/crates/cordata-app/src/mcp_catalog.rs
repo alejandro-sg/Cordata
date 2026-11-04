@@ -38,7 +38,7 @@ pub struct Snapshot {
     pub held: Vec<Held>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MarketplaceItem {
     pub id: &'static str,
     pub name: &'static str,
@@ -46,10 +46,21 @@ pub struct MarketplaceItem {
     pub command: &'static str,
     pub default_args: &'static [&'static str],
     pub category: &'static str,
+    pub required_env: &'static [&'static str],
 }
 
-/// Maintained servers only (the archived reference servers — brave-search, postgres, puppeteer, the old npm GitHub
-/// server — are gone). Each runs on the person's machine with their rights; every call still asks first.
+pub const CATEGORIES: &[&'static str] = &[
+    "All",
+    "Developer",
+    "Database",
+    "Web",
+    "Productivity",
+    "Cloud",
+    "Native",
+];
+
+/// Maintained servers catalog across categories. Each runs on the person's machine with their rights;
+/// every call still asks first.
 pub const MARKETPLACE_ITEMS: &[MarketplaceItem] = &[
     MarketplaceItem {
         id: "rea",
@@ -58,40 +69,204 @@ pub const MARKETPLACE_ITEMS: &[MarketplaceItem] = &[
         command: "rea",
         default_args: &[],
         category: "Native",
+        required_env: &[],
     },
     MarketplaceItem {
         id: "github",
         name: "GitHub",
-        description: "Issues, pull requests and code search. Needs the github-mcp-server binary and GITHUB_PERSONAL_ACCESS_TOKEN in its env block.",
+        description: "Issues, pull requests, commits and repository code search.",
         command: "github-mcp-server",
         default_args: &["stdio"],
         category: "Developer",
+        required_env: &["GITHUB_PERSONAL_ACCESS_TOKEN"],
     },
     MarketplaceItem {
         id: "git",
         name: "Git",
-        description: "Read and search repository history (uvx mcp-server-git).",
+        description: "Read, diff and search local repository history (uvx mcp-server-git).",
         command: "uvx",
         default_args: &["mcp-server-git"],
         category: "Developer",
+        required_env: &[],
     },
     MarketplaceItem {
         id: "fetch",
         name: "Fetch",
-        description: "Fetch a web page as markdown (uvx mcp-server-fetch). Reaches the network.",
+        description: "Fetch web pages as clean markdown over HTTP/HTTPS (uvx mcp-server-fetch).",
         command: "uvx",
         default_args: &["mcp-server-fetch"],
         category: "Web",
+        required_env: &[],
+    },
+    MarketplaceItem {
+        id: "brave-search",
+        name: "Brave Search",
+        description: "Live internet web search and query index.",
+        command: "npx",
+        default_args: &["-y", "@modelcontextprotocol/server-brave-search"],
+        category: "Web",
+        required_env: &["BRAVE_API_KEY"],
+    },
+    MarketplaceItem {
+        id: "puppeteer",
+        name: "Puppeteer",
+        description: "Headless Chrome web automation, scraping, and visual screenshot capture.",
+        command: "npx",
+        default_args: &["-y", "@modelcontextprotocol/server-puppeteer"],
+        category: "Web",
+        required_env: &[],
     },
     MarketplaceItem {
         id: "memory",
         name: "Memory",
-        description: "A local knowledge graph that persists across sessions (npx @modelcontextprotocol/server-memory).",
+        description: "A local knowledge graph that persists facts across sessions.",
         command: "npx",
         default_args: &["-y", "@modelcontextprotocol/server-memory"],
         category: "Productivity",
+        required_env: &[],
+    },
+    MarketplaceItem {
+        id: "sequential-thinking",
+        name: "Sequential Thinking",
+        description: "Structured step-by-step problem-solving and dynamic plan refinement.",
+        command: "npx",
+        default_args: &["-y", "@modelcontextprotocol/server-sequential-thinking"],
+        category: "Productivity",
+        required_env: &[],
+    },
+    MarketplaceItem {
+        id: "postgres",
+        name: "PostgreSQL",
+        description: "Inspect schema, view tables, and execute analytical database queries.",
+        command: "npx",
+        default_args: &["-y", "@modelcontextprotocol/server-postgres"],
+        category: "Database",
+        required_env: &["DATABASE_URL"],
+    },
+    MarketplaceItem {
+        id: "sqlite",
+        name: "SQLite",
+        description: "Read schema and run queries against local SQLite database files.",
+        command: "uvx",
+        default_args: &["mcp-server-sqlite"],
+        category: "Database",
+        required_env: &[],
+    },
+    MarketplaceItem {
+        id: "redis",
+        name: "Redis",
+        description: "Key-value inspection, cache queries, and TTL monitoring.",
+        command: "npx",
+        default_args: &["-y", "@modelcontextprotocol/server-redis"],
+        category: "Database",
+        required_env: &["REDIS_URL"],
+    },
+    MarketplaceItem {
+        id: "supabase",
+        name: "Supabase",
+        description: "Inspect databases, migrations, edge functions, and project schemas.",
+        command: "npx",
+        default_args: &["-y", "@supabase/mcp-server"],
+        category: "Database",
+        required_env: &["SUPABASE_ACCESS_TOKEN"],
+    },
+    MarketplaceItem {
+        id: "filesystem",
+        name: "Filesystem",
+        description: "Direct secure access to designated local directories.",
+        command: "npx",
+        default_args: &["-y", "@modelcontextprotocol/server-filesystem"],
+        category: "Developer",
+        required_env: &[],
+    },
+    MarketplaceItem {
+        id: "docker",
+        name: "Docker",
+        description: "Inspect containers, image registries, compose setups, and container logs.",
+        command: "uvx",
+        default_args: &["mcp-server-docker"],
+        category: "Developer",
+        required_env: &[],
+    },
+    MarketplaceItem {
+        id: "kubernetes",
+        name: "Kubernetes",
+        description: "Cluster exploration, pods, deployments, services, and namespace monitoring.",
+        command: "npx",
+        default_args: &["-y", "@modelcontextprotocol/server-kubernetes"],
+        category: "Cloud",
+        required_env: &[],
+    },
+    MarketplaceItem {
+        id: "cloudflare",
+        name: "Cloudflare",
+        description: "Manage Workers, KV namespaces, DNS records, and Pages deployments.",
+        command: "npx",
+        default_args: &["-y", "@cloudflare/mcp-server-cloudflare"],
+        category: "Cloud",
+        required_env: &["CLOUDFLARE_API_TOKEN"],
+    },
+    MarketplaceItem {
+        id: "sentry",
+        name: "Sentry",
+        description: "Search issues, investigate stack traces, and review crash telemetry.",
+        command: "uvx",
+        default_args: &["mcp-server-sentry"],
+        category: "Developer",
+        required_env: &["SENTRY_AUTH_TOKEN"],
+    },
+    MarketplaceItem {
+        id: "linear",
+        name: "Linear",
+        description: "Search and triage issues, sprints, cycles, and project milestones.",
+        command: "npx",
+        default_args: &["-y", "@modelcontextprotocol/server-linear"],
+        category: "Productivity",
+        required_env: &["LINEAR_API_KEY"],
+    },
+    MarketplaceItem {
+        id: "slack",
+        name: "Slack",
+        description: "List channels, search message history, and post notifications.",
+        command: "npx",
+        default_args: &["-y", "@modelcontextprotocol/server-slack"],
+        category: "Productivity",
+        required_env: &["SLACK_BOT_TOKEN"],
+    },
+    MarketplaceItem {
+        id: "everything",
+        name: "Everything Reference",
+        description: "Reference implementation of all MCP features (tools, prompts, sampling).",
+        command: "npx",
+        default_args: &["-y", "@modelcontextprotocol/server-everything"],
+        category: "Developer",
+        required_env: &[],
     },
 ];
+
+/// Searches marketplace items by query text and optional category filter.
+pub fn search_marketplace(query: &str, category: Option<&str>) -> Vec<&'static MarketplaceItem> {
+    let q = query.trim().to_lowercase();
+    let cat = category.filter(|c| *c != "All" && !c.is_empty());
+    MARKETPLACE_ITEMS
+        .iter()
+        .filter(|item| {
+            if let Some(c) = cat {
+                if !item.category.eq_ignore_ascii_case(c) {
+                    return false;
+                }
+            }
+            if q.is_empty() {
+                return true;
+            }
+            item.id.to_lowercase().contains(&q)
+                || item.name.to_lowercase().contains(&q)
+                || item.description.to_lowercase().contains(&q)
+                || item.category.to_lowercase().contains(&q)
+                || item.command.to_lowercase().contains(&q)
+        })
+        .collect()
+}
 
 /// The servers a chat started in `cwd` would run, by the engine's rules.
 pub fn snapshot(home: &Path, cwd: &Path) -> Snapshot {
@@ -107,9 +282,8 @@ pub fn snapshot(home: &Path, cwd: &Path) -> Snapshot {
     Snapshot { servers, held }
 }
 
-/// Adds (or replaces) a server in `<home>/mcp.json`, the person's own file: it applies in every folder and no
-/// repository can change it. Written atomically, private.
-pub fn install_server(home: &Path, id: &str, command: &str, args: &[&str]) -> Result<(), String> {
+/// Adds (or replaces) a server in `<home>/mcp.json` with optional environment variables.
+pub fn install_server_with_env(home: &Path, id: &str, command: &str, args: &[&str], env: &[(&str, &str)]) -> Result<(), String> {
     let path = home.join("mcp.json");
     let mut root: Map<String, Value> = match fs::read_to_string(&path) {
         Ok(text) => match serde_json::from_str::<Value>(&text) {
@@ -122,7 +296,15 @@ pub fn install_server(home: &Path, id: &str, command: &str, args: &[&str]) -> Re
     if !servers.is_object() {
         *servers = json!({});
     }
-    servers.as_object_mut().expect("just made an object").insert(id.to_owned(), json!({"command": command, "args": args}));
+    let mut entry = json!({"command": command, "args": args});
+    if !env.is_empty() {
+        let mut env_map = Map::new();
+        for (k, v) in env {
+            env_map.insert((*k).to_owned(), Value::String((*v).to_owned()));
+        }
+        entry.as_object_mut().unwrap().insert("env".into(), Value::Object(env_map));
+    }
+    servers.as_object_mut().expect("just made an object").insert(id.to_owned(), entry);
     fs::create_dir_all(home).map_err(|e| e.to_string())?;
     let tmp = home.join(format!(".mcp.{}.tmp", std::process::id()));
     fs::write(&tmp, serde_json::to_string_pretty(&Value::Object(root)).map_err(|e| e.to_string())? + "\n").map_err(|e| e.to_string())?;
@@ -131,6 +313,12 @@ pub fn install_server(home: &Path, id: &str, command: &str, args: &[&str]) -> Re
         let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
     }
     fs::rename(&tmp, &path).map_err(|e| e.to_string())
+}
+
+/// Adds (or replaces) a server in `<home>/mcp.json`, the person's own file: it applies in every folder and no
+/// repository can change it. Written atomically, private.
+pub fn install_server(home: &Path, id: &str, command: &str, args: &[&str]) -> Result<(), String> {
+    install_server_with_env(home, id, command, args, &[])
 }
 
 /// Approves one held-back server as it is now: its entry replaces any earlier one for the same folder and name, so a
@@ -189,5 +377,38 @@ mod tests {
         let home = scratch("mcp-broken");
         std::fs::write(home.as_path().join("mcp.json"), "{ not json").unwrap();
         assert!(install_server(home.as_path(), "x", "x", &[]).is_err());
+    }
+
+    #[test]
+    fn search_marketplace_filters_by_query_and_category() {
+        // Query search
+        let sqlite = search_marketplace("sqlite", None);
+        assert_eq!(sqlite.len(), 1);
+        assert_eq!(sqlite[0].id, "sqlite");
+
+        // Category filter
+        let db = search_marketplace("", Some("Database"));
+        assert!(db.iter().any(|i| i.id == "postgres"));
+        assert!(db.iter().any(|i| i.id == "sqlite"));
+        assert!(!db.iter().any(|i| i.id == "github"));
+
+        // Combined query + category
+        let search_db = search_marketplace("post", Some("Database"));
+        assert_eq!(search_db.len(), 1);
+        assert_eq!(search_db[0].id, "postgres");
+
+        // Non-existent search
+        let none = search_marketplace("nonexistent-xyz-tool", None);
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn install_server_with_env_persists_environment_variables() {
+        let home = scratch("mcp-env");
+        install_server_with_env(home.as_path(), "gh", "github-mcp-server", &["stdio"], &[("GITHUB_PERSONAL_ACCESS_TOKEN", "test_tok")]).unwrap();
+        let text = std::fs::read_to_string(home.as_path().join("mcp.json")).unwrap();
+        let val: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(val["mcpServers"]["gh"]["command"], "github-mcp-server");
+        assert_eq!(val["mcpServers"]["gh"]["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"], "test_tok");
     }
 }

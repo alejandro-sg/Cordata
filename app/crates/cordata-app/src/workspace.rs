@@ -32,6 +32,7 @@ mod agents;
 mod attachments;
 mod conversation;
 pub(crate) use conversation::prompt_mark;
+mod artifacts;
 mod editor;
 mod git_ops;
 mod palette;
@@ -51,8 +52,10 @@ pub enum DockTab {
     Files,
     Editor,
     Review,
+    Artifacts,
     Terminal,
     Agents,
+    McpHub,
 }
 
 /// What floats over the window; the last one is on top and esc closes it first.
@@ -106,7 +109,9 @@ actions!(
         ShowFiles,
         ShowEditor,
         ShowReview,
+        ShowArtifacts,
         ShowTerminal,
+        ShowMcpHub,
         OpenFiles,
         SaveFile,
         SwitchTo1,
@@ -160,6 +165,7 @@ pub struct Workspace {
     pub(super) files: editor::Files,
     pub(super) file_filter: Entity<InputState>,
     pub(super) review: review::Review,
+    pub(super) artifacts: artifacts::ArtifactsState,
     pub(super) terminal: terminal::Terminal,
     /// Start the dock shell when the Terminal tab is shown (`Launch::shell`).
     shell_on_show: bool,
@@ -182,6 +188,8 @@ pub struct Workspace {
     api_key_masked: Option<String>,
     /// The MCP servers a chat here starts, read when the MCP section opens (never per frame).
     mcp: crate::mcp_catalog::Snapshot,
+    pub(super) mcp_search: Entity<InputState>,
+    pub(super) mcp_category: &'static str,
     /// Settings' “Search settings…” box: narrows the section list.
     pub(super) settings_search: Entity<InputState>,
     /// Focus for the settings modal and the confirm dialog (their keys).
@@ -310,6 +318,7 @@ impl Workspace {
         let clone_dest = cx.new(|cx| InputState::new(window, cx).placeholder("~/Development"));
         let api_key_input = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("sk-ant-…"));
         let settings_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search settings…"));
+        let mcp_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search MCP servers (e.g. postgres, sqlite, docker, git)…"));
         let rename_input = cx.new(|cx| InputState::new(window, cx).placeholder("Conversation title"));
         let model_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter, or type any model id…"));
         let git = git_ops::Git::new(window, cx);
@@ -349,6 +358,11 @@ impl Workspace {
                 if matches!(event, InputEvent::Change | InputEvent::PressEnter { .. }) {
                     let query = input.read(cx).value().to_string();
                     this.on_settings_search(&query, cx);
+                }
+            }),
+            cx.subscribe_in(&mcp_search, window, |_, _, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
                 }
             }),
             cx.subscribe_in(&api_key_input, window, |this: &mut Self, _, event: &InputEvent, window, cx| {
@@ -391,6 +405,7 @@ impl Workspace {
             files: editor::Files::default(),
             file_filter,
             review: review::Review::default(),
+            artifacts: artifacts::ArtifactsState::default(),
             terminal,
             shell_on_show: shell,
             settings_view,
@@ -410,6 +425,8 @@ impl Workspace {
             api_key_input,
             api_key_masked: None,
             mcp: Default::default(),
+            mcp_search,
+            mcp_category: "All",
             settings_search,
             settings_focus: cx.focus_handle(),
             esc_at: None,
@@ -921,8 +938,16 @@ impl Workspace {
         self.switch_dock(DockTab::Review, cx);
     }
 
+    fn show_artifacts_action(&mut self, _: &ShowArtifacts, _: &mut Window, cx: &mut Context<Self>) {
+        self.switch_dock(DockTab::Artifacts, cx);
+    }
+
     fn show_terminal_action(&mut self, _: &ShowTerminal, window: &mut Window, cx: &mut Context<Self>) {
         self.toggle_terminal(&ToggleTerminal, window, cx);
+    }
+
+    fn show_mcphub_action(&mut self, _: &ShowMcpHub, _: &mut Window, cx: &mut Context<Self>) {
+        self.switch_dock(DockTab::McpHub, cx);
     }
 
     fn open_files_action(&mut self, _: &OpenFiles, window: &mut Window, cx: &mut Context<Self>) {
@@ -943,12 +968,32 @@ impl Workspace {
         match tab {
             DockTab::Files => self.load_tree(cx),
             DockTab::Review => self.load_review(cx),
+            DockTab::Artifacts => self.load_artifacts(cx),
             DockTab::Agents if self.agents.found.is_none() => self.load_agents(cx),
             // The shell starts the first time the pane is shown (tests click to start one).
             DockTab::Terminal if self.shell_on_show => self.ensure_terminal(cx),
+            DockTab::McpHub => self.load_mcp(cx),
             _ => {}
         }
         cx.notify();
+    }
+
+    pub(super) fn load_mcp(&mut self, cx: &mut Context<Self>) {
+        self.mcp = crate::mcp_catalog::snapshot(&cordata_home(), &self.cwd);
+        cx.notify();
+    }
+
+    pub(super) fn mcp_hub_panel(&self, cx: &mut Context<Self>) -> AnyElement {
+        let rows = self.mcp_rows(cx);
+        div()
+            .id("mcp-hub-panel")
+            .flex()
+            .flex_col()
+            .size_full()
+            .overflow_y_scroll()
+            .gap(px(10.))
+            .children(rows)
+            .into_any_element()
     }
 
     fn next_session(&mut self, _: &NextSession, _: &mut Window, cx: &mut Context<Self>) {
@@ -1978,7 +2023,9 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::show_files_action))
             .on_action(cx.listener(Self::show_editor_action))
             .on_action(cx.listener(Self::show_review_action))
+            .on_action(cx.listener(Self::show_artifacts_action))
             .on_action(cx.listener(Self::show_terminal_action))
+            .on_action(cx.listener(Self::show_mcphub_action))
             .on_action(cx.listener(Self::open_files_action))
             .on_action(cx.listener(Self::save_file_action))
             .on_action(cx.listener(|this, _: &SwitchTo1, _, cx| this.switch_slot(1, cx)))
@@ -2094,6 +2141,8 @@ pub fn bind_keys(cx: &mut App) {
         gpui::KeyBinding::new("cmd-alt-3", ShowEditor, Some("Workspace")),
         gpui::KeyBinding::new("cmd-alt-4", ShowReview, Some("Workspace")),
         gpui::KeyBinding::new("cmd-alt-5", ShowTerminal, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-alt-6", ShowArtifacts, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-alt-7", ShowMcpHub, Some("Workspace")),
         gpui::KeyBinding::new("cmd-p", OpenFiles, Some("Workspace")),
         gpui::KeyBinding::new("cmd-s", SaveFile, Some("Workspace")),
         gpui::KeyBinding::new("cmd-s", SaveFile, Some("CordataEditor")),
@@ -2164,7 +2213,9 @@ pub fn install_menus(cx: &mut App) {
             MenuItem::action("Files", ShowFiles),
             MenuItem::action("Editor", ShowEditor),
             MenuItem::action("Review", ShowReview),
+            MenuItem::action("Canvas", ShowArtifacts),
             MenuItem::action("Terminal", ShowTerminal),
+            MenuItem::action("MCP Hub", ShowMcpHub),
             MenuItem::separator(),
             MenuItem::action("Focus Composer", FocusComposer),
         ]),

@@ -569,7 +569,7 @@ impl Agent<'_> {
                 let _ = events.send(AppEvent::PermissionRequested { info, decision: tx });
                 // A dropped sender counts as a rejection.
                 let decision = interruptible(rx, commands, events, &self.mode).await?.unwrap_or(ApprovalDecision::Reject);
-                match approval::interpret(decision) {
+                match approval::interpret_call(&call.name, decision) {
                     Verdict::Allow { always } => {
                         // A network call is never remembered, whatever the front end sent.
                         if always && !(call.name == "run_command" && policy::wants_network(&call.args)) {
@@ -579,6 +579,10 @@ impl Agent<'_> {
                     Verdict::Deny(reason) => {
                         let _ = events.send(patch(ToolStatus::Failed, Some(reason.clone())));
                         return Ok(reason);
+                    }
+                    Verdict::Complete(output) => {
+                        let _ = events.send(patch(ToolStatus::Completed, Some(output.clone())));
+                        return Ok(output);
                     }
                 }
             }

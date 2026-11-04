@@ -13,7 +13,7 @@ use serde_json::{Map, Value, json};
 use crate::machine::{Research, Verified};
 use crate::scope::py_repr;
 
-pub const RESEARCH_BRIEF: &str = "You are a research worker exploring the repository.\nYour role is read-only: do not edit or create files.\nAll findings must be grounded in evidence.\nCite file evidence as 'path:line' with a short verbatim quote from that location.\nDoc evidence must cite an existing project file path.\nReturn a structured brief conforming to the schema with findings, constraints, risks, approach, and open_questions.";
+pub const RESEARCH_BRIEF: &str = "You are a research worker exploring the repository.\nYour role is read-only: do not edit or create files.\nAll findings must be grounded in evidence.\nCite file evidence as 'path:line' with a short verbatim quote from that location.\nDoc evidence must cite an existing project file path.\nExternal protocol rules or third-party API contracts (webhooks, schemas) should be cited with kind 'external' or 'inferred' and a reference specification.\nReturn a structured brief conforming to the schema with findings, constraints, risks, approach, and open_questions.";
 
 /// The schema a research worker answers against.
 pub fn research_schema() -> Value {
@@ -23,7 +23,7 @@ pub fn research_schema() -> Value {
             "findings": {"type": "array", "items": {"type": "object", "required": ["id", "claim", "evidence"], "properties": {
                 "id": {"type": "string"}, "claim": {"type": "string"},
                 "evidence": {"type": "array", "items": {"type": "object", "required": ["kind", "ref"], "properties": {
-                    "kind": {"type": "string", "enum": ["file", "doc", "command"]}, "ref": {"type": "string"}, "quote": {"type": "string"}}}}}}},
+                    "kind": {"type": "string", "enum": ["file", "doc", "command", "external", "inferred", "external_contract"]}, "ref": {"type": "string"}, "quote": {"type": "string"}}}}}}},
             "constraints": {"type": "array", "items": {"type": "string"}},
             "risks": {"type": "array", "items": {"type": "string"}},
             "approach": {"type": "string"},
@@ -296,6 +296,14 @@ pub fn verify_brief(brief: Option<&Value>, root: &str) -> Verified {
                         Err(format!("command evidence {} is not verifiable without an existing doc ref", py_repr_value(&reference)))
                     }
                 }
+                Some("external") | Some("inferred") | Some("external_contract") => {
+                    let text = reference.as_str().unwrap_or("").trim();
+                    if text.is_empty() {
+                        Err(format!("external contract evidence in finding {fid} missing non-empty ref"))
+                    } else {
+                        Ok(())
+                    }
+                }
                 _ => Err(format!("unknown evidence kind {}", py_repr_value(kind.unwrap_or(&Value::Null)))),
             };
             match outcome {
@@ -462,6 +470,12 @@ mod tests {
         assert!(weak.refused && weak.reasons.last().unwrap() == "refused: survivors (1) are fewer than half of findings (3)");
         let all = verify_brief(Some(&json!({"findings": [finding("a", json!([]))]})), &root);
         assert!(all.refused && all.reasons.last().unwrap() == "refused: all findings were dropped");
+
+        // External contract findings survive verification with non-empty ref
+        let ext = finding("f_ext", json!([{"kind": "external", "ref": "telegram:webhook_payload", "quote": "caption vs text"}]));
+        let v_ext = verify_brief(Some(&json!({"findings": [ext], "approach": "handle caption"})), &root);
+        assert!(!v_ext.refused, "external contract finding survived");
+        assert_eq!(v_ext.brief["findings"][0]["id"], "f_ext");
     }
 
     #[test]

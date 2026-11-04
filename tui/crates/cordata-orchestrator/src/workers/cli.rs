@@ -315,11 +315,12 @@ impl CliWorker {
     pub async fn execute(&self, task: TaskPacket, resume: Option<&str>, events: EventSink) -> WorkerResult {
         let first = self.attempt(task.clone(), resume, events.clone(), None).await;
         let gave_up = first.status == "failed" && first.error_message.as_deref().is_some_and(|e| e.starts_with(crate::worker::GAVE_UP));
-        let handle = first.session_handle.clone().filter(|_| gave_up && !self.dialect.can_run_commands());
+        let handle = first.session_handle.clone().filter(|_| gave_up);
         let result = match handle {
             Some(handle) => {
                 events(WorkerEvent { event_type: "progress".into(), payload: json!({"phase": "nudge", "denied": first.denied}) });
-                let second = self.attempt(task, Some(&handle), events.clone(), Some(prompting::GAVE_UP_NUDGE)).await;
+                let nudge = prompting::gave_up_nudge(&first.denied);
+                let second = self.attempt(task, Some(&handle), events.clone(), Some(&nudge)).await;
                 combine(first, second)
             }
             None => first,

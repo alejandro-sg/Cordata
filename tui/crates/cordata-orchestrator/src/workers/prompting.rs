@@ -27,6 +27,19 @@ pub const NO_COMMANDS_NOTE: &str = "Shell commands are NOT available in this env
 /// Sent on the same conversation when a worker that cannot run commands asked to, was refused and stopped.
 pub const GAVE_UP_NUDGE: &str = "Your shell command was refused: shell commands are not available here, and asking again will be refused too. The step is not done yet. Continue now with your file tools only: read what you need, make the edits the step asks for, then state what you changed. The harness runs the checks afterwards.";
 
+/// Context-aware nudge sent when a worker stops after a refusal.
+pub fn gave_up_nudge(denied: &[String]) -> String {
+    let has_edit = denied.iter().any(|d| {
+        let l = d.to_ascii_lowercase();
+        l.contains("edit") || l.contains("replace") || l.contains("write")
+    });
+    if has_edit {
+        "Your edit was refused or failed (for example due to a target string, indentation, or whitespace mismatch). The step is not done yet. Please call read_file on the target file around the relevant lines to inspect the exact current contents, then re-issue edit_file with the exact matching indentation and target string.".into()
+    } else {
+        GAVE_UP_NUDGE.into()
+    }
+}
+
 /// Escapes every non-ASCII char as `\uXXXX` (UTF-16 units), as Python's `json.dumps` does by default.
 fn ascii_escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
@@ -119,7 +132,54 @@ pub fn compose(task: &TaskPacket, native_schema: bool, can_run_commands: bool) -
     parts.into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join("\n\n")
 }
 
-/// The JSON object in a model's answer: the whole text, a fenced block, or the outermost `{…}`.
+/// Extracts balanced JSON objects from text, handling strings with escapes.
+fn extract_balanced_objects(text: &str) -> Vec<&str> {
+    let mut objects = Vec::new();
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'{' {
+            let start = i;
+            let mut depth = 0;
+            let mut in_str = false;
+            let mut escape = false;
+            let mut j = i;
+            while j < bytes.len() {
+                let b = bytes[j];
+                if in_str {
+                    if escape {
+                        escape = false;
+                    } else if b == b'\\' {
+                        escape = true;
+                    } else if b == b'"' {
+                        in_str = false;
+                    }
+                } else {
+                    match b {
+                        b'"' => in_str = true,
+                        b'{' => depth += 1,
+                        b'}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                if let Ok(s) = std::str::from_utf8(&bytes[start..=j]) {
+                                    objects.push(s);
+                                }
+                                i = j;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                j += 1;
+            }
+        }
+        i += 1;
+    }
+    objects
+}
+
+/// The JSON object in a model's answer: the whole text, a fenced block, or balanced `{…}` objects.
 pub fn parse_json_answer(text: &str) -> Option<Value> {
     let raw = text.trim();
     if raw.is_empty() {
@@ -129,17 +189,56 @@ pub fn parse_json_answer(text: &str) -> Option<Value> {
     if raw.contains("```") {
         for chunk in raw.split("```").skip(1).step_by(2) {
             let starts_json = chunk.trim_start().starts_with("json") || chunk.trim_start().starts_with("JSON");
-            candidates.push(match chunk.split_once('\n') {
+            let inner = match chunk.split_once('\n') {
                 Some((_, rest)) if starts_json => rest.to_owned(),
                 _ => chunk.to_owned(),
-            });
+            };
+            for obj in extract_balanced_objects(&inner) {
+                candidates.push(obj.to_owned());
+            }
+            candidates.push(inner);
         }
+    }
+    for obj in extract_balanced_objects(raw) {
+        candidates.push(obj.to_owned());
     }
     if let (Some(first), Some(last)) = (raw.find('{'), raw.rfind('}'))
         && first < last {
             candidates.push(raw[first..=last].to_owned());
         }
-    candidates.iter().find_map(|c| serde_json::from_str::<Value>(c.trim()).ok().filter(Value::is_object))
+
+    let mut parsed_objects: Vec<Value> = candidates
+        .iter()
+        .filter_map(|c| serde_json::from_str::<Value>(c.trim()).ok().filter(Value::is_object))
+        .collect();
+
+    if parsed_objects.is_empty() {
+        return None;
+    }
+
+    parsed_objects.sort_by_key(|v| {
+        let obj = v.as_object().unwrap();
+        let mut score = 0i32;
+        if obj.contains_key("verdict") {
+            score += 100;
+        }
+        if obj.contains_key("gaps") {
+            score += 50;
+        }
+        if obj.contains_key("step_scores") {
+            score += 25;
+        }
+        if obj.contains_key("findings") {
+            score += 50;
+        }
+        if obj.contains_key("commands") {
+            score += 50;
+        }
+        score += obj.len() as i32;
+        std::cmp::Reverse(score)
+    });
+
+    parsed_objects.into_iter().next()
 }
 
 #[cfg(test)]
@@ -170,6 +269,19 @@ mod tests {
         assert_eq!(parse_json_answer("so {\"a\":3} it is"), Some(json!({"a": 3})));
         assert_eq!(parse_json_answer("[1,2]"), None);
         assert_eq!(parse_json_answer(""), None);
+        // Resilient recovery when conversational thought precedes a JSON verdict
+        let conversational = "Thinking: {\"thought\": \"looks good\"}. My formal verdict: {\"verdict\": \"accept\", \"gaps\": []}. Done.";
+        assert_eq!(parse_json_answer(conversational), Some(json!({"verdict": "accept", "gaps": []})));
+        // Escaped quotes inside braces
+        let with_escapes = "Result: {\"verdict\": \"gaps\", \"missing\": \"need \\\"quoted\\\" string\"}";
+        assert_eq!(parse_json_answer(with_escapes), Some(json!({"verdict": "gaps", "missing": "need \"quoted\" string"})));
+    }
+
+    #[test]
+    fn gave_up_nudge_tailors_message_to_edit_versus_command() {
+        assert!(gave_up_nudge(&["edit_file".into()]).contains("Your edit was refused"));
+        assert!(gave_up_nudge(&["run_command".into()]).contains("Your shell command was refused"));
+        assert_eq!(gave_up_nudge(&[]), GAVE_UP_NUDGE);
     }
 
     #[test]
