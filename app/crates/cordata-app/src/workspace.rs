@@ -32,6 +32,7 @@ mod agents;
 mod attachments;
 mod conversation;
 pub(crate) use conversation::prompt_mark;
+mod floorplan_bar;
 mod artifacts;
 mod editor;
 mod git_ops;
@@ -235,6 +236,7 @@ pub struct Workspace {
     /// `--selftest`: answer every approval with Allow and quit with a summary once the first turn ends.
     selftest: Option<SelfTest>,
     pub(super) agents: agents::Agents,
+    pub(super) floorplan: floorplan_bar::FloorplanSummary,
     /// The column edge being dragged.
     resizing: Option<resize::Edge>,
     /// The meter's readout or the model switcher, when one is open.
@@ -451,6 +453,7 @@ impl Workspace {
             selftest: selftest.then(SelfTest::default),
             resizing: None,
             agents: agents::Agents::default(),
+            floorplan: floorplan_bar::FloorplanSummary::default(),
             popup: None,
             keys: meter::Keys::default(),
             model_filter,
@@ -477,6 +480,7 @@ impl Workspace {
         this.start_meter(window, cx);
         this.load_tree(cx);
         this.load_review(cx);
+        this.load_floorplan(cx);
         if picker {
             this.open_overlay(Overlay::Picker, window, cx);
         }
@@ -2071,6 +2075,7 @@ impl Render for Workspace {
                             .flex_col()
                             .bg(crate::theme::glass_main_bg(cx))
                             .child(header)
+                            .child(self.floorplan_bar(cx))
                             .child(body)
                             .child(
                                 div()
