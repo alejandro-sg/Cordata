@@ -385,6 +385,9 @@ pub mod fonts {
     pub const MONO: &str = "Geist Mono";
     pub const SANS_FALLBACK: &str = ".SystemUIFont";
     pub const MONO_FALLBACKS: [&str; 2] = ["SF Mono", "Menlo"];
+    /// The agent's voice: a reading serif, so who is speaking shows before a word is read. Your words and the chrome
+    /// stay in the sans; machine facts in the mono. All three ship with macOS.
+    pub const VOICE: [&str; 3] = ["Charter", "Iowan Old Style", "Georgia"];
 }
 
 #[cfg(test)]

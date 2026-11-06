@@ -49,7 +49,7 @@ pub struct MarketplaceItem {
     pub required_env: &'static [&'static str],
 }
 
-pub const CATEGORIES: &[&'static str] = &[
+pub const CATEGORIES: &[&str] = &[
     "All",
     "Developer",
     "Database",
@@ -251,10 +251,10 @@ pub fn search_marketplace(query: &str, category: Option<&str>) -> Vec<&'static M
     MARKETPLACE_ITEMS
         .iter()
         .filter(|item| {
-            if let Some(c) = cat {
-                if !item.category.eq_ignore_ascii_case(c) {
-                    return false;
-                }
+            if let Some(c) = cat
+                && !item.category.eq_ignore_ascii_case(c)
+            {
+                return false;
             }
             if q.is_empty() {
                 return true;

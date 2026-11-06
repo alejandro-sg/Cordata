@@ -102,15 +102,11 @@ fn quiet(card: &ToolCard, ctx: &Context) -> Option<Quiet> {
     }
 }
 
-/// Transient filler tokens emitted between tool calls or during turn transitions.
+/// Text a model emits between tool calls that says nothing: blank, or a bare "continuing" / ellipsis. Only these are
+/// dropped; a reply that is a real word, however short, is the agent speaking and stays.
 pub fn is_filler(text: &str) -> bool {
-    let t = text.trim();
-    t.is_empty()
-        || t.eq_ignore_ascii_case("continuing")
-        || t == "..."
-        || t == "…"
-        || t.eq_ignore_ascii_case("thought")
-        || t.eq_ignore_ascii_case("thinking")
+    let t = text.trim().trim_end_matches(['.', '…']);
+    t.is_empty() || t.eq_ignore_ascii_case("continuing")
 }
 
 /// The transcript as display rows. Rules (docs/auto-mode.md §1.1): consecutive quiet tool cards (read, search, run;

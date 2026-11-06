@@ -25,7 +25,7 @@ The cell is the only thing that changes; each state differs in shape and place a
 | idle (unfocused) | hollow, in the mouth | ink at 55% | `C▯` |
 | working | solid, **inside** the ring (in the sandbox) | signal | `(█` |
 | needs you | solid, in the mouth (at the gate) | attention | `C█` |
-| done | none; the ring closes | ink | `O` |
+| done | none; the ring closes | ink | `◯` (a plain `O` reads as a zero in Geist Mono) |
 | error | solid, split by a slash | danger | `C▚` |
 
 ## Colour
@@ -41,6 +41,33 @@ The cell is the only thing that changes; each state differs in shape and place a
 
 The tokens live in `app/crates/cordata-theme/src/tokens.rs`, with contrast tests (AA everywhere, AAA for text under
 macOS Increase Contrast).
+
+## Type
+
+Three voices, so who is speaking shows before a word is read:
+
+| face | for |
+|---|---|
+| reading serif (Charter → Iowan Old Style → Georgia, all shipped with macOS) | the agent's prose and the brief |
+| Geist (sans) | your words and the chrome |
+| Geist Mono | machine facts: paths, commands, counts, the mark |
+
+## The desk
+
+A thread is drawn as a piece of work, not a chat (`app/crates/cordata-app/src/workspace/desk.rs`, facts from
+`cordata_view::desk`):
+
+- **Brief**: your first prompt, set as the page's title in the serif; under it "done when" (the project's check:
+  `scripts/verify.sh`, a Makefile `verify`/`test`/`check`, or the toolchain's runner), turns, files changed, and the
+  session's startup notes folded into one word (hover lists them).
+- **Tape**: one stop per prompt; the gate waiting on you is the last stop. A click walks the transcript there.
+- **Places**: the right margin lists the files the thread read and changed, by component, each with what happened to
+  it. Real paths from tool calls; nothing is guessed.
+- **Gate**: the `C█` mark, the question, and one line on what yes means (an edit can be reverted; a command cannot).
+- **Receipt**: after a turn, what changed, what ran, and whether the check passed, with the next step.
+
+The rail marks each thread with the mark's state instead of an icon. No emoji anywhere: the brand's icons are the
+Lucide set above, and the mark.
 
 ## Icons
 

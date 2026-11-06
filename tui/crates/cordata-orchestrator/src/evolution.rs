@@ -125,10 +125,10 @@ impl ImmutableGuard {
                     stack.push(p);
                 } else if kind.is_file() {
                     let rel = p.strip_prefix(root).unwrap_or(&p).to_string_lossy().into_owned();
-                    if rel.contains("/tests/") || rel.starts_with("tests/") || rel.ends_with("_test.rs") || rel.ends_with("_tests.rs") {
-                        if let Some(h) = Self::hash_file(&p) {
-                            hashes.insert(rel, h);
-                        }
+                    if (rel.contains("/tests/") || rel.starts_with("tests/") || rel.ends_with("_test.rs") || rel.ends_with("_tests.rs"))
+                        && let Some(h) = Self::hash_file(&p)
+                    {
+                        hashes.insert(rel, h);
                     }
                 }
             }
@@ -321,13 +321,11 @@ pub fn evaluate_fitness(target: &EvolutionTarget, root: &Path) -> Result<Fitness
             let lat = start.elapsed().as_millis() as f64;
             let mut throughput = 0.0;
             for line in stdout.lines() {
-                if line.contains("BENCH") && line.contains("MB/s") {
-                    if let Some(pos) = line.find("MB/s") {
-                        let prefix = line[..pos].trim();
-                        if let Some(num_str) = prefix.split_whitespace().last() {
-                            throughput = num_str.parse::<f64>().unwrap_or(0.0);
-                        }
-                    }
+                if line.contains("BENCH")
+                    && let Some(pos) = line.find("MB/s")
+                    && let Some(num_str) = line[..pos].split_whitespace().last()
+                {
+                    throughput = num_str.parse::<f64>().unwrap_or(0.0);
                 }
             }
             Ok(FitnessScore {
@@ -463,65 +461,81 @@ pub fn evaluate_candidate(
     }
 }
 
+/// The files under `sandbox` whose bytes differ from the same path under `root` (or that `root` lacks), relative.
+/// Build output, git metadata and Cordata's own state are not candidates.
+fn changed_between(sandbox: &Path, root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![sandbox.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let Ok(kind) = entry.file_type() else { continue };
+            let p = entry.path();
+            if kind.is_dir() {
+                let name = entry.file_name();
+                if matches!(name.to_str(), Some("target" | ".git" | ".cordata")) {
+                    continue;
+                }
+                stack.push(p);
+            } else if kind.is_file()
+                && let Ok(rel) = p.strip_prefix(sandbox)
+                && ImmutableGuard::hash_file(&p) != ImmutableGuard::hash_file(&root.join(rel))
+            {
+                out.push(rel.to_path_buf());
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Whether `root`'s git working tree has uncommitted changes (or is not a git checkout at all).
+fn tree_is_dirty(root: &Path) -> bool {
+    Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["status", "--porcelain"])
+        .output()
+        .map_or(true, |o| !o.status.success() || !o.stdout.is_empty())
+}
+
 /// Executes a full, sandboxed evolution cycle for `config.target`.
+///
+/// Refuses, rather than reporting gates, when there is nothing to judge: nothing in this crate proposes a change yet,
+/// so a fresh sandbox is identical to the tree and a "cycle" would only re-measure the baseline. A promotion is copied
+/// over the working tree only when that tree is clean, so `git checkout .` always undoes it.
 pub fn run_evolution_cycle(config: EvolutionConfig) -> Result<EvolutionReport, String> {
     let start_time = Instant::now();
     let root = std::fs::canonicalize(&config.project_root).map_err(|e| format!("invalid root: {e}"))?;
+    if !config.dry_run && tree_is_dirty(&root) {
+        return Err("the working tree has uncommitted changes (or is not a git checkout): commit or stash first, or pass --dry-run".into());
+    }
 
-    // 1. Establish baseline fitness score
     let baseline = evaluate_fitness(&config.target, &root)?;
-
-    // 2. Snapshot evaluation harness for anti-tamper checking
     let guard = ImmutableGuard::snapshot(&root);
 
-    // 3. Create APFS copy-on-write Sandbox
     let label = format!("rsi-{}", config.target);
     let sandbox = synthesizer::create(&root, None, &label, &[], synthesizer::MAX_FILES)
         .map_err(|e| format!("failed to provision APFS CoW sandbox: {e}"))?;
 
-    // 4. In this cycle, evaluate whatever changes exist in the sandbox (or if a mutating callback was run)
-    let (promoted_all_gates, candidate_opt, gates) = evaluate_candidate(
-        &sandbox.root,
-        &config.target,
-        &baseline,
-        &guard,
-        config.threshold,
-    );
+    let candidates = changed_between(&sandbox.root, &root);
+    if candidates.is_empty() {
+        sandbox.discard();
+        return Err("nothing to evaluate: no change was proposed in the sandbox (no mutator is wired up yet)".into());
+    }
 
-    let mut changed_files = Vec::new();
+    let (promoted_all_gates, candidate_opt, gates) = evaluate_candidate(&sandbox.root, &config.target, &baseline, &guard, config.threshold);
     let delta = candidate_opt.as_ref().map_or(0.0, |c| c.primary - baseline.primary);
 
-    // 5. Atomic Harvest on promotion
+    let mut changed_files = Vec::new();
     if promoted_all_gates && !config.dry_run {
-        let mut stack = vec![sandbox.root.clone()];
-        while let Some(dir) = stack.pop() {
-            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
-            for entry in entries.flatten() {
-                let Ok(kind) = entry.file_type() else { continue };
-                let p = entry.path();
-                if kind.is_dir() {
-                    let name = entry.file_name();
-                    let s = name.to_string_lossy();
-                    if s == "target" || s == ".git" || s == ".cordata" {
-                        continue;
-                    }
-                    stack.push(p);
-                } else if kind.is_file() {
-                    if let Ok(rel) = p.strip_prefix(&sandbox.root) {
-                        let src_file = root.join(rel);
-                        let candidate_hash = ImmutableGuard::hash_file(&p);
-                        let source_hash = ImmutableGuard::hash_file(&src_file);
-                        if candidate_hash != source_hash && candidate_hash.is_some() {
-                            let rel_str = rel.to_string_lossy().into_owned();
-                            if let Some(parent) = src_file.parent() {
-                                let _ = std::fs::create_dir_all(parent);
-                            }
-                            if std::fs::copy(&p, &src_file).is_ok() {
-                                changed_files.push(rel_str);
-                            }
-                        }
-                    }
-                }
+        for rel in &candidates {
+            let (from, to) = (sandbox.root.join(rel), root.join(rel));
+            if let Some(parent) = to.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if std::fs::copy(&from, &to).is_ok() {
+                changed_files.push(rel.to_string_lossy().into_owned());
             }
         }
     }
@@ -594,5 +608,19 @@ mod tests {
         assert_eq!("economizer".parse::<EvolutionTarget>().unwrap(), EvolutionTarget::Economizer);
         assert_eq!("guard".parse::<EvolutionTarget>().unwrap(), EvolutionTarget::Guard);
         assert_eq!("custom_subsystem".parse::<EvolutionTarget>().unwrap(), EvolutionTarget::Custom("custom_subsystem".into()));
+    }
+
+    #[test]
+    fn only_differing_files_are_candidates() {
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        for dir in [a.path(), b.path()] {
+            std::fs::create_dir_all(dir.join("src")).unwrap();
+            std::fs::write(dir.join("src/same.rs"), "same").unwrap();
+            std::fs::create_dir_all(dir.join("target")).unwrap();
+        }
+        assert!(changed_between(a.path(), b.path()).is_empty(), "an untouched copy proposes nothing");
+        std::fs::write(a.path().join("src/new.rs"), "new").unwrap();
+        std::fs::write(a.path().join("target/out"), "build output").unwrap();
+        assert_eq!(changed_between(a.path(), b.path()), vec![PathBuf::from("src/new.rs")]);
     }
 }

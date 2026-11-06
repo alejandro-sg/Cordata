@@ -5,10 +5,8 @@
 use cordata_theme::tokens as t;
 use cordata_view::app::{ConnState, TabState};
 use cordata_view::shown;
-use std::time::Duration;
 
 use gpui::prelude::FluentBuilder as _;
-use gpui::{Animation, AnimationExt as _, ease_in_out};
 use gpui::{AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement, MouseButton, ParentElement, SharedString, StatefulInteractiveElement as _, Styled, div, px};
 
 use super::{DockTab, Overlay, Workspace};
@@ -91,7 +89,7 @@ impl Workspace {
                     .cursor_pointer()
                     .hover(move |s| s.bg(hover))
                     .on_click(cx.listener(|this, _, window, cx| this.open_overlay(Overlay::Picker, window, cx)))
-                    .child(ui::cordata_logo(20., cx))
+                    .child(div().flex_shrink_0().font_family(mono(cx)).text_size(px(14.)).text_color(c(tk.amber)).child("C█"))
                     .child(div().flex_1().min_w_0().truncate().text_size(px(t::TEXT_TITLE)).font_weight(FontWeight::SEMIBOLD).text_color(c(tk.text_primary)).child(SharedString::from(self.project_name())))
                     .child(div().flex_shrink_0().text_color(c(tk.text_faint)).child(gpui_component::Icon::new(gpui_kit_assets::IconName::ChevronDown).size(px(13.))))
             )
@@ -204,7 +202,7 @@ impl Workspace {
         let rail = work::rail(&threads, &saved, &places, &self.cwd);
         let needs = rail.needs_you();
         let can_close = self.sessions.len() > 1;
-        let hover = line(cx, t::HOVER);
+        let (hover, selected) = (line(cx, t::HOVER), line(cx, t::HOVER_STRONG));
         let section = |label: &str| div().pl(px(10.)).pt(px(12.)).pb(px(3.)).truncate().text_size(px(t::TEXT_TAG)).text_color(c(tk.text_faint)).child(SharedString::from(label.to_owned()));
 
         let mut col = div().id("work-board").flex_1().min_h_0().overflow_y_scroll().flex().flex_col().gap(px(1.)).px(px(8.)).pb(px(8.));
@@ -239,11 +237,12 @@ impl Workspace {
                 ),
         );
         for (ix, row) in rail.threads.iter().enumerate() {
+            // The brand's cell says what the thread is doing, by shape as well as colour.
             let mark = match row.mark {
-                Mark::NeedsYou => Some(c(tk.attention)),
-                Mark::Working => Some(c(tk.amber)),
-                Mark::Unread => Some(ca(tk.amber, 0.45)),
-                Mark::Idle => None,
+                Mark::NeedsYou => ui::MarkState::NeedsYou,
+                Mark::Working => ui::MarkState::Working,
+                Mark::Unread => ui::MarkState::Done,
+                Mark::Idle => ui::MarkState::Idle,
             };
             let index = row.index;
             let group = SharedString::from(format!("thread-row-{ix}"));
@@ -266,33 +265,14 @@ impl Workspace {
                 .pr(px(6.))
                 .rounded(px(t::RADIUS_ROW))
                 .cursor_pointer()
-                .when(active, move |r| {
-                    r.bg(ca(tk.amber, if tk.is_dark { 0.12 } else { 0.08 }))
-                        .border_1()
-                        .border_color(ca(tk.amber, if tk.is_dark { 0.28 } else { 0.20 }))
-                })
+                .when(active, move |r| r.bg(selected))
                 .when(!active, move |r| r.hover(move |s| s.bg(hover)))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     if let Some(entity) = this.sessions.get(index).cloned() {
                         this.show(entity, cx);
                     }
                 }))
-                .when_some(mark, |r, colour| {
-                    let bar = div().absolute().left(px(0.)).top(px(8.)).bottom(px(8.)).w(px(2.)).rounded_full().bg(colour);
-                    // A working thread's mark breathes: alive, not stuck. Waiting and finished marks hold still.
-                    if mark_kind == Mark::Working && ui::motion(cx) {
-                        r.child(bar.with_animation(("thread-breath", ix), Animation::new(Duration::from_millis(1800)).repeat().with_easing(ease_in_out), |el, t| el.opacity(0.35 + 0.65 * (1.0 - (2.0 * t - 1.0).powi(2)))))
-                    } else {
-                        r.child(bar)
-                    }
-                })
-                .child(
-                    div()
-                        .flex_shrink_0()
-                        .text_size(px(11.))
-                        .text_color(c(if active { tk.amber } else { tk.text_faint }))
-                        .child("💬"),
-                )
+                .child(ui::mark(("thread-mark", ix), mark, 11., cx))
                 .child(
                     div()
                         .flex_1()
@@ -352,13 +332,8 @@ impl Workspace {
                         .cursor_pointer()
                         .hover(move |s| s.bg(hover))
                         .on_click(cx.listener(move |this, _, window, cx| this.open_saved(id.clone(), window, cx)))
-                        .child(
-                            div()
-                                .flex_shrink_0()
-                                .text_size(px(11.))
-                                .text_color(c(tk.text_faint))
-                                .child("🕒"),
-                        )
+                        // The mark's column, empty: an earlier conversation is not doing anything.
+                        .child(div().w(px(11. * 1.4)).flex_shrink_0())
                         .child(
                             div()
                                 .flex_1()

@@ -3,7 +3,6 @@
 //! adds ids, handlers and accessibility labels. No colour or size is written here except through `theme`/`tokens`.
 
 use cordata_theme::tokens::{self as t};
-use cordata_theme::Rgb;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{AnyElement, AnyView, App, Div, ElementId, FontWeight, IntoElement as _, InteractiveElement as _, ParentElement, SharedString, Stateful, StatefulInteractiveElement as _, Styled, Window, div, px};
 use gpui_component::tooltip::Tooltip;
@@ -144,6 +143,65 @@ pub fn icon_button(id: impl Into<ElementId>, glyph: &'static str, cx: &App) -> S
         .hover(move |s| s.bg(hover).text_color(ink))
         .role(gpui::Role::Button)
         .child(glyph)
+}
+
+/// The brand's one moving part, as text: the cursor cell and where it sits says the state by shape as well as colour
+/// (`app/assets/brand/README.md`, "State"). Used wherever a thread's state is shown — the rail, the gate, the receipt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkState {
+    /// Hollow cell in the mouth: nothing happening.
+    Idle,
+    /// Solid cell inside the ring: working, in the sandbox.
+    Working,
+    /// Solid cell in the mouth: at the gate, waiting on you.
+    NeedsYou,
+    /// No cell; the ring closes: done.
+    Done,
+    /// Cell split by a slash: something failed.
+    Error,
+}
+
+impl MarkState {
+    pub fn glyph(self) -> &'static str {
+        match self {
+            Self::Idle => "C▯",
+            Self::Working => "(█",
+            Self::NeedsYou => "C█",
+            Self::Done => "◯",
+            Self::Error => "C▚",
+        }
+    }
+}
+
+/// The mark in a fixed-width mono box, in its state's colour. A working mark breathes (unless Reduce Motion is on).
+pub fn mark(id: impl Into<ElementId>, state: MarkState, size: f32, cx: &App) -> AnyElement {
+    let tk = tk(cx);
+    let ink = match state {
+        MarkState::Idle => ca(tk.text_primary, 0.38),
+        MarkState::Working => c(tk.amber),
+        MarkState::NeedsYou => c(tk.attention),
+        MarkState::Done => c(tk.text_secondary),
+        MarkState::Error => c(tk.danger),
+    };
+    let el = div()
+        .flex_shrink_0()
+        .w(px(size * 1.4))
+        .font_family(mono(cx))
+        .text_size(px(size))
+        .line_height(px(size * 1.2))
+        .text_color(ink)
+        .child(state.glyph());
+    if state == MarkState::Working && motion(cx) {
+        gpui::AnimationExt::with_animation(
+            el,
+            id,
+            gpui::Animation::new(std::time::Duration::from_millis(1800)).repeat().with_easing(gpui::ease_in_out),
+            |el, t| el.opacity(0.4 + 0.6 * (1.0 - (2.0 * t - 1.0).powi(2))),
+        )
+        .into_any_element()
+    } else {
+        el.into_any_element()
+    }
 }
 
 /// Whether the window may animate: off when macOS Reduce Motion is on. Every animation asks this first.
@@ -385,78 +443,18 @@ pub fn cordata_mark(size: f32, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-/// The Cordata logo with subtle Apple liquid glass treatment (frosted squircle, specular rim, ambient drop shadow).
+/// The mark, flat: the ring as a mono `C` and the cell beside it in the signal colour — the same `C█` a terminal
+/// shows. No badge, glass or shadow: it is a piece of type, sized like the text around it.
 pub fn cordata_logo(size: f32, cx: &App) -> AnyElement {
-    let t = tk(cx);
-    let mark_size = (size * 0.58).round();
-
-    // Subtle Apple liquid glass materials for light and dark
-    let badge_bg = if t.is_dark {
-        ca(Rgb::hex(0x1B1F27), 0.72)
-    } else {
-        ca(Rgb::hex(0xF8FAFC), 0.82)
-    };
-    let border_col = if t.is_dark {
-        ca(Rgb::hex(0xFFFFFF), 0.16)
-    } else {
-        ca(Rgb::hex(0x000000), 0.08)
-    };
-    let specular = if t.is_dark {
-        ca(Rgb::hex(0xFFFFFF), 0.40)
-    } else {
-        ca(Rgb::hex(0xFFFFFF), 0.95)
-    };
-    let inner_bounce = if t.is_dark {
-        ca(t.amber, 0.20)
-    } else {
-        ca(Rgb::hex(0x000000), 0.04)
-    };
-    let shadow_ambient = ca(t.shadow, if t.is_dark { 0.42 } else { 0.14 });
-    let shadow_contact = ca(t.shadow, if t.is_dark { 0.22 } else { 0.07 });
-
+    let tk = tk(cx);
     div()
         .flex()
-        .items_center()
-        .justify_center()
-        .size(px(size))
-        .rounded(px(size * 0.24))
-        .bg(badge_bg)
-        .border_1()
-        .border_color(border_col)
-        .shadow(vec![
-            // Top specular liquid glass reflection
-            gpui::BoxShadow {
-                color: specular,
-                offset: gpui::point(px(0.), px(1.)),
-                blur_radius: px(0.5),
-                spread_radius: px(0.),
-                inset: true,
-            },
-            // Bottom inner refraction bounce
-            gpui::BoxShadow {
-                color: inner_bounce,
-                offset: gpui::point(px(0.), px(-1.)),
-                blur_radius: px(1.5),
-                spread_radius: px(0.),
-                inset: true,
-            },
-            // Ambient elevation shadow
-            gpui::BoxShadow {
-                color: shadow_ambient,
-                offset: gpui::point(px(0.), px((size * 0.08).max(1.))),
-                blur_radius: px((size * 0.25).max(3.)),
-                spread_radius: px(0.),
-                inset: false,
-            },
-            // Contact shadow
-            gpui::BoxShadow {
-                color: shadow_contact,
-                offset: gpui::point(px(0.), px(1.)),
-                blur_radius: px(2.),
-                spread_radius: px(0.),
-                inset: false,
-            },
-        ])
-        .child(cordata_mark(mark_size, cx))
+        .flex_shrink_0()
+        .items_baseline()
+        .font_family(mono(cx))
+        .text_size(px(size * 0.62))
+        .line_height(px(size))
+        .child(div().text_color(c(tk.text_primary)).child("C"))
+        .child(div().text_color(c(tk.amber)).child("█"))
         .into_any_element()
 }

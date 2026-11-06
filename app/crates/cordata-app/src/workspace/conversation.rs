@@ -14,7 +14,7 @@ use gpui::{Animation, AnimationExt as _, ease_in_out};
 use gpui::{AnyElement, App, BoxShadow, ClickEvent, Context, FontWeight, InteractiveElement as _, IntoElement, MouseButton, ParentElement, SharedString, StatefulInteractiveElement as _, Styled, StyledImage as _, Window, div, point, px, relative};
 use gpui_component::input::Textarea;
 
-use super::{DockTab, Overlay, TogglePanel, ToggleSidebar, Workspace, tilde};
+use super::{Overlay, TogglePanel, ToggleSidebar, Workspace, tilde};
 use crate::theme::{amber, c, ca, inset_ring, line, mono, soft_shadow, tk};
 use crate::transcript;
 use crate::ui::{self, Kind, Tone};
@@ -102,6 +102,7 @@ impl Workspace {
         let tk = tk(cx);
         let view = &self.session.read(cx).view;
         let title = view.title();
+        let has_brief = cordata_view::desk::brief(&view.messages).is_some();
         let status = status_of(view);
         // Said only when it is not the ordinary case; the live line below says the rest.
         let word = match status {
@@ -141,8 +142,8 @@ impl Workspace {
                         .on_click(cx.listener(|this, _, window, cx| this.open_overlay(Overlay::Picker, window, cx))),
                 )
             })
-            // A fresh thread has no name yet: the header stays empty rather than repeating the rail's "New thread".
-            .when(title != "New thread", |row| row.child(div().min_w(px(60.)).flex_shrink_1().truncate().text_size(px(t::TEXT_TITLE)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(SharedString::from(shown(&title)))))
+            // The thread's name is its brief, set under this row as the page's title; the row itself carries only state.
+            .when(!has_brief && title != "New thread", |row| row.child(div().min_w(px(60.)).flex_shrink_1().truncate().text_size(px(t::TEXT_TITLE)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(SharedString::from(shown(&title)))))
             .when_some(word, |row, (word, ink)| row.child(div().flex_shrink_0().whitespace_nowrap().text_size(px(t::TEXT_META)).text_color(c(ink)).child(word)))
             // The empty middle drags the window.
             .child(div().flex_1().h_full().min_w(px(8.)).on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move()))
@@ -243,32 +244,48 @@ impl Workspace {
                     .flex()
                     .flex_col()
                     .gap(px(14.))
+                    // A blank brief: the project, the question, and what "done" will mean here.
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(12.))
-                            .child(ui::cordata_logo(36., cx))
-                            .child(
-                                div()
-                                    .text_size(px(t::TEXT_EMPTY))
-                                    .font_weight(FontWeight::LIGHT)
-                                    .text_color(c(tk.text_primary))
-                                    .child(SharedString::from(project)),
-                            ),
+                            .gap(px(8.))
+                            .font_family(mono(cx))
+                            .text_size(px(t::TEXT_META))
+                            .text_color(c(tk.text_faint))
+                            .child(ui::cordata_logo(18., cx))
+                            .child(SharedString::from(project)),
+                    )
+                    .child(div().font_family(crate::theme::voice(cx)).text_size(px(30.)).line_height(relative(1.2)).text_color(c(tk.text_primary)).child("What should change?"))
+                    .child(
+                        div()
+                            .text_size(px(t::TEXT_SMALL))
+                            .text_color(c(tk.text_muted))
+                            .child(SharedString::from(match self.check_command() {
+                                Some(check) => format!("Say it in your own words. Here, done means {check} passes; you decide at every gate."),
+                                None => "Say it in your own words; you decide at every gate.".to_owned(),
+                            })),
                     )
                     .child(div().flex().flex_col().child(explore).child(review).child(fix))
                     .children(notices)
+                    // The session's opening notes, as one line: hover lists them. A server that failed to start is
+                    // the one note worth its own words.
                     .when(!notes.is_empty(), |col| {
+                        let failed = notes.iter().filter(|n| n.contains("did not start") || n.contains("error")).count();
+                        let said = match failed {
+                            0 => format!("{} startup note{}", notes.len(), if notes.len() == 1 { "" } else { "s" }),
+                            f => format!("{} startup notes · {f} need a look", notes.len()),
+                        };
+                        let list: Vec<String> = notes.iter().map(|n| shown(n)).collect();
                         col.child(
                             div()
+                                .id("startup-notes")
                                 .pt(px(6.))
-                                .flex()
-                                .flex_col()
-                                .gap(px(2.))
+                                .font_family(mono(cx))
                                 .text_size(px(t::TEXT_META))
-                                .text_color(c(tk.text_faint))
-                                .children(notes.into_iter().map(|n| div().truncate().child(SharedString::from(shown(&n))))),
+                                .text_color(c(if failed > 0 { tk.attention } else { tk.text_faint }))
+                                .tooltip(ui::tip(SharedString::from(list.join("\n"))))
+                                .child(SharedString::from(said)),
                         )
                     }),
             )
@@ -295,6 +312,13 @@ impl Workspace {
         let has_diff = diffs.is_some();
         let tool = info.tool_name.as_str();
         let is_ask_question = info.tool_name == "ask_question";
+        // What saying yes means, in one line: an edit can be taken back, a command's effects cannot.
+        let consequence: Option<&'static str> = match (is_ask_question, info.kind, command.is_some()) {
+            (true, ..) => None,
+            (_, acp_core::ToolKind::Edit, _) => Some("An edit: you can revert it afterwards in Review."),
+            (_, _, true) => Some("A command: it runs inside the sandbox, and what it does is not undone automatically."),
+            _ => None,
+        };
         let (_, sentence, block, buttons): (&str, String, Option<String>, Vec<AnyElement>) = {
             if is_ask_question {
                 let questions_arr = input.and_then(|i| i.get("questions")).and_then(|q| q.as_array());
@@ -402,6 +426,7 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .gap(px(8.))
+                    .child(ui::mark("gate-mark", ui::MarkState::NeedsYou, 13., cx))
                     .child(div().text_size(px(t::TEXT_BODY)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(SharedString::from(shown(&sentence))))
                     .when(self.saying, |row| row.child(ui::badge("type below · ↵ sends", Tone::Amber, cx))),
             )
@@ -409,49 +434,8 @@ impl Workspace {
             .when_some(diffs, |card, diffs| card.child(transcript::diff_preview(&diffs, cx)))
             .when(!has_diff, |card| card.when_some(block, |card, text| card.child(ui::code_block(SharedString::from(shown(&text)), cx).text_color(c(tk.text_body)))))
             .child(div().flex().flex_wrap().items_center().gap(px(6.)).children(buttons))
+            .when_some(consequence, |card, said| card.child(div().text_size(px(t::TEXT_META)).text_color(c(tk.text_faint)).child(said)))
             .into_any_element()
-    }
-
-    /// After a reply: review the changed files, copy the answer, undo the turn's changes.
-    pub(super) fn post_reply_actions(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let tk = tk(cx);
-        let view = &self.session.read(cx).view;
-        if view.turn_active || !view.pending.is_empty() || !matches!(view.messages.last(), Some(Message::Agent(_))) {
-            return None;
-        }
-        // "Review" only when this turn changed files: the tree's older changes are the rail's ±N, not this reply's.
-        let edited = view
-            .messages
-            .iter()
-            .rev()
-            .take_while(|m| !matches!(m, Message::User(_)))
-            .any(|m| matches!(m, Message::Tool(card) if !card.diffs.is_empty()));
-        let link = |id: &'static str, text: &'static str| {
-            let hover = c(tk.text_primary);
-            div()
-                .id(id)
-                .role(gpui::Role::Button)
-                .cursor_pointer()
-                .text_size(px(t::TEXT_SMALL))
-                .text_color(c(tk.text_faint))
-                .hover(move |s| s.text_color(hover))
-                .child(text)
-        };
-        Some(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(16.))
-                .pb(px(10.))
-                .when(edited, |row| {
-                    row.child(link("review-files", "review changes").tooltip(ui::tip("Changes, hunk by hunk  ⌘⌥4")).on_click(cx.listener(|this, _, _, cx| {
-                        this.set_panel(true, cx);
-                        this.switch_dock(DockTab::Review, cx);
-                    })))
-                })
-                .child(link("copy-reply", "copy").tooltip(ui::tip("Copy the reply as Markdown")).on_click(cx.listener(|this, _, _, cx| this.copy_last_reply(cx))))
-                .into_any_element(),
-        )
     }
 
     /// The `/` and `@` menu, above the composer.
@@ -744,9 +728,9 @@ impl Workspace {
         } else if view.turn_active {
             "Queue a follow-up (↵)…"
         } else if view.messages.iter().any(transcript::is_conversation) {
-            "Ask a follow-up, @mention files, or type / for commands…"
+            "Steer, ask, or add to the brief — @ files, / commands…"
         } else {
-            "Ask anything, @mention files, or type / for commands…"
+            "Describe the change you want — @ files, / commands…"
         }
     }
 }

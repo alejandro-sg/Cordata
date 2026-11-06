@@ -40,6 +40,8 @@ pub struct ArtifactsState {
     pub tasks: Vec<ArtifactTask>,
     pub active_path: Option<PathBuf>,
     pub filter: MilestoneFilter,
+    /// Why the last task toggle was refused (the file changed under it, or could not be written).
+    pub notice: Option<String>,
 }
 
 impl ArtifactsState {
@@ -122,7 +124,6 @@ pub fn scan_artifacts(root: &Path) -> Vec<PathBuf> {
         "ARCHITECTURE.md",
         "SPEC.md",
         "TASKS.md",
-        "AGENTS.md",
     ];
     for name in candidates {
         let path = root.join(name);
@@ -132,8 +133,9 @@ pub fn scan_artifacts(root: &Path) -> Vec<PathBuf> {
     }
 
     let art_dir = root.join(".cordata/artifacts");
-    if art_dir.is_dir() {
-        if let Ok(entries) = std::fs::read_dir(&art_dir) {
+    if art_dir.is_dir()
+        && let Ok(entries) = std::fs::read_dir(&art_dir)
+    {
             let mut sub_files = Vec::new();
             for entry in entries.flatten() {
                 let p = entry.path();
@@ -143,10 +145,40 @@ pub fn scan_artifacts(root: &Path) -> Vec<PathBuf> {
             }
             sub_files.sort();
             files.extend(sub_files);
-        }
     }
 
     files
+}
+
+/// The line `task` names, cycled to its next state, written back atomically; refused if the file changed under it.
+pub fn cycle_task_on_disk(path: &Path, task: &ArtifactTask) -> Result<(), String> {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("the plan").to_owned();
+    let content = std::fs::read_to_string(path).map_err(|e| format!("{name}: {e}"))?;
+    let lines: Vec<&str> = content.lines().collect();
+    let current = lines.get(task.line_idx).copied().unwrap_or_default();
+    let still = ArtifactsState::parse_tasks(current);
+    if still.first().is_none_or(|t| t.text != task.text || t.completed != task.completed || t.in_progress != task.in_progress) {
+        return Err(format!("{name} changed since it was shown; reloaded it — try again"));
+    }
+    let indent = &current[..current.len() - current.trim_start().len()];
+    let bullet = if current.trim_start().starts_with('*') { '*' } else { '-' };
+    let mark = match (task.completed, task.in_progress) {
+        (false, false) => "/",
+        (false, true) => "x",
+        (true, _) => " ",
+    };
+    let mut out: Vec<String> = lines.iter().map(|l| (*l).to_owned()).collect();
+    out[task.line_idx] = format!("{indent}{bullet} [{mark}] {}", task.text);
+    let mut updated = out.join("\n");
+    if content.ends_with('\n') {
+        updated.push('\n');
+    }
+    let tmp = path.with_extension("md.cordata-tmp");
+    std::fs::write(&tmp, &updated).map_err(|e| format!("{name}: {e}"))?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("{name}: {e}")
+    })
 }
 
 impl Workspace {
@@ -173,48 +205,18 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Cycles the state of a task on disk: [ ] -> [/] -> [x] -> [ ]
+    /// Cycles one task on disk: `[ ]` → `[/]` → `[x]` → `[ ]`. The file is read again first, and the line must still
+    /// be that task: an agent may have edited the plan since it was shown, and a stale copy must never be written back
+    /// over its work. The write goes through a temporary file and a rename, so a crash leaves the old plan whole.
     pub fn toggle_artifact_task(&mut self, task_idx: usize, cx: &mut Context<Self>) {
         let Some(path) = self.artifacts.active_path.clone() else {
             return;
         };
-        if task_idx >= self.artifacts.tasks.len() {
+        let Some(task) = self.artifacts.tasks.get(task_idx).cloned() else {
             return;
-        }
-        let task = &self.artifacts.tasks[task_idx];
-        let target_line = task.line_idx;
-
-        let lines: Vec<&str> = self.artifacts.content.lines().collect();
-        if target_line >= lines.len() {
-            return;
-        }
-
-        let mut new_lines = Vec::with_capacity(lines.len());
-        for (idx, line) in lines.into_iter().enumerate() {
-            if idx == target_line {
-                let leading_ws = line.len() - line.trim_start().len();
-                let indent = &line[..leading_ws];
-                let trimmed = line.trim_start();
-                let bullet = if trimmed.starts_with('*') { '*' } else { '-' };
-
-                let next_state = match (task.completed, task.in_progress) {
-                    (false, false) => format!("{indent}{bullet} [/] {}", task.text), // Pending -> In Progress
-                    (false, true) => format!("{indent}{bullet} [x] {}", task.text),  // In Progress -> Done
-                    (true, _) => format!("{indent}{bullet} [ ] {}", task.text),      // Done -> Pending
-                };
-                new_lines.push(next_state);
-            } else {
-                new_lines.push(line.to_string());
-            }
-        }
-
-        let mut updated = new_lines.join("\n");
-        if self.artifacts.content.ends_with('\n') {
-            updated.push('\n');
-        }
-        if std::fs::write(&path, &updated).is_ok() {
-            self.load_artifacts(cx);
-        }
+        };
+        self.artifacts.notice = cycle_task_on_disk(&path, &task).err();
+        self.load_artifacts(cx);
     }
 
     pub(super) fn artifacts_panel(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -308,16 +310,10 @@ impl Workspace {
                             .gap(px(6.))
                             .child(
                                 div()
-                                    .text_color(c(tk.amber))
-                                    .font_weight(FontWeight::BOLD)
-                                    .child("✦"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(t::TEXT_BODY))
+                                    .text_size(px(t::TEXT_UI))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(c(tk.text_primary))
-                                    .child("Milestone Scrubber & Artifact Canvas"),
+                                    .child("Plans"),
                             ),
                     )
                     .child(
@@ -360,7 +356,8 @@ impl Workspace {
                     .items_center()
                     .gap(px(6.))
                     .children(selector_pills),
-            );
+            )
+            .children(artifacts.notice.clone().map(|why| div().text_size(px(t::TEXT_SMALL)).text_color(c(tk.attention)).child(SharedString::from(why))));
 
         // Milestone Scrubber pipeline nodes (connected DAG strip)
         let scrubber_strip = (total > 0).then(|| {
@@ -850,15 +847,14 @@ mod tests {
         "#;
         let tasks = ArtifactsState::parse_tasks(md);
         assert_eq!(tasks.len(), 6);
-        assert_eq!(tasks[0].completed, true);
-        assert_eq!(tasks[1].completed, true);
-        assert_eq!(tasks[2].in_progress, true);
-        assert_eq!(tasks[3].completed, false);
-        assert_eq!(tasks[4].completed, true);
-        assert_eq!(tasks[5].completed, false);
+        assert!(tasks[0].completed);
+        assert!(tasks[1].completed);
+        assert!(tasks[2].in_progress);
+        assert!(!tasks[3].completed);
+        assert!(tasks[4].completed);
+        assert!(!tasks[5].completed);
 
-        let mut state = ArtifactsState::default();
-        state.tasks = tasks;
+        let state = ArtifactsState { tasks, ..Default::default() };
         assert_eq!(state.total_tasks(), 6);
         assert_eq!(state.completed_tasks(), 3);
         assert_eq!(state.in_progress_tasks(), 1);
@@ -874,7 +870,7 @@ mod tests {
         assert_eq!(tasks[0].line_idx, 0);
         assert_eq!(tasks[1].line_idx, 1);
         assert_eq!(tasks[2].line_idx, 2);
-        assert_eq!(tasks[2].in_progress, true);
+        assert!(tasks[2].in_progress);
         assert_eq!(tasks[3].line_idx, 3);
     }
 
@@ -894,5 +890,21 @@ mod tests {
         };
         assert!(short_label.ends_with('…'));
         assert_eq!(short_label.chars().count(), 17);
+    }
+
+    #[test]
+    fn a_task_cycles_on_disk_and_a_stale_one_is_refused() {
+        let dir = std::env::temp_dir().join(format!("cordata-plan-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("PLAN.md");
+        std::fs::write(&path, "# Plan\n  - [ ] first\n- [x] second\n").unwrap();
+        let tasks = ArtifactsState::parse_tasks(&std::fs::read_to_string(&path).unwrap());
+        cycle_task_on_disk(&path, &tasks[0]).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "# Plan\n  - [/] first\n- [x] second\n");
+        // The agent rewrote the line since it was shown: the old copy is not written back.
+        std::fs::write(&path, "# Plan\n  - [ ] renamed\n- [x] second\n").unwrap();
+        assert!(cycle_task_on_disk(&path, &tasks[0]).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "# Plan\n  - [ ] renamed\n- [x] second\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

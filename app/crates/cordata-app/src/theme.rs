@@ -20,6 +20,8 @@ pub struct Active {
     pub tokens: Tokens,
     pub sans: SharedString,
     pub mono: SharedString,
+    /// The reading serif the agent's prose is set in (`fonts::VOICE`), or the sans when none is installed.
+    pub voice: SharedString,
     pub increase_contrast: bool,
     /// The preference as written (`system`, or a theme name) — what an appearance change is resolved against.
     pub choice: SharedString,
@@ -42,6 +44,11 @@ pub fn sans(cx: &App) -> SharedString {
 
 pub fn mono(cx: &App) -> SharedString {
     active(cx).map_or_else(|| SharedString::from(fonts::MONO_FALLBACKS[1]), |a| a.mono.clone())
+}
+
+/// The agent's reading face.
+pub fn voice(cx: &App) -> SharedString {
+    active(cx).map_or_else(|| SharedString::from(fonts::VOICE[0]), |a| a.voice.clone())
 }
 
 /// The code font size (Settings → Appearance), for code blocks and the editor.
@@ -144,7 +151,7 @@ pub fn inset_bottom(color: Hsla) -> Vec<BoxShadow> {
 /// Register the bundled fonts (Geist, Geist Mono) and choose the families: Geist when it loaded, else the system's.
 /// The files are looked for in the bundle (`Contents/Resources/fonts`) and, for a run from the checkout,
 /// `app/assets/fonts`. Nothing is fetched.
-pub fn load_fonts(cx: &mut App) -> (SharedString, SharedString) {
+pub fn load_fonts(cx: &mut App) -> (SharedString, SharedString, SharedString) {
     let mut dirs = Vec::new();
     if let Ok(exe) = std::env::current_exe()
         && let Some(contents) = exe.parent().and_then(|macos| macos.parent())
@@ -178,7 +185,8 @@ pub fn load_fonts(cx: &mut App) -> (SharedString, SharedString) {
     let has = |name: &str| names.iter().any(|n| n == name);
     let sans = if has(fonts::SANS) { fonts::SANS } else { fonts::SANS_FALLBACK };
     let mono = if has(fonts::MONO) { fonts::MONO } else { fonts::MONO_FALLBACKS.into_iter().find(|f| has(f)).unwrap_or(fonts::MONO_FALLBACKS[1]) };
-    (SharedString::from(sans), SharedString::from(mono))
+    let voice = fonts::VOICE.into_iter().find(|f| has(f)).unwrap_or(sans);
+    (SharedString::from(sans), SharedString::from(mono), SharedString::from(voice))
 }
 
 /// Is this appearance a dark one?
@@ -199,8 +207,8 @@ pub fn install(increase_contrast: bool, theme: &str, cx: &mut App) {
 }
 
 fn install_resolved(increase_contrast: bool, choice: &str, dark: bool, cx: &mut App) {
-    let (sans, mono) = match active(cx) {
-        Some(a) => (a.sans.clone(), a.mono.clone()),
+    let (sans, mono, voice) = match active(cx) {
+        Some(a) => (a.sans.clone(), a.mono.clone(), a.voice.clone()),
         None => load_fonts(cx),
     };
     let base = *resolve(choice, dark);
@@ -208,7 +216,7 @@ fn install_resolved(increase_contrast: bool, choice: &str, dark: bool, cx: &mut 
     let palette = tokens.palette();
     let mode = if tokens.is_dark { ThemeMode::Dark } else { ThemeMode::Light };
     let config = Rc::new(component_theme(&tokens, &palette, &sans, &mono));
-    cx.set_global(Active { tokens, sans, mono, increase_contrast, choice: SharedString::from(choice.to_owned()) });
+    cx.set_global(Active { tokens, sans, mono, voice, increase_contrast, choice: SharedString::from(choice.to_owned()) });
     // The library's mode first — `Theme::change` loads its stock colours for that mode — then ours over them; the other
     // order threw our colours away.
     Theme::change(mode, None, cx);

@@ -13,7 +13,7 @@ use gpui::{AnyElement, App, FontWeight, InteractiveElement as _, IntoElement, Pa
 use gpui_component::text::{TextView, TextViewStyle};
 
 use crate::hud;
-use crate::theme::{amber, c, ca, line, mono, tk};
+use crate::theme::{amber, c, ca, line, mono, tk, voice};
 use crate::ui::{self};
 
 /// Rows of a tool's result shown when it is opened, before "… N more lines".
@@ -66,11 +66,10 @@ pub fn has_content(view: &cordata_view::app::App) -> bool {
 
 /// The notes a session opens with (settings warnings, instructions read), for the empty state.
 pub fn opening_notes(view: &cordata_view::app::App) -> Vec<String> {
-    let end = view.opening.unwrap_or(view.messages.len()).min(view.messages.len());
-    view.messages[..end]
+    view.messages
         .iter()
         .filter_map(|m| match m {
-            Message::Info(text) => Some(text.clone()),
+            Message::Info(text) if cordata_view::desk::is_session_note(text) => Some(text.clone()),
             _ => None,
         })
         .collect()
@@ -175,9 +174,12 @@ fn assistant(text: &str, ix: usize, cx: &App) -> AnyElement {
         return div().into_any_element();
     }
     let tk = tk(cx);
+    // The agent speaks in the reading serif; your words and the machine's facts stay in the sans and the mono, so who
+    // is speaking shows before a word is read.
     div()
         .py(px(8.))
-        .text_size(px(t::TEXT_BODY))
+        .font_family(voice(cx))
+        .text_size(px(t::TEXT_BODY + 1.))
         .line_height(relative(t::LINE_HEIGHT_BODY))
         .text_color(c(tk.text_body))
         .child(
@@ -488,8 +490,8 @@ fn meta_of(card: &ToolCard) -> String {
     format!("{n} line{}", if n == 1 { "" } else { "s" })
 }
 
-/// Human-friendly representation of a tool call: returns (icon, verb, subject, detail_hint).
-pub fn humanize_tool_call(card: &ToolCard, ctx: &fold::Context) -> (&'static str, &'static str, String, Option<String>) {
+/// A tool call in words: (verb, subject, where). No icon: the verb already says what kind of call it is.
+pub fn humanize_tool_call(card: &ToolCard, ctx: &fold::Context) -> (&'static str, String, Option<String>) {
     let raw_target = target(card);
     let shortened = ctx.shorten(&raw_target);
     let is_pending = matches!(card.status, ToolStatus::Pending | ToolStatus::InProgress);
@@ -505,16 +507,16 @@ pub fn humanize_tool_call(card: &ToolCard, ctx: &fold::Context) -> (&'static str
             } else {
                 base_verb
             };
-            ("📄", label, fname, parent)
+            (label, fname, parent)
         }
         "edit" => {
             let p = std::path::Path::new(&shortened);
             let fname = p.file_name().and_then(|f| f.to_str()).unwrap_or(&shortened).to_owned();
             let parent = p.parent().and_then(|p| p.to_str()).filter(|s| !s.is_empty()).map(str::to_owned);
-            ("✎", base_verb, fname, parent)
+            (base_verb, fname, parent)
         }
         "search" => {
-            ("🔍", base_verb, shortened, None)
+            (base_verb, shortened, None)
         }
         "run" => {
             let clean_cmd = shortened.trim_start_matches("$ ").trim();
@@ -522,35 +524,42 @@ pub fn humanize_tool_call(card: &ToolCard, ctx: &fold::Context) -> (&'static str
                 let file = file.trim();
                 let p = std::path::Path::new(file);
                 let fname = p.file_name().and_then(|f| f.to_str()).unwrap_or(file);
-                return ("📄", "Read", format!("{fname} ({range})"), Some(file.to_owned()));
+                return ("Read", format!("{fname} {}", range.replace(',', "–")), parent_of(file));
             }
             if let Some(rest) = clean_cmd.strip_prefix("wc -l ") {
                 let file = rest.trim();
                 let p = std::path::Path::new(file);
                 let fname = p.file_name().and_then(|f| f.to_str()).unwrap_or(file);
-                return ("📊", if is_pending { "Count" } else { "Counted" }, format!("lines in {fname}"), Some(file.to_owned()));
+                return (if is_pending { "Count" } else { "Counted" }, format!("lines in {fname}"), parent_of(file));
             }
             if clean_cmd.starts_with("curl ") {
                 let url = clean_cmd.split_whitespace().find(|w| w.starts_with("http://") || w.starts_with("https://")).unwrap_or(clean_cmd);
                 let host = url.split('/').nth(2).unwrap_or(url);
-                return ("🌐", if is_pending { "Fetch" } else { "Fetched" }, format!("resource from {host}"), Some(url.to_owned()));
+                return (if is_pending { "Fetch" } else { "Fetched" }, host.to_owned(), None);
             }
             if clean_cmd.starts_with("cargo test") {
-                return ("⚡", base_verb, "cargo test".to_owned(), Some(clean_cmd.to_owned()));
+                return (base_verb, clean_cmd.to_owned(), None);
             }
             if clean_cmd.starts_with("cargo build") {
-                return ("⚡", base_verb, "cargo build".to_owned(), Some(clean_cmd.to_owned()));
+                return (base_verb, clean_cmd.to_owned(), None);
             }
             if let Some(git_subcmd) = clean_cmd.strip_prefix("git ") {
-                return ("⎇", "Git", git_subcmd.to_owned(), None);
+                return (base_verb, format!("git {git_subcmd}"), None);
             }
-            ("⚡", base_verb, clean_cmd.to_owned(), None)
+            (base_verb, clean_cmd.to_owned(), None)
         }
         _ => {
-            let clean_name = card.name.strip_prefix("mcp_").unwrap_or(&card.name);
-            ("🧩", base_verb, format!("{clean_name} {shortened}"), None)
+            // An MCP or custom tool: its name is the subject; its input only when it says something.
+            let name = card.name.strip_prefix("mcp_").unwrap_or(&card.name).to_owned();
+            let input = shortened.trim();
+            let said = !input.is_empty() && input != card.name && !input.starts_with('{');
+            (base_verb, name, said.then(|| input.to_owned()))
         }
     }
+}
+
+fn parent_of(file: &str) -> Option<String> {
+    std::path::Path::new(file).parent().and_then(|p| p.to_str()).filter(|s| !s.is_empty()).map(str::to_owned)
 }
 
 fn tool(card: &ToolCard, edge: GroupEdge, expanded: bool, ctx: &fold::Context, cx: &App) -> AnyElement {
@@ -562,7 +571,7 @@ fn tool(card: &ToolCard, edge: GroupEdge, expanded: bool, ctx: &fold::Context, c
         ToolStatus::InProgress => ("●", tk.amber),
         ToolStatus::Pending => ("○", tk.amber_dim),
     };
-    let (icon, verb_label, subject, detail_hint) = humanize_tool_call(card, ctx);
+    let (verb_label, subject, detail_hint) = humanize_tool_call(card, ctx);
     let row_hover = line(cx, t::HOVER);
 
     let right_meta: AnyElement = if !card.diffs.is_empty() {
@@ -628,7 +637,6 @@ fn tool(card: &ToolCard, edge: GroupEdge, expanded: bool, ctx: &fold::Context, c
                 .hover(move |s| s.bg(row_hover))
                 .text_size(px(t::TEXT_SMALL))
                 .child(div().w(px(12.)).flex_shrink_0().text_color(c(ink)).child(mark))
-                .child(div().flex_shrink_0().text_size(px(12.)).child(icon))
                 .child(div().w(px(58.)).flex_shrink_0().font_weight(FontWeight::MEDIUM).text_color(c(tk.text_secondary)).child(verb_label))
                 .child(div().flex_1().min_w_0().truncate().font_family(mono(cx)).text_color(c(tk.text_primary)).child(SharedString::from(cut(&shown(&subject)))))
                 .when_some(detail_hint, |row, hint| {
@@ -676,7 +684,7 @@ pub fn activity_summary(a: &Activity) -> String {
 pub fn activity(a: &Activity, expanded: bool, body: Vec<AnyElement>, cx: &App) -> AnyElement {
     let tk = tk(cx);
     let row_hover = line(cx, t::HOVER);
-    let dot = div().w(px(14.)).flex_shrink_0().text_color(c(if a.running { tk.amber } else { tk.amber_dim })).child(if a.running { "●" } else { "✦" });
+    let dot = div().w(px(12.)).flex_shrink_0().text_color(c(if a.running { tk.amber } else { tk.text_faint })).child(if a.running { "●" } else { "✓" });
     let dot: AnyElement = if a.running && crate::ui::motion(cx) {
         gpui::AnimationExt::with_animation(
             dot,
@@ -690,57 +698,28 @@ pub fn activity(a: &Activity, expanded: bool, body: Vec<AnyElement>, cx: &App) -
         dot.into_any_element()
     };
     let hint = a.hint.as_deref().map(|h| cut(&shown(h))).unwrap_or_default();
+    // Not a card: one line of the log, hanging off the same margin rule its calls use when opened.
     div()
-        .my(px(6.))
+        .my(px(4.))
         .w_full()
-        .rounded(px(t::RADIUS_CARD))
-        .bg(ca(tk.bg_panel, if tk.is_dark { 0.50 } else { 0.70 }))
-        .border_1()
-        .border_color(line(cx, t::LINE_SUBTLE))
+        .border_l_1()
+        .border_color(line(cx, t::LINE_CONTROL))
         .child(
             div()
                 .flex()
                 .items_center()
                 .gap(px(10.))
-                .h(px(36.))
+                .h(px(30.))
                 .px(px(12.))
                 .cursor_pointer()
                 .hover(move |s| s.bg(row_hover))
+                .text_size(px(t::TEXT_SMALL))
                 .child(dot)
-                .child(div().flex_shrink_0().font_weight(FontWeight::MEDIUM).text_size(px(t::TEXT_UI)).text_color(c(tk.text_primary)).child(SharedString::from(activity_summary(a))))
-                .when(!hint.is_empty(), |row| {
-                    row.child(div().text_color(c(tk.text_faint)).child("·"))
-                        .child(div().flex_1().min_w_0().truncate().text_size(px(t::TEXT_SMALL)).text_color(c(tk.text_muted)).child(SharedString::from(hint)))
-                })
-                .child(
-                    div()
-                        .flex_shrink_0()
-                        .flex()
-                        .items_center()
-                        .gap(px(4.))
-                        .px(px(6.))
-                        .py(px(2.))
-                        .rounded(px(t::RADIUS_ROW))
-                        .text_size(px(t::TEXT_TAG))
-                        .text_color(c(tk.text_muted))
-                        .child(if expanded { "Hide" } else { "Show actions" })
-                        .child(if expanded { "⌃" } else { "⌄" }),
-                ),
+                .child(div().flex_shrink_0().whitespace_nowrap().text_color(c(tk.text_secondary)).child(SharedString::from(activity_summary(a))))
+                .child(div().flex_1().min_w_0().truncate().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.text_faint)).child(SharedString::from(hint)))
+                .child(div().flex_shrink_0().text_color(c(tk.text_faint)).child(if expanded { "⌃" } else { "⌄" })),
         )
-        .when(expanded, |d| {
-            d.child(
-                div()
-                    .pt(px(4.))
-                    .pb(px(8.))
-                    .px(px(10.))
-                    .border_t_1()
-                    .border_color(line(cx, t::LINE_SUBTLE))
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.))
-                    .children(body),
-            )
-        })
+        .when(expanded, |d| d.child(div().pl(px(4.)).pb(px(4.)).flex().flex_col().children(body)))
         .into_any_element()
 }
 
@@ -826,8 +805,7 @@ mod tests {
             kind: acp_core::ToolKind::Read,
             diffs: Vec::new(),
         };
-        let (icon, verb, subject, parent) = humanize_tool_call(&read_card, &ctx);
-        assert_eq!(icon, "📄");
+        let (verb, subject, parent) = humanize_tool_call(&read_card, &ctx);
         assert_eq!(verb, "Read");
         assert_eq!(subject, "main.rs");
         assert_eq!(parent.as_deref(), Some("tui/src"));
@@ -841,10 +819,9 @@ mod tests {
             kind: acp_core::ToolKind::Execute,
             diffs: Vec::new(),
         };
-        let (icon, verb, subject, _) = humanize_tool_call(&sed_card, &ctx);
-        assert_eq!(icon, "📄");
+        let (verb, subject, _) = humanize_tool_call(&sed_card, &ctx);
         assert_eq!(verb, "Read");
-        assert_eq!(subject, "lib.rs (50,120)");
+        assert_eq!(subject, "lib.rs 50–120");
 
         let git_card = ToolCard {
             id: "3".into(),
@@ -855,10 +832,9 @@ mod tests {
             kind: acp_core::ToolKind::Execute,
             diffs: Vec::new(),
         };
-        let (icon, verb, subject, _) = humanize_tool_call(&git_card, &ctx);
-        assert_eq!(icon, "⎇");
-        assert_eq!(verb, "Git");
-        assert_eq!(subject, "status");
+        let (verb, subject, _) = humanize_tool_call(&git_card, &ctx);
+        assert_eq!(verb, "Ran");
+        assert_eq!(subject, "git status");
 
         let pending_edit = ToolCard {
             id: "4".into(),
@@ -869,8 +845,7 @@ mod tests {
             kind: acp_core::ToolKind::Edit,
             diffs: Vec::new(),
         };
-        let (icon, verb, subject, _) = humanize_tool_call(&pending_edit, &ctx);
-        assert_eq!(icon, "✎");
+        let (verb, subject, _) = humanize_tool_call(&pending_edit, &ctx);
         assert_eq!(verb, "Edit");
         assert_eq!(subject, "main.rs");
     }

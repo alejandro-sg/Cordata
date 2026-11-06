@@ -32,7 +32,7 @@ mod agents;
 mod attachments;
 mod conversation;
 pub(crate) use conversation::prompt_mark;
-mod floorplan_bar;
+mod desk;
 mod artifacts;
 mod editor;
 mod git_ops;
@@ -236,7 +236,8 @@ pub struct Workspace {
     /// `--selftest`: answer every approval with Allow and quit with a summary once the first turn ends.
     selftest: Option<SelfTest>,
     pub(super) agents: agents::Agents,
-    pub(super) floorplan: floorplan_bar::FloorplanSummary,
+    /// The project's check command (`cordata_view::desk::check_command`), and the folder it was read for.
+    pub(super) check: (PathBuf, Option<String>),
     /// The column edge being dragged.
     resizing: Option<resize::Edge>,
     /// The meter's readout or the model switcher, when one is open.
@@ -453,7 +454,7 @@ impl Workspace {
             selftest: selftest.then(SelfTest::default),
             resizing: None,
             agents: agents::Agents::default(),
-            floorplan: floorplan_bar::FloorplanSummary::default(),
+            check: (PathBuf::new(), None),
             popup: None,
             keys: meter::Keys::default(),
             model_filter,
@@ -480,7 +481,6 @@ impl Workspace {
         this.start_meter(window, cx);
         this.load_tree(cx);
         this.load_review(cx);
-        this.load_floorplan(cx);
         if picker {
             this.open_overlay(Overlay::Picker, window, cx);
         }
@@ -1858,7 +1858,12 @@ impl Workspace {
 fn display_rows(session: &Session) -> (Vec<fold::Row>, fold::Context) {
     let mut ctx = fold::Context::here(session.cwd.clone());
     ctx.waiting = session.view.pending.iter().map(|p| p.info.tool_call_id.clone()).collect();
-    (fold::rows_with(&session.view.messages, &ctx), ctx)
+    // The session's own notes are said once, in the brief's meta line, not as the transcript's first screen; and
+    // the brief's prompt is the page's title, so its row is not drawn again.
+    let notes = cordata_view::desk::session_notes(&session.view.messages);
+    let brief = cordata_view::desk::brief_message(&session.view.messages);
+    let rows = fold::rows_with(&session.view.messages, &ctx).into_iter().filter(|r| !matches!(r, fold::Row::Message(i) if notes.contains(i) || Some(*i) == brief)).collect();
+    (rows, ctx)
 }
 
 /// Whether a pending approval earns a system notification: only the first sighting, only with the window out of front,
@@ -1870,6 +1875,7 @@ fn should_notify(first_sighting: bool, enabled: bool, window_active: bool, notif
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.poll_disk(window, cx);
+        self.refresh_check();
         self.sync_transcript(cx);
         let placeholder = self.placeholder(cx);
         if placeholder != self.composer_placeholder {
@@ -1988,7 +1994,9 @@ impl Render for Workspace {
         .size_full();
         let pending_info = self.session.read(cx).view.pending.front().map(|p| p.info.clone());
         let pending = pending_info.as_ref().map(|info| self.approval_card(info, cx));
-        let actions_row = self.post_reply_actions(cx);
+        let actions_row = self.receipt(cx);
+        let brief = self.brief_block(cx);
+        let places = (has_conversation && column_w >= desk::PLACES_MIN_COLUMN).then(|| self.places_margin(cx));
         let menu = self.slash_menu(cx);
         let sidebar = self.sidebar_open.then(|| self.sidebar(cx));
         let header = self.header(column_w, cx);
@@ -2075,16 +2083,31 @@ impl Render for Workspace {
                             .flex_col()
                             .bg(crate::theme::glass_main_bg(cx))
                             .child(header)
-                            .child(self.floorplan_bar(cx))
-                            .child(body)
+                            // The desk: the brief over the transcript and the composer, the places in the right margin.
                             .child(
                                 div()
-                                    .w_full()
                                     .flex()
-                                    .justify_center()
-                                    .px(px(24.))
-                                    .pb(px(16.))
-                                    .child(div().w_full().max_w(px(t::CONTENT_MAX_W)).flex().flex_col().children(actions_row).children(pending).children(menu).child(composer)),
+                                    .flex_1()
+                                    .min_h_0()
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .children(brief)
+                                            .child(body)
+                                            .child(
+                                                div()
+                                                    .w_full()
+                                                    .flex()
+                                                    .justify_center()
+                                                    .px(px(24.))
+                                                    .pb(px(16.))
+                                                    .child(div().w_full().max_w(px(t::CONTENT_MAX_W)).flex().flex_col().children(actions_row).children(pending).children(menu).child(composer)),
+                                            ),
+                                    )
+                                    .children(places),
                             )
 
                     )

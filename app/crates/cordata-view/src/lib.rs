@@ -14,6 +14,7 @@ pub mod assistants;
 pub mod commands;
 pub mod config_ui;
 pub mod custom;
+pub mod desk;
 pub mod extras;
 pub mod fold;
 pub mod input;
