@@ -181,6 +181,8 @@ pub struct Workspace {
     pub(super) rack_selected_slot: Option<usize>,
     /// Whether rack canvas is in graph mode vs list mode.
     pub(super) rack_graph_mode: bool,
+    /// Progressive exposure view mode (Topology Graph, Pipeline Stages, Decomposition Tree).
+    pub(super) rack_view_mode: cordata_view::work::RackViewMode,
     /// Selected tape stop for forensic inspection, turn-level forking, or post-turn rollback.
     pub(super) selected_turn: Option<usize>,
     /// Whether the Change Sheet's agent summary is expanded beyond its 5-line clamp.
@@ -517,6 +519,7 @@ impl Workspace {
             desk_mode: default_desk_mode,
             rack_selected_slot: None,
             rack_graph_mode: true,
+            rack_view_mode: cordata_view::work::RackViewMode::Graph,
             selected_turn: None,
             sheet_expanded: false,
             sheet_toggled_files: HashSet::new(),
@@ -537,6 +540,8 @@ impl Workspace {
                 this.track(session, window, cx);
             }
             this.show(first, cx);
+            // Retain user's configured default desk mode upon launch/restoration
+            this.desk_mode = default_desk_mode;
             if open_folder {
                 this.switch_project(launch_cwd, window, cx);
             }

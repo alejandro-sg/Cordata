@@ -273,6 +273,64 @@ impl ConfidenceSignal {
     }
 }
 
+/// Supervisory Canvas view modes for progressive exposure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RackViewMode {
+    #[default]
+    Graph,
+    Pipeline,
+    Tree,
+}
+
+impl RackViewMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Graph => "Topology Graph",
+            Self::Pipeline => "Pipeline Stages",
+            Self::Tree => "Decomposition Tree",
+        }
+    }
+}
+
+/// Multi-agent orchestration pipeline stages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PipelineStage {
+    #[default]
+    Plan,
+    Probe,
+    Gate,
+    Synthesize,
+    Done,
+}
+
+impl PipelineStage {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Plan => "1. Plan & Decompose",
+            Self::Probe => "2. Probes & Sandbox",
+            Self::Gate => "3. Gate & Review",
+            Self::Synthesize => "4. Synthesize & Commit",
+            Self::Done => "5. Completed",
+        }
+    }
+}
+
+/// Decomposed sub-task item for progressive exposure.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SubTaskItem {
+    pub label: String,
+    pub done: bool,
+    pub in_progress: bool,
+}
+
+/// Recent backend tool invocation action telemetry.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AgentActionItem {
+    pub tool_name: String,
+    pub summary: String,
+    pub status: String,
+}
+
 /// Directed connection between agents or stages in the orchestration graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GraphEdge {
@@ -280,6 +338,7 @@ pub struct GraphEdge {
     pub to_slot: usize,
     pub label: String,
     pub is_conflict: bool,
+    pub active: bool,
 }
 
 /// Interactive orchestration topology & multi-agent work graph.
@@ -316,6 +375,10 @@ pub struct TriageIn {
     pub confidence: ConfidenceSignal,
     pub wave: usize,
     pub parent_slot: Option<usize>,
+    pub stage: PipelineStage,
+    pub subtasks: Vec<SubTaskItem>,
+    pub recent_actions: Vec<AgentActionItem>,
+    pub touched_files: Vec<String>,
 }
 
 /// Two or more open threads waiting on the exact same tool call (`tool_name` + canonical target/command).
@@ -404,6 +467,81 @@ pub fn infer_confidence(working: bool, has_warning: bool, high_risk: bool) -> Co
     }
 }
 
+/// Infers pipeline stage for multi-agent visual boards.
+pub fn infer_stage(state: TabState, gate_title: Option<&str>, role: AgentRole, files: usize) -> PipelineStage {
+    if gate_title.is_some() || state == TabState::NeedsApproval {
+        PipelineStage::Gate
+    } else if state == TabState::Done {
+        PipelineStage::Done
+    } else if role == AgentRole::Supervisor && files == 0 {
+        PipelineStage::Plan
+    } else if role == AgentRole::InvariantProbe {
+        PipelineStage::Probe
+    } else if role == AgentRole::Synthesizer || role == AgentRole::Reviewer || files > 0 {
+        PipelineStage::Synthesize
+    } else {
+        PipelineStage::Probe
+    }
+}
+
+/// Decomposes an agent's current high-level goal into structured sub-tasks for progressive exposure.
+pub fn infer_subtasks(role: AgentRole, files: usize, working: bool, has_gate: bool) -> Vec<SubTaskItem> {
+    match role {
+        AgentRole::Supervisor => vec![
+            SubTaskItem { label: "Decompose goal into modular briefs".into(), done: true, in_progress: false },
+            SubTaskItem { label: "Dispatch invariant probes & worker pods".into(), done: true, in_progress: false },
+            SubTaskItem { label: "Monitor concurrency & avoid scope collisions".into(), done: working, in_progress: working },
+            SubTaskItem { label: "Synthesize APFS clone diffs into change sheet".into(), done: files > 0, in_progress: !working && files == 0 },
+        ],
+        AgentRole::InvariantProbe => vec![
+            SubTaskItem { label: "Scan repository invariants & tests".into(), done: true, in_progress: false },
+            SubTaskItem { label: "Execute hermetic verification probes".into(), done: !working, in_progress: working },
+            SubTaskItem { label: "Verify falsification boundaries".into(), done: !working && !has_gate, in_progress: has_gate },
+        ],
+        AgentRole::DomainWorker | AgentRole::Worker => vec![
+            SubTaskItem { label: "Target assigned subsystem files".into(), done: true, in_progress: false },
+            SubTaskItem { label: "Execute localized implementation changes".into(), done: files > 0, in_progress: working },
+            SubTaskItem { label: "Pass build and offline unit tests".into(), done: !working && files > 0, in_progress: !working && files == 0 },
+        ],
+        AgentRole::Synthesizer => vec![
+            SubTaskItem { label: "Collect parallel pod diffs".into(), done: true, in_progress: false },
+            SubTaskItem { label: "Resolve overlapping file edits".into(), done: !has_gate, in_progress: has_gate },
+            SubTaskItem { label: "Finalize atomic review patch".into(), done: files > 0, in_progress: working },
+        ],
+        AgentRole::Reviewer => vec![
+            SubTaskItem { label: "Audit change against AGENTS.md rules".into(), done: true, in_progress: false },
+            SubTaskItem { label: "Verify zero plaintext secrets".into(), done: true, in_progress: false },
+            SubTaskItem { label: "Approve wave completion".into(), done: !working, in_progress: working },
+        ],
+    }
+}
+
+/// Extracts recent backend tool actions for live telemetry feeds.
+pub fn extract_recent_actions(messages: &[crate::app::Message]) -> Vec<AgentActionItem> {
+    messages
+        .iter()
+        .rev()
+        .filter_map(|m| match m {
+            crate::app::Message::Tool(t) => {
+                let summary = if !t.diffs.is_empty() {
+                    t.diffs[0].path.clone()
+                } else if let Some(raw) = &t.raw_input {
+                    crate::view::summarize_input(raw).unwrap_or_else(|| t.name.clone())
+                } else {
+                    t.name.clone()
+                };
+                Some(AgentActionItem {
+                    tool_name: t.name.clone(),
+                    summary,
+                    status: t.status.label().to_owned(),
+                })
+            }
+            _ => None,
+        })
+        .take(4)
+        .collect()
+}
+
 /// Builds the interactive multi-agent orchestration graph with roles, dependency edges, and scope collisions.
 pub fn build_work_graph(items: &[TriageIn]) -> WorkGraph {
     let mut high_risk = 0usize;
@@ -423,12 +561,15 @@ pub fn build_work_graph(items: &[TriageIn]) -> WorkGraph {
 
     // 1. Structural orchestration links (supervisor -> workers, probes -> synthesizer)
     for item in items {
+        let is_working = item.state == TabState::Working;
         if let Some(parent) = item.parent_slot {
+            let parent_working = items.iter().find(|i| i.slot == parent).is_some_and(|p| p.state == TabState::Working);
             edges.push(GraphEdge {
                 from_slot: parent,
                 to_slot: item.slot,
                 label: "spawned".into(),
                 is_conflict: false,
+                active: is_working || parent_working,
             });
         } else if (item.role == AgentRole::InvariantProbe || item.role == AgentRole::DomainWorker)
             && let Some(sup) = items.iter().find(|i| i.role == AgentRole::Supervisor)
@@ -439,6 +580,7 @@ pub fn build_work_graph(items: &[TriageIn]) -> WorkGraph {
                 to_slot: item.slot,
                 label: "probe".into(),
                 is_conflict: false,
+                active: is_working || sup.state == TabState::Working,
             });
         }
         if item.role == AgentRole::Synthesizer || item.role == AgentRole::Reviewer {
@@ -449,6 +591,7 @@ pub fn build_work_graph(items: &[TriageIn]) -> WorkGraph {
                         to_slot: item.slot,
                         label: "synthesize".into(),
                         is_conflict: false,
+                        active: is_working || prev.state == TabState::Working,
                     });
                 }
             }
@@ -468,6 +611,7 @@ pub fn build_work_graph(items: &[TriageIn]) -> WorkGraph {
                     to_slot: b.slot,
                     label: "collision".into(),
                     is_conflict: true,
+                    active: a.state == TabState::Working || b.state == TabState::Working,
                 });
             }
         }
@@ -593,6 +737,10 @@ mod tests {
             confidence: ConfidenceSignal::HighSolid,
             wave: 1,
             parent_slot: None,
+            stage: infer_stage(state, sig, AgentRole::Worker, files),
+            subtasks: infer_subtasks(AgentRole::Worker, files, state == TabState::Working, sig.is_some()),
+            recent_actions: Vec::new(),
+            touched_files: Vec::new(),
         };
         let all = [
             strip(0, TabState::NeedsApproval, Some("run_command:cargo test"), 1),
@@ -635,6 +783,10 @@ mod tests {
             confidence: ConfidenceSignal::HighSolid,
             wave: 1,
             parent_slot: None,
+            stage: PipelineStage::Plan,
+            subtasks: infer_subtasks(AgentRole::Supervisor, 2, true, false),
+            recent_actions: Vec::new(),
+            touched_files: vec!["src/lib.rs".into()],
         };
         let probe = TriageIn {
             index: 1,
@@ -658,6 +810,10 @@ mod tests {
             confidence: ConfidenceSignal::HighSolid,
             wave: 1,
             parent_slot: Some(1),
+            stage: PipelineStage::Probe,
+            subtasks: infer_subtasks(AgentRole::InvariantProbe, 1, true, false),
+            recent_actions: Vec::new(),
+            touched_files: vec!["tests/harness.rs".into()],
         };
         let worker = TriageIn {
             index: 2,
@@ -681,6 +837,10 @@ mod tests {
             confidence: ConfidenceSignal::LowHatched,
             wave: 1,
             parent_slot: Some(1),
+            stage: PipelineStage::Gate,
+            subtasks: infer_subtasks(AgentRole::DomainWorker, 3, false, true),
+            recent_actions: Vec::new(),
+            touched_files: vec!["src/hooks.rs".into()],
         };
 
         let graph = build_work_graph(&[root, probe, worker]);

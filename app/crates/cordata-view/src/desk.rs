@@ -851,6 +851,10 @@ mod tests {
                 confidence: crate::work::ConfidenceSignal::HighSolid,
                 wave: 1,
                 parent_slot: None,
+                stage: crate::work::PipelineStage::Probe,
+                subtasks: Vec::new(),
+                recent_actions: Vec::new(),
+                touched_files: Vec::new(),
             })
             .collect();
 

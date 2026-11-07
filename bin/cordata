@@ -47,6 +47,7 @@ Cordata — AI Coding Assistant & Autonomous Orchestrator
   cordata evolve [TARGET] [OPTS]   Recursive self-improvement cycle across Iron Gates
   cordata floorplan [OPTIONS]      Architectural map & active-work visualizer (--html to open)
   cordata doctor                   Check the CLIs, providers and settings Cordata leans on
+  cordata app [OPTIONS]            Launch native desktop application (GPUI Canvas)
   cordata tui [OPTIONS]            The terminal client with its own options
 
 Options:
@@ -60,6 +61,17 @@ case "${1:-}" in
   doctor) bin="$(built cordata-doctor)"; shift; exec "$bin" "$@" ;;
   floorplan) bin="$(built cordata-floorplan)"; shift; exec "$bin" "$@" ;;
   run|status|show|resume|evolve) exec "$(built cordata-run)" "$@" ;;
+  app|gui)
+    shift || true
+    if [[ -d "$HOME/Applications/Cordata.app" ]]; then
+      open -a "$HOME/Applications/Cordata.app" --args "$@"
+    elif [[ -x "$REPO_ROOT/app/target/release/cordata-app" ]]; then
+      exec "$REPO_ROOT/app/target/release/cordata-app" "$@"
+    else
+      open -a "Cordata" 2>/dev/null || (cd "$REPO_ROOT/app" && cargo run --release -q -p cordata-app -- "$@")
+    fi
+    exit 0
+    ;;
   tui) shift; exec "$(built acp-tui)" "$@" ;;
   *) exec "$(built acp-tui)" "$@" ;;
 esac
