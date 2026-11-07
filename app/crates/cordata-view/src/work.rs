@@ -244,12 +244,34 @@ pub enum AgentRole {
 impl AgentRole {
     pub fn badge(&self) -> &'static str {
         match self {
-            Self::Worker => "Worker",
-            Self::Supervisor => "Supervisor",
-            Self::InvariantProbe => "INV Probe",
-            Self::DomainWorker => "DOM Worker",
-            Self::Synthesizer => "Synthesizer",
-            Self::Reviewer => "Reviewer",
+            Self::Worker => "WORKER",
+            Self::Supervisor => "SUPERVISOR",
+            Self::InvariantProbe => "PROBE",
+            Self::DomainWorker => "DOMAIN",
+            Self::Synthesizer => "SYNTH",
+            Self::Reviewer => "REVIEW",
+        }
+    }
+
+    pub fn glyph(&self) -> &'static str {
+        match self {
+            Self::Supervisor => "⌘",
+            Self::InvariantProbe => "⌕",
+            Self::DomainWorker => "⚡",
+            Self::Synthesizer => "⎇",
+            Self::Reviewer => "🛡",
+            Self::Worker => "⚙",
+        }
+    }
+
+    pub fn mission(&self) -> &'static str {
+        match self {
+            Self::Supervisor => "Decompose objectives & govern concurrent waves",
+            Self::InvariantProbe => "Continuous invariant testing & falsification probes",
+            Self::DomainWorker => "APFS clone sandbox code synthesis & compilation",
+            Self::Synthesizer => "APFS clone patch reconciliation & 3-way merge",
+            Self::Reviewer => "Security audit, secret scan & zero regression validation",
+            Self::Worker => "Autonomous task execution in sandbox",
         }
     }
 }

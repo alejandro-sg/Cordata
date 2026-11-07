@@ -160,7 +160,7 @@ impl Workspace {
         let sel_slot = self.rack_selected_slot;
         let view_mode = self.rack_view_mode;
 
-        // Governor Blueprint Bar with stage breadcrumb & batch gate approval
+        // Governor Blueprint Bar with stage breadcrumbs & autonomous telemetry
         let blueprint_bar = div()
             .id("governor-blueprint")
             .p(px(10.))
@@ -177,18 +177,18 @@ impl Workspace {
                     .child(ui::mark("gov-mark", if graph.high_risk_count > 0 { MarkState::NeedsYou } else { MarkState::Working }, 11., cx))
                     .child(div().flex().flex_col().gap(px(1.))
                         .child(div().text_size(px(t::TEXT_SMALL)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary))
-                            .child(SharedString::from(format!("Wave {} Governor Blueprint · {} Agents ({} Gates)", graph.active_wave, inputs.len(), graph.high_risk_count))))
+                            .child(SharedString::from(format!("Wave {} Flight Blueprint · {} Specialized Pods · APFS Sandboxes", graph.active_wave, inputs.len()))))
                         .child(div().flex().items_center().gap(px(4.))
-                            .child(div().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).text_color(c(tk.amber)).child("1.Plan"))
-                            .child(div().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).text_color(c(tk.text_muted)).child("→"))
-                            .child(div().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).text_color(c(tk.teal)).child("2.Probes"))
-                            .child(div().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).text_color(c(tk.text_muted)).child("→"))
-                            .child(div().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).text_color(c(if graph.high_risk_count > 0 { tk.attention } else { tk.text_muted })).child("3.Gates"))
-                            .child(div().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).text_color(c(tk.text_muted)).child("→"))
-                            .child(div().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).text_color(c(tk.text_primary)).child("4.Synthesize")))))
+                            .child(div().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).text_color(c(tk.amber)).child("1.PLAN"))
+                            .child(div().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).text_color(c(tk.text_muted)).child("──►"))
+                            .child(div().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).text_color(c(tk.teal)).child("2.PROBES"))
+                            .child(div().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).text_color(c(tk.text_muted)).child("──►"))
+                            .child(div().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).text_color(c(if graph.high_risk_count > 0 { tk.attention } else { tk.text_muted })).child("3.GATES"))
+                            .child(div().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).text_color(c(tk.text_muted)).child("──►"))
+                            .child(div().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).text_color(c(tk.text_primary)).child("4.SYNTHESIS")))))
             .child(
                 div().flex().items_center().gap(px(6.))
-                    .child(ui::button("gov-spawn-worker", "+ Dispatch Worker ⌘N", Kind::Ghost, cx)
+                    .child(ui::button("gov-spawn-worker", "+ Dispatch Pod ⌘N", Kind::Ghost, cx)
                         .on_click(cx.listener(|this, _, window, cx| { this.open_new(window, cx); })))
                     .when(!rack.batch_gates.is_empty(), |b| {
                         let total: usize = rack.batch_gates.iter().map(|g| g.thread_indices.len()).sum();
@@ -196,27 +196,27 @@ impl Workspace {
                         b.child(ui::button("gov-batch-allow", SharedString::from(format!("Approve {total} Gates")), Kind::Primary, cx)
                             .on_click(cx.listener(move |this, _, _, cx| this.answer_batch_gate(&sig, ApprovalDecision::Allow, cx))))
                     })
-                    .child(ui::button("gov-pause-all", "Pause All", Kind::Ghost, cx).on_click(cx.listener(|this, _, _, cx| {
+                    .child(ui::button("gov-pause-all", "Hold Orbit", Kind::Ghost, cx).on_click(cx.listener(|this, _, _, cx| {
                         for ses in &this.sessions { ses.update(cx, |s, cx| s.cancel(cx)); }
                         cx.notify();
                     }))));
 
-        // Scope Collision Radar
+        // Conflict Avoidance & Scope Collision Radar
         let collision_radar = (!graph.scope_collisions.is_empty()).then(|| {
             div().flex().flex_col().gap(px(4.))
                 .children(graph.scope_collisions.iter().enumerate().map(|(c_ix, (s1, s2, desc))| {
-                    div().id(("scope-collision", c_ix)).p(px(6.)).rounded(px(t::RADIUS_CARD)).border_1().border_color(ca(tk.amber, 0.5)).bg(ca(tk.amber, 0.08))
+                    div().id(("scope-collision", c_ix)).p(px(8.)).rounded(px(t::RADIUS_CARD)).border_1().border_color(ca(tk.amber, 0.55)).bg(ca(tk.amber, 0.08))
                         .flex().items_center().justify_between()
                         .child(div().flex().items_center().gap(px(6.))
                             .child(ui::mark(("coll-mark", c_ix), MarkState::NeedsYou, 10., cx))
-                            .child(div().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.amber)).child(SharedString::from(desc.clone()))))
-                        .child(div().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).text_color(c(tk.text_muted)).child(SharedString::from(format!("#{s1} ⟷ #{s2}"))))
+                            .child(div().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.amber)).child(SharedString::from(format!("⚡ Conflict Radar: {desc}")))))
+                        .child(div().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).text_color(c(tk.text_muted)).child(SharedString::from(format!("Pod #{s1} ⟷ Pod #{s2}"))))
                 }))
         });
 
-        // 1. Topology Graph View with animated pulse for active nodes
+        // 1. Spatial Neural Mesh Canvas
         let graph_view = div().flex().flex_col().gap(px(8.))
-            .child(div().flex().flex_wrap().gap(px(8.))
+            .child(div().flex().flex_wrap().gap(px(10.))
                 .children(inputs.iter().map(|item| {
                     let slot = item.slot;
                     let is_sel = sel_slot == Some(slot);
@@ -229,28 +229,31 @@ impl Workspace {
                         AgentRole::Reviewer => tk.attention,
                         AgentRole::Worker => tk.text_secondary,
                     };
+                    let done_tasks = item.subtasks.iter().filter(|s| s.done).count();
+                    let total_tasks = item.subtasks.len();
                     let card = div()
                         .id(("node-agent", slot))
                         .role(gpui::Role::Button)
                         .cursor_pointer()
-                        .w(px(255.))
-                        .p(px(8.))
+                        .w(px(260.))
+                        .p(px(10.))
                         .rounded(px(t::RADIUS_CARD))
                         .border_1()
-                        .border_color(if is_sel { c(tk.amber) } else { ca(role_color, if item.confidence == ConfidenceSignal::LowHatched { 0.8 } else { 0.4 }) })
-                        .bg(if is_sel { ca(tk.amber, 0.12) } else { ca(tk.bg_panel, 0.8) })
+                        .border_color(if is_sel { c(tk.amber) } else { ca(role_color, if item.confidence == ConfidenceSignal::LowHatched { 0.8 } else { 0.35 }) })
+                        .bg(if is_sel { ca(tk.amber, 0.12) } else { ca(tk.bg_panel, 0.85) })
                         .hover(|s| s.bg(ca(tk.amber, 0.08)))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.rack_selected_slot = if this.rack_selected_slot == Some(slot) { None } else { Some(slot) };
                             record_ux_event("node_select", serde_json::json!({ "slot": slot }));
                             cx.notify();
                         }))
-                        .flex().flex_col().gap(px(3.))
+                        .flex().flex_col().gap(px(4.))
                         .child(div().flex().items_center().justify_between()
                             .child(div().flex().items_center().gap(px(5.))
                                 .child(div().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).text_color(c(role_color)).child(SharedString::from(format!("#{slot}"))))
-                                .child(div().px(px(4.)).py(px(1.)).rounded(px(3.)).bg(ca(role_color, 0.15))
-                                    .font_family(mono(cx)).text_size(px(9.)).font_weight(FontWeight::BOLD).text_color(c(role_color)).child(item.role.badge())))
+                                .child(div().px(px(5.)).py(px(1.)).rounded(px(3.)).bg(ca(role_color, 0.15))
+                                    .font_family(mono(cx)).text_size(px(9.)).font_weight(FontWeight::BOLD).text_color(c(role_color))
+                                    .child(SharedString::from(format!("{} {}", item.role.glyph(), item.role.badge())))))
                             .child(ui::mark(("node-mark", slot), if is_working { MarkState::Working } else if item.gate_title.is_some() { MarkState::NeedsYou } else { MarkState::Idle }, 9., cx)))
                         .child(div().truncate().text_size(px(t::TEXT_SMALL)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(SharedString::from(item.title.clone())))
                         .child(div().truncate().font_family(mono(cx)).text_size(px(t::TEXT_TAG))
@@ -258,7 +261,7 @@ impl Workspace {
                             .child(SharedString::from(item.current_action.clone().unwrap_or_else(|| "idle".to_owned()))))
                         .child(div().flex().items_center().justify_between().pt(px(2.))
                             .child(div().font_family(mono(cx)).text_size(px(9.)).text_color(c(tk.text_faint)).child(SharedString::from(format!("±{}f · +{} −{}", item.files, item.added, item.removed))))
-                            .child(div().font_family(mono(cx)).text_size(px(9.)).text_color(c(tk.text_faint)).child(SharedString::from(item.confidence.label()))));
+                            .child(div().font_family(mono(cx)).text_size(px(9.)).text_color(c(tk.text_faint)).child(SharedString::from(format!("✓ {done_tasks}/{total_tasks}")))));
 
                     if is_working && ui::motion(cx) {
                         gpui::AnimationExt::with_animation(
@@ -274,10 +277,10 @@ impl Workspace {
                         card.into_any_element()
                     }
                 })))
-            // Directed edge relay pills
+            // Active neural communication conduits
             .when(!graph.edges.is_empty(), |b| {
                 b.child(div().flex().items_center().flex_wrap().gap(px(6.)).pt(px(4.))
-                    .child(div().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).text_color(c(tk.text_muted)).child("relational links:"))
+                    .child(div().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).text_color(c(tk.text_muted)).child("active conduits:"))
                     .children(graph.edges.iter().map(|e| {
                         let (f, t, lbl, conf) = (e.from_slot, e.to_slot, e.label.clone(), e.is_conflict);
                         div().px(px(6.)).py(px(2.)).rounded(px(3.))
@@ -285,11 +288,11 @@ impl Workspace {
                             .border_1().border_color(ca(if conf { tk.attention } else { tk.amber }, if e.active { 0.5 } else { 0.2 }))
                             .font_family(mono(cx)).text_size(px(9.))
                             .text_color(c(if conf { tk.attention } else { tk.text_primary }))
-                            .child(SharedString::from(format!("#{f} ──{lbl}──> #{t}")))
+                            .child(SharedString::from(format!("POD #{f} ═══({lbl})═══► POD #{t}")))
                     })))
             });
 
-        // 2. Pipeline Stages (Kanban) View
+        // 2. Multi-Track Flight Recorder (Phase Rails)
         let pipeline_view = div().flex().gap(px(10.))
             .children([PipelineStage::Plan, PipelineStage::Probe, PipelineStage::Gate, PipelineStage::Synthesize, PipelineStage::Done].into_iter().map(|st| {
                 let st_items: Vec<&TriageIn> = inputs.iter().filter(|i| i.stage == st).collect();
@@ -309,13 +312,13 @@ impl Workspace {
                                 cx.notify();
                             }))
                             .child(div().flex().items_center().justify_between()
-                                .child(div().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).font_weight(FontWeight::MEDIUM).text_color(c(tk.amber)).child(SharedString::from(format!("#{slot}"))))
+                                .child(div().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).font_weight(FontWeight::MEDIUM).text_color(c(tk.amber)).child(SharedString::from(format!("POD #{slot}"))))
                                 .child(ui::mark(("st-mark", slot), if it.state == TabState::Working { MarkState::Working } else { MarkState::Idle }, 8., cx)))
                             .child(div().truncate().text_size(px(t::TEXT_TAG)).text_color(c(tk.text_primary)).child(SharedString::from(it.title.clone())))
                     }))
             }));
 
-        // 3. Sub-Task Decomposition Tree View
+        // 3. Sub-Task Matrix View
         let tree_view = div().flex().flex_col().gap(px(8.))
             .children(inputs.iter().map(|item| {
                 let slot = item.slot;
@@ -326,7 +329,7 @@ impl Workspace {
                     .flex().flex_col().gap(px(4.))
                     .child(div().flex().items_center().justify_between()
                         .child(div().flex().items_center().gap(px(6.))
-                            .child(div().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).text_color(c(tk.amber)).child(SharedString::from(format!("#{slot} · {}", item.role.badge()))))
+                            .child(div().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).text_color(c(tk.amber)).child(SharedString::from(format!("POD #{slot} · {}", item.role.badge()))))
                             .child(div().text_size(px(t::TEXT_SMALL)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(SharedString::from(item.title.clone()))))
                         .child(div().font_family(mono(cx)).text_size(px(9.)).text_color(c(tk.text_faint)).child(SharedString::from(format!("±{} files", item.files)))))
                     .children(item.subtasks.iter().map(|sub| {
@@ -340,7 +343,7 @@ impl Workspace {
                     }))
             }));
 
-        // Adaptive Node Inspector with telemetry & granular controls
+        // Adaptive Generative Node Inspector with telemetry & granular controls
         let node_inspector = sel_slot.and_then(|slot| inputs.iter().find(|i| i.slot == slot)).map(|item| {
             let (ix, slot) = (item.index, item.slot);
             div()
@@ -353,7 +356,7 @@ impl Workspace {
                 .flex().flex_col().gap(px(8.))
                 .child(div().flex().items_center().justify_between()
                     .child(div().flex().items_center().gap(px(8.))
-                        .child(div().font_family(voice(cx)).text_size(px(15.)).font_weight(FontWeight::BOLD).text_color(c(tk.text_primary)).child(SharedString::from(format!("Agent #{slot} · {}", item.role.badge()))))
+                        .child(div().font_family(voice(cx)).text_size(px(15.)).font_weight(FontWeight::BOLD).text_color(c(tk.text_primary)).child(SharedString::from(format!("Pod #{slot} · {} · {}", item.role.glyph(), item.role.badge()))))
                         .child(div().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.text_muted)).child(SharedString::from(item.title.clone()))))
                     .child(div().flex().items_center().gap(px(6.))
                         .child(ui::button(("insp-focus", slot), "Focus Thread ⌘N", Kind::Primary, cx).on_click(cx.listener(move |this, _, _, cx| {
@@ -367,10 +370,11 @@ impl Workspace {
                             this.desk_mode = DeskMode::ChangeSheet;
                             cx.notify();
                         })))
-                        .child(ui::button(("insp-pause", slot), "Intervene", Kind::Ghost, cx).on_click(cx.listener(move |this, _, _, cx| {
+                        .child(ui::button(("insp-pause", slot), "Hold / Steer", Kind::Ghost, cx).on_click(cx.listener(move |this, _, _, cx| {
                             if let Some(target) = this.sessions.get(ix).cloned() { target.update(cx, |s, cx| s.cancel(cx)); }
                             cx.notify();
                         })))))
+                .child(div().font_family(mono(cx)).text_size(px(9.)).text_color(c(tk.text_muted)).child(SharedString::from(item.role.mission())))
                 .when_some(item.gate_title.as_ref(), |insp, gate| {
                     let sig = item.gate_signature.clone().unwrap_or_default();
                     let sig_deny = sig.clone();
@@ -380,8 +384,8 @@ impl Workspace {
                             .child(ui::mark(("insp-gate-mark", slot), MarkState::NeedsYou, 11., cx))
                             .child(div().font_family(mono(cx)).text_size(px(t::TEXT_SMALL)).text_color(c(tk.text_primary)).child(SharedString::from(format!("Pending Gate: {gate}")))))
                         .child(div().flex().items_center().gap(px(6.))
-                            .child(ui::button(("insp-gate-allow", slot), "Allow", Kind::Primary, cx).on_click(cx.listener(move |this, _, _, cx| this.answer_batch_gate(&sig, ApprovalDecision::Allow, cx))))
-                            .child(ui::button(("insp-gate-deny", slot), "Deny", Kind::Ghost, cx).on_click(cx.listener(move |this, _, _, cx| this.answer_batch_gate(&sig_deny, ApprovalDecision::Reject, cx))))))
+                            .child(ui::button(("insp-gate-allow", slot), "Allow ↵", Kind::Primary, cx).on_click(cx.listener(move |this, _, _, cx| this.answer_batch_gate(&sig, ApprovalDecision::Allow, cx))))
+                            .child(ui::button(("insp-gate-deny", slot), "Deny Esc", Kind::Ghost, cx).on_click(cx.listener(move |this, _, _, cx| this.answer_batch_gate(&sig_deny, ApprovalDecision::Reject, cx))))))
                 })
                 .when(!item.recent_actions.is_empty(), |insp| {
                     insp.child(div().flex().flex_col().gap(px(3.))
@@ -424,19 +428,19 @@ impl Workspace {
                 .child(div().w_full().max_w(px(t::CONTENT_MAX_W)).flex().flex_col().gap(px(12.))
                     .child(div().flex().items_baseline().justify_between().pb(px(8.)).border_b_1().border_color(line(cx, t::LINE_SUBTLE))
                         .child(div().flex().items_baseline().gap(px(10.))
-                            .child(div().font_family(voice(cx)).text_size(px(22.)).text_color(c(tk.text_primary)).child("Supervisory Control Room"))
-                            .child(ui::meta(SharedString::from(format!("{} active agents · wave {}", inputs.len(), graph.active_wave)), cx)))
+                            .child(div().font_family(voice(cx)).text_size(px(22.)).text_color(c(tk.text_primary)).child("Autonomous Flight Deck"))
+                            .child(ui::meta(SharedString::from(format!("wave {} · {} pods in orbit", graph.active_wave, inputs.len())), cx)))
                         .child(div().flex().items_center().gap(px(8.))
                             .child(div().flex().items_center().gap(px(2.))
-                                .child(ui::button("view-graph", "Graph", if view_mode == RackViewMode::Graph { Kind::Tint } else { Kind::Ghost }, cx)
+                                .child(ui::button("view-graph", "☩ Mesh", if view_mode == RackViewMode::Graph { Kind::Tint } else { Kind::Ghost }, cx)
                                     .on_click(cx.listener(|this, _, _, cx| { this.rack_view_mode = RackViewMode::Graph; this.rack_graph_mode = true; cx.notify(); })))
-                                .child(ui::button("view-pipeline", "Pipeline", if view_mode == RackViewMode::Pipeline { Kind::Tint } else { Kind::Ghost }, cx)
+                                .child(ui::button("view-pipeline", "☵ Rails", if view_mode == RackViewMode::Pipeline { Kind::Tint } else { Kind::Ghost }, cx)
                                     .on_click(cx.listener(|this, _, _, cx| { this.rack_view_mode = RackViewMode::Pipeline; this.rack_graph_mode = false; cx.notify(); })))
-                                .child(ui::button("view-tree", "Tree", if view_mode == RackViewMode::Tree { Kind::Tint } else { Kind::Ghost }, cx)
+                                .child(ui::button("view-tree", "☲ Matrix", if view_mode == RackViewMode::Tree { Kind::Tint } else { Kind::Ghost }, cx)
                                     .on_click(cx.listener(|this, _, _, cx| { this.rack_view_mode = RackViewMode::Tree; this.rack_graph_mode = false; cx.notify(); }))))
                             .child(div().id("rack-close").role(gpui::Role::Button).cursor_pointer().font_family(mono(cx)).text_size(px(t::TEXT_META))
                                 .text_color(c(tk.text_muted)).hover(|s| s.text_color(c(tk.text_primary)))
-                                .on_click(cx.listener(|this, _, _, cx| this.toggle_rack(cx))).child("back to thread  ⌘0"))))
+                                .on_click(cx.listener(|this, _, _, cx| this.toggle_rack(cx))).child("thread view  ⌘0"))))
                     .child(blueprint_bar)
                     .children(collision_radar)
                     .child(match view_mode {

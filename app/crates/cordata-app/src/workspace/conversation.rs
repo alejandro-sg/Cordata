@@ -17,7 +17,7 @@ use gpui_component::input::Textarea;
 use super::{Overlay, TogglePanel, ToggleSidebar, Workspace, tilde};
 use crate::theme::{amber, c, ca, inset_ring, line, mono, soft_shadow, tk};
 use crate::transcript;
-use crate::ui::{self, Kind, Tone};
+use crate::ui::{self, Kind, MarkState, Tone};
 
 /// What the header says about the shown session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -726,6 +726,59 @@ impl Workspace {
         let ready = typed || !self.staged.is_empty();
         let active_border = ready || busy || self.saying;
 
+        if self.desk_mode == super::DeskMode::Rack {
+            let sel_slot = self.rack_selected_slot.unwrap_or(1);
+            let send_key = if self.prefs.send_with == "cmd-enter" { "⌘↵" } else { "↵" };
+            return div()
+                .id("composer")
+                .role(gpui::Role::Group)
+                .aria_label("Flight Director HUD")
+                .capture_key_down(cx.listener(Self::composer_keys))
+                .w_full()
+                .flex()
+                .justify_center()
+                .pt(px(4.))
+                .child(
+                    div()
+                        .w_full()
+                        .max_w(px(880.))
+                        .h(px(40.))
+                        .px(px(12.))
+                        .rounded_full()
+                        .border_1()
+                        .border_color(ca(tk.amber, if typed { 0.55 } else { 0.25 }))
+                        .bg(ca(tk.bg_panel, 0.90))
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .child(
+                            div().flex().items_center().gap(px(6.))
+                                .child(ui::mark("hud-mark", if busy { MarkState::Working } else { MarkState::Idle }, 9., cx))
+                                .child(div().px(px(5.)).py(px(1.)).rounded(px(3.)).bg(ca(tk.amber, 0.15))
+                                    .font_family(mono(cx)).text_size(px(10.)).font_weight(FontWeight::BOLD).text_color(c(tk.amber))
+                                    .child(SharedString::from(format!("POD #{sel_slot}"))))
+                        )
+                        .child(
+                            div().flex_1().min_w_0().text_size(px(t::TEXT_SMALL))
+                                .child(Textarea::new(&self.composer).appearance(false).aria_label("Directive"))
+                        )
+                        .child(
+                            div().flex().items_center().gap(px(6.))
+                                .child(div().font_family(mono(cx)).text_size(px(9.)).text_color(c(tk.text_faint)).child(SharedString::from(format!("{send_key} steer · ⌘N pod"))))
+                                .when(busy, |row| {
+                                    row.child(ui::button("hud-stop", "Stop", Kind::Ghost, cx).on_click(cx.listener(|this, _, _, cx| this.session.update(cx, |s, cx| s.cancel(cx)))))
+                                })
+                                .child(ui::button("hud-spawn", "+ Pod", Kind::Ghost, cx).on_click(cx.listener(|this, _, window, cx| this.open_new(window, cx))))
+                                .child(ui::button("hud-sheet", "Diffs ⌘D", Kind::Ghost, cx).on_click(cx.listener(|this, _, _, cx| {
+                                    this.load_review(cx);
+                                    this.desk_mode = super::DeskMode::ChangeSheet;
+                                    cx.notify();
+                                })))
+                        )
+                )
+                .into_any_element();
+        }
+
         let mut ring = Vec::new();
         if active_border {
             ring.push(BoxShadow { color: amber(cx, 0.05), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(t::COMPOSER_RING), inset: false });
@@ -963,7 +1016,7 @@ impl Workspace {
     pub(super) fn placeholder(&self, cx: &App) -> &'static str {
         let view = &self.session.read(cx).view;
         if self.desk_mode == super::DeskMode::Rack {
-            "Message active thread (↵), click any thread above, or press ⌘0 to return…"
+            "Direct mission or active pod (e.g. /spawn, /pause, /synthesize, or type directive)…"
         } else if self.saying {
             "Reply in your own words — ↵ sends, esc returns to approval"
         } else if !view.pending.is_empty() {
