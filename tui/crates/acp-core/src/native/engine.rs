@@ -20,6 +20,7 @@ use super::provider::{Call, Delta, GenaiProvider, Msg, Provider};
 use super::tools;
 use crate::events::{AppEvent, Restored, SessionInfo, StopReason, ToolCallInfo, ToolCallPatch, ToolStatus};
 use crate::history;
+use crate::hooks::{HookDecision, HooksRegistry};
 use crate::permission::ApprovalDecision;
 use crate::auto::{self, Judgement};
 use crate::policy::{self, Mode, Network, Policy};
@@ -137,6 +138,7 @@ async fn interruptible<F: Future>(fut: F, commands: &mut Commands, events: &Even
                 Some(Command::Cancel) => return Err(Interrupt::Cancel),
                 Some(Command::Shutdown) | None => return Err(Interrupt::Shutdown),
                 Some(Command::SetMode(next)) => set_mode(mode, next, events),
+                Some(Command::SetScope(next)) => set_scope(mode, next, events),
                 Some(Command::Prompt(..) | Command::Resume(_) | Command::Forget | Command::SetModel(_)) => {
                     let _ = events.send(AppEvent::Notice("a turn is still running; wait or cancel it first".into()));
                 }
@@ -151,21 +153,37 @@ fn set_mode(mode: &ModeSwitch, next: Mode, events: &Events) {
     let _ = events.send(AppEvent::ModeChanged(next));
 }
 
-/// The session's mode, switched through a shared reference by the command loop while a turn holds the agent. An
-/// atomic rather than a `Cell` keeps the session future `Send` (it runs under `tokio::spawn`).
-struct ModeSwitch(AtomicBool);
+fn set_scope(mode: &ModeSwitch, next: Vec<String>, events: &Events) {
+    mode.set_scope(next.clone());
+    let _ = events.send(AppEvent::ScopeChanged(next));
+}
+
+/// The session's mode and pinned write scope, switched through a shared reference by the command loop while a turn
+/// holds the agent. Atomic + `std::sync::Mutex` keeps the session future `Send` (it runs under `tokio::spawn`).
+struct ModeSwitch {
+    auto: AtomicBool,
+    scope: std::sync::Mutex<Vec<String>>,
+}
 
 impl ModeSwitch {
     fn new(mode: Mode) -> Self {
-        Self(AtomicBool::new(mode == Mode::Auto))
+        Self { auto: AtomicBool::new(mode == Mode::Auto), scope: std::sync::Mutex::new(Vec::new()) }
     }
 
     fn get(&self) -> Mode {
-        if self.0.load(Ordering::Relaxed) { Mode::Auto } else { Mode::Ask }
+        if self.auto.load(Ordering::Relaxed) { Mode::Auto } else { Mode::Ask }
     }
 
     fn set(&self, mode: Mode) {
-        self.0.store(mode == Mode::Auto, Ordering::Relaxed);
+        self.auto.store(mode == Mode::Auto, Ordering::Relaxed);
+    }
+
+    fn scope(&self) -> Vec<String> {
+        self.scope.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn set_scope(&self, next: Vec<String>) {
+        *self.scope.lock().unwrap_or_else(|e| e.into_inner()) = next;
     }
 }
 
@@ -183,6 +201,7 @@ struct Agent<'a> {
     /// `Command::SetMode` changes it, mid-turn too.
     mode: ModeSwitch,
     mcp: super::mcp::McpManager,
+    hooks: HooksRegistry,
 }
 
 /// Where this conversation is saved after each turn, if anywhere.
@@ -310,7 +329,8 @@ pub(crate) async fn drive(
         let _ = events.send(AppEvent::Notice(notice));
     }
     let mode = ModeSwitch::new(policy.mode);
-    let mut agent = Agent { provider, switched: None, cwd: options.cwd.clone(), offload, always: HashSet::new(), economizer, policy, mode, mcp };
+    let hooks = HooksRegistry::load_for_workspace(&options.cwd);
+    let mut agent = Agent { provider, switched: None, cwd: options.cwd.clone(), offload, always: HashSet::new(), economizer, policy, mode, mcp, hooks };
     let mut history: Vec<Msg> = Vec::new();
     while let Some(command) = commands.recv().await {
         match command {
@@ -377,6 +397,7 @@ pub(crate) async fn drive(
                 }
             },
             Command::SetMode(next) => set_mode(&agent.mode, next, &events),
+            Command::SetScope(next) => set_scope(&agent.mode, next, &events),
             Command::Cancel => {}
             Command::Shutdown => break,
         }
@@ -537,6 +558,12 @@ impl Agent<'_> {
             return Ok(reason);
         }
 
+        // Lifecycle hooks ($c_8): pre-tool interceptor inside the tool loop.
+        if let HookDecision::Block { reason } = self.hooks.evaluate_pre_tool_use(&call.name, &call.args) {
+            let _ = events.send(patch(ToolStatus::Failed, Some(reason.clone())));
+            return Ok(reason);
+        }
+
         if call.name == "run_command" && policy::wants_network(&call.args) && self.policy.network == Network::Off {
             let reason = "refused: network access for commands is off (chat.network). Run it without `network`, or ask the user to run it.".to_owned();
             let _ = events.send(patch(ToolStatus::Failed, Some(reason.clone())));
@@ -549,19 +576,24 @@ impl Agent<'_> {
             let _ = events.send(patch(ToolStatus::Failed, Some(reason.clone())));
             return Ok(reason);
         }
+        let scope = self.mode.scope();
+        let always_eligible = auto::is_always_eligible(&call.name, &call.args, &self.cwd, &self.policy, &scope);
         let key = approval::always_key(&call.name, &call.args);
         if tools::needs_approval(&call.name) && let policy::Verdict::Allow(rule) = &rule {
             let _ = events.send(AppEvent::Notice(format!("{} ran without asking: your rule `{rule}`", call.name)));
-        } else if tools::needs_approval(&call.name) && !self.always.contains(&key) {
+        } else if tools::needs_approval(&call.name) && !(always_eligible && self.always.contains(&key)) {
             // Auto mode answers first; a call it cannot show is safe goes to the card with the reason why.
             let judged = match self.mode.get() {
                 Mode::Ask => None,
-                Mode::Auto => Some(auto::judge(&call.name, &call.args, &self.cwd, &self.policy)),
+                Mode::Auto => Some(auto::judge_with_scope(&call.name, &call.args, &self.cwd, &self.policy, &scope)),
             };
             if let Some(Judgement::Allow(reason)) = judged {
                 let _ = events.send(AppEvent::AutoAllowed { id: call.id.clone(), reason });
             } else {
                 let mut info = approval::request(&call.id, &call.name, &call.args);
+                if !always_eligible {
+                    info.always_label = None;
+                }
                 if let Some(Judgement::Ask(reason)) = judged {
                     info.reason = Some(reason);
                 }
@@ -571,8 +603,7 @@ impl Agent<'_> {
                 let decision = interruptible(rx, commands, events, &self.mode).await?.unwrap_or(ApprovalDecision::Reject);
                 match approval::interpret_call(&call.name, decision) {
                     Verdict::Allow { always } => {
-                        // A network call is never remembered, whatever the front end sent.
-                        if always && !(call.name == "run_command" && policy::wants_network(&call.args)) {
+                        if always && always_eligible {
                             self.always.insert(key);
                         }
                     }
@@ -614,6 +645,18 @@ impl Agent<'_> {
             self.economizer.commands.push(CommandOutcome { cmd, ok: status == ToolStatus::Completed });
         }
         let mut output = tools::limit_output(output, &self.offload);
+        // Lifecycle hooks ($c_8): post-tool interceptor inside the tool loop.
+        match self.hooks.evaluate_post_tool_use(&call.name, &call.args, &output, status == ToolStatus::Completed) {
+            HookDecision::Block { reason } => {
+                let _ = events.send(patch(ToolStatus::Failed, Some(reason.clone())));
+                return Ok(reason);
+            }
+            HookDecision::Feedback { reason } => {
+                output.push_str("\n\n");
+                output.push_str(&reason);
+            }
+            HookDecision::Allow => {}
+        }
         match self.economizer.guard.inspect(&tool_call, &output) {
             GuardDecision::Allow => {}
             GuardDecision::Nudge(note) | GuardDecision::Refuse(note) => {
@@ -1035,6 +1078,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn lifecycle_hook_blocks_tool_call_inside_tool_loop() {
+        let dir = tempfile::tempdir().unwrap();
+        let cordata_dir = dir.path().join(".cordata");
+        std::fs::create_dir_all(&cordata_dir).unwrap();
+        let hook_json = serde_json::json!({
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "run_command",
+                        "hooks": [
+                            { "type": "command", "command": "echo '{\"decision\":\"block\",\"reason\":\"blocked by c8 lifecycle hook\"}'" }
+                        ]
+                    }
+                ]
+            }
+        });
+        std::fs::write(cordata_dir.join("hooks.json"), hook_json.to_string()).unwrap();
+
+        let fake = Fake::new(vec![
+            vec![call("c1", "run_command", json!({"cmd":"cargo test"}))],
+            vec![text("done")],
+        ]);
+        let events = session(&fake, dir.path(), &["go"], |_| ApprovalDecision::Allow).await;
+        assert!(asked(&events).is_empty(), "lifecycle hook blocks before user prompt or execution");
+        let seen = fake.seen.lock().unwrap();
+        assert!(matches!(&seen[1][2], Msg::ToolResult { output, .. } if output.contains("blocked by c8 lifecycle hook")));
+    }
+
+    #[tokio::test]
     async fn the_guard_refuses_git_and_env_writes_and_recursive_deletes_without_asking() {
         let dir = tempfile::tempdir().unwrap();
         let fake = Fake::new(vec![
@@ -1061,6 +1133,27 @@ mod tests {
         let events = session(&fake, dir.path(), &["go"], |_| ApprovalDecision::AllowAlways).await;
         assert_eq!(asked(&events), ["edit_file"]);
         assert!(dir.path().join("one.txt").exists() && dir.path().join("two.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn allow_always_on_benign_program_never_skips_destructive_gate() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Fake::new(vec![
+            vec![call("c1", "run_command", json!({"cmd":"true"}))],
+            vec![call("c2", "run_command", json!({"cmd":"true"}))],
+            vec![call("c3", "run_command", json!({"cmd":"git reset --hard HEAD"}))],
+            vec![text("done")],
+        ]);
+        let events = session(&fake, dir.path(), &["go"], |info| {
+            if info.raw_input.as_ref().and_then(|v| v.get("cmd")).and_then(|v| v.as_str()).is_some_and(|c| c.contains("reset")) {
+                ApprovalDecision::Reject
+            } else {
+                ApprovalDecision::AllowAlways
+            }
+        })
+        .await;
+        // c1 asks and remembers `run_command (true)`, c2 skips, c3 (`git reset --hard HEAD`) still asks!
+        assert_eq!(asked(&events), ["run_command", "run_command"]);
     }
 
     #[tokio::test]

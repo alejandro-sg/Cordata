@@ -1,5 +1,6 @@
 //! `AppEvent`: the one vocabulary both front ends consume, produced by the native engine.
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::oneshot;
 
@@ -51,6 +52,43 @@ impl ToolStatus {
             ToolStatus::Failed => "failed",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanItemStatus {
+    Pending,
+    InProgress,
+    Completed,
+    Cancelled,
+}
+
+impl PlanItemStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            PlanItemStatus::Pending => "pending",
+            PlanItemStatus::InProgress => "in_progress",
+            PlanItemStatus::Completed => "completed",
+            PlanItemStatus::Cancelled => "cancelled",
+        }
+    }
+}
+
+/// One step in a structured plan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanItem {
+    pub step: String,
+    pub status: PlanItemStatus,
+}
+
+/// A structured plan update from an agent or orchestrator.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PlanUpdate {
+    Items {
+        explanation: Option<String>,
+        items: Vec<PlanItem>,
+    },
+    Markdown(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,8 +200,12 @@ pub enum AppEvent {
         id: String,
         reason: String,
     },
+    /// A structured plan update from the model or orchestrator (`AcpPlanUpdate`).
+    PlanUpdated(PlanUpdate),
     /// Who answers approvals now (`chat.mode`, or `SessionHandle::set_mode`).
     ModeChanged(crate::policy::Mode),
+    /// The pinned write-scope prefixes for `auto` mode (`SessionHandle::set_scope`); empty means whole project.
+    ScopeChanged(Vec<String>),
     TurnComplete(StopReason),
     /// The turn failed; the session stays usable.
     TurnFailed(String),

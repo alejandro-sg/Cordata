@@ -10,10 +10,10 @@ use cordata_theme::tokens as t;
 use cordata_view::assistants::{self, Found, KNOWN};
 use cordata_view::settings::Store;
 use gpui::prelude::FluentBuilder as _;
-use gpui::{AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement, ParentElement, SharedString, StatefulInteractiveElement as _, Styled, div, px};
+use gpui::{AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement, ParentElement, SharedString, StatefulInteractiveElement as _, Styled, Window, div, px};
 use serde_json::Value;
 
-use super::{DockTab, Workspace};
+use super::{DockTab, Overlay, Workspace};
 use crate::theme::{c, line, mono, tk};
 use crate::ui::{self, Kind};
 
@@ -156,9 +156,12 @@ impl Workspace {
     }
 
     /// Start an assistant in the dock terminal (where its state is followed like any terminal agent).
-    fn open_in_terminal(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+    fn open_in_terminal(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.overlays.retain(|o| *o != Overlay::Settings);
         self.switch_dock(DockTab::Terminal, cx);
         self.ensure_terminal(cx);
+        let focus = self.terminal.focus.clone();
+        window.focus(&focus, cx);
         let quoted = format!("'{}'", path.display().to_string().replace('\'', r"'\''"));
         if !self.terminal_type(&format!("{quoted}\r")) {
             self.agents.note = Some("the terminal is not running".into());
@@ -247,7 +250,7 @@ impl Workspace {
                             .px(px(8.))
                             .text_size(px(t::TEXT_SMALL))
                             .tooltip(ui::tip("Run it in the dock terminal"))
-                            .on_click(cx.listener(move |this, _, _, cx| this.open_in_terminal(path.clone(), cx))),
+                            .on_click(cx.listener(move |this, _, window, cx| this.open_in_terminal(path.clone(), window, cx))),
                     )
                     .into_any_element()
             })
@@ -259,8 +262,7 @@ impl Workspace {
         let refresh_hover = c(tk.text_primary);
         div()
             .id("agents-panel")
-            .size_full()
-            .overflow_y_scroll()
+            .w_full()
             .flex()
             .flex_col()
             .child(

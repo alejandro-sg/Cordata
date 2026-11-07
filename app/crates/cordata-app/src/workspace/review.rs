@@ -5,7 +5,7 @@
 //! hunks without disturbing other changes in the same file.
 
 use cordata_theme::tokens as t;
-use cordata_view::review::{Action, FileDiff, Status, apply, apply_file, untracked, working_changes};
+use cordata_view::review::{Action, FileDiff, LineKind, Status, apply, apply_file, display_files, untracked, working_changes};
 use cordata_view::shown;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -17,9 +17,69 @@ use super::Workspace;
 use crate::theme::{amber, c, ca, line, mono, tk};
 use crate::ui;
 
+#[derive(Clone)]
+pub struct SharedRun {
+    pub kind: LineKind,
+    pub text: SharedString,
+}
+
+#[derive(Clone)]
+pub struct SharedHunk {
+    pub header: SharedString,
+    pub new_start: usize,
+    pub runs: Vec<SharedRun>,
+    pub preview_runs: Vec<SharedRun>,
+    pub hidden_lines: usize,
+}
+
+#[derive(Clone)]
+pub struct SharedFile {
+    pub raw_path: String,
+    pub path: SharedString,
+    pub status: Status,
+    pub binary: bool,
+    pub additions: usize,
+    pub deletions: usize,
+    pub sensitive: bool,
+    pub hunks: Vec<SharedHunk>,
+}
+
+impl SharedFile {
+    pub fn from_diffs(files: &[FileDiff]) -> Vec<Self> {
+        let to_shared = |runs: Vec<cordata_view::review::DisplayRun>| -> Vec<SharedRun> {
+            runs.into_iter().map(|r| SharedRun { kind: r.kind, text: SharedString::from(r.text) }).collect()
+        };
+        files
+            .iter()
+            .zip(display_files(files))
+            .map(|(raw, disp)| Self {
+                raw_path: raw.path.clone(),
+                path: SharedString::from(disp.path),
+                status: disp.status,
+                binary: disp.binary,
+                additions: disp.additions,
+                deletions: disp.deletions,
+                sensitive: disp.sensitive,
+                hunks: disp
+                    .hunks
+                    .into_iter()
+                    .map(|h| SharedHunk {
+                        header: SharedString::from(h.header),
+                        new_start: h.new_start,
+                        runs: to_shared(h.runs),
+                        preview_runs: to_shared(h.preview_runs),
+                        hidden_lines: h.hidden_lines,
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+}
+
 #[derive(Default)]
 pub struct Review {
     pub files: Vec<FileDiff>,
+    pub display: Vec<SharedFile>,
     pub untracked: Vec<String>,
     pub loading: bool,
     pub error: Option<String>,
@@ -47,7 +107,10 @@ impl Workspace {
         let owner = self.cwd.clone();
         cx.spawn(async move |this, cx| {
             let (result, untracked_files) = cx.background_executor().spawn(async move {
-                let changes = working_changes(&root);
+                let changes = working_changes(&root).map(|files| {
+                    let display = SharedFile::from_diffs(&files);
+                    (files, display)
+                });
                 let untracked = untracked(&root);
                 (changes, untracked)
             }).await;
@@ -58,12 +121,14 @@ impl Workspace {
                 }
                 this.review.loading = false;
                 match result {
-                    Ok(files) => {
+                    Ok((files, display)) => {
                         this.review.files = files;
+                        this.review.display = display;
                         this.review.error = None;
                     }
                     Err(err) => {
                         this.review.files = Vec::new();
+                        this.review.display = Vec::new();
                         this.review.error = Some(err);
                     }
                 }
@@ -166,7 +231,7 @@ impl Workspace {
 
         let files_list: Vec<AnyElement> = self
             .review
-            .files
+            .display
             .iter()
             .enumerate()
             .map(|(file_idx, file)| {
@@ -182,7 +247,7 @@ impl Workspace {
                     Status::Renamed => c(tk.amber_soft),
                     Status::Modified => c(tk.attention),
                 };
-                let file_path = file.path.clone();
+                let file_path = file.raw_path.clone();
                 let this_click = this.clone();
                 let path_for_click = file_path.clone();
 
@@ -213,7 +278,7 @@ impl Workspace {
                                     .text_size(px(t::TEXT_META))
                                     .text_color(c(tk.text_muted))
                                     .hover(|el| el.text_color(c(tk.text_primary)))
-                                    .child(SharedString::from(hunk.header.clone()))
+                                    .child(hunk.header.clone())
                                     .on_click(move |_: &ClickEvent, window, cx| {
                                         let _ = this_hunk_click.update(cx, |this, cx| {
                                             this.open_file(&path_for_hunk, Some(line_no), window, cx);
@@ -239,26 +304,25 @@ impl Workspace {
                                     ),
                             );
 
-                        let lines_rendered: Vec<AnyElement> = hunk
-                            .lines
+                        let runs_rendered: Vec<AnyElement> = hunk
+                            .runs
                             .iter()
-                            .map(|line| {
-                                let (prefix, rest) = line.split_at(line.chars().next().map_or(0, char::len_utf8));
-                                let (bg, ink) = match prefix {
-                                    "+" => (Some(amber(cx, t::DIFF_ADD_FILL)), tk.text_body),
-                                    "-" => (Some(ca(tk.danger, t::DIFF_DEL_FILL)), tk.text_muted),
-                                    _ => (None, tk.text_muted),
+                            .map(|run| {
+                                let (bg, ink) = match run.kind {
+                                    LineKind::Add => (Some(amber(cx, t::DIFF_ADD_FILL)), tk.text_body),
+                                    LineKind::Del => (Some(ca(tk.danger, t::DIFF_DEL_FILL)), tk.text_muted),
+                                    LineKind::Context => (None, tk.text_muted),
                                 };
-                                let masked = format!("{prefix}{}", shown(rest));
                                 div()
                                     .px(px(8.))
                                     .py(px(1.))
+                                    .whitespace_nowrap()
                                     .font_family(mono(cx))
                                     .text_size(px(t::TEXT_SMALL))
                                     .line_height(gpui::relative(1.5))
                                     .text_color(c(ink))
                                     .when_some(bg, |el, bg| el.bg(bg))
-                                    .child(SharedString::from(masked))
+                                    .child(run.text.clone())
                                     .into_any_element()
                             })
                             .collect();
@@ -272,7 +336,7 @@ impl Workspace {
                             .border_color(line(cx, t::LINE_SUBTLE))
                             .overflow_hidden()
                             .child(hunk_header)
-                            .children(lines_rendered)
+                            .children(runs_rendered)
                             .into_any_element()
                     })
                     .collect();
@@ -322,14 +386,14 @@ impl Workspace {
                                             .font_family(mono(cx))
                                             .text_color(c(tk.text_primary))
                                             .hover(|el| el.text_color(c(tk.amber)))
-                                            .child(SharedString::from(file.path.clone())),
+                                            .child(file.path.clone()),
                                     )
                                     .child(
                                         div()
                                             .text_size(px(t::TEXT_META))
                                             .font_family(mono(cx))
                                             .text_color(c(tk.text_faint))
-                                            .child(format!("+{} -{}", file.additions(), file.deletions())),
+                                            .child(format!("+{} -{}", file.additions, file.deletions)),
                                     ),
                             )
                             .child(

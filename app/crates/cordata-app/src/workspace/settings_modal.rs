@@ -19,12 +19,21 @@ pub enum Section {
     Appearance,
     Shortcuts,
     Account,
+    Agents,
     Mcp,
     Advanced,
 }
 
 impl Section {
-    pub const ALL: [Section; 6] = [Section::General, Section::Appearance, Section::Shortcuts, Section::Account, Section::Mcp, Section::Advanced];
+    pub const ALL: [Section; 7] = [
+        Section::General,
+        Section::Appearance,
+        Section::Shortcuts,
+        Section::Account,
+        Section::Agents,
+        Section::Mcp,
+        Section::Advanced,
+    ];
 
     fn title(self) -> &'static str {
         match self {
@@ -32,6 +41,7 @@ impl Section {
             Section::Appearance => "Appearance",
             Section::Shortcuts => "Shortcuts",
             Section::Account => "Account",
+            Section::Agents => "Agents & Delegation",
             Section::Mcp => "MCP & Marketplace",
             Section::Advanced => "Advanced",
         }
@@ -42,8 +52,9 @@ impl Section {
         match self {
             Section::General => "launch startup quick ask hotkey send enter cost notifications sound meter context tokens latency instruments",
             Section::Appearance => "theme dark light ink paper density font size",
-            Section::Shortcuts => "keys keyboard bindings hotkeys",
+            Section::Shortcuts => "keys keyboard bindings hotkeys change sheet triage rack gate",
             Section::Account => "api key anthropic sign out usage keychain",
+            Section::Agents => "agents claude codex gemini cursor delegation quota workers assistants",
             Section::Mcp => "mcp tools servers model context protocol catalog approve rea github git fetch memory",
             Section::Advanced => "logs diagnostics reset clear history",
         }
@@ -61,6 +72,7 @@ impl Section {
             Section::Appearance => "Theme and density.",
             Section::Shortcuts => "Every key the window answers to.",
             Section::Account => "Your key and usage.",
+            Section::Agents => "Installed coding assistants, delegation and usage quotas.",
             Section::Mcp => "Model Context Protocol tools, discovery and official marketplace.",
             Section::Advanced => "Logs, diagnostics and resets.",
         }
@@ -79,16 +91,19 @@ pub enum Select {
 const QUICK_ASK_SHORTCUT: &str = "Quick ask, from any app";
 
 /// The read-only shortcut reference.
-pub const SHORTCUTS: [(&str, &str); 16] = [
+pub const SHORTCUTS: [(&str, &str); 19] = [
     ("Command palette", "⌘K"),
     ("Switch project", "⌘O"),
     ("New conversation", "⌘N"),
     ("Switch conversation", "⌘1–9"),
+    ("Multi-agent triage rack", "⌘0"),
+    ("Change sheet / Transcript", "⌘D"),
     ("Toggle project sidebar", "⌘B"),
     ("Toggle side panel", "⌘\\"),
     ("Terminal", "⌃`"),
     ("Settings", "⌘,"),
-    ("Send / approve the card", "↵"),
+    ("Send / approve routine card", "↵"),
+    ("Confirm high-risk gate", "⌘Y"),
     ("New line", "⇧↵"),
     ("Deny / close overlay", "esc"),
     ("Stop the run", "esc esc"),
@@ -178,6 +193,7 @@ impl Workspace {
                     .collect()
             }
             Section::Account => self.account_rows(cx),
+            Section::Agents => vec![div().pt(px(12.)).child(self.agents_panel(cx)).into_any_element()],
             Section::Mcp => self.mcp_rows(cx),
             Section::Advanced => self.advanced_rows(cx),
         };
@@ -296,9 +312,12 @@ impl Workspace {
     }
 
     /// Loads what a section shows when it opens.
-    pub(super) fn on_settings_section(&mut self, _cx: &mut Context<Self>) {
+    pub(super) fn on_settings_section(&mut self, cx: &mut Context<Self>) {
         if self.settings_section == Section::Account {
             self.api_key_masked = crate::keychain::masked();
+        }
+        if self.settings_section == Section::Agents && self.agents.found.is_none() {
+            self.load_agents(cx);
         }
         if self.settings_section == Section::Mcp {
             self.mcp = crate::mcp_catalog::snapshot(&super::cordata_home(), &self.cwd);

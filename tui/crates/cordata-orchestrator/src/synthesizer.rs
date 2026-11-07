@@ -41,13 +41,13 @@ pub const MAX_FILES: usize = 60_000;
 /// Directories that are rebuilt or vendored (`checkpoints.DEPENDENCY_DIRS`).
 pub use cordata_checkpoints::DEPENDENCY_DIRS;
 
-fn digest(path: &Path) -> Option<String> {
+pub(crate) fn digest(path: &Path) -> Option<String> {
     let bytes = std::fs::read(path).ok()?;
     Some(Sha1::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// Copies one file, copy-on-write when the filesystem can. `true` when it was a clone.
-fn copy_file(src: &Path, dst: &Path) -> std::io::Result<bool> {
+pub(crate) fn copy_file(src: &Path, dst: &Path) -> std::io::Result<bool> {
     #[cfg(target_os = "macos")]
     {
         let (s, d) = (CString::new(src.as_os_str().as_bytes())?, CString::new(dst.as_os_str().as_bytes())?);

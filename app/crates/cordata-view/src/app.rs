@@ -13,7 +13,7 @@ use crate::commands::{self, Command};
 use crate::input::Input;
 use crate::settings::{Settings, Store};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ToolCard {
     pub id: String,
     pub name: String,
@@ -26,7 +26,7 @@ pub struct ToolCard {
     pub diffs: Vec<FileDiff>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Message {
     /// The key/command reference, printed on demand (`?`, `/help`).
     Help,
@@ -85,6 +85,8 @@ pub enum Effect {
     SetModel(String),
     /// Switch who answers approvals for the rest of the session (`SessionHandle::set_mode`).
     SetMode(Mode),
+    /// Pin `auto` mode's write scope to relative prefixes (`SessionHandle::set_scope`).
+    SetScope(Vec<String>),
     /// A command run in the project folder, reported back as a `LocalEvent`. `share` hands its output to the agent
     /// with the next prompt (`!command`); `as_diff` shows it as a coloured diff (`/diff`).
     Shell {
@@ -239,6 +241,8 @@ pub struct App {
     pub note: Option<Input>,
     /// Who answers approvals no rule decides: the person (`Ask`) or `auto::judge` (`Auto`). Shift+Tab flips it.
     pub mode: Mode,
+    /// Relative path prefixes restricting `auto` mode edits (`empty` = whole project).
+    pub scope: Vec<String>,
     /// `auto · <reason>` for each tool call auto mode let run without a card, by tool call id. Shown on the call's own
     /// row, never as a message of its own.
     pub auto_meta: HashMap<String, String>,
@@ -297,6 +301,7 @@ impl App {
             overlay_factory: crate::overlay::none,
             note: None,
             mode: Mode::Ask,
+            scope: Vec::new(),
             auto_meta: HashMap::new(),
         }
     }
@@ -313,6 +318,12 @@ impl App {
             Mode::Auto => Mode::Ask,
         };
         Effect::SetMode(self.mode)
+    }
+
+    /// Updates the pinned write scope on the brief and notifies the engine.
+    pub fn set_scope(&mut self, scope: Vec<String>) -> Effect {
+        self.scope = scope.clone();
+        Effect::SetScope(scope)
     }
 
     /// For the footer of *another* session's tab strip.
@@ -463,7 +474,30 @@ impl App {
             AppEvent::AutoAllowed { id, reason } => {
                 self.auto_meta.insert(id, format!("auto · {}", sanitize(&reason)));
             }
+            AppEvent::PlanUpdated(plan) => match plan {
+                acp_core::PlanUpdate::Items { explanation, items } => {
+                    let header = explanation.unwrap_or_else(|| "plan:".to_string());
+                    let steps = items
+                        .iter()
+                        .map(|item| {
+                            let icon = match item.status {
+                                acp_core::PlanItemStatus::Completed => "✓",
+                                acp_core::PlanItemStatus::InProgress => "►",
+                                acp_core::PlanItemStatus::Cancelled => "✗",
+                                acp_core::PlanItemStatus::Pending => "○",
+                            };
+                            format!("  {icon} {}", sanitize(&item.step))
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    self.messages.push(Message::Info(format!("{header}\n{steps}")));
+                }
+                acp_core::PlanUpdate::Markdown(md) => {
+                    self.messages.push(Message::Info(format!("plan:\n{}", sanitize(&md))));
+                }
+            },
             AppEvent::ModeChanged(mode) => self.mode = mode,
+            AppEvent::ScopeChanged(scope) => self.scope = scope,
             AppEvent::ToolCallStarted(info) => {
                 self.telemetry.output(Instant::now());
                 self.turn_tools += 1;

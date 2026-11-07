@@ -228,6 +228,22 @@ impl Workspace {
                         .when(needs, |d| d.cursor_pointer().tooltip(ui::tip("Go to what needs you  ⌘J")).on_click(cx.listener(|this, _, window, cx| this.next_attention(&super::NextAttention, window, cx))))
                         .child(SharedString::from(rail.brief().map(|b| format!("· {b}")).unwrap_or_default())),
                 )
+                .when(self.sessions.len() > 1 || self.desk_mode == super::DeskMode::Rack, |hdr| {
+                    let on = self.desk_mode == super::DeskMode::Rack;
+                    hdr.child(
+                        div()
+                            .id("open-rack")
+                            .role(gpui::Role::Button)
+                            .cursor_pointer()
+                            .font_family(mono(cx))
+                            .text_size(px(t::TEXT_TAG))
+                            .text_color(c(if on { tk.amber } else { tk.text_muted }))
+                            .hover(|s| s.text_color(c(tk.text_primary)))
+                            .tooltip(ui::tip("Supervisory triage rack  ⌘0"))
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_rack(cx)))
+                            .child("rack"),
+                    )
+                })
                 .child(
                     ui::icon_action("new-session", gpui_kit_assets::IconName::SquarePen, cx)
                         .size(px(22.))
@@ -249,7 +265,7 @@ impl Workspace {
             let close_group = group.clone();
             let tip = if index <= 8 { format!("{}  ⌘{}", shown(&row.title), index + 1) } else { shown(&row.title) };
             let meta: Vec<String> = [row.detail.clone(), row.elsewhere.clone().unwrap_or_default()].into_iter().filter(|s| !s.is_empty()).collect();
-            let (mark_kind, active) = (row.mark, row.active);
+            let (mark_kind, active) = (row.mark, row.active && self.desk_mode != super::DeskMode::Rack);
             let item = div()
                 .id(("thread", ix))
                 .group(group)
@@ -268,6 +284,9 @@ impl Workspace {
                 .when(active, move |r| r.bg(selected))
                 .when(!active, move |r| r.hover(move |s| s.bg(hover)))
                 .on_click(cx.listener(move |this, _, _, cx| {
+                    if this.desk_mode == super::DeskMode::Rack {
+                        this.desk_mode = super::DeskMode::Transcript;
+                    }
                     if let Some(entity) = this.sessions.get(index).cloned() {
                         this.show(entity, cx);
                     }

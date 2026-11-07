@@ -85,6 +85,33 @@ pub struct Place {
     pub touch: Touch,
     pub added: usize,
     pub removed: usize,
+    /// Build, lock, sandbox, policy, guard, or credential-adjacent file.
+    pub sensitive: bool,
+    /// 1-based slot numbers of other open threads that also edited this file.
+    pub shared_threads: Vec<usize>,
+}
+
+/// Whether `path` touches build scripts, dependency locks, sandbox/policy guards, CI, or auth boundaries.
+pub fn is_sensitive_path(path: &str) -> bool {
+    let norm = path.replace('\\', "/");
+    let lower = norm.to_ascii_lowercase();
+    let name = lower.rsplit('/').next().unwrap_or(&lower);
+    matches!(
+        name,
+        "cargo.toml"
+            | "cargo.lock"
+            | "makefile"
+            | "build.rs"
+            | "deny.toml"
+            | "package.json"
+            | "package-lock.json"
+            | "pnpm-lock.yaml"
+            | "yarn.lock"
+    ) || lower.starts_with(".github/")
+        || lower.contains("/.github/")
+        || ["sandbox", "policy", "guard", "keychain", "auth", "permission", "secret"]
+            .iter()
+            .any(|kw| name.contains(kw))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,9 +127,92 @@ impl Area {
     }
 }
 
+/// Relative paths edited (or waiting to be edited) in `messages`.
+pub fn edited_paths(messages: &[Message], cwd: &Path) -> Vec<String> {
+    let mut set = std::collections::BTreeSet::new();
+    for m in messages {
+        let Message::Tool(card) = m else { continue };
+        if card.status == ToolStatus::Failed {
+            continue;
+        }
+        for d in &card.diffs {
+            let rel = relative(&d.path, cwd);
+            if !rel.is_empty() {
+                set.insert(rel);
+            }
+        }
+        if card.diffs.is_empty()
+            && verb(&card.name) == "edit"
+            && let Some(p) = input_path(card)
+        {
+            let rel = relative(&p, cwd);
+            if !rel.is_empty() {
+                set.insert(rel);
+            }
+        }
+    }
+    set.into_iter().collect()
+}
+
+/// Candidate relative write-scope prefixes inferred from `@path` mentions in prompts and files touched so far.
+pub fn candidate_scope(messages: &[Message], cwd: &Path) -> Vec<String> {
+    let mut out = std::collections::BTreeSet::new();
+    for m in messages {
+        if let Message::User(text) = m {
+            for word in text.split_whitespace() {
+                if let Some(mention) = word.strip_prefix('@') {
+                    let clean = mention.trim_matches(|c: char| matches!(c, ',' | '.' | ';' | ':' | ')' | '(' | '\'' | '"'));
+                    let rel = relative(clean, cwd);
+                    if !rel.is_empty() && !rel.starts_with("..") && cwd.join(&rel).exists() {
+                        out.insert(rel);
+                    }
+                }
+            }
+        }
+    }
+    for area in places(messages, cwd, None) {
+        for place in &area.places {
+            if matches!(place.touch, Touch::Edited | Touch::Waiting | Touch::Working) {
+                out.insert(scope_prefix_of(&place.path));
+            }
+        }
+    }
+    if out.is_empty() {
+        for area in places(messages, cwd, None) {
+            for place in &area.places {
+                out.insert(scope_prefix_of(&place.path));
+            }
+        }
+    }
+    out.into_iter().take(6).collect()
+}
+
+fn scope_prefix_of(path: &str) -> String {
+    let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty() && *p != ".").collect();
+    if parts.len() <= 1 {
+        return path.to_owned();
+    }
+    if let Some(i) = parts.iter().position(|p| matches!(*p, "crates" | "packages" | "apps" | "libs"))
+        && i + 2 <= parts.len()
+    {
+        return parts[..=i + 1].join("/");
+    }
+    parts[..parts.len() - 1].join("/")
+}
+
 /// The files this thread touched, grouped by component; areas and files with the most pressing state first, then by
 /// name. `waiting` is the id of the call an approval is open for.
 pub fn places(messages: &[Message], cwd: &Path, waiting: Option<&str>) -> Vec<Area> {
+    places_with_peers(messages, cwd, waiting, &[])
+}
+
+/// [`places`] annotated with `shared_threads` from other open sessions `(1_based_slot, edited_paths)`.
+pub fn places_with_peers(
+    messages: &[Message],
+    cwd: &Path,
+    waiting: Option<&str>,
+    peers: &[(usize, Vec<String>)],
+) -> Vec<Area> {
     let mut files: BTreeMap<String, Place> = BTreeMap::new();
     for m in messages {
         let Message::Tool(card) = m else { continue };
@@ -121,7 +231,23 @@ pub fn places(messages: &[Message], cwd: &Path, waiting: Option<&str>) -> Vec<Ar
             if path.is_empty() {
                 continue;
             }
-            let entry = files.entry(path.clone()).or_insert(Place { path, touch, added: 0, removed: 0 });
+            let entry = files.entry(path.clone()).or_insert_with(|| {
+                let mut shared_threads: Vec<usize> = peers
+                    .iter()
+                    .filter(|(_, edited)| edited.iter().any(|p| p == &path))
+                    .map(|(slot, _)| *slot)
+                    .collect();
+                shared_threads.sort_unstable();
+                shared_threads.dedup();
+                Place {
+                    sensitive: is_sensitive_path(&path),
+                    path,
+                    touch,
+                    added: 0,
+                    removed: 0,
+                    shared_threads,
+                }
+            });
             // A file read and later edited reads as edited; an edit still waiting outranks both.
             entry.touch = entry.touch.min(touch);
             if touch != Touch::Waiting {
@@ -215,6 +341,115 @@ pub enum CheckState {
     Running,
 }
 
+/// Falsification audit over a slice of file diffs: net removed test assertions, newly ignored tests, and sensitive files.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DiffAudit {
+    pub assertions_removed: usize,
+    pub tests_ignored: usize,
+    pub sensitive_files: usize,
+}
+
+fn count_assertions(text: &str) -> usize {
+    text.lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            !trimmed.starts_with("//")
+                && (trimmed.contains("assert!(")
+                    || trimmed.contains("assert_eq!(")
+                    || trimmed.contains("assert_ne!(")
+                    || trimmed.contains("assert_matches!(")
+                    || trimmed.starts_with("#[test]")
+                    || trimmed.starts_with("#[tokio::test")
+                    || trimmed.starts_with("#[gpui::test"))
+        })
+        .count()
+}
+
+fn count_ignores(text: &str) -> usize {
+    text.lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            trimmed.starts_with("#[ignore") || trimmed.contains(".skip(") || trimmed.contains("@pytest.mark.skip")
+        })
+        .count()
+}
+
+pub fn audit_diffs(diffs: &[FileDiff]) -> DiffAudit {
+    let mut audit = DiffAudit::default();
+    let mut sensitive = std::collections::BTreeSet::new();
+    for diff in diffs {
+        let old = diff.old_text.as_deref().unwrap_or("");
+        let new = &diff.new_text;
+        audit.assertions_removed += count_assertions(old).saturating_sub(count_assertions(new));
+        audit.tests_ignored += count_ignores(new).saturating_sub(count_ignores(old));
+        if is_sensitive_path(&diff.path) {
+            sensitive.insert(diff.path.clone());
+        }
+    }
+    audit.sensitive_files = sensitive.len();
+    audit
+}
+
+/// Per-turn summary for the tape scrubber and forensic drawer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnSummary {
+    /// 0-based turn index on the tape.
+    pub index: usize,
+    /// Index of the `Message::User` prompt in `messages`.
+    pub message: usize,
+    /// Exclusive end index in `messages` (start of next user turn or `messages.len()`).
+    pub end_message: usize,
+    pub prompt: String,
+    pub files: usize,
+    pub added: usize,
+    pub removed: usize,
+    pub tools: usize,
+    pub conclusion: Option<String>,
+}
+
+pub fn turn_summaries(messages: &[Message]) -> Vec<TurnSummary> {
+    let stops = turns(messages);
+    stops
+        .iter()
+        .enumerate()
+        .map(|(index, stop)| {
+            let end_message = stops.get(index + 1).map_or(messages.len(), |next| next.message);
+            let slice = &messages[stop.message + 1..end_message];
+            let mut files = std::collections::BTreeSet::new();
+            let (mut added, mut removed, mut tools) = (0usize, 0usize, 0usize);
+            let mut conclusion = None;
+            for m in slice {
+                match m {
+                    Message::Tool(card) => {
+                        tools += 1;
+                        for d in &card.diffs {
+                            files.insert(d.path.clone());
+                        }
+                        let (a, r) = diff_counts(&card.diffs);
+                        added += a;
+                        removed += r;
+                    }
+                    Message::Agent(text) if !text.trim().is_empty() => {
+                        conclusion = Some(text.trim().to_owned());
+                    }
+                    _ => {}
+                }
+            }
+            TurnSummary {
+                index,
+                message: stop.message,
+                end_message,
+                prompt: stop.prompt.clone(),
+                files: files.len(),
+                added,
+                removed,
+                tools,
+                conclusion,
+            }
+        })
+        .collect()
+}
+
 /// What the last turn did, said once it is over.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Receipt {
@@ -225,6 +460,18 @@ pub struct Receipt {
     pub failed: usize,
     /// The check, if this turn ran it (or something that is plainly a test run).
     pub check: Option<(String, CheckState)>,
+    /// Net test assertions or `#[test]` attributes deleted in this turn's edits.
+    pub assertions_removed: usize,
+    /// Net `#[ignore]` / skipped test annotations added in this turn's edits.
+    pub tests_ignored: usize,
+    /// Sensitive build/lock/sandbox/policy files edited in this turn.
+    pub sensitive_files: usize,
+}
+
+impl Receipt {
+    pub fn has_falsification_warning(&self) -> bool {
+        self.assertions_removed > 0 || self.tests_ignored > 0
+    }
 }
 
 /// The receipt for everything since your last prompt. `check` is the project's check command, if one is known.
@@ -232,6 +479,7 @@ pub fn receipt(messages: &[Message], check: Option<&str>) -> Receipt {
     let start = messages.iter().rposition(|m| matches!(m, Message::User(_))).map_or(0, |i| i + 1);
     let mut r = Receipt::default();
     let mut files = std::collections::BTreeSet::new();
+    let mut all_diffs: Vec<FileDiff> = Vec::new();
     for m in &messages[start..] {
         let Message::Tool(card) = m else { continue };
         if card.status == ToolStatus::Failed {
@@ -239,6 +487,7 @@ pub fn receipt(messages: &[Message], check: Option<&str>) -> Receipt {
         }
         for d in &card.diffs {
             files.insert(d.path.clone());
+            all_diffs.push(d.clone());
         }
         let (a, d) = diff_counts(&card.diffs);
         r.added += a;
@@ -258,6 +507,10 @@ pub fn receipt(messages: &[Message], check: Option<&str>) -> Receipt {
             }
         }
     }
+    let audit = audit_diffs(&all_diffs);
+    r.assertions_removed = audit.assertions_removed;
+    r.tests_ignored = audit.tests_ignored;
+    r.sensitive_files = audit.sensitive_files;
     r.files = files.len();
     r
 }
@@ -310,6 +563,91 @@ pub fn check_command(root: &Path) -> Option<String> {
         return Some("pytest".into());
     }
     None
+}
+
+/// Memoizable snapshot of every derived desk surface for a single conversation version, eliminating per-frame scans
+/// across messages and diffs during 120Hz scrolling, hover, and live-line animations.
+#[derive(Debug, Clone, Default)]
+pub struct Snapshot {
+    pub brief_shown: Option<String>,
+    pub turns: Vec<Turn>,
+    pub turn_summaries: Vec<TurnSummary>,
+    pub note_texts: Vec<String>,
+    pub failing_notes: usize,
+    pub edited_files: usize,
+    pub candidate_scope: Vec<String>,
+    pub places: Vec<Area>,
+    pub receipt: Receipt,
+    pub session_audit: DiffAudit,
+    pub conclusion_shown: Option<String>,
+    pub session_diffs: Vec<FileDiff>,
+}
+
+/// Computes a complete [`Snapshot`] once when a conversation's version or peer set changes.
+pub fn snapshot(
+    messages: &[Message],
+    cwd: &Path,
+    waiting_id: Option<&str>,
+    check: Option<&str>,
+    peers: &[(usize, Vec<String>)],
+) -> Snapshot {
+    let brief_shown = brief(messages).map(|b| crate::shown(&b));
+    let turns = turns(messages);
+    let turn_summaries = turn_summaries(messages);
+    let note_ix = session_notes(messages);
+    let note_texts: Vec<String> = note_ix
+        .iter()
+        .filter_map(|i| {
+            if let Some(Message::Info(t)) = messages.get(*i) {
+                Some(crate::shown(t))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let failing_notes = note_texts
+        .iter()
+        .filter(|n| n.contains("did not start") || n.contains("error"))
+        .count();
+    let places = places_with_peers(messages, cwd, waiting_id, peers);
+    let edited_files = places
+        .iter()
+        .map(|a| a.places.iter().filter(|p| p.touch == Touch::Edited).count())
+        .sum();
+    let candidate_scope = candidate_scope(messages, cwd);
+    let receipt = receipt(messages, check);
+    let mut session_diffs = Vec::new();
+    for m in messages {
+        if let Message::Tool(card) = m
+            && card.status == ToolStatus::Completed
+        {
+            session_diffs.extend(card.diffs.iter().cloned());
+        }
+    }
+    let session_audit = audit_diffs(&session_diffs);
+    let conclusion_shown = messages.iter().rev().find_map(|m| {
+        if let Message::Agent(t) = m
+            && !t.trim().is_empty()
+        {
+            Some(crate::shown(t))
+        } else {
+            None
+        }
+    });
+    Snapshot {
+        brief_shown,
+        turns,
+        turn_summaries,
+        note_texts,
+        failing_notes,
+        edited_files,
+        candidate_scope,
+        places,
+        receipt,
+        session_audit,
+        conclusion_shown,
+        session_diffs,
+    }
 }
 
 #[cfg(test)]
@@ -399,5 +737,173 @@ mod tests {
         std::fs::write(dir.join("scripts/verify.sh"), "#!/bin/sh").unwrap();
         assert_eq!(check_command(&dir).as_deref(), Some("scripts/verify.sh"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn falsification_audit_flags_deleted_assertions_ignored_tests_and_sensitive_files() {
+        let mut weaken = card("1", "edit_file", json!({"path": "crates/x/src/lib.rs"}), ToolStatus::Completed);
+        weaken.diffs.push(FileDiff {
+            path: "crates/x/src/lib.rs".into(),
+            old_text: Some("#[test]\nfn check_it() {\n    assert_eq!(1 + 1, 2);\n    assert!(true);\n}\n".into()),
+            new_text: "#[test]\n#[ignore]\nfn check_it() {\n}\n".into(),
+        });
+        let mut lock_edit = card("2", "edit_file", json!({"path": "Cargo.toml"}), ToolStatus::Completed);
+        lock_edit.diffs.push(FileDiff {
+            path: "Cargo.toml".into(),
+            old_text: Some("[dependencies]\n".into()),
+            new_text: "[dependencies]\nfoo = \"1\"\n".into(),
+        });
+        let mut pass_run = card("3", "run_command", json!({"cmd": "cargo test"}), ToolStatus::Completed);
+        pass_run.content = "test result: ok. 0 passed; 0 failed; 1 ignored".into();
+        let msgs = vec![Message::User("fix tests".into()), Message::Tool(weaken), Message::Tool(lock_edit), Message::Tool(pass_run)];
+        let r = receipt(&msgs, Some("cargo test"));
+        assert_eq!(r.check, Some(("cargo test".into(), CheckState::Passed)));
+        assert!(r.has_falsification_warning());
+        assert_eq!(r.assertions_removed, 2);
+        assert_eq!(r.tests_ignored, 1);
+        assert_eq!(r.sensitive_files, 1);
+    }
+
+    #[test]
+    fn places_with_peers_marks_sensitive_and_cross_thread_overlaps() {
+        let cwd = Path::new("/repo");
+        let mut edit = card("1", "edit_file", json!({"path": "/repo/tui/crates/acp-core/src/policy.rs"}), ToolStatus::Completed);
+        edit.diffs.push(FileDiff { path: "/repo/tui/crates/acp-core/src/policy.rs".into(), old_text: Some("a\n".into()), new_text: "b\n".into() });
+        let msgs = vec![Message::User("tighten policy".into()), Message::Tool(edit)];
+        let peers = vec![(2, vec!["tui/crates/acp-core/src/policy.rs".to_owned()]), (4, vec!["README.md".to_owned()])];
+        let areas = places_with_peers(&msgs, cwd, None, &peers);
+        let p = &areas[0].places[0];
+        assert!(p.sensitive, "policy.rs is a sensitive boundary file");
+        assert_eq!(p.shared_threads, vec![2]);
+        assert_eq!(candidate_scope(&msgs, cwd), vec!["tui/crates/acp-core".to_owned()]);
+        let summaries = turn_summaries(&msgs);
+        assert_eq!(summaries.len(), 1);
+        assert_eq!((summaries[0].files, summaries[0].added, summaries[0].removed), (1, 1, 1));
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_ux_revamp_desk_and_sheet_frame() {
+        let cwd = Path::new("/repo");
+        let mut msgs = vec![Message::Info("settings: ~/.cordata/settings.json".into())];
+        for t in 0..30 {
+            msgs.push(Message::User(format!("Turn {t}: update module {t} and verify invariants")));
+            let mut edit = card(&format!("edit-{t}"), "edit_file", json!({"path": format!("/repo/app/crates/cordata-app/src/mod_{t}.rs")}), ToolStatus::Completed);
+            edit.diffs.push(FileDiff {
+                path: format!("/repo/app/crates/cordata-app/src/mod_{t}.rs"),
+                old_text: Some((0..15).map(|i| format!("    let old_val_{i} = compute({i});\n")).collect()),
+                new_text: (0..22).map(|i| format!("    let new_val_{i} = compute_fast({i});\n")).collect(),
+            });
+            msgs.push(Message::Tool(edit));
+            let mut run = card(&format!("run-{t}"), "run_command", json!({"cmd": "scripts/verify.sh"}), ToolStatus::Completed);
+            run.content = "test result: ok. 120 passed; 0 failed; 0 ignored".into();
+            msgs.push(Message::Tool(run));
+            msgs.push(Message::Agent(format!("Completed module {t} changes and verified `scripts/verify.sh` passes cleanly.")));
+        }
+        let peers = vec![
+            (2, vec!["app/crates/cordata-app/src/mod_3.rs".to_owned(), "app/crates/cordata-app/src/mod_7.rs".to_owned()]),
+            (3, vec!["app/crates/cordata-app/src/mod_12.rs".to_owned()]),
+        ];
+
+        // 22 changed files, ~140 lines per file = ~3,080 short diff lines (< 256 bytes each).
+        let mut patch = String::new();
+        for f in 0..22 {
+            patch.push_str(&format!(
+                "diff --git a/app/crates/cordata-app/src/file_{f}.rs b/app/crates/cordata-app/src/file_{f}.rs\n\
+                 index 1111111..2222222 100644\n\
+                 --- a/app/crates/cordata-app/src/file_{f}.rs\n\
+                 +++ b/app/crates/cordata-app/src/file_{f}.rs\n\
+                 @@ -1,50 +1,90 @@\n"
+            ));
+            for l in 0..30 {
+                patch.push_str(&format!(" fn context_line_{f}_{l}(state: &Workspace) -> usize {{ state.len() }}\n"));
+            }
+            for l in 0..20 {
+                patch.push_str(&format!("-    let old_metric_{l} = compute_slow_metric(state, {l});\n"));
+            }
+            for l in 0..90 {
+                patch.push_str(&format!("+    let fast_metric_{l} = compute_cached_metric(state, {l});\n"));
+            }
+        }
+        let parsed_files = crate::review::parse(&patch);
+        let total_lines: usize = parsed_files.iter().flat_map(|f| &f.hunks).map(|h| h.lines.len()).sum();
+
+        let triage_inputs: Vec<crate::work::TriageIn> = (0..6)
+            .map(|ix| crate::work::TriageIn {
+                index: ix,
+                slot: ix + 1,
+                title: format!("Task {}", ix + 1),
+                folder: cwd.to_path_buf(),
+                state: if ix < 2 { crate::app::TabState::NeedsApproval } else if ix < 4 { crate::app::TabState::Done } else { crate::app::TabState::Working },
+                active: ix == 0,
+                files: 4,
+                added: 80,
+                removed: 18,
+                check: Some(("scripts/verify.sh".into(), CheckState::Passed)),
+                falsification_warning: false,
+                gate_title: (ix < 2).then(|| "run_command · cargo test".to_owned()),
+                gate_signature: (ix < 2).then(|| "/repo|run_command|{\"cmd\":\"cargo test\"}|".to_owned()),
+                gate_high_risk: false,
+                working_secs: Some(95),
+                overlaps: if ix == 0 { vec![2] } else { Vec::new() },
+            })
+            .collect();
+
+        let median_ms = |f: &dyn Fn()| {
+            let mut samples: Vec<f64> = (0..31)
+                .map(|_| {
+                    let start = std::time::Instant::now();
+                    f();
+                    start.elapsed().as_secs_f64() * 1e3
+                })
+                .collect();
+            samples.sort_by(f64::total_cmp);
+            samples[15]
+        };
+
+        let uncached = median_ms(&|| {
+            let snap = snapshot(&msgs, cwd, None, Some("scripts/verify.sh"), &peers);
+            std::hint::black_box(&snap);
+            let mut scrubbed_chars = 0usize;
+            for file in &parsed_files {
+                for hunk in &file.hunks {
+                    for ln in &hunk.lines {
+                        let (_, rest) = ln.split_at(ln.chars().next().map_or(0, char::len_utf8));
+                        scrubbed_chars += crate::shown(rest).len();
+                    }
+                }
+            }
+            std::hint::black_box(scrubbed_chars);
+            std::hint::black_box(crate::work::triage_rack(&triage_inputs));
+        });
+
+        let prep = median_ms(&|| {
+            std::hint::black_box(crate::review::display_files(&parsed_files));
+        });
+
+        let cached_snap = std::rc::Rc::new(snapshot(&msgs, cwd, None, Some("scripts/verify.sh"), &peers));
+        let prepped_files = crate::review::display_files(&parsed_files);
+        let run_count: usize = prepped_files.iter().flat_map(|f| &f.hunks).map(|h| h.runs.len()).sum();
+
+        let memoized = median_ms(&|| {
+            let snap = std::rc::Rc::clone(&cached_snap);
+            std::hint::black_box(&snap.receipt);
+            std::hint::black_box(&snap.places);
+            let mut draw_bytes = 0usize;
+            for file in prepped_files.iter().take(4) {
+                for hunk in &file.hunks {
+                    for run in &hunk.runs {
+                        draw_bytes += run.text.len();
+                    }
+                }
+            }
+            std::hint::black_box(draw_bytes);
+            std::hint::black_box(crate::work::triage_rack(&triage_inputs));
+        });
+
+        println!(
+            "BENCH ux revamp (30 turns, 22 files / {total_lines} lines -> {run_count} runs): uncached {uncached:.3}ms | bg prep {prep:.3}ms | memoized frame {memoized:.3}ms | 120Hz budget 8.333ms"
+        );
+        assert!(memoized < 1.0, "memoized UX revamp frame ({memoized:.3}ms) must stay well under 1.0ms (8.333ms 120Hz budget)");
     }
 }

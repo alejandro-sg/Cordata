@@ -165,6 +165,67 @@ pub fn tokens(value: u64) -> String {
     }
 }
 
+/// Composition of the conversation's visible context across four semantic buckets, plus offloaded tool outputs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ContextBreakdown {
+    pub instructions_bytes: usize,
+    pub tools_bytes: usize,
+    pub diffs_bytes: usize,
+    pub dialogue_bytes: usize,
+    pub offloaded_count: usize,
+}
+
+impl ContextBreakdown {
+    pub fn total_bytes(&self) -> usize {
+        self.instructions_bytes + self.tools_bytes + self.diffs_bytes + self.dialogue_bytes
+    }
+
+    /// Four `(label, share_0_to_1)` entries; sums to `1.0` when `total_bytes() > 0`.
+    pub fn shares(&self) -> [(&'static str, f64); 4] {
+        let total = self.total_bytes();
+        if total == 0 {
+            return [("Instructions", 0.0), ("Tool output", 0.0), ("Diffs", 0.0), ("Dialogue", 0.0)];
+        }
+        let denom = total as f64;
+        [
+            ("Instructions", self.instructions_bytes as f64 / denom),
+            ("Tool output", self.tools_bytes as f64 / denom),
+            ("Diffs", self.diffs_bytes as f64 / denom),
+            ("Dialogue", self.dialogue_bytes as f64 / denom),
+        ]
+    }
+}
+
+pub fn context_breakdown(messages: &[crate::app::Message]) -> ContextBreakdown {
+    use crate::app::Message;
+    let mut b = ContextBreakdown::default();
+    for msg in messages {
+        match msg {
+            Message::Info(text) => {
+                if crate::desk::is_session_note(text) || text.starts_with("attached ") {
+                    b.instructions_bytes += text.len();
+                } else {
+                    b.tools_bytes += text.len();
+                }
+            }
+            Message::Tool(card) => {
+                let raw_len = card.raw_input.as_ref().map_or(0, |v| v.to_string().len());
+                b.tools_bytes += card.content.len() + raw_len;
+                for d in &card.diffs {
+                    b.diffs_bytes += d.new_text.len() + d.old_text.as_ref().map_or(0, String::len);
+                }
+                if card.content.contains(".cordata/offloaded") || card.content.contains("offloaded to ") {
+                    b.offloaded_count += 1;
+                }
+            }
+            Message::Diff(diff) => b.diffs_bytes += diff.len(),
+            Message::User(t) | Message::Agent(t) | Message::Thought(t) => b.dialogue_bytes += t.len(),
+            Message::Welcome(_) | Message::Divider(_) | Message::Error(_) | Message::Help => {}
+        }
+    }
+    b
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -207,5 +268,30 @@ mod tests {
     fn numbers_read_short() {
         assert_eq!((secs(1.24), secs(48.2), secs(185.0)), ("1.2s".into(), "48s".into(), "3m 05s".into()));
         assert_eq!((tokens(950), tokens(12_400), tokens(1_200_000)), ("950".into(), "12.4k".into(), "1.20M".into()));
+    }
+
+    #[test]
+    fn context_breakdown_separates_instructions_tools_diffs_and_offloads() {
+        use crate::app::{Message, ToolCard};
+        use acp_core::{FileDiff, ToolKind, ToolStatus};
+        let msgs = vec![
+            Message::Info("instructions: AGENTS.md loaded".into()),
+            Message::User("refactor parser".into()),
+            Message::Tool(ToolCard {
+                id: "1".into(),
+                name: "run_command".into(),
+                kind: ToolKind::Execute,
+                status: ToolStatus::Completed,
+                raw_input: None,
+                content: "output offloaded to ~/.cordata/offloaded/1.txt".into(),
+                diffs: vec![FileDiff { path: "src/lib.rs".into(), old_text: Some("old".into()), new_text: "new".into() }],
+            }),
+            Message::Agent("done".into()),
+        ];
+        let b = context_breakdown(&msgs);
+        assert!(b.instructions_bytes > 0 && b.tools_bytes > 0 && b.diffs_bytes == 6 && b.dialogue_bytes > 0);
+        assert_eq!(b.offloaded_count, 1);
+        let sum: f64 = b.shares().iter().map(|(_, s)| *s).sum();
+        assert!((sum - 1.0).abs() < 1e-9);
     }
 }

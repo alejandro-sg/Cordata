@@ -229,6 +229,86 @@ pub fn age(secs: u64) -> String {
     }
 }
 
+/// One open thread summarized as a flight strip on the Multi-Agent Triage Rack (`⌘0`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TriageIn {
+    pub index: usize,
+    pub slot: usize,
+    pub title: String,
+    pub folder: PathBuf,
+    pub state: TabState,
+    pub active: bool,
+    pub files: usize,
+    pub added: usize,
+    pub removed: usize,
+    pub check: Option<(String, crate::desk::CheckState)>,
+    pub falsification_warning: bool,
+    pub gate_title: Option<String>,
+    pub gate_signature: Option<String>,
+    pub gate_high_risk: bool,
+    pub working_secs: Option<u64>,
+    pub overlaps: Vec<usize>,
+}
+
+/// Two or more open threads waiting on the exact same tool call (`tool_name` + canonical target/command).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchGate {
+    pub signature: String,
+    pub title: String,
+    pub thread_indices: Vec<usize>,
+    pub thread_slots: Vec<usize>,
+    pub high_risk: bool,
+}
+
+/// Supervisory Flight Strip Rack: groups parallel threads by exception rather than opening order.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TriageRack {
+    pub at_gate: Vec<TriageIn>,
+    pub ready: Vec<TriageIn>,
+    pub in_sandbox: Vec<TriageIn>,
+    pub idle: Vec<TriageIn>,
+    pub batch_gates: Vec<BatchGate>,
+}
+
+pub fn triage_rack(items: &[TriageIn]) -> TriageRack {
+    let mut rack = TriageRack::default();
+    let mut by_sig: std::collections::BTreeMap<String, BatchGate> = std::collections::BTreeMap::new();
+    for item in items {
+        let mut normalized = item.clone();
+        normalized.title = thread_title(&item.title);
+        match item.state {
+            TabState::NeedsApproval | TabState::Closed => {
+                if item.state == TabState::NeedsApproval
+                    && let Some(sig) = &item.gate_signature
+                {
+                    let entry = by_sig.entry(sig.clone()).or_insert_with(|| BatchGate {
+                        signature: sig.clone(),
+                        title: item.gate_title.clone().unwrap_or_else(|| sig.clone()),
+                        thread_indices: Vec::new(),
+                        thread_slots: Vec::new(),
+                        high_risk: false,
+                    });
+                    entry.thread_indices.push(item.index);
+                    entry.thread_slots.push(item.slot);
+                    entry.high_risk |= item.gate_high_risk;
+                }
+                rack.at_gate.push(normalized);
+            }
+            TabState::Working => rack.in_sandbox.push(normalized),
+            TabState::Done => rack.ready.push(normalized),
+            TabState::Idle | TabState::Connecting => {
+                if item.files > 0 {
+                    rack.ready.push(normalized);
+                } else {
+                    rack.idle.push(normalized);
+                }
+            }
+        }
+    }
+    rack.batch_gates = by_sig.into_values().filter(|g| g.thread_indices.len() >= 2).collect();
+    rack
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,5 +394,42 @@ mod tests {
         assert_eq!(humane_branch("feature/add_login", Path::new("/x")), "Add login");
         assert_eq!(humane_branch("", Path::new("/r/wt-one")), "Wt one");
         assert_eq!(humane_branch("fix-deadbeef", Path::new("/x")), "Fix", "a hex tail after a word goes");
+    }
+
+    #[test]
+    fn triage_rack_groups_by_supervisory_band_and_clusters_identical_gates() {
+        let strip = |index: usize, state: TabState, sig: Option<&str>, files: usize| TriageIn {
+            index,
+            slot: index + 1,
+            title: format!("task {index}"),
+            folder: "/r".into(),
+            state,
+            active: index == 0,
+            files,
+            added: files * 4,
+            removed: files,
+            check: None,
+            falsification_warning: false,
+            gate_title: sig.map(|s| format!("Run {s}")),
+            gate_signature: sig.map(str::to_owned),
+            gate_high_risk: false,
+            working_secs: Some(30),
+            overlaps: Vec::new(),
+        };
+        let all = [
+            strip(0, TabState::NeedsApproval, Some("run_command:cargo test"), 1),
+            strip(1, TabState::Working, None, 0),
+            strip(2, TabState::NeedsApproval, Some("run_command:cargo test"), 2),
+            strip(3, TabState::Done, None, 3),
+            strip(4, TabState::Idle, None, 0),
+        ];
+        let rack = triage_rack(&all);
+        assert_eq!(rack.at_gate.len(), 2);
+        assert_eq!(rack.in_sandbox.len(), 1);
+        assert_eq!(rack.ready.len(), 1);
+        assert_eq!(rack.idle.len(), 1);
+        assert_eq!(rack.batch_gates.len(), 1);
+        assert_eq!(rack.batch_gates[0].thread_indices, vec![0, 2]);
+        assert_eq!(rack.batch_gates[0].thread_slots, vec![1, 3]);
     }
 }

@@ -236,6 +236,12 @@ impl Session {
         self.settle(vec![effect], cx);
     }
 
+    /// Pins or clears `auto` mode's relative write-scope prefixes on this thread.
+    pub fn set_scope(&mut self, scope: Vec<String>, cx: &mut Context<Self>) {
+        let effect = self.view.set_scope(scope);
+        self.settle(vec![effect], cx);
+    }
+
     /// The model switcher: same path as `/model <name>`, so the reducer's checks apply.
     pub fn set_model(&mut self, model: &str, cx: &mut Context<Self>) {
         self.submit(&format!("/model {model}"), cx);
@@ -262,6 +268,7 @@ impl Session {
                 sent
             }
             Effect::SetMode(mode) => self.with_handle(|h| h.set_mode(mode)),
+            Effect::SetScope(scope) => self.with_handle(|h| h.set_scope(scope)),
             Effect::Copy(text) => {
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
                 Ok(())
@@ -298,7 +305,7 @@ impl Session {
                 Ok(())
             }
             Effect::Review => {
-                self.view.messages.push(Message::Info("the diff review lands with the editor (docs/app.md P3); /diff shows the working tree's diff now".into()));
+                cx.emit(SessionEvent::Window(WindowRequest::Review));
                 Ok(())
             }
         };
@@ -319,7 +326,7 @@ impl Session {
 pub enum SessionEvent {
     /// An approval or a finished turn wants the person (bounce the Dock icon, badge the rail).
     NeedsAttention,
-    /// A `/new`, `/close` or session switch: the window's to carry out.
+    /// A `/new`, `/close`, `/review` or session switch: the window's to carry out.
     Window(WindowRequest),
     /// The person picked a model: new threads start with it too (the window keeps it in prefs).
     ModelChosen(String),
@@ -329,6 +336,7 @@ pub enum SessionEvent {
 pub enum WindowRequest {
     New,
     Close,
+    Review,
     Switch(cordata_view::app::SwitchTarget),
 }
 

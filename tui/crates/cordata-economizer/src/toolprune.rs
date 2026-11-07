@@ -41,6 +41,7 @@ impl ToolDefinition {
 const INTENTS: &[(&str, &[&str])] = &[
     ("code_outline", &["outline", "structure", "overview"]),
     ("code_map", &["where", "find", "locate", "which", "how", "architecture", "map", "explain", "understand"]),
+    ("acp_registry_search", &["acp", "registry", "agent", "agents", "harness", "distribution"]),
 ];
 
 /// Name fragments too common to signal intent on their own.

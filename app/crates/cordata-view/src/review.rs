@@ -114,6 +114,106 @@ impl FileDiff {
     }
 }
 
+/// Visual classification of a contiguous diff run inside a hunk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineKind {
+    Context,
+    Add,
+    Del,
+}
+
+/// Contiguous diff lines of the same [`LineKind`], pre-sanitized and secret-scrubbed once off the UI thread.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisplayRun {
+    pub kind: LineKind,
+    pub text: String,
+}
+
+const HUNK_PREVIEW_THRESHOLD: usize = 44;
+const HUNK_PREVIEW_LINES: usize = 28;
+
+/// Pre-scrubbed hunk ready for zero-regex 120Hz frame rendering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisplayHunk {
+    pub header: String,
+    pub new_start: usize,
+    pub runs: Vec<DisplayRun>,
+    pub preview_runs: Vec<DisplayRun>,
+    pub hidden_lines: usize,
+}
+
+fn group_runs(lines: &[String]) -> Vec<DisplayRun> {
+    let mut runs: Vec<DisplayRun> = Vec::new();
+    for line in lines {
+        let (pfx, rest) = line.split_at(line.chars().next().map_or(0, char::len_utf8));
+        let kind = match pfx {
+            "+" => LineKind::Add,
+            "-" => LineKind::Del,
+            _ => LineKind::Context,
+        };
+        let cleaned = crate::redact::scrub(&crate::app::sanitize(rest)).0.replace('\n', " ");
+        let formatted = format!("{pfx}{cleaned}");
+        match runs.last_mut() {
+            Some(last) if last.kind == kind => {
+                last.text.push('\n');
+                last.text.push_str(&formatted);
+            }
+            _ => runs.push(DisplayRun { kind, text: formatted }),
+        }
+    }
+    runs
+}
+
+/// Pre-scrubbed file diff ready for zero-regex 120Hz frame rendering in Change Sheet (`⌘D`) and Review (`⌘⌥4`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisplayFile {
+    pub path: String,
+    pub status: Status,
+    pub binary: bool,
+    pub additions: usize,
+    pub deletions: usize,
+    pub sensitive: bool,
+    pub hunks: Vec<DisplayHunk>,
+}
+
+/// Builds pre-scrubbed, run-grouped [`DisplayFile`]s once off the UI thread so every 120Hz UI redraw does zero regex
+/// scrubbing and lays out ~10x fewer GPUI elements on multi-thousand-line diffs.
+pub fn display_files(files: &[FileDiff]) -> Vec<DisplayFile> {
+    files
+        .iter()
+        .map(|file| {
+            let hunks = file
+                .hunks
+                .iter()
+                .map(|hunk| {
+                    let runs = group_runs(&hunk.lines);
+                    let (preview_runs, hidden_lines) = if hunk.lines.len() > HUNK_PREVIEW_THRESHOLD {
+                        (group_runs(&hunk.lines[..HUNK_PREVIEW_LINES]), hunk.lines.len() - HUNK_PREVIEW_LINES)
+                    } else {
+                        (Vec::new(), 0)
+                    };
+                    DisplayHunk {
+                        header: crate::redact::scrub(&crate::app::sanitize(&hunk.header)).0,
+                        new_start: hunk.new_start,
+                        runs,
+                        preview_runs,
+                        hidden_lines,
+                    }
+                })
+                .collect();
+            DisplayFile {
+                path: crate::redact::scrub(&crate::app::sanitize(&file.path)).0,
+                status: file.status.clone(),
+                binary: file.binary,
+                additions: file.additions(),
+                deletions: file.deletions(),
+                sensitive: crate::desk::is_sensitive_path(&file.path),
+                hunks,
+            }
+        })
+        .collect()
+}
+
 /// `git diff` output, split into files and hunks.
 pub fn parse(patch: &str) -> Vec<FileDiff> {
     let mut files: Vec<FileDiff> = Vec::new();
@@ -437,5 +537,37 @@ Binary files a/logo.png and b/logo.png differ
         assert_eq!(untracked(dir.path()), vec!["new.rs".to_owned()]);
         let plain = tempfile::tempdir().unwrap();
         assert_eq!(working_changes(plain.path()).unwrap_err(), "not a git repository");
+    }
+
+    #[test]
+    fn display_files_groups_contiguous_runs_masks_secrets_and_flags_sensitive_paths() {
+        let key = format!("sk-ant-api03-{}", "Q7zR9kMp3XwB".repeat(4));
+        let patch = format!(
+            "\
+diff --git a/Cargo.toml b/Cargo.toml
+index 1111111..2222222 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -1,4 +1,5 @@
+ [package]
+ name = \"demo\"
+-version = \"0.1.0\"
++version = \"0.2.0\"
++# key = {key}
+ edition = \"2024\"
+"
+        );
+        let parsed = parse(&patch);
+        let disp = display_files(&parsed);
+        assert_eq!(disp.len(), 1);
+        assert!(disp[0].sensitive, "Cargo.toml is flagged sensitive");
+        assert_eq!((disp[0].additions, disp[0].deletions), (2, 1));
+        let runs = &disp[0].hunks[0].runs;
+        assert_eq!(
+            runs.iter().map(|r| r.kind).collect::<Vec<_>>(),
+            vec![LineKind::Context, LineKind::Del, LineKind::Add, LineKind::Context]
+        );
+        assert!(runs[0].text.contains(" [package]\n name = \"demo\""));
+        assert!(!runs[2].text.contains(&key) && runs[2].text.contains("[REDACTED]"));
     }
 }

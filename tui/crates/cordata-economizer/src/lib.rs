@@ -5,11 +5,13 @@
 //! * [`loopguard`]   nudges, then refuses, repeated identical tool calls and edit reversions.
 //! * [`cache_align`] lays the prompt out so the prefix stays byte-identical between rounds.
 //! * [`compactor`]   keeps the head and tail of long outputs and ages old ones into digests.
+//! * [`coalescer`]   batches streaming token deltas and throttles progressive tool updates.
 //!
 //! Nothing here touches the network or a model; everything is a pure function of its inputs plus the
 //! small JSON files under `~/.cordata/economizer/`.
 
 pub mod cache_align;
+pub mod coalescer;
 pub mod compactor;
 pub mod loopguard;
 pub mod microskills;

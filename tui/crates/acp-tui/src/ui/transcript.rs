@@ -146,7 +146,7 @@ fn message_lines(app: &App, index: usize, width: u16) -> Vec<Line<'static>> {
         Message::Info(text) => prefixed(
             text,
             w,
-            "  ✦ ",
+            "  · ",
             "    ",
             Style::new().fg(Color::Gray),
             Style::new().fg(Color::Cyan),

@@ -539,6 +539,7 @@ async fn run(
                 Effect::Resume(wanted) => with_handle(workspace, |h| h.resume(wanted)),
                 Effect::SetModel(model) => with_handle(workspace, |h| h.set_model(model)),
                 Effect::SetMode(mode) => with_handle(workspace, |h| h.set_mode(mode)),
+                Effect::SetScope(scope) => with_handle(workspace, |h| h.set_scope(scope)),
                 // Every open session stops saving, or one of them would write the folder back.
                 Effect::Forget => workspace.slots.iter().filter_map(|slot| slot.handle.as_ref()).try_for_each(SessionHandle::forget),
             };

@@ -17,6 +17,7 @@ log "=== micro (release, hermetic)"
 (cd "$ROOT/tui" && cargo test -q --release -p acp-core bench_ -- --ignored --nocapture 2>/dev/null | grep BENCH)
 (cd "$ROOT/tui" && cargo test -q --release -p cordata-repomap --features embed bench_ -- --ignored --nocapture 2>/dev/null | grep BENCH)
 (cd "$ROOT/app" && cargo test -q --release -p cordata-view --features crossterm bench_ -- --ignored --nocapture 2>/dev/null | grep BENCH)
+(cd "$ROOT/app" && cargo test -q --release -p cordata-app bench_ -- --ignored --nocapture 2>/dev/null | grep BENCH)
 
 log "=== process"
 (cd "$ROOT/tui" && cargo build -q --release)

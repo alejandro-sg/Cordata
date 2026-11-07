@@ -33,6 +33,9 @@ mod attachments;
 mod conversation;
 pub(crate) use conversation::prompt_mark;
 mod desk;
+mod rack;
+mod sheet;
+pub use sheet::DeskMode;
 mod artifacts;
 mod editor;
 mod git_ops;
@@ -55,8 +58,6 @@ pub enum DockTab {
     Review,
     Artifacts,
     Terminal,
-    Agents,
-    McpHub,
 }
 
 /// What floats over the window; the last one is on top and esc closes it first.
@@ -124,6 +125,9 @@ actions!(
         SwitchTo7,
         SwitchTo8,
         SwitchTo9,
+        ToggleDeck,
+        ToggleRack,
+        ForceAllowGate,
         About,
         HideApp,
         HideOthers,
@@ -162,7 +166,6 @@ pub struct Workspace {
     pub(super) sidebar_open: bool,
     /// The side panel is shown (the person's choice, or the width's default).
     pub(super) panel_open: bool,
-    overflow_open: bool,
     pub(super) files: editor::Files,
     pub(super) file_filter: Entity<InputState>,
     pub(super) review: review::Review,
@@ -173,6 +176,23 @@ pub struct Workspace {
     pub(super) settings_view: settings_view::SettingsView,
     /// The window's own preferences.
     pub(super) prefs: Prefs,
+    pub(super) desk_mode: DeskMode,
+    /// Selected tape stop for forensic inspection, turn-level forking, or post-turn rollback.
+    pub(super) selected_turn: Option<usize>,
+    /// Whether the Change Sheet's agent summary is expanded beyond its 5-line clamp.
+    pub(super) sheet_expanded: bool,
+    /// Per-file fold overrides in the Change Sheet (`⌘D`).
+    pub(super) sheet_toggled_files: HashSet<String>,
+    /// Expanded large hunks (`(raw_path, hunk_idx)`) in the Change Sheet (`⌘D`).
+    pub(super) sheet_expanded_hunks: HashSet<(String, usize)>,
+    /// Explicit `[expand all]` / `[collapse all]` override on the Change Sheet (`None` = smart default: first 2 + sensitive).
+    pub(super) sheet_all_expanded: Option<bool>,
+    /// Memoized desk & folded-row snapshot for the active session, avoiding per-frame message/diff scans at 120Hz.
+    pub(super) desk_cache: DeskCache,
+    /// Tool call ID of a high-risk gate whose challenge token was explicitly confirmed.
+    pub(super) gate_unlocked: Option<String>,
+    /// Inline feedback shown when a locked high-risk gate is triggered without token confirmation.
+    pub(super) gate_hint: Option<String>,
     overlays: Vec<Overlay>,
     confirm: Option<Confirm>,
     palette_input: Entity<InputState>,
@@ -268,6 +288,34 @@ pub struct Launch {
     pub store: threads::Store,
     /// A folder was named at launch: with threads restored, it is shown too (its open thread, else a new one).
     pub open_folder: bool,
+}
+
+#[derive(Default, PartialEq, Eq)]
+pub(super) struct DeskCacheKey {
+    session_id: EntityId,
+    version: u64,
+    msg_len: usize,
+    pending_id: Option<String>,
+    check: Option<String>,
+    peers: Vec<(usize, EntityId, u64, usize)>,
+}
+
+pub(super) struct DeskCache {
+    key: Option<DeskCacheKey>,
+    pub(super) snap: std::rc::Rc<cordata_view::desk::Snapshot>,
+    pub(super) rows: std::rc::Rc<Vec<fold::Row>>,
+    pub(super) fold_ctx: std::rc::Rc<fold::Context>,
+}
+
+impl Default for DeskCache {
+    fn default() -> Self {
+        Self {
+            key: None,
+            snap: std::rc::Rc::new(cordata_view::desk::Snapshot::default()),
+            rows: std::rc::Rc::new(Vec::new()),
+            fold_ctx: std::rc::Rc::new(fold::Context::here(PathBuf::new())),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -404,7 +452,6 @@ impl Workspace {
             dock_tab: DockTab::default(),
             sidebar_open,
             panel_open,
-            overflow_open: false,
             files: editor::Files::default(),
             file_filter,
             review: review::Review::default(),
@@ -458,6 +505,15 @@ impl Workspace {
             popup: None,
             keys: meter::Keys::default(),
             model_filter,
+            desk_mode: DeskMode::default(),
+            selected_turn: None,
+            sheet_expanded: false,
+            sheet_toggled_files: HashSet::new(),
+            sheet_expanded_hunks: HashSet::new(),
+            sheet_all_expanded: None,
+            desk_cache: DeskCache::default(),
+            gate_unlocked: None,
+            gate_hint: None,
             _subscriptions: subscriptions,
         };
         let cwd = this.cwd.clone();
@@ -499,7 +555,12 @@ impl Workspace {
                 self.open_overlay(Overlay::Settings, window, cx);
             }
             _ if what == "about" => self.open_overlay(Overlay::About, window, cx),
-            _ if what == "agents" => self.switch_dock(DockTab::Agents, cx),
+            _ if what == "agents" => {
+                self.settings_section = settings_modal::Section::Agents;
+                self.open_overlay(Overlay::Settings, window, cx);
+            }
+            _ if what == "sheet" => self.desk_mode = DeskMode::ChangeSheet,
+            _ if what == "rack" => self.desk_mode = DeskMode::Rack,
             _ if what == "models" => self.popup = Some(meter::Popup::Models),
             _ if what == "terminal" => {
                 self.panel_open = true;
@@ -675,8 +736,12 @@ impl Workspace {
                 this.sound_and_notify(&observed, window, cx);
                 // The conversation's id arrives after the engine starts, and its file appears when a turn ends.
                 let mark = observed.read(cx).saved_id().map(|id| (id.to_owned(), observed.read(cx).view.turns_done));
-                if mark.is_some() && this.thread_marks.get(&observed.entity_id()) != mark.as_ref() {
+                let mark_changed = mark.is_some() && this.thread_marks.get(&observed.entity_id()) != mark.as_ref();
+                if mark_changed {
                     this.persist_threads(cx);
+                    if observed.entity_id() == this.session.entity_id() && this.desk_mode == DeskMode::ChangeSheet {
+                        this.load_review(cx);
+                    }
                 }
                 if observed.entity_id() == this.session.entity_id() {
                     this.step_selftest(cx);
@@ -731,6 +796,11 @@ impl Workspace {
         // project's diff.
         let home = session.read(cx).cwd.clone();
         self.session = session;
+        self.desk_mode = DeskMode::Transcript;
+        self.selected_turn = None;
+        self.sheet_expanded = false;
+        self.gate_unlocked = None;
+        self.gate_hint = None;
         if home != self.cwd {
             self.retarget(home, cx);
         }
@@ -795,6 +865,9 @@ impl Workspace {
             }
         };
         let session = self.sessions[next].clone();
+        if self.desk_mode == DeskMode::Rack {
+            self.desk_mode = DeskMode::Transcript;
+        }
         self.show(session, cx);
     }
 
@@ -802,6 +875,12 @@ impl Workspace {
         match request {
             WindowRequest::New => self.open_new(window, cx),
             WindowRequest::Close => self.close_active(cx),
+            WindowRequest::Review => {
+                self.load_review(cx);
+                sheet::record_ux_event("mode_switch", serde_json::json!({ "mode": "change_sheet", "source": "slash_review" }));
+                self.desk_mode = DeskMode::ChangeSheet;
+                cx.notify();
+            }
             WindowRequest::Switch(target) => self.switch(target, cx),
         }
     }
@@ -853,9 +932,60 @@ impl Workspace {
         display_rows(self.session.read(cx)).0.len()
     }
 
+    fn sync_desk_cache(&mut self, cx: &App) {
+        let active_id = self.session.entity_id();
+        let check = self.check_command();
+        let peers_sig: Vec<(usize, EntityId, u64, usize)> = self
+            .sessions
+            .iter()
+            .enumerate()
+            .filter(|(_, entity)| entity.entity_id() != active_id)
+            .map(|(ix, entity)| {
+                let p = entity.read(cx);
+                (ix + 1, entity.entity_id(), p.version, p.view.messages.len())
+            })
+            .collect();
+        let (version, msg_len, pending_id) = {
+            let s = self.session.read(cx);
+            (s.version, s.view.messages.len(), s.view.pending.front().map(|p| p.info.tool_call_id.clone()))
+        };
+        let key = DeskCacheKey {
+            session_id: active_id,
+            version,
+            msg_len,
+            pending_id: pending_id.clone(),
+            check: check.clone(),
+            peers: peers_sig,
+        };
+        if self.desk_cache.key.as_ref() == Some(&key) {
+            return;
+        }
+        let active_cwd = self.session.read(cx).cwd.clone();
+        let peers_edited: Vec<(usize, Vec<String>)> = self
+            .sessions
+            .iter()
+            .enumerate()
+            .filter(|(_, entity)| entity.entity_id() != active_id)
+            .filter_map(|(ix, entity)| {
+                let peer = entity.read(cx);
+                (peer.cwd == active_cwd).then(|| (ix + 1, cordata_view::desk::edited_paths(&peer.view.messages, &peer.cwd)))
+            })
+            .filter(|(_, paths)| !paths.is_empty())
+            .collect();
+        let session = self.session.read(cx);
+        let snap = cordata_view::desk::snapshot(&session.view.messages, &session.cwd, pending_id.as_deref(), check.as_deref(), &peers_edited);
+        let (rows, fold_ctx) = display_rows(session);
+        self.desk_cache = DeskCache {
+            key: Some(key),
+            snap: std::rc::Rc::new(snap),
+            rows: std::rc::Rc::new(rows),
+            fold_ctx: std::rc::Rc::new(fold_ctx),
+        };
+    }
+
     fn sync_transcript(&mut self, cx: &App) {
         let session = self.session.read(cx);
-        let (id, len, version) = (self.session.entity_id(), display_rows(session).0.len(), session.version);
+        let (id, len, version) = (self.session.entity_id(), self.desk_cache.rows.len(), session.version);
         let (old_id, old_len, old_version) = self.seen;
         // Another thread, or a cleared one (folding shrinks the count by a row or two, never by a screenful).
         if id != old_id || len + REMEASURE_TAIL < old_len {
@@ -876,8 +1006,7 @@ impl Workspace {
             self.close_overlay(top, window, cx);
             return;
         }
-        if self.overflow_open || self.row_menu.is_some() {
-                    self.overflow_open = false;
+        if self.row_menu.is_some() {
             self.row_menu = None;
             cx.notify();
             return;
@@ -891,8 +1020,18 @@ impl Workspace {
             cx.notify();
             return;
         }
+        if self.desk_mode == DeskMode::Rack {
+            self.desk_mode = DeskMode::Transcript;
+            cx.notify();
+            return;
+        }
         if !self.session.read(cx).view.pending.is_empty() {
-            self.session.update(cx, |session, cx| session.answer(ApprovalDecision::Reject, cx));
+            self.answer_gate(ApprovalDecision::Reject, cx);
+            return;
+        }
+        if self.desk_mode == DeskMode::ChangeSheet {
+            self.desk_mode = DeskMode::Transcript;
+            cx.notify();
             return;
         }
         if self.session.read(cx).view.turn_active {
@@ -950,8 +1089,10 @@ impl Workspace {
         self.toggle_terminal(&ToggleTerminal, window, cx);
     }
 
-    fn show_mcphub_action(&mut self, _: &ShowMcpHub, _: &mut Window, cx: &mut Context<Self>) {
-        self.switch_dock(DockTab::McpHub, cx);
+    fn show_mcphub_action(&mut self, _: &ShowMcpHub, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings_section = settings_modal::Section::Mcp;
+        self.on_settings_section(cx);
+        self.open_overlay(Overlay::Settings, window, cx);
     }
 
     fn open_files_action(&mut self, _: &OpenFiles, window: &mut Window, cx: &mut Context<Self>) {
@@ -963,9 +1104,22 @@ impl Workspace {
         self.save_active(cx);
     }
 
+    fn toggle_deck_action(&mut self, _: &ToggleDeck, _: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_change_sheet(cx);
+    }
+
+    fn toggle_rack_action(&mut self, _: &ToggleRack, _: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_rack(cx);
+    }
+
+    fn force_allow_gate_action(&mut self, _: &ForceAllowGate, _: &mut Window, cx: &mut Context<Self>) {
+        if self.desk_mode != DeskMode::Rack && !self.session.read(cx).view.pending.is_empty() {
+            self.answer_gate(ApprovalDecision::Allow, cx);
+        }
+    }
+
     pub(super) fn switch_dock(&mut self, tab: DockTab, cx: &mut Context<Self>) {
         self.dock_tab = tab;
-        self.overflow_open = false;
         if !self.panel_open {
             self.set_panel(true, cx);
         }
@@ -973,31 +1127,11 @@ impl Workspace {
             DockTab::Files => self.load_tree(cx),
             DockTab::Review => self.load_review(cx),
             DockTab::Artifacts => self.load_artifacts(cx),
-            DockTab::Agents if self.agents.found.is_none() => self.load_agents(cx),
             // The shell starts the first time the pane is shown (tests click to start one).
             DockTab::Terminal if self.shell_on_show => self.ensure_terminal(cx),
-            DockTab::McpHub => self.load_mcp(cx),
             _ => {}
         }
         cx.notify();
-    }
-
-    pub(super) fn load_mcp(&mut self, cx: &mut Context<Self>) {
-        self.mcp = crate::mcp_catalog::snapshot(&cordata_home(), &self.cwd);
-        cx.notify();
-    }
-
-    pub(super) fn mcp_hub_panel(&self, cx: &mut Context<Self>) -> AnyElement {
-        let rows = self.mcp_rows(cx);
-        div()
-            .id("mcp-hub-panel")
-            .flex()
-            .flex_col()
-            .size_full()
-            .overflow_y_scroll()
-            .gap(px(10.))
-            .children(rows)
-            .into_any_element()
     }
 
     fn next_session(&mut self, _: &NextSession, _: &mut Window, cx: &mut Context<Self>) {
@@ -1118,7 +1252,7 @@ impl Workspace {
                 let pending = view.pending.front();
                 (pending.is_some(), self.composer.read(cx).value().is_empty())
             };
-            if pending && empty && plain && !self.saying {
+            if self.desk_mode != DeskMode::Rack && pending && empty && plain && !self.saying {
                 return matches!(key, "a" | "y" | "s" | "r" | "n" | "k" | "w" | "enter");
             }
             let single_line = !self.composer.read(cx).value().contains('\n');
@@ -1144,30 +1278,52 @@ impl Workspace {
             (view.menu.is_some(), pending.is_some(), self.composer.read(cx).value().is_empty())
         };
         let plain = !event.keystroke.modifiers.modified();
-        // An approval card takes single keys while the composer is empty, as the terminal's does: a/y allow, r/n
-        // reject, s allow the tool for the session, w reject in your own words.
-        if pending && empty && plain && !self.saying {
-            let decision = match event.keystroke.key.as_str() {
-                "a" | "y" => Some(ApprovalDecision::Allow),
-                "s" => Some(ApprovalDecision::AllowAlways),
-                "r" | "n" | "k" => Some(ApprovalDecision::Reject),
+        let gate_visible = pending && self.desk_mode != DeskMode::Rack;
+        // An approval card takes single keys while the composer is empty: routine gates accept a/y/s/↵; high-risk
+        // gates hold Allow until their challenge token is confirmed (or ⌘Y is pressed), while r/n/k/esc/w remain instant.
+        if gate_visible && empty && plain && !self.saying {
+            let locked = self.active_gate_locked(cx);
+            match event.keystroke.key.as_str() {
+                "a" | "y" | "s" if locked => {
+                    self.gate_hint = Some("High-risk gate: confirm the risk token above or press ⌘Y to allow.".into());
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
+                "a" | "y" => {
+                    self.answer_gate(ApprovalDecision::Allow, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                "s" => {
+                    let has_always = self.session.read(cx).view.pending.front().is_some_and(|p| p.info.always_label.is_some());
+                    let dec = if has_always { ApprovalDecision::AllowAlways } else { ApprovalDecision::Allow };
+                    self.answer_gate(dec, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                "r" | "n" | "k" => {
+                    self.answer_gate(ApprovalDecision::Reject, cx);
+                    cx.stop_propagation();
+                    return;
+                }
                 "w" => {
                     self.saying = true;
                     cx.stop_propagation();
                     cx.notify();
                     return;
                 }
-                _ => None,
-            };
-            if let Some(decision) = decision {
-                self.session.update(cx, |session, cx| session.answer(decision, cx));
-                cx.stop_propagation();
-                return;
+                _ => {}
             }
         }
-        // ↵ on an empty composer answers the card: allow once.
-        if pending && empty && !self.saying && event.keystroke.key == "enter" && !event.keystroke.modifiers.modified() {
-            self.session.update(cx, |session, cx| session.answer(ApprovalDecision::Allow, cx));
+        // ↵ on an empty composer answers a routine card; high-risk cards require challenge confirmation or ⌘Y.
+        if gate_visible && empty && !self.saying && event.keystroke.key == "enter" && !event.keystroke.modifiers.modified() {
+            if self.active_gate_locked(cx) {
+                self.gate_hint = Some("High-risk gate: confirm the risk token above or press ⌘Y to allow.".into());
+                cx.notify();
+            } else {
+                self.answer_gate(ApprovalDecision::Allow, cx);
+            }
             cx.stop_propagation();
             return;
         }
@@ -1202,7 +1358,6 @@ impl Workspace {
     // -------------------------------------------------------------------------------------------- overlays
 
     pub(super) fn open_overlay(&mut self, overlay: Overlay, window: &mut Window, cx: &mut Context<Self>) {
-        self.overflow_open = false;
         self.overlays.retain(|o| *o != overlay);
         self.overlays.push(overlay);
         match overlay {
@@ -1547,6 +1702,9 @@ impl Workspace {
         self.cwd = path;
         self.files = editor::Files::default();
         self.review = review::Review::default();
+        self.sheet_toggled_files.clear();
+        self.sheet_expanded_hunks.clear();
+        self.sheet_all_expanded = None;
         self.git.pr = None;
         self.git.note = None;
         self.git.worktrees.clear();
@@ -1612,11 +1770,17 @@ impl Workspace {
             let shown = format!("{body}\n\n[attached: {}]", names.join(", "));
             let items: Vec<acp_core::Attachment> = self.staged.drain(..).map(|s| s.attachment).collect();
             self.attach_note = None;
+            if self.desk_mode != DeskMode::Transcript {
+                self.desk_mode = DeskMode::Transcript;
+            }
             self.composer.update(cx, |state, cx| state.set_value("", window, cx));
             self.session.update(cx, |session, cx| session.submit_with(&shown, items, cx));
             return;
         }
         self.attach_note = None;
+        if self.desk_mode != DeskMode::Transcript {
+            self.desk_mode = DeskMode::Transcript;
+        }
         self.composer.update(cx, |state, cx| state.set_value("", window, cx));
         self.session.update(cx, |session, cx| session.submit(&text, cx));
     }
@@ -1876,6 +2040,7 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.poll_disk(window, cx);
         self.refresh_check();
+        self.sync_desk_cache(cx);
         self.sync_transcript(cx);
         let placeholder = self.placeholder(cx);
         if placeholder != self.composer_placeholder {
@@ -1894,9 +2059,9 @@ impl Render for Workspace {
         // Anything past the session banner (a reply, a `!command`'s output, `/cost`) is worth the transcript.
         let has_conversation = transcript::has_content(&session.read(cx).view);
         let this = cx.entity().downgrade();
-        // Folded once per frame, not once per row: the list asks for rows by index.
-        let (rows, fold_ctx) = display_rows(session.read(cx));
-        let (rows, fold_ctx) = (std::rc::Rc::new(rows), std::rc::Rc::new(fold_ctx));
+        // Memoized across frames when session.version is unchanged.
+        let rows = std::rc::Rc::clone(&self.desk_cache.rows);
+        let fold_ctx = std::rc::Rc::clone(&self.desk_cache.fold_ctx);
         let transcript_list = list(self.transcript.clone(), move |ix, _window, cx| {
             let view = &session.read(cx).view;
             let Some(row) = rows.get(ix) else { return div().into_any_element() };
@@ -1993,10 +2158,10 @@ impl Render for Workspace {
         })
         .size_full();
         let pending_info = self.session.read(cx).view.pending.front().map(|p| p.info.clone());
-        let pending = pending_info.as_ref().map(|info| self.approval_card(info, cx));
-        let actions_row = self.receipt(cx);
-        let brief = self.brief_block(cx);
-        let places = (has_conversation && column_w >= desk::PLACES_MIN_COLUMN).then(|| self.places_margin(cx));
+        let pending = (self.desk_mode == DeskMode::Transcript).then(|| pending_info.as_ref().map(|info| self.approval_card(info, cx))).flatten();
+        let actions_row = (self.desk_mode == DeskMode::Transcript).then(|| self.receipt(cx)).flatten();
+        let brief = (self.desk_mode != DeskMode::Rack).then(|| self.brief_block(cx)).flatten();
+        let places = (has_conversation && self.desk_mode != DeskMode::Rack && column_w >= desk::PLACES_MIN_COLUMN).then(|| self.places_margin(cx));
         let menu = self.slash_menu(cx);
         let sidebar = self.sidebar_open.then(|| self.sidebar(cx));
         let header = self.header(column_w, cx);
@@ -2005,10 +2170,11 @@ impl Render for Workspace {
         let overlays = self.overlay_layer(window, cx);
         let grips = self.resize_grips(window_w, cx);
         let drop_ring = crate::theme::amber(cx, t::AMBER_BORDER_STRONG);
-        let body: AnyElement = if has_conversation {
-            div().id("transcript").role(gpui::Role::Log).aria_label("Transcript").flex_1().min_h_0().child(transcript_list).into_any_element()
-        } else {
-            div().flex_1().min_h_0().child(self.empty_state(cx)).into_any_element()
+        let body: AnyElement = match self.desk_mode {
+            DeskMode::Rack => div().flex_1().min_h_0().child(self.triage_rack_view(cx)).into_any_element(),
+            DeskMode::ChangeSheet => div().flex_1().min_h_0().child(self.change_sheet(cx)).into_any_element(),
+            _ if has_conversation => div().id("transcript").role(gpui::Role::Log).aria_label("Transcript").flex_1().min_h_0().child(transcript_list).into_any_element(),
+            _ => div().flex_1().min_h_0().child(self.empty_state(cx)).into_any_element(),
         };
 
         div()
@@ -2040,6 +2206,9 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::show_mcphub_action))
             .on_action(cx.listener(Self::open_files_action))
             .on_action(cx.listener(Self::save_file_action))
+            .on_action(cx.listener(Self::toggle_deck_action))
+            .on_action(cx.listener(Self::toggle_rack_action))
+            .on_action(cx.listener(Self::force_allow_gate_action))
             .on_action(cx.listener(|this, _: &SwitchTo1, _, cx| this.switch_slot(1, cx)))
             .on_action(cx.listener(|this, _: &SwitchTo2, _, cx| this.switch_slot(2, cx)))
             .on_action(cx.listener(|this, _: &SwitchTo3, _, cx| this.switch_slot(3, cx)))
@@ -2150,6 +2319,9 @@ pub fn bind_keys(cx: &mut App) {
         gpui::KeyBinding::new("ctrl-k", CommandMenu, Some("Workspace")),
         gpui::KeyBinding::new("cmd-o", SwitchProject, Some("Workspace")),
         gpui::KeyBinding::new("cmd-b", ToggleSidebar, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-d", ToggleDeck, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-0", ToggleRack, Some("Workspace")),
+        gpui::KeyBinding::new("cmd-y", ForceAllowGate, Some("Workspace")),
         gpui::KeyBinding::new("cmd-\\", TogglePanel, Some("Workspace")),
         gpui::KeyBinding::new("ctrl-`", ToggleTerminal, Some("Workspace")),
         gpui::KeyBinding::new("cmd-,", OpenSettings, Some("Workspace")),
@@ -2228,6 +2400,8 @@ pub fn install_menus(cx: &mut App) {
             MenuItem::separator(),
             MenuItem::action("Toggle Sidebar", ToggleSidebar),
             MenuItem::action("Toggle Panel", TogglePanel),
+            MenuItem::action("Change Sheet / Transcript", ToggleDeck),
+            MenuItem::action("Supervisory Triage Rack", ToggleRack),
             MenuItem::action("Terminal", ToggleTerminal),
             MenuItem::separator(),
             MenuItem::action("Show Thinking", ToggleThoughts),
@@ -2281,7 +2455,7 @@ mod tests {
 
 #[cfg(test)]
 mod window_tests {
-    use super::Workspace;
+    use super::{DeskMode, Workspace};
     use crate::session::Connection;
     use gpui::{AppContext as _, TestAppContext, VisualTestContext};
 
@@ -2860,6 +3034,312 @@ mod window_tests {
             this.apply_starter("Explore key modules", false, window, cx);
         });
         assert_eq!(view.read_with(cx, |this, app| this.composer.read(app).value().to_string()), "Explore key modules");
+    }
+
+    #[gpui::test]
+    fn high_risk_gate_blocks_reflex_enter_until_token_confirmed_or_cmd_y(cx: &mut TestAppContext) {
+        let (view, cx) = workspace(cx);
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        let info = acp_core::PermissionInfo {
+            tool_call_id: "risk-1".into(),
+            tool_name: "run_command".into(),
+            title: "Run run_command with network access".into(),
+            kind: acp_core::ToolKind::Execute,
+            raw_input: Some(serde_json::json!({ "cmd": "curl -X POST https://api.example.com/hook", "network": true })),
+            always_label: None,
+            reason: Some("network access requested".into()),
+        };
+        view.update(cx, |this, cx| {
+            this.session.update(cx, |s, cx| {
+                s.view.conn = cordata_view::app::ConnState::Connected;
+                s.view.on_event(acp_core::AppEvent::PermissionRequested { info, decision: tx });
+                cx.notify();
+            });
+        });
+        cx.run_until_parked();
+        assert!(view.read_with(cx, |this, app| this.active_gate_locked(app)), "high-risk gate starts locked");
+
+        // Reflex Enter and plain `a` must NOT approve a locked high-risk gate.
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert!(rx.try_recv().is_err(), "reflex Enter is blocked while locked");
+        assert!(view.read_with(cx, |this, _| this.gate_hint.is_some()), "inline hint explains why");
+
+        cx.simulate_keystrokes("a");
+        cx.run_until_parked();
+        assert!(rx.try_recv().is_err(), "reflex 'a' is also blocked while locked");
+
+        // Confirming the risk token unlocks Enter, or ⌘Y allows explicitly.
+        cx.simulate_keystrokes("cmd-y");
+        cx.run_until_parked();
+        assert_eq!(rx.try_recv().ok(), Some(acp_core::ApprovalDecision::Allow), "⌘Y unlocks and approves high-risk gate");
+    }
+
+    #[gpui::test]
+    fn change_sheet_cmd_d_and_triage_rack_cmd_0_batch_gate(cx: &mut TestAppContext) {
+        let (view, cx) = workspace(cx);
+        cx.simulate_keystrokes("cmd-n");
+        cx.run_until_parked();
+
+        // Both threads wait on the identical safe check command.
+        let mut rxs = Vec::new();
+        view.update(cx, |this, cx| {
+            for (ix, ses) in this.sessions.iter().enumerate() {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                rxs.push(rx);
+                let info = acp_core::PermissionInfo {
+                    tool_call_id: format!("chk-{ix}"),
+                    tool_name: "run_command".into(),
+                    title: "Run run_command".into(),
+                    kind: acp_core::ToolKind::Execute,
+                    raw_input: Some(serde_json::json!({ "cmd": "cargo test" })),
+                    always_label: Some("Always allow run_command (cargo) this session".into()),
+                    reason: None,
+                };
+                ses.update(cx, |s, cx| {
+                    s.view.conn = cordata_view::app::ConnState::Connected;
+                    s.view.messages.push(cordata_view::app::Message::User(format!("Task {}", ix + 1)));
+                    s.view.on_event(acp_core::AppEvent::PermissionRequested { info, decision: tx });
+                    cx.notify();
+                });
+            }
+        });
+        cx.run_until_parked();
+
+        assert_eq!(view.read_with(cx, |this, _| this.desk_mode), DeskMode::Transcript);
+        cx.simulate_keystrokes("cmd-d");
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |this, _| this.desk_mode), DeskMode::ChangeSheet, "⌘D switches to proof-first Change Sheet");
+
+        cx.simulate_keystrokes("cmd-0");
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |this, _| this.desk_mode), DeskMode::Rack, "⌘0 opens Supervisory Triage Rack");
+
+        // While the Rack is open, plain `a` does not silently approve a hidden single-session gate, and `esc` closes the Rack.
+        cx.simulate_keystrokes("a");
+        cx.run_until_parked();
+        for rx in &mut rxs {
+            assert!(rx.try_recv().is_err(), "hidden single-session gate is not answered from the Rack");
+        }
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |this, _| this.desk_mode), DeskMode::Transcript, "esc exits the Triage Rack");
+        for rx in &mut rxs {
+            assert!(rx.try_recv().is_err(), "esc exited the Rack without rejecting pending gates");
+        }
+
+        cx.simulate_keystrokes("cmd-0");
+        cx.run_until_parked();
+        let sig = view.read_with(cx, |this, app| {
+            let cwd = this.sessions[0].read(app).cwd.clone();
+            format!("{}|run_command|{{\"cmd\":\"cargo test\"}}|", cwd.display())
+        });
+        // Batch-approving by canonical signature answers both matching threads in a single decision.
+        view.update(cx, |this, cx| {
+            this.answer_batch_gate(&sig, acp_core::ApprovalDecision::Allow, cx);
+        });
+        cx.run_until_parked();
+        for rx in &mut rxs {
+            assert_eq!(rx.try_recv().ok(), Some(acp_core::ApprovalDecision::Allow));
+        }
+    }
+
+    #[gpui::test]
+    fn tape_scrubber_reverts_post_turn_edits_and_forks_clean_thread(cx: &mut TestAppContext) {
+        let (view, cx) = workspace(cx);
+        let dir = tempfile_dir();
+        let file_a = dir.join("lib.rs");
+        std::fs::write(&file_a, "pub fn answer() -> i32 { 42 }\n").unwrap();
+
+        // Simulate Turn 1 (good edit) followed by Turn 2 (bad edit to lib.rs + unwanted extra.rs + edit to pre-existing empty mod.rs).
+        std::fs::write(&file_a, "pub fn answer() -> i32 { 0 }\n").unwrap();
+        let file_b = dir.join("extra.rs");
+        std::fs::write(&file_b, "// unwanted\n").unwrap();
+        let file_empty = dir.join("mod.rs");
+        std::fs::write(&file_empty, "pub mod extra;\n").unwrap();
+
+        view.update(cx, |this, cx| {
+            this.cwd = dir.clone();
+            this.session.update(cx, |s, _| {
+                s.cwd = dir.clone();
+                s.view.conn = cordata_view::app::ConnState::Connected;
+                s.view.messages = vec![
+                    cordata_view::app::Message::User("Turn 1: implement answer()".into()),
+                    cordata_view::app::Message::Tool(cordata_view::app::ToolCard {
+                        id: "t1".into(),
+                        name: "edit_file".into(),
+                        kind: acp_core::ToolKind::Edit,
+                        status: acp_core::ToolStatus::Completed,
+                        raw_input: None,
+                        content: "edited lib.rs".into(),
+                        diffs: vec![acp_core::FileDiff {
+                            path: "lib.rs".into(),
+                            old_text: Some("pub fn answer() -> i32 { 0 }\n".into()),
+                            new_text: "pub fn answer() -> i32 { 42 }\n".into(),
+                        }],
+                    }),
+                    cordata_view::app::Message::Agent("Implemented answer = 42.".into()),
+                    cordata_view::app::Message::User("Turn 2: experimental refactor".into()),
+                    cordata_view::app::Message::Tool(cordata_view::app::ToolCard {
+                        id: "t2".into(),
+                        name: "edit_file".into(),
+                        kind: acp_core::ToolKind::Edit,
+                        status: acp_core::ToolStatus::Completed,
+                        raw_input: None,
+                        content: "edited lib.rs and extra.rs".into(),
+                        diffs: vec![
+                            acp_core::FileDiff {
+                                path: "lib.rs".into(),
+                                old_text: Some("pub fn answer() -> i32 { 42 }\n".into()),
+                                new_text: "pub fn answer() -> i32 { 0 }\n".into(),
+                            },
+                            acp_core::FileDiff {
+                                path: "extra.rs".into(),
+                                old_text: None,
+                                new_text: "// unwanted\n".into(),
+                            },
+                            acp_core::FileDiff {
+                                path: "mod.rs".into(),
+                                old_text: Some(String::new()),
+                                new_text: "pub mod extra;\n".into(),
+                            },
+                        ],
+                    }),
+                    cordata_view::app::Message::Agent("Broke answer.".into()),
+                ];
+            });
+        });
+
+        let reverted = view.update_in(cx, |this, window, cx| this.revert_edits_after_turn(0, window, cx));
+        assert_eq!(reverted, 3, "rolled back all 3 post-turn-1 file diffs");
+        assert_eq!(std::fs::read_to_string(&file_a).unwrap(), "pub fn answer() -> i32 { 42 }\n", "Turn 1 state restored");
+        assert!(!file_b.exists(), "newly created file in Turn 2 removed");
+        assert_eq!(std::fs::read_to_string(&file_empty).unwrap(), "", "pre-existing empty file restored without deletion");
+
+        // Forking from Turn 1 opens a clean 2nd session containing only Turn 1's messages.
+        view.update_in(cx, |this, window, cx| this.fork_from_turn(0, window, cx));
+        cx.run_until_parked();
+        let (session_count, forked_turns) = view.read_with(cx, |this, app| {
+            let turns = cordata_view::desk::turns(&this.session.read(app).view.messages).len();
+            (this.sessions.len(), turns)
+        });
+        assert_eq!(session_count, 2, "forked into a new open thread");
+        assert_eq!(forked_turns, 1, "forked thread holds only Turn 1, dropping Turn 2");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui::test]
+    fn empty_thread_change_sheet_esc_send_new_and_slash_review(cx: &mut TestAppContext) {
+        let (view, cx) = workspace(cx);
+        view.update(cx, |this, cx| {
+            this.session.update(cx, |s, _| {
+                s.view.conn = cordata_view::app::ConnState::Connected;
+                s.view.messages.clear();
+            });
+            let patch = "diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1 +1,2 @@\n fn a() {}\n+fn b() {}\n";
+            let files = cordata_view::review::parse(patch);
+            this.review.display = super::review::SharedFile::from_diffs(&files);
+            this.review.files = files;
+        });
+        cx.run_until_parked();
+
+        // 1. ⌘D opens Change Sheet even on a brand-new empty thread, and esc returns to Transcript.
+        cx.simulate_keystrokes("cmd-d");
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |this, _| this.desk_mode), DeskMode::ChangeSheet, "⌘D opens Change Sheet on empty thread");
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |this, _| this.desk_mode), DeskMode::Transcript, "esc exits Change Sheet back to Transcript");
+
+        // 2. Typing `/review` opens the Proof-First Change Sheet instead of printing a placeholder message.
+        cx.simulate_input("/review");
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |this, _| this.desk_mode), DeskMode::ChangeSheet, "/review opens Change Sheet");
+
+        // 3. Sending a prompt while in Change Sheet switches back to Transcript so streaming replies are visible.
+        view.update_in(cx, |this, window, cx| {
+            this.composer.update(cx, |c, cx| c.set_value("fix src/a.rs", window, cx));
+            this.send_composer(window, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |this, _| this.desk_mode), DeskMode::Transcript, "sending a prompt switches to Transcript");
+
+        // 4. Opening a new thread (⌘N) while in Supervisory Rack resets to Transcript for the new thread.
+        cx.simulate_keystrokes("cmd-0");
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |this, _| this.desk_mode), DeskMode::Rack);
+        cx.simulate_keystrokes("cmd-n");
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |this, _| this.desk_mode), DeskMode::Transcript, "⌘N exits Rack and shows the new thread");
+    }
+
+    #[gpui::test]
+    #[ignore]
+    fn bench_gpui_window_render_sheet_and_rack(cx: &mut TestAppContext) {
+        let (view, cx) = workspace(cx);
+        for _ in 0..3 {
+            cx.simulate_keystrokes("cmd-n");
+            cx.run_until_parked();
+        }
+        let mut patch = String::new();
+        for f in 0..22 {
+            patch.push_str(&format!(
+                "diff --git a/src/file_{f}.rs b/src/file_{f}.rs\n--- a/src/file_{f}.rs\n+++ b/src/file_{f}.rs\n@@ -1,30 +1,110 @@\n"
+            ));
+            for l in 0..30 {
+                patch.push_str(&format!(" fn ctx_{f}_{l}(s: &Workspace) -> usize {{ s.sessions.len() }}\n"));
+            }
+            for l in 0..80 {
+                patch.push_str(&format!("+    let val_{l} = fast_frame_metric(s, {l});\n"));
+            }
+        }
+        let parsed = cordata_view::review::parse(&patch);
+        let shared = super::review::SharedFile::from_diffs(&parsed);
+        view.update(cx, |this, cx| {
+            let first = this.sessions[0].clone();
+            this.show(first, cx);
+            this.session.update(cx, |s, cx| {
+                s.view.conn = cordata_view::app::ConnState::Connected;
+                for t in 0..25 {
+                    s.view.messages.push(cordata_view::app::Message::User(format!("Turn {t}: optimize rendering path")));
+                    s.view.messages.push(cordata_view::app::Message::Agent(format!("Updated rendering path in turn {t}.")));
+                }
+                s.version += 1;
+                cx.notify();
+            });
+            this.review.files = parsed;
+            this.review.display = shared;
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        let measure_mode = |mode: DeskMode, view: &gpui::Entity<Workspace>, cx: &mut VisualTestContext| -> f64 {
+            view.update(cx, |this, cx| {
+                this.desk_mode = mode;
+                cx.notify();
+            });
+            cx.run_until_parked();
+            let mut samples: Vec<f64> = (0..21)
+                .map(|_| {
+                    let s = std::time::Instant::now();
+                    view.update(cx, |_, cx| cx.notify());
+                    cx.run_until_parked();
+                    s.elapsed().as_secs_f64() * 1e3
+                })
+                .collect();
+            samples.sort_by(f64::total_cmp);
+            samples[10]
+        };
+
+        let transcript_ms = measure_mode(DeskMode::Transcript, &view, cx);
+        let sheet_ms = measure_mode(DeskMode::ChangeSheet, &view, cx);
+        let rack_ms = measure_mode(DeskMode::Rack, &view, cx);
+        println!(
+            "BENCH gpui window layout+draw (25 turns, 22 files / 2420 diff lines, 4 threads): transcript {transcript_ms:.2}ms | change_sheet {sheet_ms:.2}ms | triage_rack {rack_ms:.2}ms | 120Hz budget 8.33ms"
+        );
+        assert!(sheet_ms < 8.33, "ChangeSheet GPUI window frame ({sheet_ms:.2}ms) exceeded 8.33ms 120Hz budget");
+        assert!(rack_ms < 8.33, "TriageRack GPUI window frame ({rack_ms:.2}ms) exceeded 8.33ms 120Hz budget");
     }
 
     fn tempfile_dir() -> std::path::PathBuf {

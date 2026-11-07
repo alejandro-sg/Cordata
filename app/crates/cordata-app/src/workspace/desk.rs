@@ -34,10 +34,9 @@ fn cut(text: &str, n: usize) -> String {
 impl Workspace {
     /// Read the project's check command again when the window moved to another folder.
     pub(super) fn refresh_check(&mut self) {
-        let root = self.root();
-        if self.check.0 != root {
-            let found = desk::check_command(&root);
-            self.check = (root, found);
+        if self.check.0 != self.cwd {
+            let found = desk::check_command(&self.cwd);
+            self.check = (self.cwd.clone(), found);
         }
     }
 
@@ -45,21 +44,24 @@ impl Workspace {
         self.check.1.clone()
     }
 
-    /// The brief: your first prompt as the page's title, a meta line, and the tape. `None` before you have asked.
+    /// The brief: your first prompt as the page's title, a meta line with scope contract, and the tape. `None` before you have asked.
     pub(super) fn brief_block(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let tk = tk(cx);
-        let view = &self.session.read(cx).view;
-        let brief = desk::brief(&view.messages)?;
-        let turns = desk::turns(&view.messages);
-        let note_ix = desk::session_notes(&view.messages);
-        let notes = note_ix.len();
-        let note_text: Vec<String> = note_ix.iter().filter_map(|i| if let Some(Message::Info(t)) = view.messages.get(*i) { Some(shown(t)) } else { None }).collect();
-        let failing = note_text.iter().filter(|n| n.contains("did not start") || n.contains("error")).count();
-        let cwd = self.session.read(cx).cwd.clone();
-        let files = desk::places(&view.messages, &cwd, None).iter().map(|a| a.places.iter().filter(|p| p.touch == Touch::Edited).count()).sum::<usize>();
+        let snap = std::rc::Rc::clone(&self.desk_cache.snap);
+        let brief = snap.brief_shown.as_ref()?;
+        let (pending, turn_active, scope) = {
+            let view = &self.session.read(cx).view;
+            (!view.pending.is_empty(), view.turn_active, view.scope.clone())
+        };
+        let notes = snap.note_texts.len();
+        let failing = snap.failing_notes;
+        let files = snap.edited_files;
         let check = self.check_command();
+        let in_sheet = self.desk_mode == super::DeskMode::ChangeSheet;
 
         let sep = || div().text_color(c(tk.text_faint)).child("·");
+        let scope_el = self.scope_chip(&scope, &snap.candidate_scope, cx);
+
         let meta = div()
             .flex()
             .flex_wrap()
@@ -73,21 +75,35 @@ impl Workspace {
                     .child(div().text_color(c(tk.text_secondary)).child(SharedString::from(check)))
                     .child(sep())
             })
-            .child(div().child(SharedString::from(format!("{} turn{}", turns.len(), if turns.len() == 1 { "" } else { "s" }))))
+            .child(scope_el)
+            .child(sep())
+            .child(div().child(SharedString::from(format!("{} turn{}", snap.turns.len(), if snap.turns.len() == 1 { "" } else { "s" }))))
             .when(files > 0, |row| row.child(sep()).child(div().child(SharedString::from(format!("{files} file{} changed", if files == 1 { "" } else { "s" })))))
             .when(notes > 0, |row| {
                 row.child(sep()).child(
                     div()
                         .id("opening-notes")
                         .cursor_default()
-                        .tooltip(ui::tip(SharedString::from(note_text.join("\n"))))
+                        .tooltip(ui::tip(SharedString::from(snap.note_texts.join("\n"))))
                         .when(failing > 0, |d| d.text_color(c(tk.attention)))
                         .child(SharedString::from(match failing {
                             0 => format!("{notes} startup note{}", if notes == 1 { "" } else { "s" }),
                             f => format!("{notes} startup notes · {f} need a look"),
                         })),
                 )
-            });
+            })
+            .child(div().flex_1())
+            .child(
+                div()
+                    .id("brief-mode-toggle")
+                    .role(gpui::Role::Button)
+                    .cursor_pointer()
+                    .text_color(c(if in_sheet { tk.amber } else { tk.text_muted }))
+                    .hover(|s| s.text_color(c(tk.text_primary)))
+                    .tooltip(ui::tip("Switch between proof-first change sheet and transcript  ⌘D"))
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_change_sheet(cx)))
+                    .child(if in_sheet { "transcript  ⌘D" } else { "change sheet  ⌘D" }),
+            );
 
         Some(
             div()
@@ -110,23 +126,23 @@ impl Workspace {
                         .child(
                             div()
                                 .id("brief-text")
-                                .tooltip(ui::tip(SharedString::from(cut(&shown(&brief), 600))))
+                                .tooltip(ui::tip(SharedString::from(cut(brief, 600))))
                                 .font_family(voice(cx))
                                 .text_size(px(21.))
                                 .line_height(relative(1.3))
                                 .text_color(c(tk.text_primary))
                                 .line_clamp(2)
-                                .child(SharedString::from(shown(&brief))),
+                                .child(SharedString::from(brief.clone())),
                         )
                         .child(meta)
-                        .when(turns.len() > 1 || !view.pending.is_empty() || view.turn_active, |col| col.child(self.tape(&turns, cx))),
+                        .when(!snap.turns.is_empty() || pending || turn_active, |col| col.child(self.tape(&snap.turns, cx))),
                 )
                 .into_any_element(),
         )
     }
 
-    /// One stop per prompt, joined by a hairline; the newest breathes while the agent works on it, and a gate waiting
-    /// on you closes the tape. A click scrolls the transcript to that turn.
+    /// One stop per prompt, joined by a hairline; clicking a stop opens its forensic scrubber (fork / rollback) and
+    /// scrolls the transcript when in Transcript mode.
     fn tape(&self, turns: &[desk::Turn], cx: &mut Context<Self>) -> AnyElement {
         let tk = tk(cx);
         let view = &self.session.read(cx).view;
@@ -142,8 +158,9 @@ impl Workspace {
             if i > skipped {
                 row = row.child(joint());
             }
+            let selected = self.selected_turn == Some(i);
             let live = i == last && running && !waiting;
-            let ink = if i == last && (running || waiting) { c(tk.amber) } else { c(tk.text_muted) };
+            let ink = if selected || (i == last && (running || waiting)) { c(tk.amber) } else { c(tk.text_muted) };
             let message = turn.message;
             let stop = div()
                 .id(("tape", i))
@@ -152,20 +169,22 @@ impl Workspace {
                 .cursor_pointer()
                 .text_color(ink)
                 .hover(|s| s.text_color(c(tk.text_primary)))
-                .tooltip(ui::tip(SharedString::from(format!("Turn {} — {}", i + 1, cut(&shown(&turn.prompt), 140)))))
+                .tooltip(ui::tip(SharedString::from(format!("Turn {} — {} (click to inspect, fork, or roll back)", i + 1, cut(&shown(&turn.prompt), 140)))))
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    let (rows, _) = super::display_rows(this.session.read(cx));
-                    // The turn's prompt row, or (for the brief, whose row is not drawn) the first row after it.
-                    let at = |r: &fold::Row| match r {
-                        fold::Row::Message(j) => *j,
-                        fold::Row::Activity(a) => a.first,
-                    };
-                    if let Some(ix) = rows.iter().position(|r| at(r) >= message) {
-                        this.transcript.scroll_to_reveal_item(ix);
-                        cx.notify();
+                    this.selected_turn = if this.selected_turn == Some(i) { None } else { Some(i) };
+                    if this.desk_mode == super::DeskMode::Transcript {
+                        let (rows, _) = super::display_rows(this.session.read(cx));
+                        let at = |r: &fold::Row| match r {
+                            fold::Row::Message(j) => *j,
+                            fold::Row::Activity(a) => a.first,
+                        };
+                        if let Some(ix) = rows.iter().position(|r| at(r) >= message) {
+                            this.transcript.scroll_to_reveal_item(ix);
+                        }
                     }
+                    cx.notify();
                 }))
-                .child("●");
+                .child(if selected { "◉" } else { "●" });
             row = row.child(if live && ui::motion(cx) {
                 gpui::AnimationExt::with_animation(stop, ("tape-live", i), gpui::Animation::new(std::time::Duration::from_millis(1600)).repeat().with_easing(gpui::ease_in_out), |el, t| {
                     el.opacity(0.35 + 0.65 * (1.0 - (2.0 * t - 1.0).powi(2)))
@@ -178,15 +197,21 @@ impl Workspace {
         if waiting {
             row = row.child(joint()).child(div().flex_shrink_0().px(px(2.)).text_color(c(tk.attention)).child("◆"));
         }
-        row.into_any_element()
+        let scrubber = self.selected_turn.filter(|&i| i < turns.len()).and_then(|sel| self.tape_scrubber(sel, cx));
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .child(row)
+            .children(scrubber)
+            .into_any_element()
     }
 
-    /// The right margin: what this thread touched, by place.
+    /// The right margin: what this thread touched, by place, with sensitive-file and cross-thread overlap radar.
     pub(super) fn places_margin(&self, cx: &mut Context<Self>) -> AnyElement {
         let tk = tk(cx);
-        let session = self.session.read(cx);
-        let waiting = session.view.pending.front().map(|p| p.info.tool_call_id.clone());
-        let areas = desk::places(&session.view.messages, &session.cwd, waiting.as_deref());
+        let snap = std::rc::Rc::clone(&self.desk_cache.snap);
+        let areas = &snap.places;
         let hover = line(cx, t::HOVER);
         let has_blueprint = floorplan_bin().is_some();
 
@@ -215,19 +240,28 @@ impl Workspace {
                 let name = Path::new(&place.path).file_name().and_then(|n| n.to_str()).unwrap_or(&place.path).to_owned();
                 let rel = place.path.clone();
                 let counts = (place.added + place.removed > 0).then_some((place.added, place.removed));
+                let mut tip = format!("{}\nOpen in the editor", shown(&place.path));
+                if place.sensitive {
+                    tip.push_str("\n△ Sensitive build / lock / policy file");
+                }
+                if !place.shared_threads.is_empty() {
+                    let list: Vec<String> = place.shared_threads.iter().map(|t| format!("#{t}")).collect();
+                    tip.push_str(&format!("\n⎇ Also edited in thread {}", list.join(", ")));
+                }
+                let shared_badge = place.shared_threads.first().copied();
                 col = col.child(
                     div()
                         .id(SharedString::from(format!("place-{a}-{p}")))
                         .flex()
                         .items_center()
-                        .gap(px(6.))
+                        .gap(px(5.))
                         .h(px(24.))
                         .px(px(4.))
                         .ml(px(-4.))
                         .rounded(px(t::RADIUS_ROW))
                         .cursor_pointer()
                         .hover(move |s| s.bg(hover))
-                        .tooltip(ui::tip(SharedString::from(format!("{}\nOpen in the editor", shown(&place.path)))))
+                        .tooltip(ui::tip(SharedString::from(tip)))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.set_panel(true, cx);
                             this.open_file(&rel, None, window, cx);
@@ -243,6 +277,12 @@ impl Workspace {
                                 .text_color(c(if place.touch == Touch::Read { tk.text_muted } else { tk.text_primary }))
                                 .child(SharedString::from(name)),
                         )
+                        .when(place.sensitive, |row| {
+                            row.child(div().flex_shrink_0().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).text_color(c(tk.attention)).child("△"))
+                        })
+                        .when_some(shared_badge, |row, peer_num| {
+                            row.child(div().flex_shrink_0().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).text_color(c(tk.teal)).child(SharedString::from(format!("⎇#{peer_num}"))))
+                        })
                         .when_some(counts, |row, (add, del)| {
                             row.child(
                                 div()
@@ -259,7 +299,7 @@ impl Workspace {
             }
         }
 
-        let root = self.root();
+        let root = self.cwd.clone();
         div()
             .id("places-margin")
             .w(px(PLACES_W))
@@ -304,7 +344,8 @@ impl Workspace {
             return None;
         }
         let check = self.check_command();
-        let r = desk::receipt(&view.messages, check.as_deref());
+        let snap = std::rc::Rc::clone(&self.desk_cache.snap);
+        let r = &snap.receipt;
         let link = |id: &'static str, text: &'static str| {
             let hover = c(tk.text_primary);
             div().id(id).role(gpui::Role::Button).cursor_pointer().text_color(c(tk.text_muted)).hover(move |s| s.text_color(hover)).child(text)
@@ -314,6 +355,7 @@ impl Workspace {
         let state = match r.check.as_ref().map(|(_, s)| *s) {
             _ if r.failed > 0 && r.check.as_ref().is_none_or(|(_, s)| *s != CheckState::Passed) => MarkState::Error,
             Some(CheckState::Failed) => MarkState::Error,
+            _ if r.has_falsification_warning() => MarkState::NeedsYou,
             _ => MarkState::Done,
         };
         let sep = || div().text_color(c(tk.text_faint)).child("·");
@@ -331,6 +373,29 @@ impl Workspace {
         }
         if r.failed > 0 {
             words = words.child(sep()).child(div().text_color(c(tk.danger)).child(SharedString::from(format!("{} failed", r.failed))));
+        }
+        if r.assertions_removed > 0 {
+            words = words.child(sep()).child(
+                div()
+                    .text_color(c(tk.attention))
+                    .child(SharedString::from(format!("{} assertion{} removed", r.assertions_removed, if r.assertions_removed == 1 { "" } else { "s" }))),
+            );
+        }
+        if r.tests_ignored > 0 {
+            words = words.child(sep()).child(
+                div()
+                    .text_color(c(tk.attention))
+                    .child(SharedString::from(format!("{} test{} ignored", r.tests_ignored, if r.tests_ignored == 1 { "" } else { "s" }))),
+            );
+        }
+        if r.sensitive_files > 0 {
+            words = words.child(sep()).child(
+                div()
+                    .id("receipt-sensitive")
+                    .text_color(c(tk.attention))
+                    .tooltip(ui::tip("Build, lockfile, or policy files were modified"))
+                    .child(SharedString::from(format!("{} sensitive", r.sensitive_files))),
+            );
         }
         let check_said: Option<(String, gpui::Hsla)> = match (&r.check, r.files > 0) {
             (Some((_, CheckState::Passed)), _) => Some(("check passed".into(), c(tk.amber))),
@@ -365,7 +430,8 @@ impl Workspace {
                             row.child(link("run-check", "run check").tooltip(ui::tip("Ask the agent to run the check and fix what fails")).on_click(cx.listener(move |this, _, window, cx| this.apply_starter(&prompt, false, window, cx))))
                         })
                         .when(r.files > 0, |row| {
-                            row.child(link("review-files", "review").tooltip(ui::tip("Changes, hunk by hunk  ⌘⌥4")).on_click(cx.listener(|this, _, _, cx| {
+                            row.child(link("open-change-sheet", "change sheet").tooltip(ui::tip("Proof-first change sheet  ⌘D")).on_click(cx.listener(|this, _, _, cx| this.toggle_change_sheet(cx))))
+                            .child(link("review-files", "review").tooltip(ui::tip("Changes, hunk by hunk  ⌘⌥4")).on_click(cx.listener(|this, _, _, cx| {
                                 this.set_panel(true, cx);
                                 this.switch_dock(DockTab::Review, cx);
                             })))
@@ -377,17 +443,22 @@ impl Workspace {
     }
 }
 
-/// The `cordata-floorplan` binary (or the `cordata` launcher, which forwards `floorplan`), when one is installed.
+/// The `cordata-floorplan` binary (or the `cordata` launcher, which forwards `floorplan`), cached once per process.
 fn floorplan_bin() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("CORDATA_FLOORPLAN_BIN").map(PathBuf::from).filter(|p| p.is_file()) {
-        return Some(path);
-    }
-    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
-    if let Some(p) = [home.join(".local/bin/cordata"), PathBuf::from("/usr/local/bin/cordata")].into_iter().find(|p| p.is_file()) {
-        return Some(p);
-    }
-    let exe = std::env::current_exe().ok()?;
-    exe.ancestors().find_map(|dir| [dir.join("tui/target/release/cordata-floorplan"), dir.join("bin/cordata")].into_iter().find(|p| p.is_file()))
+    static FLOORPLAN: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    FLOORPLAN
+        .get_or_init(|| {
+            if let Some(path) = std::env::var_os("CORDATA_FLOORPLAN_BIN").map(PathBuf::from).filter(|p| p.is_file()) {
+                return Some(path);
+            }
+            let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+            if let Some(p) = [home.join(".local/bin/cordata"), PathBuf::from("/usr/local/bin/cordata")].into_iter().find(|p| p.is_file()) {
+                return Some(p);
+            }
+            let exe = std::env::current_exe().ok()?;
+            exe.ancestors().find_map(|dir| [dir.join("tui/target/release/cordata-floorplan"), dir.join("bin/cordata")].into_iter().find(|p| p.is_file()))
+        })
+        .clone()
 }
 
 /// Open the whole project's map (the floorplan's HTML view) in the browser.

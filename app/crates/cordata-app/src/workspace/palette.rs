@@ -26,6 +26,9 @@ pub enum Action {
     Worktree,
     SwitchWorktree(std::path::PathBuf),
     Review(bool),
+    ToggleChangeSheet,
+    ToggleRack,
+    OpenAgentsSettings,
     /// Show the open thread at this index.
     Thread(usize),
 }
@@ -95,6 +98,9 @@ impl Workspace {
             Item { group: "Project", label: "Commit, push, pull request…".into(), shortcut: "", action: Action::Tab(DockTab::Review) },
             Item { group: "Project", label: "Switch project…".into(), shortcut: "⌘O", action: Action::SwitchProject },
             Item { group: "Project", label: "Open folder…".into(), shortcut: "", action: Action::OpenFolder },
+            Item { group: "Desk", label: "Change sheet / Transcript".into(), shortcut: "⌘D", action: Action::ToggleChangeSheet },
+            Item { group: "Desk", label: "Supervisory triage rack".into(), shortcut: "⌘0", action: Action::ToggleRack },
+            Item { group: "App", label: "Agents & delegation…".into(), shortcut: "", action: Action::OpenAgentsSettings },
             Item { group: "App", label: "Settings".into(), shortcut: "⌘,", action: Action::Settings },
         ]);
         for wt in &self.git.worktrees {
@@ -141,8 +147,18 @@ impl Workspace {
             Action::Worktree => self.begin_worktree(window, cx),
             Action::SwitchWorktree(path) => self.switch_project(path, window, cx),
             Action::Review(branch) => self.request_review(branch, window, cx),
+            Action::ToggleChangeSheet => self.toggle_change_sheet(cx),
+            Action::ToggleRack => self.toggle_rack(cx),
+            Action::OpenAgentsSettings => {
+                self.settings_section = super::settings_modal::Section::Agents;
+                self.on_settings_section(cx);
+                self.open_overlay(Overlay::Settings, window, cx);
+            }
             Action::Thread(index) => {
                 if let Some(entity) = self.sessions.get(index).cloned() {
+                    if self.desk_mode == super::DeskMode::Rack {
+                        self.desk_mode = super::DeskMode::Transcript;
+                    }
                     self.show(entity, cx);
                 }
             }

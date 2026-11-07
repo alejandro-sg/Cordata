@@ -97,6 +97,15 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
                     "required":["question","options"]}}},
                 "required":["questions"]}),
         },
+        ToolSpec {
+            name: Cow::Borrowed("acp_registry_search"),
+            description: Cow::Borrowed("Search the official Agent Client Protocol (ACP) Registry (cdn.agentclientprotocol.com) \
+                          for available agents, harnesses, and distributions (binary, npx, uvx)."),
+            schema: json!({"type":"object","properties":{
+                "query":{"type":"string","description":"search query or agent keyword"},
+                "limit":{"type":"integer","description":"max results to return, default 10"}},
+                "required":["query"]}),
+        },
     ]
 }
 
@@ -105,7 +114,7 @@ pub(crate) fn kind_of(name: &str) -> ToolKind {
         "read_file" | "code_outline" => ToolKind::Read,
         "edit_file" => ToolKind::Edit,
         "run_command" => ToolKind::Execute,
-        "code_search" | "code_map" => ToolKind::Search,
+        "code_search" | "code_map" | "acp_registry_search" => ToolKind::Search,
         _ => ToolKind::Other,
     }
 }
@@ -281,6 +290,27 @@ pub(crate) async fn execute(name: &str, args: &Value, cwd: &Path, writable: &[Pa
         "ask_question" => {
             let fallback = args.get("questions").and_then(|q| serde_json::to_string(q).ok()).unwrap_or_else(|| "question completed".into());
             Ok(fallback)
+        }
+        "acp_registry_search" => {
+            let query = arg(args, "query")?;
+            let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(10) as usize;
+            let catalog = crate::acp_registry::AcpRegistryCatalog::standard();
+            let results = catalog.search(query, limit);
+            if results.is_empty() {
+                Ok(format!("No ACP agents found matching '{query}'. Check registry at https://cdn.agentclientprotocol.com"))
+            } else {
+                let mut out = format!("Found {} ACP agent(s):\n", results.len());
+                for a in results {
+                    out.push_str(&format!(
+                        "- {} (v{}, {})\n  ID: {}\n  Description: {}\n",
+                        a.name, a.version, a.distribution.as_str(), a.id, a.description
+                    ));
+                    if let Some(repo) = &a.repository {
+                        out.push_str(&format!("  Repository: {repo}\n"));
+                    }
+                }
+                Ok(out)
+            }
         }
         other => Err(format!("unknown tool `{other}`")),
     }
@@ -499,5 +529,13 @@ mod tests {
         std::fs::write(dir.path().join("ui.rs"), "fn pay() { charge_customer(1); }\nfn render_menu() {}\n").unwrap();
         let out = execute("code_map", &json!({"query": "where do we charge the customer card", "tokens": 256}), dir.path(), &[]).await.unwrap();
         assert!(out.starts_with("billing.rs\n") && out.contains("2│ pub fn charge_customer"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn acp_registry_search_discovers_agents() {
+        let dir = tmp();
+        let out = execute("acp_registry_search", &json!({"query": "cordata"}), dir.path(), &[]).await.unwrap();
+        assert!(out.contains("Cordata Native Agent") && out.contains("binary"));
+        assert!(!needs_approval("acp_registry_search"));
     }
 }

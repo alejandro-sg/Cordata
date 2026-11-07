@@ -782,7 +782,6 @@ impl Workspace {
             .size_full()
             .gap(px(12.))
             .p(px(24.))
-            .child(div().text_size(px(28.)).text_color(c(tk.amber)).child("✦"))
             .child(
                 div()
                     .text_size(px(t::TEXT_BODY))

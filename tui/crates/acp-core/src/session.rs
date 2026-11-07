@@ -48,6 +48,8 @@ pub(crate) enum Command {
     SetModel(String),
     /// Who answers approvals from now on: the person (`Ask`) or `auto::judge` first (`Auto`).
     SetMode(Mode),
+    /// Restricts `auto` mode file edits to these relative path prefixes (`empty` = whole project).
+    SetScope(Vec<String>),
     Cancel,
     Shutdown,
 }
@@ -109,6 +111,12 @@ impl SessionHandle {
     /// Switches who answers approvals (`ask` or `auto`) for the rest of this session. Answered with `ModeChanged`.
     pub fn set_mode(&self, mode: Mode) -> Result<()> {
         self.send(Command::SetMode(mode))
+    }
+
+    /// Pins `auto` mode's write scope to `scope` (relative prefixes inside `cwd`; empty clears the lock).
+    /// Answered with `ScopeChanged`.
+    pub fn set_scope(&self, scope: Vec<String>) -> Result<()> {
+        self.send(Command::SetScope(scope))
     }
 
     /// Stops a running turn, between streamed events. Inert while an approval is unanswered: answer it first.

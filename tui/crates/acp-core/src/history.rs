@@ -297,6 +297,38 @@ pub fn forget(cwd: &Path) -> std::io::Result<usize> {
     forget_in(&home, cwd)
 }
 
+/// Forks a saved session (`source_id`) at `keep_prompts` completed user turns (1-indexed), writing a new saved
+/// conversation file and returning its new session ID. The source conversation is left untouched.
+pub fn fork(cwd: &Path, source_id: &str, keep_prompts: usize) -> Result<String, String> {
+    let home = crate::policy::cordata_home().ok_or_else(|| "no home folder".to_owned())?;
+    fork_in(&home, cwd, source_id, keep_prompts)
+}
+
+/// [`fork`] under an explicit `CORDATA_HOME` directory.
+pub fn fork_in(home: &Path, cwd: &Path, source_id: &str, keep_prompts: usize) -> Result<String, String> {
+    if keep_prompts == 0 {
+        return Err("keep_prompts must be at least 1".into());
+    }
+    let saved = load_in(home, cwd, source_id)?;
+    let mut seen_prompts = 0usize;
+    let mut cut = saved.messages.len();
+    for (idx, msg) in saved.messages.iter().enumerate() {
+        if matches!(msg, Msg::User { .. }) {
+            seen_prompts += 1;
+            if seen_prompts > keep_prompts {
+                cut = idx;
+                break;
+            }
+        }
+    }
+    if seen_prompts == 0 {
+        return Err("conversation has no prompts to fork".into());
+    }
+    let id = new_id();
+    save_in(home, cwd, &id, &saved.model, &saved.messages[..cut]).map_err(|e| format!("could not save forked session: {e}"))?;
+    Ok(id)
+}
+
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
@@ -410,6 +442,35 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         assert!(save_in(home.path(), Path::new("/p"), "../../etc/x", "m", &[]).is_err());
         assert!(new_id().chars().all(|c| c.is_ascii_hexdigit() || c == '-'));
+    }
+
+    #[test]
+    fn forking_slices_cleanly_at_user_turn_boundary_without_mutating_source() {
+        let home = tempfile::tempdir().unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+        let messages = vec![
+            user("turn 1"),
+            Msg::Assistant {
+                text: "reply 1".into(),
+                calls: vec![Call { id: "c1".into(), name: "read_file".into(), args: json!({"path": "a.rs"}), thought_signatures: None }],
+            },
+            Msg::ToolResult { id: "c1".into(), output: "contents".into() },
+            Msg::Assistant { text: "done 1".into(), calls: Vec::new() },
+            user("turn 2"),
+            Msg::Assistant { text: "done 2".into(), calls: Vec::new() },
+            user("turn 3"),
+            Msg::Assistant { text: "done 3".into(), calls: Vec::new() },
+        ];
+        save_in(home.path(), cwd.path(), "abc-000001", "claude-sonnet-5-5", &messages).unwrap();
+        let forked_id = fork_in(home.path(), cwd.path(), "abc-000001", 2).unwrap();
+        assert_ne!(forked_id, "abc-000001");
+
+        let forked = load_in(home.path(), cwd.path(), &forked_id).unwrap();
+        assert_eq!(forked.messages.len(), 6, "keeps turn 1 (with tool call + result) and turn 2, drops turn 3");
+        assert!(matches!(&forked.messages[4], Msg::User { text } if text == "turn 2"));
+
+        let original = load_in(home.path(), cwd.path(), "abc-000001").unwrap();
+        assert_eq!(original.messages.len(), 8, "original session stays intact");
     }
 }
 

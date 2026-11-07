@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{Animation, AnimationExt as _, ease_in_out};
-use gpui::{AnyElement, App, BoxShadow, ClickEvent, Context, FontWeight, InteractiveElement as _, IntoElement, MouseButton, ParentElement, SharedString, StatefulInteractiveElement as _, Styled, StyledImage as _, Window, div, point, px, relative};
+use gpui::{AnyElement, App, BoxShadow, Context, FontWeight, InteractiveElement as _, IntoElement, MouseButton, ParentElement, SharedString, StatefulInteractiveElement as _, Styled, StyledImage as _, div, point, px, relative};
 use gpui_component::input::Textarea;
 
 use super::{Overlay, TogglePanel, ToggleSidebar, Workspace, tilde};
@@ -102,7 +102,7 @@ impl Workspace {
         let tk = tk(cx);
         let view = &self.session.read(cx).view;
         let title = view.title();
-        let has_brief = cordata_view::desk::brief(&view.messages).is_some();
+        let has_brief = self.desk_cache.snap.brief_shown.is_some();
         let status = status_of(view);
         // Said only when it is not the ordinary case; the live line below says the rest.
         let word = match status {
@@ -147,6 +147,22 @@ impl Workspace {
             .when_some(word, |row, (word, ink)| row.child(div().flex_shrink_0().whitespace_nowrap().text_size(px(t::TEXT_META)).text_color(c(ink)).child(word)))
             // The empty middle drags the window.
             .child(div().flex_1().h_full().min_w(px(8.)).on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move()))
+            .when(!has_brief && self.desk_mode != super::DeskMode::Rack && (self.review.file_count() > 0 || self.desk_mode == super::DeskMode::ChangeSheet), |row| {
+                let in_sheet = self.desk_mode == super::DeskMode::ChangeSheet;
+                row.child(
+                    div()
+                        .id("header-sheet-toggle")
+                        .role(gpui::Role::Button)
+                        .cursor_pointer()
+                        .font_family(mono(cx))
+                        .text_size(px(t::TEXT_META))
+                        .text_color(c(if in_sheet { tk.amber } else { tk.text_muted }))
+                        .hover(|s| s.text_color(c(tk.text_primary)))
+                        .tooltip(ui::tip("Switch between proof-first change sheet and transcript  ⌘D"))
+                        .on_click(cx.listener(|this, _, _, cx| this.toggle_change_sheet(cx)))
+                        .child(if in_sheet { "transcript  ⌘D" } else { "change sheet  ⌘D" }),
+                )
+            })
             .children(self.branch_chip(cx))
             .children(self.pr_chip(cx))
             .child(
@@ -226,6 +242,13 @@ impl Workspace {
         let fix = starter("starter-fix", "Run the checks and fix what fails".into()).on_click(cx.listener(|this, _, window, cx| {
             this.apply_starter("Run the project's test suite and build checks, diagnose any failures, and propose clean fixes.", false, window, cx);
         }));
+        let open_sheet = (dirty_count > 0).then(|| {
+            starter(
+                "starter-sheet",
+                SharedString::from(format!("Open Change Sheet ({dirty_count} uncommitted file{})  ⌘D", if dirty_count == 1 { "" } else { "s" })),
+            )
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_change_sheet(cx)))
+        });
 
         div()
             .id("empty-state-scroll")
@@ -266,7 +289,7 @@ impl Workspace {
                                 None => "Say it in your own words; you decide at every gate.".to_owned(),
                             })),
                     )
-                    .child(div().flex().flex_col().child(explore).child(review).child(fix))
+                    .child(div().flex().flex_col().children(open_sheet).child(explore).child(review).child(fix))
                     .children(notices)
                     // The session's opening notes, as one line: hover lists them. A server that failed to start is
                     // the one note worth its own words.
@@ -292,30 +315,83 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// Whether the frontmost pending approval is a high-risk gate that has not yet been unlocked via its risk token.
+    pub(super) fn active_gate_locked(&self, cx: &App) -> bool {
+        let ses = self.session.read(cx);
+        let Some(pending) = ses.view.pending.front() else {
+            return false;
+        };
+        let info = &pending.info;
+        if info.tool_name == "ask_question" {
+            return false;
+        }
+        let analysis = acp_core::auto::gate_analysis(
+            &info.tool_name,
+            info.raw_input.as_ref(),
+            &ses.cwd,
+            info.reason.as_deref(),
+        );
+        analysis.high_risk && self.gate_unlocked.as_deref() != Some(info.tool_call_id.as_str())
+    }
+
+    pub(super) fn answer_gate(&mut self, decision: ApprovalDecision, cx: &mut Context<Self>) {
+        let (tool, high_risk) = {
+            let ses = self.session.read(cx);
+            ses.view
+                .pending
+                .front()
+                .map(|pending| {
+                    let info = &pending.info;
+                    let a = acp_core::auto::gate_analysis(
+                        &info.tool_name,
+                        info.raw_input.as_ref(),
+                        &ses.cwd,
+                        info.reason.as_deref(),
+                    );
+                    (info.tool_name.clone(), a.high_risk)
+                })
+                .unwrap_or_default()
+        };
+        let decision_tag = match &decision {
+            ApprovalDecision::Allow => "allow",
+            ApprovalDecision::AllowAlways => "always",
+            ApprovalDecision::Reject => "deny",
+            ApprovalDecision::Say(_) => "reply",
+        };
+        super::sheet::record_ux_event(
+            "gate_decision",
+            serde_json::json!({ "tool": tool, "high_risk": high_risk, "decision": decision_tag }),
+        );
+        self.gate_unlocked = None;
+        self.gate_hint = None;
+        self.saying = false;
+        self.session.update(cx, |session, cx| session.answer(decision, cx));
+        cx.notify();
+    }
+
     pub(super) fn approval_card(&self, info: &PermissionInfo, cx: &mut Context<Self>) -> AnyElement {
         let tk = tk(cx);
-        let session = self.session.clone();
-        let answer = move |decision: ApprovalDecision| {
-            let session = session.clone();
-            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                let decision = decision.clone();
-                session.update(cx, |session, cx| session.answer(decision, cx));
-            }
-        };
         let input = info.raw_input.as_ref();
-        let command = input.and_then(|i| i.get("cmd")).and_then(|v| v.as_str()).map(str::to_owned);
+        let command = input
+            .and_then(|i| i.get("cmd").or_else(|| i.get("command")))
+            .and_then(|v| v.as_str())
+            .map(str::to_owned);
         let summary = input.and_then(cordata_view::view::summarize_input).unwrap_or_default();
-        let place = tilde(&self.session.read(cx).cwd);
+        let cwd = self.session.read(cx).cwd.clone();
+        let place = tilde(&cwd);
         // Display only: the target is shortened as the transcript shows it; `raw_input` stays whole.
-        let fold = cordata_view::fold::Context::here(self.session.read(cx).cwd.clone());
+        let fold = cordata_view::fold::Context::here(cwd.clone());
         let diffs = self.session.read(cx).view.card(&info.tool_call_id).map(|card| card.diffs.clone()).filter(|d| !d.is_empty());
         let has_diff = diffs.is_some();
         let tool = info.tool_name.as_str();
         let is_ask_question = info.tool_name == "ask_question";
+        let analysis = acp_core::auto::gate_analysis(tool, input, &cwd, info.reason.as_deref());
+        let locked = !is_ask_question && analysis.high_risk && self.gate_unlocked.as_deref() != Some(info.tool_call_id.as_str());
+        let risk_token = analysis.risk_token.clone().unwrap_or_else(|| "high-risk call".to_owned());
         // What saying yes means, in one line: an edit can be taken back, a command's effects cannot.
         let consequence: Option<&'static str> = match (is_ask_question, info.kind, command.is_some()) {
             (true, ..) => None,
-            (_, acp_core::ToolKind::Edit, _) => Some("An edit: you can revert it afterwards in Review."),
+            (_, acp_core::ToolKind::Edit, _) => Some("An edit: you can revert it afterwards in Changes."),
             (_, _, true) => Some("A command: it runs inside the sandbox, and what it does is not undone automatically."),
             _ => None,
         };
@@ -341,7 +417,7 @@ impl Workspace {
                                             if is_rec { Kind::Primary } else { Kind::Ghost },
                                             cx,
                                         )
-                                        .on_click(answer(ApprovalDecision::Say(choice)))
+                                        .on_click(cx.listener(move |this, _, _, cx| this.answer_gate(ApprovalDecision::Say(choice.clone()), cx)))
                                         .into_any_element(),
                                     );
                                 }
@@ -352,7 +428,7 @@ impl Workspace {
                 let q_prompt = if q_prompts.is_empty() {
                     "Clarification requested by agent:".to_string()
                 } else {
-                    format!("✦ {}", q_prompts.join(" · "))
+                    q_prompts.join(" · ")
                 };
                 buttons.push(
                     ui::button("say-why", "Other Answer...", Kind::Ghost, cx)
@@ -364,7 +440,7 @@ impl Workspace {
                 buttons.push(
                     ui::button("reject", "Dismiss", Kind::Ghost, cx)
                         .tooltip(ui::tip("Dismiss  esc"))
-                        .on_click(answer(ApprovalDecision::Reject))
+                        .on_click(cx.listener(|this, _, _, cx| this.answer_gate(ApprovalDecision::Reject, cx)))
                         .into_any_element(),
                 );
                 ("", q_prompt, None, buttons)
@@ -376,20 +452,36 @@ impl Workspace {
                     (None, None, acp_core::ToolKind::Edit) => format!("Modify files in {place}"),
                     _ => format!("Allow {tool}?"),
                 };
-                // The engine words the offer ("Always allow run_command this session"): the button says "Always",
-                // the tooltip says the rest.
-                let always = info.always_label.as_ref().map(|label| {
-                    ui::button("always", "Always", Kind::Ghost, cx)
+                // Program-scoped session grant ("Always allow run_command (cargo) this session") surfaces "(cargo)" right on the button.
+                let always_short = info.always_label.as_deref().and_then(|lbl| {
+                    let start = lbl.find('(')?;
+                    let end = lbl[start..].find(')')? + start;
+                    Some(format!("Always {}", &lbl[start..=end]))
+                });
+                let always = (!locked).then_some(info.always_label.as_ref()).flatten().map(|label| {
+                    let text: SharedString = always_short.clone().unwrap_or_else(|| "Always".to_owned()).into();
+                    ui::button("always", text, Kind::Ghost, cx)
                         .tooltip(ui::tip(SharedString::from(shown(label))))
-                        .on_click(answer(ApprovalDecision::AllowAlways))
+                        .on_click(cx.listener(|this, _, _, cx| this.answer_gate(ApprovalDecision::AllowAlways, cx)))
                         .into_any_element()
                 });
-                let mut buttons = vec![
+                let allow_btn = if locked {
+                    let hint_tok = risk_token.clone();
+                    ui::button("allow", "Allow", Kind::Outline, cx)
+                        .tooltip(ui::tip("Confirm the risk token first, or press ⌘Y"))
+                        .child(div().text_color(c(tk.text_faint)).font_family(mono(cx)).text_size(px(t::TEXT_META)).child("⌘Y"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.gate_hint = Some(format!("High-risk gate: click Confirm {hint_tok} or press ⌘Y to allow."));
+                            cx.notify();
+                        }))
+                        .into_any_element()
+                } else {
                     ui::button("allow", "Allow", Kind::Primary, cx)
                         .child(div().text_color(c(tk.amber_dim_2)).font_family(mono(cx)).text_size(px(t::TEXT_META)).child("↵"))
-                        .on_click(answer(ApprovalDecision::Allow))
-                        .into_any_element(),
-                ];
+                        .on_click(cx.listener(|this, _, _, cx| this.answer_gate(ApprovalDecision::Allow, cx)))
+                        .into_any_element()
+                };
+                let mut buttons = vec![allow_btn];
                 buttons.extend(always);
                 buttons.push(
                     ui::button("say-why", "Reply", Kind::Ghost, cx)
@@ -401,13 +493,90 @@ impl Workspace {
                 buttons.push(
                     ui::button("reject", "Deny", Kind::Ghost, cx)
                         .tooltip(ui::tip("Deny  esc"))
-                        .on_click(answer(ApprovalDecision::Reject))
+                        .on_click(cx.listener(|this, _, _, cx| this.answer_gate(ApprovalDecision::Reject, cx)))
                         .into_any_element(),
                 );
                 ("", sentence, command.clone().map(|cmd| fold.shorten(&format!("$ {cmd}"))).or_else(|| (!summary.is_empty()).then(|| fold.shorten(&summary))), buttons)
             }
         };
-        // Not a box: a 2px attention rule down the left, the question, the command, the answers.
+        let counterfactual = (!is_ask_question).then(|| {
+            let allowed = shown(&fold.shorten(&analysis.if_allowed));
+            let denied = shown(&analysis.if_denied);
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .font_family(mono(cx))
+                .text_size(px(t::TEXT_META))
+                .child(
+                    div()
+                        .flex()
+                        .gap(px(6.))
+                        .child(div().flex_shrink_0().text_color(c(tk.text_faint)).child("If allowed →"))
+                        .child(div().min_w_0().truncate().text_color(c(tk.text_secondary)).child(SharedString::from(allowed))),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .gap(px(6.))
+                        .child(div().flex_shrink_0().text_color(c(tk.text_faint)).child("If denied (esc) →"))
+                        .child(div().min_w_0().truncate().text_color(c(tk.text_muted)).child(SharedString::from(denied))),
+                )
+                .into_any_element()
+        });
+        let challenge = (!is_ask_question && analysis.high_risk).then(|| {
+            let call_id = info.tool_call_id.clone();
+            let tok_log = risk_token.clone();
+            if locked {
+                let hover = ca(tk.attention, 0.18);
+                div()
+                    .id("gate-risk-token")
+                    .role(gpui::Role::Button)
+                    .aria_label(SharedString::from(format!("Confirm high-risk token {risk_token}")))
+                    .tooltip(ui::tip("Click to unlock Allow, or press ⌘Y"))
+                    .self_start()
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .px(px(9.))
+                    .py(px(4.))
+                    .rounded(px(t::RADIUS_CONTROL))
+                    .bg(ca(tk.attention, 0.10))
+                    .border_1()
+                    .border_color(ca(tk.attention, 0.40))
+                    .hover(move |s| s.bg(hover))
+                    .font_family(mono(cx))
+                    .text_size(px(t::TEXT_SMALL))
+                    .text_color(c(tk.attention))
+                    .child(SharedString::from(format!("Confirm {}", shown(&risk_token))))
+                    .child(div().text_size(px(t::TEXT_META)).text_color(c(tk.text_faint)).child("unlocks ↵ · or ⌘Y"))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.gate_unlocked = Some(call_id.clone());
+                        this.gate_hint = None;
+                        super::sheet::record_ux_event("gate_token_confirmed", serde_json::json!({ "token": tok_log }));
+                        cx.notify();
+                    }))
+                    .into_any_element()
+            } else {
+                div()
+                    .id("gate-risk-token")
+                    .self_start()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .px(px(8.))
+                    .py(px(3.))
+                    .rounded(px(t::RADIUS_CONTROL))
+                    .bg(ca(tk.amber, 0.12))
+                    .font_family(mono(cx))
+                    .text_size(px(t::TEXT_META))
+                    .text_color(c(tk.amber))
+                    .child(SharedString::from(format!("Confirmed {} · press ↵ to allow", shown(&risk_token))))
+                    .into_any_element()
+            }
+        });
+        // Not a box: a 2px attention rule down the left, the question, the command, the counterfactual, the answers.
         div()
             .id("approval")
             .role(gpui::Role::AlertDialog)
@@ -419,7 +588,7 @@ impl Workspace {
             .py(px(4.))
             .flex()
             .flex_col()
-            .gap(px(10.))
+            .gap(px(9.))
             .child(attention_rule(&info.tool_call_id, cx))
             .child(
                 div()
@@ -433,7 +602,12 @@ impl Workspace {
             // An edit shows the change it asks about; anything else, its command or input.
             .when_some(diffs, |card, diffs| card.child(transcript::diff_preview(&diffs, cx)))
             .when(!has_diff, |card| card.when_some(block, |card, text| card.child(ui::code_block(SharedString::from(shown(&text)), cx).text_color(c(tk.text_body)))))
+            .children(counterfactual)
+            .children(challenge)
             .child(div().flex().flex_wrap().items_center().gap(px(6.)).children(buttons))
+            .when_some(self.gate_hint.clone(), |card, hint| {
+                card.child(div().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.attention)).child(SharedString::from(hint)))
+            })
             .when_some(consequence, |card, said| card.child(div().text_size(px(t::TEXT_META)).text_color(c(tk.text_faint)).child(said)))
             .into_any_element()
     }
@@ -721,10 +895,16 @@ impl Workspace {
     /// The composer's placeholder for the session's state.
     pub(super) fn placeholder(&self, cx: &App) -> &'static str {
         let view = &self.session.read(cx).view;
-        if self.saying {
+        if self.desk_mode == super::DeskMode::Rack {
+            "Message active thread (↵), click any thread above, or press ⌘0 to return…"
+        } else if self.saying {
             "Reply in your own words — ↵ sends, esc returns to approval"
         } else if !view.pending.is_empty() {
-            "Approve above (↵), or press W to redirect in your own words…"
+            if self.active_gate_locked(cx) {
+                "High-risk gate above — confirm token (⌘Y) to allow, esc denies, W redirects…"
+            } else {
+                "Approve above (↵), or press W to redirect in your own words…"
+            }
         } else if view.turn_active {
             "Queue a follow-up (↵)…"
         } else if view.messages.iter().any(transcript::is_conversation) {

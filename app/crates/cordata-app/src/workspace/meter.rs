@@ -323,6 +323,8 @@ impl Workspace {
             Some(w) => format!("{} of {} · {:.0}%", telemetry::tokens(tm.context_used), telemetry::tokens(w), tm.context_used as f64 / w as f64 * 100.0),
             None => format!("{} (window unknown for this model)", telemetry::tokens(tm.context_used)),
         };
+        let breakdown = telemetry::context_breakdown(&self.session.read(cx).view.messages);
+        let xray = (breakdown.total_bytes() > 0).then(|| context_xray(&breakdown, 332., cx));
         let toggles = [
             ("meter-toggle", "Meter", self.prefs.show_meter, 0usize),
             ("context-toggle", "Context gauge", self.prefs.show_context, 1usize),
@@ -363,7 +365,8 @@ impl Workspace {
                             .flex_col()
                             .gap(px(6.))
                             .child(div().flex().justify_between().text_size(px(t::TEXT_LABEL)).text_color(c(tk.text_faint)).child("context").child(div().font_family(mono(cx)).child(SharedString::from(context_line))))
-                            .child(context_bar(tm, model, 332., cx)),
+                            .child(context_bar(tm, model, 332., cx))
+                            .when_some(xray, |col, xray| col.pt(px(4.)).child(xray)),
                     )
                     .child(div().text_size(px(t::TEXT_LABEL)).text_color(c(tk.text_faint)).child("medians over the kept turns · first word = prompt sent to first streamed output"))
                     .child(
@@ -451,6 +454,41 @@ fn context_bar(tm: &Telemetry, model: &str, width: f32, cx: &gpui::App) -> AnyEl
         .rounded_full()
         .bg(line(cx, 0.12))
         .child(div().h_full().rounded_full().w(px((width as f64 * share).max(if share > 0.0 { 2.0 } else { 0.0 }) as f32)).bg(fill))
+        .into_any_element()
+}
+
+/// Four-part Context Composition X-Ray: instructions, tool output, diffs, and dialogue, plus offloaded count.
+fn context_xray(breakdown: &telemetry::ContextBreakdown, width: f32, cx: &gpui::App) -> AnyElement {
+    let tk = tk(cx);
+    let shares = breakdown.shares();
+    let colours = [c(tk.teal), c(tk.amber_dim), c(tk.amber), line(cx, 0.32)];
+    let short_names = ["instr", "tools", "diffs", "chat"];
+    let segs: Vec<AnyElement> = shares
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, s))| *s > 0.0)
+        .map(|(i, (_, s))| {
+            let w = ((width as f64 * *s).round() as f32).max(3.0);
+            div().h_full().w(px(w)).bg(colours[i]).into_any_element()
+        })
+        .collect();
+    let legend: Vec<String> = shares
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, s))| *s >= 0.01)
+        .map(|(i, (_, s))| format!("{} {:.0}%", short_names[i], s * 100.0))
+        .collect();
+    let mut summary = legend.join(" · ");
+    if breakdown.offloaded_count > 0 {
+        summary.push_str(&format!(" · {} offloaded", breakdown.offloaded_count));
+    }
+    div()
+        .id("context-xray")
+        .flex()
+        .flex_col()
+        .gap(px(4.))
+        .child(div().w(px(width)).h(px(4.)).rounded_full().overflow_hidden().flex().gap(px(1.)).bg(line(cx, 0.08)).children(segs))
+        .child(div().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).text_color(c(tk.text_faint)).child(SharedString::from(summary)))
         .into_any_element()
 }
 
