@@ -846,6 +846,11 @@ mod tests {
                 gate_high_risk: false,
                 working_secs: Some(95),
                 overlaps: if ix == 0 { vec![2] } else { Vec::new() },
+                role: crate::work::AgentRole::Worker,
+                current_action: None,
+                confidence: crate::work::ConfidenceSignal::HighSolid,
+                wave: 1,
+                parent_slot: None,
             })
             .collect();
 

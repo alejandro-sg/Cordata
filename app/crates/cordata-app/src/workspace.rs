@@ -177,6 +177,10 @@ pub struct Workspace {
     /// The window's own preferences.
     pub(super) prefs: Prefs,
     pub(super) desk_mode: DeskMode,
+    /// Selected agent slot in the Supervisory Control Room (`None` = overview).
+    pub(super) rack_selected_slot: Option<usize>,
+    /// Whether rack canvas is in graph mode vs list mode.
+    pub(super) rack_graph_mode: bool,
     /// Selected tape stop for forensic inspection, turn-level forking, or post-turn rollback.
     pub(super) selected_turn: Option<usize>,
     /// Whether the Change Sheet's agent summary is expanded beyond its 5-line clamp.
@@ -506,6 +510,8 @@ impl Workspace {
             keys: meter::Keys::default(),
             model_filter,
             desk_mode: DeskMode::default(),
+            rack_selected_slot: None,
+            rack_graph_mode: true,
             selected_turn: None,
             sheet_expanded: false,
             sheet_toggled_files: HashSet::new(),
@@ -3142,6 +3148,56 @@ mod window_tests {
         for rx in &mut rxs {
             assert_eq!(rx.try_recv().ok(), Some(acp_core::ApprovalDecision::Allow));
         }
+    }
+
+    #[gpui::test]
+    fn control_room_graph_mode_node_selection_and_inspector(cx: &mut TestAppContext) {
+        let (view, cx) = workspace(cx);
+        cx.simulate_keystrokes("cmd-n");
+        cx.run_until_parked();
+
+        // Slot 1: Supervisor, Slot 2: Invariant Probe
+        view.update(cx, |this, cx| {
+            this.sessions[0].update(cx, |s, cx| {
+                s.view.conn = cordata_view::app::ConnState::Connected;
+                s.view.messages.push(cordata_view::app::Message::User("Supervisor planning wave 1".into()));
+                cx.notify();
+            });
+            this.sessions[1].update(cx, |s, cx| {
+                s.view.conn = cordata_view::app::ConnState::Connected;
+                s.view.messages.push(cordata_view::app::Message::User("invariant probe: check invariants".into()));
+                cx.notify();
+            });
+        });
+        cx.run_until_parked();
+
+        cx.simulate_keystrokes("cmd-0");
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |this, _| this.desk_mode), DeskMode::Rack);
+        assert!(view.read_with(cx, |this, _| this.rack_graph_mode), "Defaults to interactive graph mode");
+        assert_eq!(view.read_with(cx, |this, _| this.rack_selected_slot), None);
+
+        // Select Node Slot 2 (Probe)
+        view.update(cx, |this, cx| {
+            this.rack_selected_slot = Some(2);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |this, _| this.rack_selected_slot), Some(2));
+
+        // Toggle to Bands mode and back
+        view.update(cx, |this, cx| {
+            this.rack_graph_mode = false;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(!view.read_with(cx, |this, _| this.rack_graph_mode));
+        view.update(cx, |this, cx| {
+            this.rack_graph_mode = true;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(view.read_with(cx, |this, _| this.rack_graph_mode));
     }
 
     #[gpui::test]

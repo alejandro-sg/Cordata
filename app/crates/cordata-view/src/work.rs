@@ -229,6 +229,69 @@ pub fn age(secs: u64) -> String {
     }
 }
 
+/// Specialized role assigned to or inferred for an agent in the orchestration topology.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AgentRole {
+    #[default]
+    Worker,
+    Supervisor,
+    InvariantProbe,
+    DomainWorker,
+    Synthesizer,
+    Reviewer,
+}
+
+impl AgentRole {
+    pub fn badge(&self) -> &'static str {
+        match self {
+            Self::Worker => "Worker",
+            Self::Supervisor => "Supervisor",
+            Self::InvariantProbe => "INV Probe",
+            Self::DomainWorker => "DOM Worker",
+            Self::Synthesizer => "Synthesizer",
+            Self::Reviewer => "Reviewer",
+        }
+    }
+}
+
+/// Confidence signal for human governance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ConfidenceSignal {
+    #[default]
+    HighSolid,
+    Medium,
+    LowHatched,
+}
+
+impl ConfidenceSignal {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::HighSolid => "high confidence · safe sandbox",
+            Self::Medium => "normal · standard review",
+            Self::LowHatched => "low confidence · verification gate required",
+        }
+    }
+}
+
+/// Directed connection between agents or stages in the orchestration graph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphEdge {
+    pub from_slot: usize,
+    pub to_slot: usize,
+    pub label: String,
+    pub is_conflict: bool,
+}
+
+/// Interactive orchestration topology & multi-agent work graph.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkGraph {
+    pub nodes: Vec<TriageIn>,
+    pub edges: Vec<GraphEdge>,
+    pub scope_collisions: Vec<(usize, usize, String)>,
+    pub active_wave: usize,
+    pub high_risk_count: usize,
+}
+
 /// One open thread summarized as a flight strip on the Multi-Agent Triage Rack (`⌘0`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TriageIn {
@@ -248,6 +311,11 @@ pub struct TriageIn {
     pub gate_high_risk: bool,
     pub working_secs: Option<u64>,
     pub overlaps: Vec<usize>,
+    pub role: AgentRole,
+    pub current_action: Option<String>,
+    pub confidence: ConfidenceSignal,
+    pub wave: usize,
+    pub parent_slot: Option<usize>,
 }
 
 /// Two or more open threads waiting on the exact same tool call (`tool_name` + canonical target/command).
@@ -307,6 +375,111 @@ pub fn triage_rack(items: &[TriageIn]) -> TriageRack {
     }
     rack.batch_gates = by_sig.into_values().filter(|g| g.thread_indices.len() >= 2).collect();
     rack
+}
+
+/// Infers the agent's specialization role from its slot and brief/title.
+pub fn infer_role(slot: usize, title: &str) -> AgentRole {
+    let t = title.to_lowercase();
+    if slot == 1 {
+        AgentRole::Supervisor
+    } else if t.contains("inv") || t.contains("test") || t.contains("probe") {
+        AgentRole::InvariantProbe
+    } else if t.contains("synth") || t.contains("merge") {
+        AgentRole::Synthesizer
+    } else if t.contains("review") || t.contains("audit") {
+        AgentRole::Reviewer
+    } else {
+        AgentRole::DomainWorker
+    }
+}
+
+/// Infers visual confidence signaling (solid high autonomy vs hatched human-gate required).
+pub fn infer_confidence(working: bool, has_warning: bool, high_risk: bool) -> ConfidenceSignal {
+    if high_risk || has_warning {
+        ConfidenceSignal::LowHatched
+    } else if working {
+        ConfidenceSignal::HighSolid
+    } else {
+        ConfidenceSignal::Medium
+    }
+}
+
+/// Builds the interactive multi-agent orchestration graph with roles, dependency edges, and scope collisions.
+pub fn build_work_graph(items: &[TriageIn]) -> WorkGraph {
+    let mut high_risk = 0usize;
+    let mut max_wave = 1usize;
+
+    for item in items {
+        if item.gate_high_risk || item.falsification_warning {
+            high_risk += 1;
+        }
+        if item.wave > max_wave {
+            max_wave = item.wave;
+        }
+    }
+
+    let mut edges = Vec::new();
+    let mut collisions = Vec::new();
+
+    // 1. Structural orchestration links (supervisor -> workers, probes -> synthesizer)
+    for item in items {
+        if let Some(parent) = item.parent_slot {
+            edges.push(GraphEdge {
+                from_slot: parent,
+                to_slot: item.slot,
+                label: "spawned".into(),
+                is_conflict: false,
+            });
+        } else if (item.role == AgentRole::InvariantProbe || item.role == AgentRole::DomainWorker)
+            && let Some(sup) = items.iter().find(|i| i.role == AgentRole::Supervisor)
+            && sup.slot != item.slot
+        {
+            edges.push(GraphEdge {
+                from_slot: sup.slot,
+                to_slot: item.slot,
+                label: "probe".into(),
+                is_conflict: false,
+            });
+        }
+        if item.role == AgentRole::Synthesizer || item.role == AgentRole::Reviewer {
+            for prev in items {
+                if prev.slot != item.slot && (prev.role == AgentRole::InvariantProbe || prev.role == AgentRole::DomainWorker) {
+                    edges.push(GraphEdge {
+                        from_slot: prev.slot,
+                        to_slot: item.slot,
+                        label: "synthesize".into(),
+                        is_conflict: false,
+                    });
+                }
+            }
+        }
+    }
+
+    // 2. Cross-agent scope collisions on same repository
+    for i in 0..items.len() {
+        for j in (i + 1)..items.len() {
+            let a = &items[i];
+            let b = &items[j];
+            if a.folder == b.folder && a.overlaps.contains(&b.slot) {
+                let desc = format!("Scope collision on {}: #{} & #{}", a.folder.display(), a.slot, b.slot);
+                collisions.push((a.slot, b.slot, desc));
+                edges.push(GraphEdge {
+                    from_slot: a.slot,
+                    to_slot: b.slot,
+                    label: "collision".into(),
+                    is_conflict: true,
+                });
+            }
+        }
+    }
+
+    WorkGraph {
+        nodes: items.to_vec(),
+        edges,
+        scope_collisions: collisions,
+        active_wave: max_wave,
+        high_risk_count: high_risk,
+    }
 }
 
 #[cfg(test)]
@@ -415,6 +588,11 @@ mod tests {
             gate_high_risk: false,
             working_secs: Some(30),
             overlaps: Vec::new(),
+            role: AgentRole::Worker,
+            current_action: None,
+            confidence: ConfidenceSignal::HighSolid,
+            wave: 1,
+            parent_slot: None,
         };
         let all = [
             strip(0, TabState::NeedsApproval, Some("run_command:cargo test"), 1),
@@ -431,5 +609,91 @@ mod tests {
         assert_eq!(rack.batch_gates.len(), 1);
         assert_eq!(rack.batch_gates[0].thread_indices, vec![0, 2]);
         assert_eq!(rack.batch_gates[0].thread_slots, vec![1, 3]);
+    }
+
+    #[test]
+    fn work_graph_builds_edges_and_detects_scope_collisions() {
+        let root = TriageIn {
+            index: 0,
+            slot: 1,
+            title: "supervisor task".into(),
+            folder: "/repo/crate-a".into(),
+            state: TabState::Working,
+            active: true,
+            files: 2,
+            added: 10,
+            removed: 0,
+            check: None,
+            falsification_warning: false,
+            gate_title: None,
+            gate_signature: None,
+            gate_high_risk: false,
+            working_secs: Some(15),
+            overlaps: Vec::new(),
+            role: AgentRole::Supervisor,
+            current_action: Some("coordinating wave 1".into()),
+            confidence: ConfidenceSignal::HighSolid,
+            wave: 1,
+            parent_slot: None,
+        };
+        let probe = TriageIn {
+            index: 1,
+            slot: 2,
+            title: "invariant probe: test harness".into(),
+            folder: "/repo/crate-a".into(),
+            state: TabState::Working,
+            active: false,
+            files: 1,
+            added: 5,
+            removed: 0,
+            check: None,
+            falsification_warning: false,
+            gate_title: None,
+            gate_signature: None,
+            gate_high_risk: false,
+            working_secs: Some(8),
+            overlaps: vec![3],
+            role: AgentRole::InvariantProbe,
+            current_action: Some("testing invariant c6".into()),
+            confidence: ConfidenceSignal::HighSolid,
+            wave: 1,
+            parent_slot: Some(1),
+        };
+        let worker = TriageIn {
+            index: 2,
+            slot: 3,
+            title: "domain worker: hooks".into(),
+            folder: "/repo/crate-a".into(),
+            state: TabState::NeedsApproval,
+            active: false,
+            files: 3,
+            added: 20,
+            removed: 5,
+            check: None,
+            falsification_warning: true,
+            gate_title: Some("Run edit_file".into()),
+            gate_signature: Some("edit_file".into()),
+            gate_high_risk: true,
+            working_secs: Some(12),
+            overlaps: Vec::new(),
+            role: AgentRole::DomainWorker,
+            current_action: Some("editing hooks.rs".into()),
+            confidence: ConfidenceSignal::LowHatched,
+            wave: 1,
+            parent_slot: Some(1),
+        };
+
+        let graph = build_work_graph(&[root, probe, worker]);
+        assert_eq!(graph.nodes.len(), 3);
+        assert_eq!(graph.active_wave, 1);
+        assert_eq!(graph.high_risk_count, 1);
+        // Expect parent-child edges from slot 1 to slot 2 and slot 3, plus 1 conflict edge
+        assert_eq!(graph.edges.len(), 3);
+        assert!(graph.edges.iter().any(|e| e.from_slot == 1 && e.to_slot == 2));
+        assert!(graph.edges.iter().any(|e| e.from_slot == 1 && e.to_slot == 3));
+        assert!(graph.edges.iter().any(|e| e.is_conflict));
+        // Slots 2 and 3 both share "/repo/crate-a"
+        assert!(!graph.scope_collisions.is_empty());
+        assert!(graph.scope_collisions[0].2.contains("collision on"));
     }
 }
