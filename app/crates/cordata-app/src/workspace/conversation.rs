@@ -147,22 +147,88 @@ impl Workspace {
             .when_some(word, |row, (word, ink)| row.child(div().flex_shrink_0().whitespace_nowrap().text_size(px(t::TEXT_META)).text_color(c(ink)).child(word)))
             // The empty middle drags the window.
             .child(div().flex_1().h_full().min_w(px(8.)).on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move()))
-            .when(!has_brief && self.desk_mode != super::DeskMode::Rack && (self.review.file_count() > 0 || self.desk_mode == super::DeskMode::ChangeSheet), |row| {
-                let in_sheet = self.desk_mode == super::DeskMode::ChangeSheet;
-                row.child(
-                    div()
-                        .id("header-sheet-toggle")
-                        .role(gpui::Role::Button)
-                        .cursor_pointer()
-                        .font_family(mono(cx))
-                        .text_size(px(t::TEXT_META))
-                        .text_color(c(if in_sheet { tk.amber } else { tk.text_muted }))
-                        .hover(|s| s.text_color(c(tk.text_primary)))
-                        .tooltip(ui::tip("Switch between proof-first change sheet and transcript  ⌘D"))
-                        .on_click(cx.listener(|this, _, _, cx| this.toggle_change_sheet(cx)))
-                        .child(if in_sheet { "transcript  ⌘D" } else { "change sheet  ⌘D" }),
-                )
-            })
+            .child(
+                div()
+                    .id("workspace-mode-selector")
+                    .flex()
+                    .items_center()
+                    .gap(px(2.))
+                    .p(px(2.))
+                    .rounded(px(t::RADIUS_ROW))
+                    .bg(ca(tk.bg_panel, 0.7))
+                    .border_1()
+                    .border_color(line(cx, t::LINE_DEFAULT))
+                    .child(
+                        div()
+                            .id("mode-canvas-pill")
+                            .role(gpui::Role::Button)
+                            .cursor_pointer()
+                            .px(px(7.))
+                            .py(px(2.))
+                            .rounded(px(t::RADIUS_BADGE))
+                            .font_family(mono(cx))
+                            .text_size(px(t::TEXT_META))
+                            .border_1()
+                            .border_color(if self.desk_mode == super::DeskMode::Rack { ca(tk.amber, 0.6) } else { gpui::transparent_black() })
+                            .bg(if self.desk_mode == super::DeskMode::Rack { ca(tk.amber, 0.16) } else { gpui::transparent_black() })
+                            .text_color(c(if self.desk_mode == super::DeskMode::Rack { tk.amber } else { tk.text_muted }))
+                            .hover(|s| s.text_color(c(tk.text_primary)))
+                            .tooltip(ui::tip("Supervisory Control Room & Agent Graph Canvas  ⌘0"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.desk_mode = super::DeskMode::Rack;
+                                super::sheet::record_ux_event("mode_switch", serde_json::json!({ "mode": "rack" }));
+                                cx.notify();
+                            }))
+                            .child("Canvas ⌘0")
+                    )
+                    .child(
+                        div()
+                            .id("mode-transcript-pill")
+                            .role(gpui::Role::Button)
+                            .cursor_pointer()
+                            .px(px(7.))
+                            .py(px(2.))
+                            .rounded(px(t::RADIUS_BADGE))
+                            .font_family(mono(cx))
+                            .text_size(px(t::TEXT_META))
+                            .border_1()
+                            .border_color(if self.desk_mode == super::DeskMode::Transcript { ca(tk.amber, 0.6) } else { gpui::transparent_black() })
+                            .bg(if self.desk_mode == super::DeskMode::Transcript { ca(tk.amber, 0.16) } else { gpui::transparent_black() })
+                            .text_color(c(if self.desk_mode == super::DeskMode::Transcript { tk.amber } else { tk.text_muted }))
+                            .hover(|s| s.text_color(c(tk.text_primary)))
+                            .tooltip(ui::tip("Conversational steering transcript  ⌘1"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.desk_mode = super::DeskMode::Transcript;
+                                super::sheet::record_ux_event("mode_switch", serde_json::json!({ "mode": "transcript" }));
+                                cx.notify();
+                            }))
+                            .child("Transcript ⌘1")
+                    )
+                    .child(
+                        div()
+                            .id("mode-sheet-pill")
+                            .role(gpui::Role::Button)
+                            .cursor_pointer()
+                            .px(px(7.))
+                            .py(px(2.))
+                            .rounded(px(t::RADIUS_BADGE))
+                            .font_family(mono(cx))
+                            .text_size(px(t::TEXT_META))
+                            .border_1()
+                            .border_color(if self.desk_mode == super::DeskMode::ChangeSheet { ca(tk.amber, 0.6) } else { gpui::transparent_black() })
+                            .bg(if self.desk_mode == super::DeskMode::ChangeSheet { ca(tk.amber, 0.16) } else { gpui::transparent_black() })
+                            .text_color(c(if self.desk_mode == super::DeskMode::ChangeSheet { tk.amber } else { tk.text_muted }))
+                            .hover(|s| s.text_color(c(tk.text_primary)))
+                            .tooltip(ui::tip("Proof-first change sheet and diff verification  ⌘D"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.load_review(cx);
+                                this.desk_mode = super::DeskMode::ChangeSheet;
+                                super::sheet::record_ux_event("mode_switch", serde_json::json!({ "mode": "sheet" }));
+                                cx.notify();
+                            }))
+                            .child("Sheet ⌘D")
+                    )
+            )
             .children(self.branch_chip(cx))
             .children(self.pr_chip(cx))
             .child(
@@ -242,13 +308,14 @@ impl Workspace {
         let fix = starter("starter-fix", "Run the checks and fix what fails".into()).on_click(cx.listener(|this, _, window, cx| {
             this.apply_starter("Run the project's test suite and build checks, diagnose any failures, and propose clean fixes.", false, window, cx);
         }));
-        let open_sheet = (dirty_count > 0).then(|| {
-            starter(
-                "starter-sheet",
-                SharedString::from(format!("Open Change Sheet ({dirty_count} uncommitted file{})  ⌘D", if dirty_count == 1 { "" } else { "s" })),
-            )
-            .on_click(cx.listener(|this, _, _, cx| this.toggle_change_sheet(cx)))
-        });
+        let open_canvas = starter("starter-canvas", "Open Supervisory Control Room & Agent Graph  ⌘0".into()).on_click(cx.listener(|this, _, _, cx| {
+            this.toggle_rack(cx);
+        }));
+        let open_sheet = starter(
+            "starter-sheet",
+            SharedString::from(format!("Open Proof-First Change Sheet ({} uncommitted file{})  ⌘D", dirty_count, if dirty_count == 1 { "" } else { "s" })),
+        )
+        .on_click(cx.listener(|this, _, _, cx| this.toggle_change_sheet(cx)));
 
         div()
             .id("empty-state-scroll")
@@ -289,7 +356,7 @@ impl Workspace {
                                 None => "Say it in your own words; you decide at every gate.".to_owned(),
                             })),
                     )
-                    .child(div().flex().flex_col().children(open_sheet).child(explore).child(review).child(fix))
+                    .child(div().flex().flex_col().child(open_canvas).child(open_sheet).child(explore).child(review).child(fix))
                     .children(notices)
                     // The session's opening notes, as one line: hover lists them. A server that failed to start is
                     // the one note worth its own words.

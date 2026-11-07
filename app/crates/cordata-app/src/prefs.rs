@@ -28,6 +28,8 @@ pub struct Prefs {
     pub send_with: String,
     /// `last` (the last project) · `home` · `picker` (open the project picker).
     pub open_on_launch: String,
+    /// Default workspace view: `canvas` (Control Room) · `transcript` · `sheet`.
+    pub default_mode: String,
     /// Put the threads that were open back at launch (`threads.rs`). Off: a launch starts one new thread.
     pub restore_threads: bool,
     pub notify_approval: bool,
@@ -70,6 +72,7 @@ impl Default for Prefs {
             code_font_size: 13.0,
             send_with: "enter".into(),
             open_on_launch: "last".into(),
+            default_mode: "transcript".into(),
             restore_threads: true,
             notify_approval: true,
             notify_done: true,

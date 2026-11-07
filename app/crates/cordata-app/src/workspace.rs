@@ -352,6 +352,11 @@ impl Workspace {
             Self::serve_control(window, cx);
         }
         let prefs = cx.try_global::<Prefs>().cloned().unwrap_or_default();
+        let default_desk_mode = match prefs.default_mode.as_str() {
+            "transcript" => DeskMode::Transcript,
+            "sheet" => DeskMode::ChangeSheet,
+            _ => DeskMode::Rack,
+        };
         let composer = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, 10).submit_on_enter(prefs.send_with != "cmd-enter").placeholder("Ask anything, @mention files, or type / for commands…"));
         // Threads left open by the last run come back as they were: the shown one is built first (the window starts in
         // its folder), the rest are added in their old order below.
@@ -509,7 +514,7 @@ impl Workspace {
             popup: None,
             keys: meter::Keys::default(),
             model_filter,
-            desk_mode: DeskMode::default(),
+            desk_mode: default_desk_mode,
             rack_selected_slot: None,
             rack_graph_mode: true,
             selected_turn: None,

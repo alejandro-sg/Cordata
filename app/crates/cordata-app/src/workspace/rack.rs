@@ -174,6 +174,8 @@ impl Workspace {
                             .child("Propose–Probe–Compose concurrency · APFS clone isolated sandboxes"))))
             .child(
                 div().flex().items_center().gap(px(6.))
+                    .child(ui::button("gov-spawn-worker", "+ Dispatch Worker ⌘N", Kind::Ghost, cx)
+                        .on_click(cx.listener(|this, _, window, cx| { this.open_new(window, cx); })))
                     .when(!rack.batch_gates.is_empty(), |b| {
                         let total: usize = rack.batch_gates.iter().map(|g| g.thread_indices.len()).sum();
                         let sig = rack.batch_gates[0].signature.clone();

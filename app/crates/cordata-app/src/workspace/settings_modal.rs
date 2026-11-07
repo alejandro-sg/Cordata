@@ -422,6 +422,16 @@ impl Workspace {
 
     fn general_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let launch = self.select(Select::OpenOnLaunch, &self.prefs.open_on_launch.clone(), vec![("last".into(), "last project".into()), ("home".into(), "home folder".into()), ("picker".into(), "project picker".into())], cx);
+        let mode = self.segmented("default-workspace-mode", &[("canvas", "Canvas"), ("transcript", "Transcript"), ("sheet", "Sheet")], &self.prefs.default_mode.clone(), |this, v, cx| {
+            this.prefs.default_mode = v.into();
+            this.save_prefs(cx);
+            this.desk_mode = match v {
+                "canvas" => super::DeskMode::Rack,
+                "sheet" => super::DeskMode::ChangeSheet,
+                _ => super::DeskMode::Transcript,
+            };
+            cx.notify();
+        }, cx);
         let restore = self.toggle("restore-threads", self.prefs.restore_threads, "Reopen threads on launch", |this, on, cx| {
             this.prefs.restore_threads = on;
             this.save_prefs(cx);
@@ -472,6 +482,7 @@ impl Workspace {
         let quick_ask = div().flex().items_center().gap(px(8.)).child(key).child(hotkey).into_any_element();
         vec![
             setting_row("Open on launch", "What the window shows when Cordata starts.", launch, cx),
+            setting_row("Default workspace", "Which environment Cordata opens into (Canvas, Transcript, or Sheet).", mode, cx),
             setting_row("Reopen threads on launch", "Put back the threads that were open, with the one you were in. Off: every launch starts one new thread and your conversations stay under Earlier. Only one window keeps the list; a second copy of the app starts clean.", restore, cx),
             setting_row("Quick ask", "From any app: bring Cordata forward with the composer ready. Any other combination can go in prefs.toml as quick_ask_key (e.g. \"cmd-alt-j\").", quick_ask, cx),
             setting_row("Send message with", "The other key adds a new line.", send, cx),

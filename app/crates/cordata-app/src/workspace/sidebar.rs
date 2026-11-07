@@ -228,22 +228,25 @@ impl Workspace {
                         .when(needs, |d| d.cursor_pointer().tooltip(ui::tip("Go to what needs you  ⌘J")).on_click(cx.listener(|this, _, window, cx| this.next_attention(&super::NextAttention, window, cx))))
                         .child(SharedString::from(rail.brief().map(|b| format!("· {b}")).unwrap_or_default())),
                 )
-                .when(self.sessions.len() > 1 || self.desk_mode == super::DeskMode::Rack, |hdr| {
-                    let on = self.desk_mode == super::DeskMode::Rack;
-                    hdr.child(
-                        div()
-                            .id("open-rack")
-                            .role(gpui::Role::Button)
-                            .cursor_pointer()
-                            .font_family(mono(cx))
-                            .text_size(px(t::TEXT_TAG))
-                            .text_color(c(if on { tk.amber } else { tk.text_muted }))
-                            .hover(|s| s.text_color(c(tk.text_primary)))
-                            .tooltip(ui::tip("Supervisory triage rack  ⌘0"))
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_rack(cx)))
-                            .child("rack"),
-                    )
-                })
+                .child(
+                    div()
+                        .id("open-rack")
+                        .role(gpui::Role::Button)
+                        .cursor_pointer()
+                        .px(px(6.))
+                        .py(px(1.))
+                        .rounded(px(t::RADIUS_BADGE))
+                        .bg(if self.desk_mode == super::DeskMode::Rack { ca(tk.amber, 0.18) } else { gpui::transparent_black() })
+                        .border_1()
+                        .border_color(if self.desk_mode == super::DeskMode::Rack { ca(tk.amber, 0.6) } else { gpui::transparent_black() })
+                        .font_family(mono(cx))
+                        .text_size(px(t::TEXT_TAG))
+                        .text_color(c(if self.desk_mode == super::DeskMode::Rack { tk.amber } else { tk.text_muted }))
+                        .hover(|s| s.text_color(c(tk.text_primary)))
+                        .tooltip(ui::tip("Supervisory Control Room & Agent Graph Canvas  ⌘0"))
+                        .on_click(cx.listener(|this, _, _, cx| this.toggle_rack(cx)))
+                        .child("canvas  ⌘0"),
+                )
                 .child(
                     ui::icon_action("new-session", gpui_kit_assets::IconName::SquarePen, cx)
                         .size(px(22.))
