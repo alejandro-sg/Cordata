@@ -17,21 +17,42 @@ A coding agent for your Mac, in three pieces:
 
 Everything runs on your machine. The only network calls go to the model providers you configure. It is a single-developer project, macOS only (Apple Silicon for the app), and it changes often.
 
-## Why use it
+## What stands out
 
-**Nothing happens without your say-so.** Every edit and command stops at an approval card. A built-in guard refuses `.env` and `.git/` writes and recursive deletes before the prompt even appears.
+**One screen for everything running, ranked by what needs you.** The window opens on the *field*: your threads and
+orchestrated runs, with only what asks for attention drawn. A blocked command, a working thread, two threads editing the
+same component, a thread ready to review. The rest is one line: "7 idle threads". The right rail holds the exact command
+waiting on you and the changes ready to review, with the check result. No thread list to hunt through.
 
-![Cordata.app asking approval before editing a file](docs/img/app-approval.png)
+**Answer from the menu bar.** Cordata lives there: `C` quiet, `(•` working, `C● 2` when two things wait on you. Its menu
+shows the exact command and offers Allow or Reject without opening the window. Risky calls say "Review in Cordata…"
+instead, and a click only answers the call the menu showed.
 
-**Quota-aware handoffs.** `cordata run` meters each plan's rolling and weekly quota. When a pool nears its limit, the step is rolled back and continues on another pool. `cordata status` shows what is left and spends nothing.
+**Several models, checked against each other.** `cordata run` has one model research and plan, another implement, a model
+from a different family review, and the planner audit the result against its own plan. Steps of a wave run in
+copy-on-write clones of your project with disjoint file scopes, and fold back only what stayed in scope.
+
+**Hold a run, read it, send it on.** When a worker stops (quota line, rate limit, failure, or you) the step moves on with
+a handoff packet: how far it got, the checkpoint, the diff, what failed. Hold a run at its next safe point, then resume it
+on another worker or with a sentence of your own as direction. A failed run restores your tree to the checkpoint taken
+before it started.
+
+**Quota-aware.** Each plan's rolling and weekly quota is metered. When a pool nears its limit, the step continues on
+another pool. `cordata status` shows what is left and spends nothing.
 
 ![cordata status showing quota pools](docs/img/quota-pools.png)
 
-**One-screen setup check.** `cordata doctor` says what is installed, which key it found, and the fix for what is missing.
+**Nothing happens without your say-so.** Every edit and command stops at an approval card with the exact command or diff.
+A built-in guard refuses `.env` and `.git/` writes and recursive deletes before the prompt appears, and commands run in a
+macOS sandbox. Auto mode lets fixed rules (no model involved) allow the calls they can show are safe and asks about the rest; the guard still applies.
+
+![Cordata.app asking approval before editing a file](docs/img/app-approval.png)
+
+**Keys stay out of files, and setup is one command.** API keys live in the macOS Keychain or your environment, and
+`make secrets` fails the build if one lands in the tree. `cordata doctor` says what is installed, which key it found and
+the fix for what is missing.
 
 ![cordata doctor output](docs/img/doctor.png)
-
-**Keys stay out of files.** API keys live in the macOS Keychain or your environment. A secrets scan (`make secrets`) fails the build if one lands in the tree.
 
 ## Quick start
 
