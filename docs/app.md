@@ -13,7 +13,8 @@ make app-test                      # headless tests (shared state, palette, app)
 make app-check                     # clippy -D warnings, cargo-deny, and the gpui-pre snapshot proof (needs network once)
 ```
 
-The first release build compiles GPUI and takes several minutes. `make app` signs ad hoc by default, so macOS treats each
+The first release build compiles GPUI and takes several minutes; the release profile (`app/Cargo.toml`: thin LTO, one
+codegen unit, stripped symbols) makes later ones slower and the binary smaller, 59.9 MB to 45.5 MB. `make app` signs ad hoc by default, so macOS treats each
 rebuild as a new app and forgets privacy grants; set `SIGN_IDENTITY` to a self-signed "Code Signing" certificate to keep
 them. A friend running a copy you built has to open it with right-click → Open the first time.
 
@@ -99,10 +100,13 @@ created in tests or the packaged self-test (`CORDATA_APP_TRAY=off` also skips it
 
 A quiet instrument: one ground per theme (Paper, Ink and two dark variants), one signal colour (viridian) for what is
 live, ochre only for what needs you, no cards or shadows. Your prompts and the agent's replies share one text edge, with
-the `›` hanging in the margin. The header's bottom edge is the live line: a signal segment sweeps it while the agent
-works and it turns ochre when you are needed. Icons appear only as whole controls or as open/closed state; the two
-sounds (Settings → General → Sounds, off by default) play only for what you cannot see; the four small animations each
-say that something changed, and stop under Reduce Motion. The rules, colours and files: `app/assets/brand/README.md`.
+the `›` hanging in the margin. The mark is an open loop with a node: inside the loop while the agent works, in the gap
+when you are needed, the loop closed when it is done. The header's bottom edge is the cord: signal-coloured while the
+agent works, one pulse along it per burst of the thread's own events, attention-coloured end to end when you are needed.
+Nothing moves on a timer: the four movements (beat, tug, arrive, settle, `motion.rs`) are each started by an event, run
+once, and stop under Reduce Motion, so a stuck thread looks still. An orchestrator run is polled, not heard, so its mark
+is still. Icons are Cordata's own set, used only as whole controls or open/closed state; the two sounds (Settings →
+General → Sounds, off by default) play only for what you cannot see. The rules, colours and files: `app/assets/brand/README.md`.
 
 ### Driving the window from a shell
 
