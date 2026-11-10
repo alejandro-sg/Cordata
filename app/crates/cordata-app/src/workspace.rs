@@ -34,6 +34,7 @@ mod conversation;
 pub(crate) use conversation::prompt_mark;
 mod desk;
 mod field;
+mod menubar;
 mod rack;
 mod sheet;
 pub use sheet::DeskMode;
@@ -193,6 +194,11 @@ pub struct Workspace {
     pub(super) field_runs_note: Option<String>,
     pub(super) field_runs_busy: bool,
     pub(super) field_polling: bool,
+    /// Show the idle threads on the field too (they are only counted by default).
+    pub(super) field_idle_open: bool,
+    /// The menu bar item, while the pref is on (`menubar.rs`).
+    pub(super) tray: Option<crate::tray::Native>,
+    pub(super) tray_tick: u32,
     /// Selected tape stop for forensic inspection, turn-level forking, or post-turn rollback.
     pub(super) selected_turn: Option<usize>,
     /// Whether the Change Sheet's agent summary is expanded beyond its 5-line clamp.
@@ -536,6 +542,9 @@ impl Workspace {
             field_runs_note: None,
             field_runs_busy: false,
             field_polling: false,
+            field_idle_open: false,
+            tray: None,
+            tray_tick: 0,
             selected_turn: None,
             sheet_expanded: false,
             sheet_toggled_files: HashSet::new(),
@@ -549,6 +558,7 @@ impl Workspace {
         if this.desk_mode == DeskMode::Rack {
             this.ensure_run_poll(cx);
         }
+        this.start_tray(window, cx);
         let cwd = this.cwd.clone();
         this.prefs.touch_recent(&cwd, prefs::now());
         this.prefs.save();
@@ -2210,7 +2220,7 @@ impl Render for Workspace {
         let composer = self.composer(cx);
         let panel = (self.panel_open && !field_window).then(|| self.side_panel(window_w, window, cx));
         let overlays = self.overlay_layer(window, cx);
-        let grips = self.resize_grips(window_w, cx);
+        let grips = if field_window { Vec::new() } else { self.resize_grips(window_w, cx) };
         let drop_ring = crate::theme::amber(cx, t::AMBER_BORDER_STRONG);
         let body: AnyElement = match self.desk_mode {
             DeskMode::Rack => div().flex_1().min_h_0().child(self.triage_rack_view(cx)).into_any_element(),
@@ -2407,7 +2417,10 @@ pub fn install_menus(cx: &mut App) {
     cx.on_action(|_: &HideApp, cx| cx.hide());
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
-    cx.on_action(|_: &QuitApp, cx| cx.quit());
+    cx.on_action(|_: &QuitApp, cx| {
+        crate::tray::QUITTING.store(true, std::sync::atomic::Ordering::Relaxed);
+        cx.quit();
+    });
     cx.set_menus([
         Menu::new("Cordata").items([
             MenuItem::action("About Cordata", About),

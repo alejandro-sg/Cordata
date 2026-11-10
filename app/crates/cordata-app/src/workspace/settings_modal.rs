@@ -454,6 +454,10 @@ impl Workspace {
             this.prefs.notify_done = on;
             this.save_prefs(cx);
         }, cx);
+        let menu_bar = self.toggle("menu-bar", self.prefs.menu_bar, "Show in the menu bar", |this, on, cx| {
+            this.prefs.menu_bar = on;
+            this.save_prefs(cx);
+        }, cx);
         let sound = self.toggle("sound-done", self.prefs.sound_on_completion, "Sounds", |this, on, cx| {
             this.prefs.sound_on_completion = on;
             this.save_prefs(cx);
@@ -486,6 +490,7 @@ impl Workspace {
             setting_row("Reopen threads on launch", "Put back the threads that were open, with the one you were in. Off: every launch starts one new thread and your conversations stay under Earlier. Only one window keeps the list; a second copy of the app starts clean.", restore, cx),
             setting_row("Quick ask", "From any app: bring Cordata forward with the composer ready. Any other combination can go in prefs.toml as quick_ask_key (e.g. \"cmd-alt-j\").", quick_ask, cx),
             setting_row("Send message with", "The other key adds a new line.", send, cx),
+            setting_row("Show in the menu bar", "Cordata stays up when you close the window (⌘Q quits). The mark shows when something needs you, and a command that is safe to answer can be answered from there without opening the window.", menu_bar, cx),
             sub_heading("notifications", cx),
             setting_row("Notify when approval is needed", "A system notification when a command waits for you and the window is in the back.", notify, cx),
             setting_row("Notify when a thread finishes", "A system notification when a thread finishes while the window is in the back; it stays marked Done until you look (⌘J goes there).", notify_done, cx),

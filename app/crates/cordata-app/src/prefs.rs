@@ -35,6 +35,8 @@ pub struct Prefs {
     pub notify_approval: bool,
     /// A notification when a thread finishes while the window is in the background.
     pub notify_done: bool,
+    /// Cordata lives in the menu bar: the mark shows what needs you, the close button hides the app instead of ending it.
+    pub menu_bar: bool,
     /// Cordata's two sounds (`sound.rs`): needs-you and done, for what happens out of sight. The key keeps its old
     /// name so saved preferences carry over.
     pub sound_on_completion: bool,
@@ -76,6 +78,7 @@ impl Default for Prefs {
             restore_threads: true,
             notify_approval: true,
             notify_done: true,
+            menu_bar: true,
             sound_on_completion: false,
             quick_ask_hotkey: true,
             quick_ask_key: "ctrl-alt-space".into(),

@@ -18,6 +18,7 @@ mod sound;
 mod theme;
 mod threads;
 mod transcript;
+mod tray;
 mod ui;
 mod vt;
 mod workspace;

@@ -31,6 +31,7 @@ pub mod runs;
 pub mod settings;
 pub mod shell;
 pub mod telemetry;
+pub mod tray;
 pub mod tree;
 pub mod view;
 pub mod work;

@@ -18,8 +18,12 @@ use crate::work::TriageIn;
 
 pub const NODE_W: f32 = 264.;
 pub const NODE_H: f32 = 84.;
-/// A node and the room under it for its chips and gate.
-pub const ROW_H: f32 = 236.;
+/// A node, and the air under it before the next one.
+pub const ROW_BASE: f32 = NODE_H + 40.;
+/// One component chip under a node, the "+N more" line, and a gate (its command and buttons).
+pub const CHIP_H: f32 = 26.;
+pub const MORE_H: f32 = 18.;
+pub const GATE_H: f32 = 108.;
 /// Territory padding, and the strip on its left where collision links run.
 pub const PAD: f32 = 24.;
 pub const GUTTER: f32 = 20.;
@@ -94,6 +98,16 @@ impl Camera {
     pub fn to_screen(&self, wx: f32, wy: f32) -> (f32, f32) {
         (wx * self.zoom + self.x, wy * self.zoom + self.y)
     }
+}
+
+/// Does this thread belong on the field right now? Only what asks for attention, or is the thing you picked.
+/// Everything else is history: it is counted, one click from showing, and never competes with what is moving.
+pub fn matters(item: &TriageIn, picked: Option<usize>) -> bool {
+    item.gate_title.is_some()
+        || item.state == crate::app::TabState::Working
+        || !item.overlaps.is_empty()
+        || crate::flight::ready(item)
+        || picked == Some(item.slot)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -211,16 +225,22 @@ pub fn layout(threads: &[TriageIn], zones: &[Zone]) -> Field {
     let mut x = 0.0;
     for folder in folders {
         let members: Vec<&TriageIn> = threads.iter().filter(|t| &t.folder == folder).collect();
-        let (w, h) = (GUTTER + NODE_W + PAD * 2.0, HEAD + members.len() as f32 * ROW_H);
-        field.territories.push(Territory { place: folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), x, y: 0.0, w, h });
-        for (row, t) in members.iter().enumerate() {
+        let w = GUTTER + NODE_W + PAD * 2.0;
+        let mut y = HEAD;
+        for t in members.iter() {
             let on: Vec<Chip> = zones
                 .iter()
                 .filter_map(|z| z.occupants.iter().find(|o| o.slot == t.slot).map(|o| Chip { name: z.name.clone(), touch: o.touch, contested: z.contested && writes(o.touch) }))
                 .collect();
             let more = on.len().saturating_sub(MAX_CHIPS);
-            field.nodes.push(Node { slot: t.slot, index: t.index, x: x + GUTTER + PAD, y: HEAD + row as f32 * ROW_H, chips: on.into_iter().take(MAX_CHIPS).collect(), more });
+            let chips: Vec<Chip> = on.into_iter().take(MAX_CHIPS).collect();
+            // Room for what hangs under the node, so a busy thread pushes the next one down instead of covering it.
+            let room = chips.len() as f32 * CHIP_H + if more > 0 { MORE_H } else { 0.0 } + if t.gate_title.is_some() { GATE_H } else { 0.0 };
+            field.nodes.push(Node { slot: t.slot, index: t.index, x: x + GUTTER + PAD, y, chips, more });
+            y += ROW_BASE + room;
         }
+        let h = y;
+        field.territories.push(Territory { place: folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), x, y: 0.0, w, h });
         field.h = field.h.max(h);
         x += w + GAP;
     }
@@ -278,21 +298,26 @@ mod tests {
         assert_eq!(f.territories.iter().map(|t| t.place.as_str()).collect::<Vec<_>>(), ["app", "wt"]);
         let at = |slot: usize| f.nodes.iter().find(|n| n.slot == slot).map(|n| (n.x, n.y)).unwrap();
         assert_eq!(at(1).0, at(3).0, "same folder, same column");
-        assert_eq!(at(3).1 - at(1).1, ROW_H);
+        assert_eq!(at(3).1 - at(1).1, ROW_BASE);
         assert!(at(2).0 > at(1).0 + NODE_W, "the second folder sits clear to the right");
-        assert_eq!(f.territories[0].h, HEAD + 2.0 * ROW_H);
+        assert_eq!(f.territories[0].h, HEAD + 2.0 * ROW_BASE);
     }
 
     #[test]
-    fn a_node_does_not_move_when_its_state_or_another_thread_changes() {
+    fn a_node_keeps_its_place_when_state_changes_or_a_thread_opens_elsewhere() {
         let before = layout(&[thread(1, "/p/app"), thread(2, "/p/app")], &[]);
         let mut busy = thread(1, "/p/app");
         busy.state = TabState::Working;
-        let after = layout(&[busy, thread(2, "/p/app"), thread(3, "/p/wt")], &[zone("core", "app", &[(1, Touch::Working)])]);
+        // Only its own state changed, and a third thread opened in another folder: nothing moves.
+        let after = layout(&[busy, thread(2, "/p/app"), thread(3, "/p/wt")], &[]);
         for slot in [1, 2] {
             let pos = |f: &Field| f.nodes.iter().find(|n| n.slot == slot).map(|n| (n.x, n.y)).unwrap();
             assert_eq!(pos(&before), pos(&after));
         }
+        // Standing on a component does add a chip under the node, and that makes room: later nodes only ever move down.
+        let with_chip = layout(&[thread(1, "/p/app"), thread(2, "/p/app")], &[zone("core", "app", &[(1, Touch::Working)])]);
+        let y2 = |f: &Field| f.nodes[1].y;
+        assert_eq!(y2(&with_chip) - y2(&before), CHIP_H);
     }
 
     #[test]
@@ -314,6 +339,35 @@ mod tests {
         assert!(l.y1 > l.y0 && l.x < f.nodes[0].x);
         let chip = |slot: usize| f.nodes.iter().find(|n| n.slot == slot).unwrap().chips[0].contested;
         assert!(chip(1) && chip(3) && !chip(2), "the reader's chip is not marked contested");
+    }
+
+    #[test]
+    fn only_what_asks_for_attention_is_on_the_field() {
+        let idle = thread(1, "/p/app");
+        assert!(!matters(&idle, None), "an idle thread with no changes is history");
+        assert!(matters(&idle, Some(1)), "unless you picked it");
+        let mut working = thread(2, "/p/app");
+        working.state = TabState::Working;
+        let mut gated = thread(3, "/p/app");
+        gated.gate_title = Some("edit".into());
+        let mut ready = thread(4, "/p/app");
+        ready.files = 2;
+        let mut clashing = thread(5, "/p/app");
+        clashing.overlaps = vec![6];
+        for t in [&working, &gated, &ready, &clashing] {
+            assert!(matters(t, None), "{}", t.title);
+        }
+    }
+
+    #[test]
+    fn what_hangs_under_a_node_pushes_the_next_one_down() {
+        let mut gated = thread(1, "/p/app");
+        gated.gate_title = Some("edit".into());
+        let zones = [zone("a", "app", &[(1, Touch::Read)]), zone("b", "app", &[(1, Touch::Read)])];
+        let f = layout(&[gated, thread(2, "/p/app")], &zones);
+        let y = |slot: usize| f.nodes.iter().find(|n| n.slot == slot).unwrap().y;
+        assert_eq!(y(2) - y(1), ROW_BASE + 2.0 * CHIP_H + GATE_H);
+        assert_eq!(f.territories[0].h, y(2) + ROW_BASE, "the outline closes round the last node");
     }
 
     #[test]

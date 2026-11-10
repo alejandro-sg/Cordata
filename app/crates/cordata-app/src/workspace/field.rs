@@ -76,15 +76,20 @@ impl Workspace {
         let cam = self.field_cam;
         let z = cam.zoom;
         let alt = field::altitude(z);
+        let sel = self.rack_selected_slot;
+        // Rank by attention demand: what asks for you or is moving is a node; the rest is counted, not drawn.
+        let on_field: Vec<TriageIn> = inputs.iter().filter(|i| self.field_idle_open || field::matters(i, sel)).cloned().collect();
+        let idle_count = inputs.len() - inputs.iter().filter(|i| field::matters(i, sel)).count();
+        let inputs = &on_field[..];
         let laid = field::layout(inputs, zones).with_runs(&self.field_runs);
         let runs_els = self.run_elements(&laid, alt, cx);
         let tape = self.run_tape(cx);
-        let sel = self.rack_selected_slot;
         // World length to screen length; text follows the zoom but never drops under a readable size.
         let s = |v: f32| px(v * z);
         let text = |base: f32| px((base * z).clamp(11., base * 1.5));
 
-        let territories = laid.territories.iter().enumerate().map(|(ti, tr)| {
+        let many = laid.territories.len() > 1;
+        let territories = laid.territories.iter().enumerate().filter(|_| many).map(|(ti, tr)| {
             let (x, y) = cam.to_screen(tr.x, tr.y);
             div().id(("field-place", ti)).absolute().left(px(x)).top(px(y)).w(s(tr.w)).h(s(tr.h)).rounded(px(4.)).border_1().border_color(line(cx, t::LINE_SUBTLE))
                 .child(div().absolute().left(s(12.)).top(s(10.)).font_family(mono(cx)).text_size(text(t::TEXT_META)).text_color(c(tk.text_muted)).child(SharedString::from(tr.place.clone())))
@@ -148,7 +153,7 @@ impl Workspace {
                         .when(item.gate_high_risk, |r| r.child(ui::meta("high risk: open the thread to allow", cx))))
             });
             let actions: Vec<(&'static str, String)> = if alt == Altitude::Agent {
-                self.sessions.get(n.index).map(|e| {
+                self.sessions.get(item.index).map(|e| {
                     e.read(cx).view.messages.iter().rev().filter_map(|m| match m {
                         Message::Tool(card) => Some((flight::beat_of(card).label(), flight::target_of(card).map(|p| shown(&p)).unwrap_or_else(|| card.name.clone()))),
                         _ => None,
@@ -170,7 +175,15 @@ impl Workspace {
 
         let bounds = self.field_bounds.clone();
         let children: Vec<AnyElement> = territories.chain(links).chain(nodes).chain(runs_els).collect();
-        let empty = inputs.is_empty() && self.field_runs.is_empty();
+        let empty = self.field_runs.is_empty() && idle_count == 0 && inputs.is_empty();
+        let idle_row = (idle_count > 0 || self.field_idle_open).then(|| {
+            let (ix, iy) = cam.to_screen(0.0, laid.h + 12.0);
+            let label = if self.field_idle_open { "hide idle threads".to_owned() } else { format!("{idle_count} idle thread{} · show", if idle_count == 1 { "" } else { "s" }) };
+            div().id("field-idle").role(gpui::Role::Button).cursor_pointer().absolute().left(px(ix.max(8.0))).top(px(iy)).px(px(10.)).py(px(6.)).rounded(px(2.)).border_1().border_color(line(cx, t::LINE_SUBTLE))
+                .font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.text_muted)).hover(|s| s.text_color(c(tk.text_primary)))
+                .on_click(cx.listener(|this, _, _, cx| { this.field_idle_open = !this.field_idle_open; cx.notify(); }))
+                .child(SharedString::from(label)).into_any_element()
+        });
         div().id("field").relative().size_full().overflow_hidden()
             .child(canvas(move |b, _, _| bounds.set(b), |_, _, _, _| {}).absolute().size_full())
             .on_scroll_wheel(cx.listener(|this, ev: &gpui::ScrollWheelEvent, window, cx| {
@@ -198,8 +211,10 @@ impl Workspace {
             }))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, _| this.field_drag = None))
             .children(children)
+            .when_some(idle_row, |d, r| d.child(r))
+            .child(div().absolute().right(px(16.)).bottom(px(56.)).child(self.field_zoom_control(cx)))
             .when_some(tape, |d, t| d.child(t))
-            .when(empty, |d| d.child(div().p(px(24.)).text_color(c(tk.text_muted)).text_size(px(t::TEXT_SMALL)).child("No open threads.")))
+            .when(empty, |d| d.child(div().p(px(24.)).text_color(c(tk.text_muted)).text_size(px(t::TEXT_SMALL)).child("Nothing needs you and nothing is moving.")))
             .into_any_element()
     }
 }
@@ -478,12 +493,15 @@ impl Workspace {
         let count = |n: usize, word: &'static str, col: gpui::Hsla| div().flex().items_baseline().gap(px(5.))
             .child(div().text_size(px(18.)).text_color(if n > 0 { col } else { ca(tk.text_faint, 0.7) }).child(SharedString::from(n.to_string())))
             .child(div().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.text_muted)).child(word));
-        let top = div().flex().items_start().gap(px(24.)).pl(px(84.)).pr(px(24.)).py(px(10.)).border_b_1().border_color(line(cx, t::LINE_SUBTLE))
-            .child(div().flex().flex_col().gap(px(2.)).w(px(180.)).pt(px(6.))
-                .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(c(tk.text_primary)).child("Cordata"))
-                .child(ui::meta(SharedString::from(folder), cx)))
+        let top = div().flex().items_start().gap(px(24.)).pl(px(96.)).pr(px(20.)).py(px(10.)).border_b_1().border_color(line(cx, t::LINE_SUBTLE))
+            .child(div().flex().flex_col().gap(px(2.)).w(px(150.)).pt(px(6.))
+                .child(div().truncate().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(c(tk.text_primary)).child(SharedString::from(folder)))
+                .child(ui::meta(SharedString::from(match (inputs.len(), self.field_runs.len()) {
+                    (n, 0) => format!("{n} thread{}", if n == 1 { "" } else { "s" }),
+                    (n, r) => format!("{n} thread{} · {r} run{}", if n == 1 { "" } else { "s" }, if r == 1 { "" } else { "s" }),
+                }), cx)))
             .child(div().flex_1().min_w_0().flex().justify_center()
-                .child(div().w_full().max_w(px(640.)).flex().flex_col().children(menu).child(composer)))
+                .child(div().w_full().min_w(px(440.)).max_w(px(640.)).flex().flex_col().children(menu).child(composer)))
             .child(div().flex().items_center().gap(px(16.)).pt(px(10.))
                 .child(count(working + live_runs, "working", c(tk.amber)))
                 .child(count(quiet, "quiet", c(tk.text_secondary)))
@@ -491,8 +509,7 @@ impl Workspace {
                 .child(div().flex().items_center().gap(px(2.))
                     .child(ui::button("fw-lanes", "Lanes", Kind::Ghost, cx).on_click(cx.listener(|this, _, _, cx| { this.rack_view_mode = flight::RackViewMode::Lanes; cx.notify(); })))
                     .child(ui::button("fw-ground", "Ground", Kind::Ghost, cx).on_click(cx.listener(|this, _, _, cx| { this.rack_view_mode = flight::RackViewMode::Ground; cx.notify(); })))
-                    .child(ui::button("fw-threads", "Transcript ⌘1", Kind::Ghost, cx).on_click(cx.listener(|this, _, _, cx| { this.desk_mode = DeskMode::Transcript; cx.notify(); }))))
-                .child(self.field_zoom_control(cx)));
+                    .child(ui::button("fw-threads", "Transcript ⌘1", Kind::Ghost, cx).on_click(cx.listener(|this, _, _, cx| { this.desk_mode = DeskMode::Transcript; cx.notify(); })))));
 
         let head = |text: &'static str, col: gpui::Hsla| div().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(col).child(text);
         let mut rail = div().id("field-rail").w(px(284.)).flex_none().h_full().overflow_y_scroll().border_l_1().border_color(line(cx, t::LINE_SUBTLE)).p(px(16.)).flex().flex_col().gap(px(12.));
@@ -517,14 +534,20 @@ impl Workspace {
             rail = rail.child(ui::meta("nothing is waiting on you", cx));
         }
 
-        if !self.field_runs.is_empty() {
-            rail = rail.child(div().pt(px(8.)).child(head("RUNS", c(tk.amber))));
-            for run in &self.field_runs {
-                let last = run.handoffs.last().map(|h| format!("{} → {} · {}", h.from, h.to.clone().unwrap_or_else(|| "…".into()), runs::reason_words(&h.reason)));
-                rail = rail.child(div().flex().flex_col().gap(px(2.)).text_size(px(13.))
-                    .child(div().truncate().text_color(c(tk.text_primary)).child(SharedString::from(run.goal.clone())))
-                    .child(div().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.text_muted)).child(SharedString::from(if run.state == "paused" { "held".to_owned() } else { run.state.clone() })))
-                    .when_some(last, |d, l| d.child(div().truncate().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.text_secondary)).child(SharedString::from(l)))));
+        let ready: Vec<&TriageIn> = inputs.iter().filter(|i| flight::ready(i)).collect();
+        if !ready.is_empty() {
+            rail = rail.child(div().pt(px(8.)).child(head("READY TO REVIEW", c(tk.teal))));
+            for item in ready {
+                let slot = item.slot;
+                let check = match &item.check {
+                    Some((_, cordata_view::desk::CheckState::Passed)) => "check passed",
+                    Some((_, cordata_view::desk::CheckState::Running)) => "check running",
+                    _ => "no check run",
+                };
+                rail = rail.child(div().id(("rail-ready", slot)).cursor_pointer().flex().flex_col().gap(px(2.)).text_size(px(13.))
+                    .on_click(cx.listener(move |this, _, _, cx| { this.pick_lane(slot, cx); this.load_review(cx); this.desk_mode = DeskMode::ChangeSheet; cx.notify(); }))
+                    .child(div().truncate().text_color(c(tk.text_primary)).child(SharedString::from(format!("#{slot} {}", item.title))))
+                    .child(div().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.text_muted)).child(SharedString::from(format!("{} files  +{} −{} · {check} · open changes", item.files, item.added, item.removed)))));
             }
         }
 
@@ -536,16 +559,6 @@ impl Workspace {
                 rail = rail.child(div().flex().flex_col().gap(px(2.)).text_size(px(13.))
                     .child(div().text_color(c(tk.text_primary)).child(SharedString::from(z.name.clone())))
                     .child(div().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.attention)).child(SharedString::from(format!("{who} both write here")))));
-            }
-        }
-
-        let idle: Vec<&TriageIn> = inputs.iter().filter(|i| i.gate_title.is_none() && i.state != TabState::Working).collect();
-        if !idle.is_empty() {
-            rail = rail.child(div().pt(px(8.)).child(head("QUIET", c(tk.text_muted))));
-            for item in idle {
-                let slot = item.slot;
-                rail = rail.child(div().id(("rail-quiet", slot)).cursor_pointer().truncate().text_size(px(13.)).text_color(c(tk.text_secondary))
-                    .on_click(cx.listener(move |this, _, _, cx| this.pick_lane(slot, cx))).child(SharedString::from(format!("#{slot} {}", item.title))));
             }
         }
 
