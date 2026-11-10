@@ -15,7 +15,6 @@ use crate::ui::{self, Dot, Kind};
 
 impl Workspace {
     pub(super) fn sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
-        let tk = tk(cx);
         ui::drawer("sidebar", ui::DrawerSide::Left, self.rail_w(), cx)
             .role(gpui::Role::Navigation)
             .aria_label("Project and threads")
@@ -33,11 +32,9 @@ impl Workspace {
                     .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move())
                     .child(
                         div()
-                            .font_family(crate::theme::voice(cx))
-                            .text_size(px(15.))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(c(tk.text_primary))
-                            .child("Logbook"),
+                            .flex_1()
+                            .h_full()
+                            .min_w_0(),
                     )
                     .child(
                         div()

@@ -91,16 +91,48 @@ impl Workspace {
         let many = laid.territories.len() > 1;
         let territories = laid.territories.iter().enumerate().filter(|_| many).map(|(ti, tr)| {
             let (x, y) = cam.to_screen(tr.x, tr.y);
-            div().id(("field-place", ti)).absolute().left(px(x)).top(px(y)).w(s(tr.w)).h(s(tr.h)).rounded(px(4.)).border_1().border_color(line(cx, t::LINE_SUBTLE))
-                .child(div().absolute().left(s(12.)).top(s(10.)).font_family(mono(cx)).text_size(text(t::TEXT_META)).text_color(c(tk.text_muted)).child(SharedString::from(tr.place.clone())))
+            div().id(("field-place", ti)).absolute().left(px(x)).top(px(y)).w(s(tr.w)).h(s(tr.h))
+                .rounded(px(6.))
+                .border_1()
+                .border_color(line(cx, t::LINE_DEFAULT))
+                .bg(ca(tk.bg_panel, 0.4))
+                // Territory header & coordinate marker
+                .child(
+                    div().absolute().top(s(8.)).left(s(12.)).right(s(12.)).flex().items_center().justify_between()
+                        .child(
+                            div().flex().items_center().gap(s(6.))
+                                .child(div().text_size(text(11.)).text_color(c(tk.amber)).child("⬡"))
+                                .child(div().font_family(mono(cx)).text_size(text(t::TEXT_META)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(SharedString::from(format!("BASE CAMP // {}", tr.place))))
+                        )
+                        .child(div().font_family(mono(cx)).text_size(text(10.)).text_color(c(tk.text_faint)).child("TERRITORY"))
+                )
+                // Guide rope running down the gutter
+                .child(
+                    div().absolute().left(s(field::GUTTER / 2. + field::PAD)).top(s(36.)).bottom(s(12.)).w(px(1.5)).bg(ca(tk.amber, 0.25))
+                )
                 .into_any_element()
         });
 
         let links = laid.links.iter().enumerate().map(|(li, l)| {
             let (x, y0) = cam.to_screen(l.x, l.y0);
             let (_, y1) = cam.to_screen(l.x, l.y1);
-            div().id(("field-link", li)).absolute().left(px(x - 1.0)).top(px(y0)).w(px(2.)).h(px(y1 - y0)).bg(c(tk.attention))
+            let len = (y1 - y0).abs().max(1.0);
+            div().id(("field-link", li)).absolute().left(px(x - 1.0)).top(px(y0)).w(px(2.5)).h(px(len)).bg(c(tk.attention))
                 .tooltip(ui::tip(format!("#{} and #{} both write {}", l.a, l.b, l.zone)))
+                // Traveling glowing packet beads along the line
+                .child(
+                    div().absolute().left(px(-2.5)).top(px(len * 0.35)).size(px(7.)).rounded_full().bg(c(tk.amber))
+                )
+                .child(
+                    div().absolute().left(px(-2.5)).top(px(len * 0.7)).size(px(5.)).rounded_full().bg(c(tk.attention))
+                )
+                // Center shared zone badge
+                .child(
+                    div().absolute().left(px(8.)).top(px(len / 2.0 - 10.)).px(px(6.)).py(px(2.)).rounded(px(2.))
+                        .bg(ca(tk.bg_panel, 0.95)).border_1().border_color(c(tk.attention))
+                        .font_family(mono(cx)).text_size(px(10.)).text_color(c(tk.attention))
+                        .child(SharedString::from(format!("⚡ SHARED: {}", l.zone)))
+                )
                 .into_any_element()
         });
 
@@ -116,20 +148,54 @@ impl Workspace {
                 TabState::Closed => MarkState::Error,
                 _ => MarkState::Idle,
             };
-            let edge = if needs_you { c(tk.attention) } else if working { c(tk.amber) } else if sel == Some(slot) { c(tk.text_secondary) } else { line(cx, t::LINE_SUBTLE) };
+            let (edge, card_bg) = if needs_you {
+                (c(tk.attention), ca(tk.attention, 0.08))
+            } else if working {
+                (c(tk.amber), ca(tk.amber, 0.06))
+            } else if sel == Some(slot) {
+                (c(tk.text_secondary), ca(tk.bg_panel, 0.98))
+            } else {
+                (line(cx, t::LINE_DEFAULT), c(tk.bg_panel))
+            };
             let (x, y) = cam.to_screen(n.x, n.y);
             let beat = self.beat_of(item.index, cx);
+            let status_badge = if needs_you {
+                ("▲ GATE APPROVAL", c(tk.attention))
+            } else if working {
+                ("● WORKING", c(tk.amber))
+            } else if item.state == TabState::Done {
+                ("✓ COMPLETED", c(tk.teal))
+            } else {
+                ("○ READY", c(tk.text_muted))
+            };
             let card = div().id(("field-node", slot)).role(gpui::Role::Button).cursor_pointer().absolute().left(px(x)).top(px(y)).w(s(field::NODE_W)).h(s(field::NODE_H))
-                .px(s(14.)).rounded(s(14.)).border_1().border_color(edge).bg(c(tk.bg_panel)).overflow_hidden()
+                .px(s(12.)).py(s(10.)).rounded(s(6.)).border_1().border_color(edge).bg(card_bg).overflow_hidden()
                 .flex().items_center().gap(s(10.))
                 .tooltip(ui::tip(format!("#{slot} {} · {}", item.title, item.now)))
                 .on_click(cx.listener(move |this, _, _, cx| this.field_click(slot, cx)))
+                // Slot badge with colored accent
+                .child(
+                    div().px(s(6.)).py(s(2.)).rounded(px(2.)).font_family(mono(cx)).text_size(text(11.))
+                        .bg(ca(if needs_you { tk.attention } else if working { tk.amber } else { tk.text_muted }, 0.15))
+                        .text_color(if needs_you { c(tk.attention) } else if working { c(tk.amber) } else { c(tk.text_secondary) })
+                        .child(SharedString::from(format!("#{slot}")))
+                )
                 .child(ui::mark_live(("field-mark", slot), mark, 12., beat, cx))
-                .child(div().flex_1().min_w_0().flex().flex_col().gap(s(3.))
-                    .child(div().truncate().text_size(text(15.)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(SharedString::from(item.title.clone())))
-                    .when(alt != Altitude::Fleet, |d| d.child(div().truncate().font_family(mono(cx)).text_size(text(t::TEXT_META))
-                        .text_color(if needs_you { c(tk.attention) } else if working { c(tk.amber) } else { c(tk.text_muted) })
-                        .child(SharedString::from(item.now.clone())))));
+                .child(
+                    div().flex_1().min_w_0().flex().flex_col().gap(s(2.))
+                        .child(
+                            div().flex().items_center().justify_between().gap(s(6.))
+                                .child(div().truncate().font_family(crate::theme::voice(cx)).text_size(text(14.)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(SharedString::from(item.title.clone())))
+                                .child(div().flex_shrink_0().font_family(mono(cx)).text_size(text(10.)).text_color(status_badge.1).child(status_badge.0))
+                        )
+                        .when(alt != Altitude::Fleet, |d| {
+                            d.child(
+                                div().truncate().font_family(mono(cx)).text_size(text(t::TEXT_META))
+                                    .text_color(if needs_you { c(tk.attention) } else if working { c(tk.amber) } else { c(tk.text_muted) })
+                                    .child(SharedString::from(if !item.now.is_empty() { item.now.clone() } else { "idle · ready for steering".to_owned() }))
+                            )
+                        })
+                );
             if alt == Altitude::Fleet {
                 return vec![card.into_any_element()];
             }
@@ -137,21 +203,27 @@ impl Workspace {
             let chips = n.chips.iter().map(|chip| {
                 div().flex().items_center().justify_between().gap(s(8.)).px(s(8.)).h(s(22.)).rounded(px(2.)).border_1()
                     .border_color(if chip.contested { c(tk.attention) } else { line(cx, t::LINE_SUBTLE) })
+                    .bg(if chip.contested { ca(tk.attention, 0.08) } else { line(cx, t::FILL_FAINT) })
                     .font_family(mono(cx)).text_size(text(t::TEXT_TAG))
                     .child(div().truncate().text_color(c(tk.text_secondary)).child(SharedString::from(chip.name.clone())))
                     .child(div().flex_shrink_0().text_color(if chip.contested { c(tk.attention) } else { c(tk.text_muted) })
-                        .child(if chip.contested { "contested" } else { touch_word(chip.touch) }))
+                        .child(if chip.contested { "⚡ contested" } else { touch_word(chip.touch) }))
             });
             let (sig_allow, sig_deny) = (item.gate_signature.clone().unwrap_or_default(), item.gate_signature.clone().unwrap_or_default());
             let gate = item.gate_title.clone().map(|title| {
-                div().flex().flex_col().gap(s(6.)).p(s(8.)).rounded(px(2.)).border_1().border_color(c(tk.attention))
+                div().flex().flex_col().gap(s(6.)).p(s(10.)).rounded(px(4.)).border_1().border_color(c(tk.attention))
+                    .bg(ca(tk.attention, 0.08))
+                    .child(
+                        div().flex().items_center().gap(s(6.))
+                            .child(div().font_family(mono(cx)).text_size(text(10.)).text_color(c(tk.attention)).child("▲ GATE APPROVAL"))
+                    )
                     .child(div().truncate().font_family(mono(cx)).text_size(text(t::TEXT_META)).text_color(c(tk.text_primary)).child(SharedString::from(shown(&title))))
                     .child(div().flex().items_center().gap(px(6.))
-                        .when(!item.gate_high_risk, |r| r.child(ui::button(("field-allow", slot), "Allow", Kind::Primary, cx)
+                        .when(!item.gate_high_risk, |r| r.child(ui::button(("field-allow", slot), "Allow ↵", Kind::Primary, cx)
                             .on_click(cx.listener(move |this, _, _, cx| { cx.stop_propagation(); this.answer_batch_gate(&sig_allow, ApprovalDecision::Allow, cx) }))))
-                        .child(ui::button(("field-deny", slot), "Deny", Kind::Ghost, cx)
+                        .child(ui::button(("field-deny", slot), "Deny esc", Kind::Ghost, cx)
                             .on_click(cx.listener(move |this, _, _, cx| { cx.stop_propagation(); this.answer_batch_gate(&sig_deny, ApprovalDecision::Reject, cx) })))
-                        .when(item.gate_high_risk, |r| r.child(ui::meta("high risk: open the thread to allow", cx))))
+                        .when(item.gate_high_risk, |r| r.child(ui::meta("high risk: open thread to allow", cx))))
             });
             let actions: Vec<(&'static str, String)> = if alt == Altitude::Agent {
                 self.sessions.get(item.index).map(|e| {
@@ -174,8 +246,80 @@ impl Workspace {
             vec![card.into_any_element(), under.into_any_element()]
         });
 
+        let notes_x = (laid.w + 32.0).max(340.0);
+        let note_1 = {
+            let (nx, ny) = cam.to_screen(notes_x, 16.0);
+            div().id("field-note-mission").absolute().left(px(nx)).top(px(ny)).w(s(280.)).rounded(px(4.))
+                .border_1().border_color(ca(tk.amber, 0.4)).bg(ca(tk.bg_panel, 0.95))
+                .p(s(12.)).flex().flex_col().gap(s(6.))
+                .child(
+                    div().flex().items_center().justify_between()
+                        .child(div().flex().items_center().gap(s(6.))
+                            .child(div().text_size(text(13.)).child("📌"))
+                            .child(div().font_family(crate::theme::voice(cx)).text_size(text(14.)).font_weight(FontWeight::SEMIBOLD).text_color(c(tk.amber)).child("MISSION OBJECTIVE")))
+                        .child(div().font_family(mono(cx)).text_size(text(10.)).text_color(c(tk.text_faint)).child("#briefing"))
+                )
+                .child(
+                    div().text_size(text(12.)).text_color(c(tk.text_secondary))
+                        .child("Cordata roped party workspace. Hermetic offline verification, zero plaintext secrets, deterministic guards.")
+                )
+                .child(
+                    div().font_family(mono(cx)).text_size(text(10.)).text_color(c(tk.teal))
+                        .child("✓ all guards active · scripts/verify.sh")
+                )
+                .into_any_element()
+        };
+        let note_2 = {
+            let (nx, ny) = cam.to_screen(notes_x, 150.0);
+            div().id("field-note-invariants").absolute().left(px(nx)).top(px(ny)).w(s(280.)).rounded(px(4.))
+                .border_1().border_color(line(cx, t::LINE_DEFAULT)).bg(ca(tk.bg_panel, 0.95))
+                .p(s(12.)).flex().flex_col().gap(s(6.))
+                .child(
+                    div().flex().items_center().justify_between()
+                        .child(div().flex().items_center().gap(s(6.))
+                            .child(div().text_size(text(13.)).child("📐"))
+                            .child(div().font_family(crate::theme::voice(cx)).text_size(text(14.)).font_weight(FontWeight::SEMIBOLD).text_color(c(tk.text_primary)).child("AGENTS.MD INVARIANTS")))
+                        .child(div().font_family(mono(cx)).text_size(text(10.)).text_color(c(tk.text_faint)).child("#invariants"))
+                )
+                .child(
+                    div().font_family(mono(cx)).text_size(text(11.)).text_color(c(tk.text_muted)).flex().flex_col().gap(s(2.))
+                        .child("• Rust only (GPUI & ratatui)")
+                        .child("• Zero plaintext secrets in keychain")
+                        .child("• Colocated pods under 1200 lines")
+                        .child("• Deterministic verification scripts")
+                )
+                .child(
+                    div().font_family(mono(cx)).text_size(text(10.)).text_color(c(tk.text_faint))
+                        .child("enforced by cordata-guard")
+                )
+                .into_any_element()
+        };
+        let note_3 = {
+            let (nx, ny) = cam.to_screen(notes_x, 300.0);
+            div().id("field-note-handoff").absolute().left(px(nx)).top(px(ny)).w(s(280.)).rounded(px(4.))
+                .border_1().border_color(line(cx, t::LINE_DEFAULT)).bg(ca(tk.bg_panel, 0.95))
+                .p(s(12.)).flex().flex_col().gap(s(6.))
+                .child(
+                    div().flex().items_center().justify_between()
+                        .child(div().flex().items_center().gap(s(6.))
+                            .child(div().text_size(text(13.)).child("⚡"))
+                            .child(div().font_family(crate::theme::voice(cx)).text_size(text(14.)).font_weight(FontWeight::SEMIBOLD).text_color(c(tk.text_primary)).child("PARTY MEMO & HANDOFFS")))
+                        .child(div().font_family(mono(cx)).text_size(text(10.)).text_color(c(tk.text_faint)).child("#handoff"))
+                )
+                .child(
+                    div().text_size(text(12.)).text_color(c(tk.text_secondary))
+                        .child("Parallel subagents coordinate via APFS clonefile sandboxes. Wave syntheses run offline with no egress.")
+                )
+                .child(
+                    div().font_family(mono(cx)).text_size(text(10.)).text_color(c(tk.amber))
+                        .child("Goldfish review gate ready")
+                )
+                .into_any_element()
+        };
+
         let bounds = self.field_bounds.clone();
-        let children: Vec<AnyElement> = territories.chain(links).chain(nodes).chain(runs_els).collect();
+        let notes_els = vec![note_1, note_2, note_3];
+        let children: Vec<AnyElement> = territories.chain(links).chain(nodes).chain(runs_els).chain(notes_els).collect();
         let empty = self.field_runs.is_empty() && idle_count == 0 && inputs.is_empty();
         let idle_row = (idle_count > 0 || self.field_idle_open).then(|| {
             let (ix, iy) = cam.to_screen(0.0, laid.h + 12.0);
@@ -492,18 +636,24 @@ impl Workspace {
         let folder = self.cwd.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
 
         let count = |n: usize, word: &'static str, col: gpui::Hsla| div().flex().items_baseline().gap(px(5.))
-            .child(div().text_size(px(18.)).text_color(if n > 0 { col } else { c(tk.text_faint) }).child(SharedString::from(n.to_string())))
+            .child(div().text_size(px(17.)).font_weight(FontWeight::SEMIBOLD).text_color(if n > 0 { col } else { c(tk.text_faint) }).child(SharedString::from(n.to_string())))
             .child(div().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.text_muted)).child(word));
-        let top = div().flex().items_start().gap(px(24.)).pl(px(96.)).pr(px(20.)).py(px(10.)).border_b_1().border_color(line(cx, t::LINE_SUBTLE))
-            .child(div().flex().flex_col().gap(px(2.)).w(px(150.)).pt(px(6.))
-                .child(div().truncate().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(c(tk.text_primary)).child(SharedString::from(folder)))
-                .child(ui::meta(SharedString::from(match (inputs.len(), self.field_runs.len()) {
-                    (n, 0) => format!("{n} thread{}", if n == 1 { "" } else { "s" }),
-                    (n, r) => format!("{n} thread{} · {r} run{}", if n == 1 { "" } else { "s" }, if r == 1 { "" } else { "s" }),
-                }), cx)))
+        let top = div().flex().items_center().justify_between().gap(px(20.)).pl(px(84.)).pr(px(20.)).py(px(8.)).border_b_1().border_color(line(cx, t::LINE_DEFAULT))
+            .child(
+                div().flex().items_center().gap(px(10.))
+                    .child(ui::cordata_logo(18., cx))
+                    .child(div().flex().flex_col().gap(px(1.))
+                        .child(div().flex().items_center().gap(px(6.))
+                            .child(div().font_family(crate::theme::voice(cx)).text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(c(tk.text_primary)).child("Cordata"))
+                            .child(div().font_family(mono(cx)).text_size(px(11.)).px(px(5.)).py(px(1.)).rounded(px(2.)).bg(line(cx, t::FILL_FAINT)).text_color(c(tk.text_muted)).child(SharedString::from(folder))))
+                        .child(ui::meta(SharedString::from(match (inputs.len(), self.field_runs.len()) {
+                            (n, 0) => format!("{n} thread{}", if n == 1 { "" } else { "s" }),
+                            (n, r) => format!("{n} thread{} · {r} run{}", if n == 1 { "" } else { "s" }, if r == 1 { "" } else { "s" }),
+                        }), cx)))
+            )
             .child(div().flex_1().min_w_0().flex().justify_center()
-                .child(div().w_full().min_w(px(440.)).max_w(px(640.)).flex().flex_col().children(menu).child(composer)))
-            .child(div().flex().items_center().gap(px(16.)).pt(px(10.))
+                .child(div().w_full().min_w(px(380.)).max_w(px(580.)).flex().flex_col().children(menu).child(composer)))
+            .child(div().flex().items_center().gap(px(16.))
                 .child(count(working + live_runs, "working", c(tk.amber)))
                 .child(count(quiet, "quiet", c(tk.text_secondary)))
                 .child(count(waiting, "need you", c(tk.attention)))
@@ -512,27 +662,64 @@ impl Workspace {
                     .child(ui::button("fw-ground", "Ground", Kind::Ghost, cx).on_click(cx.listener(|this, _, _, cx| { this.rack_view_mode = flight::RackViewMode::Ground; cx.notify(); })))
                     .child(ui::button("fw-threads", "Transcript ⌘1", Kind::Ghost, cx).on_click(cx.listener(|this, _, _, cx| { this.desk_mode = DeskMode::Transcript; cx.notify(); })))));
 
-        let head = |text: &'static str, col: gpui::Hsla| div().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(col).child(text);
-        let mut rail = div().id("field-rail").w(px(284.)).flex_none().h_full().overflow_y_scroll().border_l_1().border_color(line(cx, t::LINE_SUBTLE)).p(px(16.)).flex().flex_col().gap(px(12.));
+        let head = |text: &'static str, col: gpui::Hsla| div().font_family(mono(cx)).text_size(px(t::TEXT_META)).font_weight(FontWeight::MEDIUM).text_color(col).child(text);
+        let mut rail = div().id("field-rail").w(px(284.)).flex_none().h_full().overflow_y_scroll().border_l_1().border_color(line(cx, t::LINE_DEFAULT)).p(px(16.)).flex().flex_col().gap(px(12.));
 
         rail = rail.child(head("NEEDS YOU", c(tk.attention)));
         for item in inputs.iter().filter(|i| i.gate_title.is_some()) {
             let slot = item.slot;
             let sig = item.gate_signature.clone().unwrap_or_default();
             let sig2 = sig.clone();
-            rail = rail.child(div().flex().flex_col().gap(px(8.)).p(px(12.)).rounded(px(2.)).border_1().border_color(c(tk.attention))
+            rail = rail.child(div().flex().flex_col().gap(px(8.)).p(px(12.)).rounded(px(4.)).border_1().border_color(c(tk.attention))
+                .bg(ca(tk.attention, 0.06))
                 .child(div().id(("rail-open", slot)).cursor_pointer().truncate().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary))
                     .on_click(cx.listener(move |this, _, _, cx| this.pick_lane(slot, cx))).child(SharedString::from(format!("#{slot} {}", item.title))))
                 .child(div().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.attention)).child(SharedString::from(shown(item.gate_title.as_deref().unwrap_or("")))))
                 .child(div().flex().gap(px(6.))
-                    .when(!item.gate_high_risk, |r| r.child(ui::button(("rail-allow", slot), "Allow", Kind::Primary, cx)
+                    .when(!item.gate_high_risk, |r| r.child(ui::button(("rail-allow", slot), "Allow ↵", Kind::Primary, cx)
                         .on_click(cx.listener(move |this, _, _, cx| this.answer_batch_gate(&sig, ApprovalDecision::Allow, cx)))))
                     .child(ui::button(("rail-deny", slot), "Reject", Kind::Ghost, cx)
                         .on_click(cx.listener(move |this, _, _, cx| this.answer_batch_gate(&sig2, ApprovalDecision::Reject, cx)))))
                 .when(item.gate_high_risk, |d| d.child(ui::meta("high risk: open the thread to allow", cx))));
         }
         if waiting == 0 {
-            rail = rail.child(ui::meta("nothing is waiting on you", cx));
+            rail = rail
+                .child(
+                    div().flex().items_center().gap(px(6.)).pt(px(2.))
+                        .child(div().size(px(7.)).rounded_full().bg(c(tk.teal)))
+                        .child(div().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.teal)).child("ALL AGENTS NOMINAL"))
+                )
+                .child(
+                    div().text_size(px(12.)).text_color(c(tk.text_muted))
+                        .child("No manual gate approvals pending. Party executing autonomously.")
+                )
+                .child(
+                    div().pt(px(6.)).child(head("LIVE ACTIVITY LOG", c(tk.text_secondary)))
+                );
+            for item in inputs.iter().take(6) {
+                let slot = item.slot;
+                rail = rail.child(
+                    div()
+                        .id(("rail-activity", slot))
+                        .cursor_pointer()
+                        .flex().flex_col().gap(px(3.))
+                        .p(px(8.))
+                        .rounded(px(t::RADIUS_CONTROL))
+                        .border_1().border_color(line(cx, t::LINE_SUBTLE))
+                        .bg(line(cx, t::FILL_FAINT))
+                        .hover(|s| s.bg(ca(tk.amber, 0.05)).border_color(ca(tk.amber, 0.3)))
+                        .on_click(cx.listener(move |this, _, _, cx| this.pick_lane(slot, cx)))
+                        .child(
+                            div().flex().items_center().justify_between()
+                                .child(div().font_family(mono(cx)).text_size(px(11.)).text_color(c(tk.amber)).child(SharedString::from(format!("#{slot} {}", item.title))))
+                                .child(div().font_family(mono(cx)).text_size(px(10.)).text_color(c(tk.text_faint)).child(if item.state == TabState::Working { "running" } else { "ready" }))
+                        )
+                        .child(
+                            div().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).text_color(c(tk.text_muted)).truncate()
+                                .child(SharedString::from(if !item.now.is_empty() { item.now.clone() } else { format!("{} files touched · +{} −{}", item.files, item.added, item.removed) }))
+                        )
+                );
+            }
         }
 
         let ready: Vec<&TriageIn> = inputs.iter().filter(|i| flight::ready(i)).collect();

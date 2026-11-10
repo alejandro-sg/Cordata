@@ -173,6 +173,27 @@ pub struct StepNode {
     pub handoffs: Vec<usize>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct Note {
+    pub id: String,
+    pub title: String,
+    pub body: String,
+    pub author: Option<String>,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub kind: NoteKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoteKind {
+    Mission,
+    AgentMemo,
+    Verification,
+    Handoff,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Field {
     pub territories: Vec<Territory>,
@@ -180,11 +201,17 @@ pub struct Field {
     pub links: Vec<Link>,
     pub runs: Vec<RunTerritory>,
     pub steps: Vec<StepNode>,
+    pub notes: Vec<Note>,
     pub w: f32,
     pub h: f32,
 }
 
 impl Field {
+    /// Attach pinned tactical notes to the board.
+    pub fn with_notes(mut self, notes: Vec<Note>) -> Field {
+        self.notes = notes;
+        self
+    }
     /// Stand the runs to the right of the threads. Steps keep plan order, so a step does not move when its worker does.
     pub fn with_runs(mut self, runs: &[Run]) -> Field {
         let mut x = if self.w > 0.0 { self.w + GAP } else { 0.0 };

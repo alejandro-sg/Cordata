@@ -418,7 +418,7 @@ impl Workspace {
                 .w_full()
                 .flex()
                 .flex_row()
-                // 120px left margin: cord + knot node + mono number
+                // 120px left margin: cord knot node + mono number
                 .child(
                     div()
                         .w(px(t::ROPE_MARGIN))
@@ -428,25 +428,15 @@ impl Workspace {
                         .justify_end()
                         .items_center()
                         .pr(px(20.))
-                        // The continuous vertical cord line
-                        .child(
-                            div()
-                                .absolute()
-                                .top_0()
-                                .bottom_0()
-                                .right(px(10.))
-                                .w(px(1.))
-                                .bg(line(cx, t::LINE_DEFAULT)),
-                        )
-                        // The knot node on the cord
+                        // The knot node on the continuous cord
                         .child(
                             div()
                                 .absolute()
                                 .top(px(17.))
                                 .right(px(8.5))
-                                .size(px(4.))
+                                .size(px(5.))
                                 .rounded_full()
-                                .bg(c(tk.text_muted))
+                                .bg(ca(tk.text_muted, 0.7))
                                 .group_hover(id, move |s| s.bg(c(tk.amber))),
                         )
                         // The number in mono
@@ -477,7 +467,7 @@ impl Workspace {
                                 .border_1()
                                 .border_color(line(cx, t::LINE_DEFAULT))
                                 .bg(line(cx, t::FILL_FAINT))
-                                .hover(move |s| s.bg(ca(tk.amber, 0.05)).border_color(ca(tk.amber, 0.35)))
+                                .hover(move |s| s.bg(ca(tk.amber, 0.08)).border_color(ca(tk.amber, 0.4)))
                                 .child(
                                     div()
                                         .text_size(px(t::TEXT_BODY))
@@ -544,18 +534,9 @@ impl Workspace {
                         .child(
                             div()
                                 .absolute()
-                                .top_0()
-                                .bottom_0()
-                                .right(px(10.))
-                                .w(px(1.))
-                                .bg(line(cx, t::LINE_DEFAULT)),
-                        )
-                        .child(
-                            div()
-                                .absolute()
                                 .top(px(8.))
                                 .right(px(8.5))
-                                .size(px(4.))
+                                .size(px(5.))
                                 .rounded_full()
                                 .bg(c(if failed > 0 { tk.attention } else { tk.text_muted })),
                         ),
@@ -592,6 +573,17 @@ impl Workspace {
                     .max_w(px(t::PAGE_WIDTH + t::ROPE_MARGIN))
                     .flex()
                     .flex_col()
+                    .relative()
+                    // The continuous vertical cord line spanning the manuscript page
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(t::ROPE_MARGIN - 11.))
+                            .top(px(16.))
+                            .bottom(px(32.))
+                            .w(px(1.5))
+                            .bg(ca(tk.amber, 0.45)),
+                    )
                     // Top headline row with cord knot
                     .child(
                         div()
@@ -599,7 +591,7 @@ impl Workspace {
                             .flex()
                             .flex_row()
                             .child(
-                                // 120px left margin: cord starts here
+                                // 120px left margin: top anchor knot
                                 div()
                                     .w(px(t::ROPE_MARGIN))
                                     .flex_shrink_0()
@@ -610,18 +602,9 @@ impl Workspace {
                                     .child(
                                         div()
                                             .absolute()
-                                            .top(px(12.))
-                                            .bottom_0()
-                                            .right(px(10.))
-                                            .w(px(1.))
-                                            .bg(line(cx, t::LINE_DEFAULT)),
-                                    )
-                                    .child(
-                                        div()
-                                            .absolute()
                                             .top(px(10.))
                                             .right(px(7.5))
-                                            .size(px(6.))
+                                            .size(px(7.))
                                             .rounded_full()
                                             .bg(c(tk.amber)),
                                     ),
@@ -1248,6 +1231,8 @@ impl Workspace {
         };
         // The prompt mark: the signal colour once there is something to send or the agent is busy.
         let mark = if active_border { c(tk.amber) } else { c(tk.text_faint) };
+        let is_rack = self.desk_mode == super::DeskMode::Rack;
+        let left_w = if is_rack { 24. } else { t::ROPE_MARGIN };
 
         div()
             .id("composer")
@@ -1257,27 +1242,30 @@ impl Workspace {
             .w_full()
             .flex()
             .flex_row()
-            // 120px left margin: cord + prompt mark ›
+            // In manuscript mode: 120px left margin with cord + prompt mark ›
+            // In canvas/rack mode: compact 24px prompt mark without 120px indent
             .child(
                 div()
-                    .w(px(t::ROPE_MARGIN))
+                    .w(px(left_w))
                     .flex_shrink_0()
                     .relative()
                     .flex()
                     .justify_end()
                     .items_start()
-                    .pr(px(14.))
+                    .pr(px(if is_rack { 6. } else { 14. }))
                     .pt(px(10.))
-                    // The cord coming from above to the caret node
-                    .child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .h(px(18.))
-                            .right(px(10.))
-                            .w(px(1.))
-                            .bg(line(cx, t::LINE_DEFAULT)),
-                    )
+                    // The cord coming from above to the caret node (only on manuscript page)
+                    .when(!is_rack, |d| {
+                        d.child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .h(px(18.))
+                                .right(px(10.))
+                                .w(px(1.))
+                                .bg(line(cx, t::LINE_DEFAULT)),
+                        )
+                    })
                     // The prompt mark › hanging on the cord
                     .child(
                         div()

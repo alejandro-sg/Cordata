@@ -2252,7 +2252,7 @@ impl Render for Workspace {
                                                 .bottom_0()
                                                 .right(px(10.))
                                                 .w(px(1.))
-                                                .bg(line(cx, t::LINE_DEFAULT)),
+                                                .bg(ca(tk.amber, 0.35)),
                                         )
                                         // Node on the cord
                                         .child(if is_anchor {
