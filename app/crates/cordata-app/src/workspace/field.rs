@@ -113,12 +113,12 @@ impl Workspace {
                         .child(
                             div().flex().items_center().gap(s(6.))
                                 .child(div().text_size(text(12.)).text_color(c(tk.amber)).child("⬡"))
-                                .child(div().font_family(mono(cx)).text_size(text(t::TEXT_META)).font_weight(FontWeight::SEMIBOLD).text_color(c(tk.text_primary)).child(SharedString::from(format!("EXPEDITION SECTOR // {}", tr.place))))
+                                .child(div().font_family(mono(cx)).text_size(text(t::TEXT_META)).font_weight(FontWeight::SEMIBOLD).text_color(c(tk.text_primary)).child(SharedString::from(tr.place.to_string())))
                         )
                         .child(
                             div().flex().items_center().gap(s(6.))
                                 .child(div().size(s(5.)).rounded_full().bg(c(tk.teal)))
-                                .child(div().font_family(mono(cx)).text_size(text(10.)).text_color(c(tk.text_faint)).child("ACTIVE"))
+                                .child(div().font_family(mono(cx)).text_size(text(10.)).text_color(c(tk.text_faint)).child("open"))
                         )
                 )
                 // Guide rope running down the gutter
@@ -128,36 +128,13 @@ impl Workspace {
                 .into_any_element()
         });
 
-        // Horizontal tether between adjacent checkout territories
-        let inter_territory_tethers: Vec<AnyElement> = if laid.territories.len() > 1 {
-            laid.territories.windows(2).enumerate().map(|(wi, pair)| {
-                let (t0, t1) = (&pair[0], &pair[1]);
-                let (x0, y) = cam.to_screen(t0.x + t0.w + pad_x, t0.y + pad_y + 42.0);
-                let (x1, _) = cam.to_screen(t1.x + pad_x, t0.y + pad_y + 42.0);
-                let len = (x1 - x0).max(1.0);
-                div().id(("field-tether", wi)).absolute().left(px(x0)).top(px(y)).w(px(len)).h(px(2.0)).bg(ca(tk.amber, 0.35))
-                    .child(div().absolute().left(px(0.)).top(px(-3.)).size(px(8.)).rounded_full().bg(c(tk.amber)))
-                    .child(div().absolute().right(px(0.)).top(px(-3.)).size(px(8.)).rounded_full().bg(c(tk.amber)))
-                    .child(div().absolute().left(px(len / 2.0 - 4.)).top(px(-3.)).size(px(8.)).rounded_full().bg(c(tk.teal)))
-                    .child(
-                        div().absolute().left(px(len / 2.0 - 24.)).top(px(-18.)).px(px(6.)).py(px(1.5)).rounded(px(2.))
-                            .bg(ca(tk.bg_panel, 0.95)).border_1().border_color(ca(tk.amber, 0.3))
-                            .font_family(mono(cx)).text_size(px(9.)).text_color(c(tk.amber))
-                            .child("⇄ TETHER")
-                    )
-                    .into_any_element()
-            }).collect()
-        } else {
-            Vec::new()
-        };
-
         let links = laid.links.iter().enumerate().map(|(li, l)| {
             let (x, y0) = cam.to_screen(l.x + pad_x, l.y0 + pad_y);
             let (_, y1) = cam.to_screen(l.x + pad_x, l.y1 + pad_y);
             let len = (y1 - y0).abs().max(1.0);
             div().id(("field-link", li)).absolute().left(px(x - 1.0)).top(px(y0)).w(px(2.5)).h(px(len)).bg(c(tk.attention))
                 .tooltip(ui::tip(format!("#{} and #{} both write {}", l.a, l.b, l.zone)))
-                // Traveling glowing packet beads along the line
+                // Two still beads on the line: where the two threads meet
                 .child(
                     div().absolute().left(px(-2.5)).top(px(len * 0.35)).size(px(7.)).rounded_full().bg(c(tk.amber))
                 )
@@ -168,8 +145,8 @@ impl Workspace {
                 .child(
                     div().absolute().left(px(8.)).top(px(len / 2.0 - 10.)).px(px(6.)).py(px(2.)).rounded(px(2.))
                         .bg(ca(tk.bg_panel, 0.95)).border_1().border_color(c(tk.attention))
-                        .font_family(mono(cx)).text_size(px(10.)).text_color(c(tk.attention))
-                        .child(SharedString::from(format!("⚡ SHARED: {}", l.zone)))
+                        .font_family(mono(cx)).text_size(px(t::TEXT_MIN)).text_color(c(tk.attention))
+                        .child(SharedString::from(format!("shared: {}", l.zone)))
                 )
                 .into_any_element()
         });
@@ -251,7 +228,7 @@ impl Workspace {
                     .font_family(mono(cx)).text_size(text(t::TEXT_TAG))
                     .child(div().truncate().text_color(c(tk.text_secondary)).child(SharedString::from(chip.name.clone())))
                     .child(div().flex_shrink_0().text_color(if chip.contested { c(tk.attention) } else { c(tk.text_muted) })
-                        .child(if chip.contested { "⚡ contested" } else { touch_word(chip.touch) }))
+                        .child(if chip.contested { "contested" } else { touch_word(chip.touch) }))
             });
             let (sig_allow, sig_deny) = (item.gate_signature.clone().unwrap_or_default(), item.gate_signature.clone().unwrap_or_default());
             let gate = item.gate_title.clone().map(|title| {
@@ -290,139 +267,13 @@ impl Workspace {
             vec![knot.into_any_element(), card.into_any_element(), under.into_any_element()]
         });
 
-        let notes_x = (laid.w + pad_x + 56.0).max(420.0);
-        let note_1 = {
-            let (nx, ny) = cam.to_screen(notes_x, 24.0);
-            div().id("field-note-mission").absolute().left(px(nx)).top(px(ny)).w(s(340.)).rounded(px(6.))
-                .border_1().border_color(ca(tk.amber, 0.45)).bg(ca(tk.bg_panel, 0.96))
-                .p(s(14.)).flex().flex_col().gap(s(8.))
-                .child(
-                    div().flex().items_center().justify_between()
-                        .child(div().flex().items_center().gap(s(6.))
-                            .child(div().text_size(text(14.)).child("📌"))
-                            .child(div().font_family(crate::theme::voice(cx)).text_size(text(15.)).font_weight(FontWeight::SEMIBOLD).text_color(c(tk.amber)).child("MISSION OBJECTIVE")))
-                        .child(div().font_family(mono(cx)).text_size(text(10.)).px(s(6.)).py(s(1.5)).rounded(px(2.)).bg(ca(tk.amber, 0.15)).text_color(c(tk.amber)).child("#briefing"))
-                )
-                .child(
-                    div().text_size(text(13.)).text_color(c(tk.text_secondary)).line_height(gpui::relative(1.3))
-                        .child("Cordata roped party workspace. Hermetic offline verification, zero plaintext secrets, deterministic guards.")
-                )
-                .child(
-                    div().flex().items_center().gap(s(6.)).pt(s(2.))
-                        .child(div().size(s(6.)).rounded_full().bg(c(tk.teal)))
-                        .child(div().font_family(mono(cx)).text_size(text(11.)).text_color(c(tk.teal)).child("all guards active · scripts/verify.sh"))
-                )
-                .into_any_element()
-        };
-        let note_2 = {
-            let (nx, ny) = cam.to_screen(notes_x, 220.0);
-            div().id("field-note-invariants").absolute().left(px(nx)).top(px(ny)).w(s(340.)).rounded(px(6.))
-                .border_1().border_color(line(cx, t::LINE_DEFAULT)).bg(ca(tk.bg_panel, 0.96))
-                .p(s(14.)).flex().flex_col().gap(s(8.))
-                .child(
-                    div().flex().items_center().justify_between()
-                        .child(div().flex().items_center().gap(s(6.))
-                            .child(div().text_size(text(14.)).child("📐"))
-                            .child(div().font_family(crate::theme::voice(cx)).text_size(text(15.)).font_weight(FontWeight::SEMIBOLD).text_color(c(tk.text_primary)).child("AGENTS.MD INVARIANTS")))
-                        .child(div().font_family(mono(cx)).text_size(text(10.)).px(s(6.)).py(s(1.5)).rounded(px(2.)).bg(line(cx, t::FILL_FAINT)).text_color(c(tk.text_faint)).child("#invariants"))
-                )
-                .child(
-                    div().font_family(mono(cx)).text_size(text(11.)).text_color(c(tk.text_muted)).flex().flex_col().gap(s(3.))
-                        .child("• Rust only (native GPUI & ratatui)")
-                        .child("• Zero plaintext secrets in keychain")
-                        .child("• Colocated pods under 1,200 lines")
-                        .child("• Deterministic verification scripts")
-                )
-                .child(
-                    div().font_family(mono(cx)).text_size(text(10.)).text_color(c(tk.text_faint)).pt(s(2.))
-                        .child("enforced by cordata-guard physical checks")
-                )
-                .into_any_element()
-        };
-        let note_3 = {
-            let (nx, ny) = cam.to_screen(notes_x, 420.0);
-            div().id("field-note-handoff").absolute().left(px(nx)).top(px(ny)).w(s(340.)).rounded(px(6.))
-                .border_1().border_color(ca(tk.teal, 0.4)).bg(ca(tk.bg_panel, 0.96))
-                .p(s(14.)).flex().flex_col().gap(s(8.))
-                .child(
-                    div().flex().items_center().justify_between()
-                        .child(div().flex().items_center().gap(s(6.))
-                            .child(div().text_size(text(14.)).child("⚡"))
-                            .child(div().font_family(crate::theme::voice(cx)).text_size(text(15.)).font_weight(FontWeight::SEMIBOLD).text_color(c(tk.text_primary)).child("HANDOFF PROTOCOL")))
-                        .child(div().font_family(mono(cx)).text_size(text(10.)).px(s(6.)).py(s(1.5)).rounded(px(2.)).bg(ca(tk.teal, 0.15)).text_color(c(tk.teal)).child("#handoff"))
-                )
-                .child(
-                    div().text_size(text(13.)).text_color(c(tk.text_secondary)).line_height(gpui::relative(1.3))
-                        .child("Parallel subagents coordinate via APFS clonefile sandboxes. Wave syntheses run offline with zero network egress.")
-                )
-                .child(
-                    div().font_family(mono(cx)).text_size(text(11.)).text_color(c(tk.amber)).pt(s(2.))
-                        .child("Goldfish review gate ready")
-                )
-                .into_any_element()
-        };
-
-        let conn_rope_1 = {
-            let (x0, y0) = cam.to_screen(laid.w + pad_x, 80.0);
-            let (x1, _) = cam.to_screen(notes_x, 80.0);
-            let w = (x1 - x0).max(1.0);
-            div().id("notes-rope-1").absolute().left(px(x0)).top(px(y0)).w(px(w)).h(px(2.0)).bg(ca(tk.amber, 0.35))
-                .child(div().absolute().left(px(0.)).top(px(-3.)).size(px(8.)).rounded_full().bg(c(tk.amber)))
-                .child(div().absolute().right(px(0.)).top(px(-3.)).size(px(8.)).rounded_full().bg(c(tk.amber)))
-                .child(div().absolute().left(px(w * 0.4)).top(px(-3.)).size(px(7.)).rounded_full().bg(c(tk.amber)))
-                .child(
-                    div().absolute().left(px(w * 0.4 - 24.)).top(px(-18.)).px(px(6.)).py(px(1.5)).rounded(px(2.))
-                        .bg(ca(tk.bg_panel, 0.95)).border_1().border_color(ca(tk.amber, 0.3))
-                        .font_family(mono(cx)).text_size(px(9.)).text_color(c(tk.amber))
-                        .child("DISPATCH ➔")
-                )
-                .into_any_element()
-        };
-
-        let conn_rope_2 = {
-            let (x0, y0) = cam.to_screen(laid.w + pad_x, 280.0);
-            let (x1, _) = cam.to_screen(notes_x, 280.0);
-            let w = (x1 - x0).max(1.0);
-            div().id("notes-rope-2").absolute().left(px(x0)).top(px(y0)).w(px(w)).h(px(2.0)).bg(ca(tk.amber, 0.35))
-                .child(div().absolute().left(px(0.)).top(px(-3.)).size(px(8.)).rounded_full().bg(c(tk.amber)))
-                .child(div().absolute().right(px(0.)).top(px(-3.)).size(px(8.)).rounded_full().bg(c(tk.amber)))
-                .child(div().absolute().left(px(w * 0.4)).top(px(-3.)).size(px(7.)).rounded_full().bg(c(tk.teal)))
-                .child(
-                    div().absolute().left(px(w * 0.4 - 22.)).top(px(-18.)).px(px(6.)).py(px(1.5)).rounded(px(2.))
-                        .bg(ca(tk.bg_panel, 0.95)).border_1().border_color(ca(tk.teal, 0.3))
-                        .font_family(mono(cx)).text_size(px(9.)).text_color(c(tk.teal))
-                        .child("GUARD ➔")
-                )
-                .into_any_element()
-        };
-
-        let conn_rope_3 = {
-            let (x0, y0) = cam.to_screen(laid.w + pad_x, 480.0);
-            let (x1, _) = cam.to_screen(notes_x, 480.0);
-            let w = (x1 - x0).max(1.0);
-            div().id("notes-rope-3").absolute().left(px(x0)).top(px(y0)).w(px(w)).h(px(2.0)).bg(ca(tk.amber, 0.35))
-                .child(div().absolute().left(px(0.)).top(px(-3.)).size(px(8.)).rounded_full().bg(c(tk.amber)))
-                .child(div().absolute().right(px(0.)).top(px(-3.)).size(px(8.)).rounded_full().bg(c(tk.amber)))
-                .child(div().absolute().left(px(w * 0.4)).top(px(-3.)).size(px(7.)).rounded_full().bg(c(tk.info)))
-                .child(
-                    div().absolute().left(px(w * 0.4 - 22.)).top(px(-18.)).px(px(6.)).py(px(1.5)).rounded(px(2.))
-                        .bg(ca(tk.bg_panel, 0.95)).border_1().border_color(ca(tk.info, 0.3))
-                        .font_family(mono(cx)).text_size(px(9.)).text_color(c(tk.info))
-                        .child("WAVE ➔")
-                )
-                .into_any_element()
-        };
-
         let bounds = self.field_bounds.clone();
-        let notes_els = vec![note_1, note_2, note_3, conn_rope_1, conn_rope_2, conn_rope_3];
         let children: Vec<AnyElement> = grid_dots
             .into_iter()
             .chain(territories)
-            .chain(inter_territory_tethers)
             .chain(links)
             .chain(nodes)
             .chain(runs_els)
-            .chain(notes_els)
             .collect();
         let empty = self.field_runs.is_empty() && inputs.is_empty();
         div().id("field").relative().size_full().overflow_hidden()
@@ -743,7 +594,7 @@ impl Workspace {
                         .child(div().flex().items_center().gap(px(6.))
                             .child(div().font_family(crate::theme::voice(cx)).text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(c(tk.text_primary)).child(SharedString::from(self.project_name())))
                             .child(div().font_family(mono(cx)).text_size(px(11.)).px(px(6.)).py(px(1.5)).rounded(px(2.)).bg(ca(tk.amber, 0.15)).text_color(c(tk.amber)).child(SharedString::from(self.git.branch.clone().unwrap_or_else(|| "main".into())))))
-                        .child(ui::meta(SharedString::from(format!("{} agent pods · constellation active", inputs.len())), cx)))
+                        .child(ui::meta(SharedString::from(format!("{} thread{}", inputs.len(), if inputs.len() == 1 { "" } else { "s" })), cx)))
             )
             .child(div().flex_1().min_w_0().flex().justify_center()
                 .child(div().w_full().min_w(px(380.)).max_w(px(580.)).flex().flex_col().children(menu).child(composer)))
@@ -788,12 +639,12 @@ impl Workspace {
                         .child(
                             div().flex().items_center().justify_between()
                                 .child(div().font_family(mono(cx)).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(c(tk.amber)).child(format!("AGENT #{slot}")))
-                                .child(div().font_family(mono(cx)).text_size(px(10.)).text_color(if item.state == TabState::Working { c(tk.amber) } else { c(tk.teal) })
+                                .child(div().font_family(mono(cx)).text_size(px(t::TEXT_MIN)).text_color(if item.state == TabState::Working { c(tk.amber) } else { c(tk.teal) })
                                     .child(if item.state == TabState::Working { "● WORKING" } else { "✓ STANDBY" }))
                         )
                         .child(div().font_family(crate::theme::voice(cx)).text_size(px(14.)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(SharedString::from(item.title.clone())))
                         .child(div().font_family(mono(cx)).text_size(px(11.)).text_color(c(tk.text_muted)).child(SharedString::from(if !item.now.is_empty() { item.now.clone() } else { "idle · ready for steering".into() })))
-                        .child(div().font_family(mono(cx)).text_size(px(10.)).text_color(c(tk.text_faint)).child(format!("{} files · +{} −{}", item.files, item.added, item.removed)))
+                        .child(div().font_family(mono(cx)).text_size(px(t::TEXT_MIN)).text_color(c(tk.text_faint)).child(format!("{} files · +{} −{}", item.files, item.added, item.removed)))
                         .child(
                             div().flex().items_center().gap(px(6.)).pt(px(4.))
                                 .child(ui::button(("rail-open-transcript", slot), "Open Transcript ⌘1", Kind::Primary, cx).on_click(cx.listener(move |this, _, _, cx| {
@@ -806,22 +657,8 @@ impl Workspace {
             }
         } else {
             rail = rail
-                .child(
-                    div().flex().items_center().gap(px(6.)).pt(px(2.))
-                        .child(div().size(px(7.)).rounded_full().bg(c(tk.teal)))
-                        .child(div().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.teal)).child("ALL AGENTS NOMINAL"))
-                )
-                .child(
-                    div().text_size(px(12.)).text_color(c(tk.text_muted))
-                        .child("The roped party is connected and synchronized across checkout territories.")
-                )
-                .child(
-                    div().flex().flex_col().gap(px(4.)).p(px(10.)).rounded(px(4.)).border_1().border_color(line(cx, t::LINE_SUBTLE)).bg(line(cx, t::FILL_FAINT))
-                        .child(div().font_family(mono(cx)).text_size(px(11.)).text_color(c(tk.text_secondary)).child(format!("• {} active agent pods", inputs.len())))
-                        .child(div().font_family(mono(cx)).text_size(px(11.)).text_color(c(tk.text_secondary)).child(format!("• {} active zones", zones.len().max(1))))
-                        .child(div().font_family(mono(cx)).text_size(px(11.)).text_color(c(tk.text_secondary)).child("• 3 tactical architectural notes"))
-                        .child(div().font_family(mono(cx)).text_size(px(11.)).text_color(c(tk.teal)).child("• Zero gate blocks"))
-                )
+                // Said plainly, from the same count the header shows: no status the app has not measured.
+                .child(div().text_size(px(t::TEXT_UI)).text_color(c(tk.text_muted)).child("Nothing is waiting on you."))
                 .child(
                     div().pt(px(6.)).flex().flex_col().gap(px(6.))
                         .child(ui::button("rail-diffs", "Review Uncommitted Diffs  ⌘D", Kind::Ghost, cx).on_click(cx.listener(|this, _, _, cx| this.toggle_change_sheet(cx))))

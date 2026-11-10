@@ -26,18 +26,6 @@ pub const TUG: Duration = Duration::from_millis(640);
 pub const TUG_LEN: f32 = 0.18;
 /// The node coming to the gate, and the gate's rule drawing.
 pub const ARRIVE: Duration = Duration::from_millis(240);
-/// The gate closing when answered.
-#[allow(dead_code)]
-pub const CLOSE: Duration = Duration::from_millis(280);
-/// The cord extending down to a new node, replacing settle.
-#[allow(dead_code)]
-pub const DRAW: Duration = Duration::from_millis(180);
-/// Drawer slide-in duration (⌘B, ⌘\).
-#[allow(dead_code)]
-pub const SLIDE: Duration = Duration::from_millis(240);
-/// Digit roll duration for count changes (+/-, turns, cost).
-#[allow(dead_code)]
-pub const TICK: Duration = Duration::from_millis(220);
 /// A new block coming to rest.
 pub const SETTLE: Duration = Duration::from_millis(200);
 /// How far a new block rises, in px.

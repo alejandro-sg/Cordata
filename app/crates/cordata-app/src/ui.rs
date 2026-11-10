@@ -539,3 +539,59 @@ pub fn notices(stack: Vec<NoticeToast>, cx: &App) -> AnyElement {
         .children(toasts)
         .into_any_element()
 }
+
+#[cfg(test)]
+mod legibility {
+    /// No view sets a literal text size under the minimum (`TEXT_MIN`): a size that small is not read. Sizes that
+    /// scale with the zoom go through a clamp, so only literals in `text_size(px(N))` are checked.
+    fn sources() -> Vec<std::path::PathBuf> {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+        files
+    }
+
+    /// No emoji anywhere in the window's source (`app/assets/brand/README.md`): the marks and the icon set are the
+    /// pictures. Test data that needs one writes it as an escape.
+    #[test]
+    fn no_view_draws_an_emoji() {
+        let mut found = Vec::new();
+        for file in sources() {
+            for (n, line) in std::fs::read_to_string(&file).unwrap().lines().enumerate() {
+                if line.chars().any(|c| matches!(c, '\u{1F300}'..='\u{1FAFF}' | '\u{26A1}' | '\u{2B50}' | '\u{2705}' | '\u{274C}')) {
+                    found.push(format!("{}:{}", file.display(), n + 1));
+                }
+            }
+        }
+        assert!(found.is_empty(), "emoji in:\n{}", found.join("\n"));
+    }
+
+    #[test]
+    fn no_view_sets_text_under_the_minimum() {
+        let files = sources();
+        let mut small = Vec::new();
+        for file in files.iter().filter(|f| !f.ends_with("ui.rs")) {
+            let source = std::fs::read_to_string(file).unwrap();
+            for (n, line) in source.lines().enumerate() {
+                let mut rest = line;
+                while let Some(at) = rest.find("text_size(px(") {
+                    rest = &rest[at + "text_size(px(".len()..];
+                    let number: String = rest.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+                    if number.parse::<f32>().is_ok_and(|v| v < cordata_theme::tokens::TEXT_MIN) {
+                        small.push(format!("{}:{} text_size(px({number}))", file.display(), n + 1));
+                    }
+                }
+            }
+        }
+        assert!(small.is_empty(), "text under {}px:\n{}", cordata_theme::tokens::TEXT_MIN, small.join("\n"));
+    }
+}

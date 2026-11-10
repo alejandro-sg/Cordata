@@ -42,8 +42,8 @@ impl Kind {
     pub fn glyph(self) -> &'static str {
         match self {
             Self::Image => "▣",
-            Self::Pdf => "📕",
-            Self::Document => "📄",
+            Self::Pdf => "▤",
+            Self::Document => "▭",
             Self::Data => "⊞",
             Self::Archive => "◫",
             Self::Code => "⌨",

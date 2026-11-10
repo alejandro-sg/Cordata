@@ -336,7 +336,7 @@ impl Workspace {
                                     })),
                             )
                             .child(
-                                ui::button("ask-artifact", "💬 Steer Plan", Kind::Ghost, cx)
+                                ui::button("ask-artifact", "Steer plan", Kind::Ghost, cx)
                                     .tooltip(ui::tip("Discuss or update this plan with the agent"))
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.apply_starter(
@@ -680,7 +680,7 @@ impl Workspace {
                                     })),
                             )
                             .child(
-                                ui::button(("guard-task", t_idx), "🛡 Guardrail", Kind::Ghost, cx)
+                                ui::button(("guard-task", t_idx), "Guardrail", Kind::Ghost, cx)
                                     .h(px(20.))
                                     .px(px(6.))
                                     .text_size(px(t::TEXT_META))
@@ -875,7 +875,7 @@ mod tests {
 
     #[test]
     fn unicode_tasks_do_not_panic_on_short_label() {
-        let text = "- [ ] Implement 🛡🛡 invariant checks for multi-agent floorplan";
+        let text = "- [ ] Implement \u{1F6E1}\u{1F6E1} invariant checks for multi-agent floorplan";
         let tasks = ArtifactsState::parse_tasks(text);
         assert_eq!(tasks.len(), 1);
         let task = &tasks[0];

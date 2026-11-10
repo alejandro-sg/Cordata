@@ -800,8 +800,8 @@ impl Workspace {
                 let sentence = match (&info.reason, &command, info.kind) {
                     // Auto mode let everything else through: say why this one still needs a person.
                     (Some(reason), ..) => format!("Auto mode asks: {}", shown(reason)),
-                    (None, Some(_), _) => format!("Run shell command in {place}"),
-                    (None, None, acp_core::ToolKind::Edit) => format!("Modify files in {place}"),
+                    (None, Some(_), _) => "Run this command?".to_owned(),
+                    (None, None, acp_core::ToolKind::Edit) => "Make this change?".to_owned(),
                     _ => format!("Allow {tool}?"),
                 };
                 // Program-scoped session grant ("Always allow run_command (cargo) this session") surfaces "(cargo)" right on the button.
@@ -970,6 +970,8 @@ impl Workspace {
                     )
                     .when(self.saying, |row| row.child(ui::badge("type below · ↵ sends", Tone::Amber, cx))),
             )
+            // Where it would happen: a fact, so it is a quiet line, not the question.
+            .child(div().min_w_0().truncate().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.text_muted)).child(SharedString::from(format!("in {place}"))))
             // An edit shows the change it asks about; anything else, its command or input in a ruled mono block (top and bottom rules only).
             .when_some(diffs, |card, diffs| card.child(transcript::diff_preview(&diffs, cx)))
             .when(!has_diff, |card| {
