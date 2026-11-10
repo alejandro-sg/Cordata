@@ -29,3 +29,11 @@ anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "net"] }
+
+# The shipped binary: whole-program inlining and one codegen unit per crate make it smaller and its hot paths
+# shorter; symbols are stripped (a panic still prints its message and location, without function names). Costs a
+# slower release build, which only packaging and `make bench` pay.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

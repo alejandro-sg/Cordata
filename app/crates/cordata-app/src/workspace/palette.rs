@@ -99,7 +99,7 @@ impl Workspace {
             Item { group: "Project", label: "Switch project…".into(), shortcut: "⌘O", action: Action::SwitchProject },
             Item { group: "Project", label: "Open folder…".into(), shortcut: "", action: Action::OpenFolder },
             Item { group: "Desk", label: "Change sheet / Transcript".into(), shortcut: "⌘D", action: Action::ToggleChangeSheet },
-            Item { group: "Desk", label: "Supervisory triage rack".into(), shortcut: "⌘0", action: Action::ToggleRack },
+            Item { group: "Desk", label: "Every thread at once".into(), shortcut: "⌘0", action: Action::ToggleRack },
             Item { group: "App", label: "Agents & delegation…".into(), shortcut: "", action: Action::OpenAgentsSettings },
             Item { group: "App", label: "Settings".into(), shortcut: "⌘,", action: Action::Settings },
         ]);

@@ -175,7 +175,6 @@ impl Workspace {
         let rack = work::triage_rack(&inputs);
         let mode = self.rack_view_mode;
         let sel = self.rack_selected_slot;
-        let motion = ui::motion(cx);
 
         let per_thread: Vec<_> = self
             .sessions
@@ -210,7 +209,7 @@ impl Workspace {
         let quiet = inputs.len() - working.min(inputs.len()) - waiting.min(inputs.len() - working.min(inputs.len()));
 
         let stat = |n: usize, word: &'static str, col: gpui::Hsla| div().flex().items_baseline().gap(px(6.))
-            .child(div().font_family(voice(cx)).text_size(px(26.)).text_color(if n > 0 { col } else { ca(tk.text_faint, 0.6) }).child(SharedString::from(n.to_string())))
+            .child(div().font_family(voice(cx)).text_size(px(26.)).text_color(if n > 0 { col } else { c(tk.text_faint) }).child(SharedString::from(n.to_string())))
             .child(div().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.text_muted)).child(word));
 
         let lane_rows: Vec<AnyElement> = inputs.iter().map(|item| {
@@ -221,18 +220,13 @@ impl Workspace {
             let ready = flight::ready(item);
             let needs_you = item.gate_title.is_some();
             let mark = if is_working { MarkState::Working } else if needs_you { MarkState::NeedsYou } else { MarkState::Idle };
-            let last = item.beats.len().saturating_sub(1);
+            let beat = self.beat_of(ix, cx);
             let bars = item.beats.iter().enumerate().map(|(bi, b)| {
                 let bar = div().id(("beat", slot * 1000 + bi)).w(px(6.)).h(px(height(*b))).rounded(px(2.)).bg(ink(*b))
                     .hover(|s| s.bg(hue))
                     .tooltip(ui::tip(item.tips.get(bi).cloned().unwrap_or_default()))
                     .on_click(cx.listener(move |this, _, _, cx| this.pick_lane(slot, cx)));
-                if is_working && bi == last && motion {
-                    gpui::AnimationExt::with_animation(bar, ("live-beat", slot), gpui::Animation::new(std::time::Duration::from_millis(900)).repeat().with_easing(gpui::ease_in_out),
-                        |el, t| el.opacity(0.35 + 0.65 * (1.0 - (2.0 * t - 1.0).powi(2)))).into_any_element()
-                } else {
-                    bar.into_any_element()
-                }
+                bar.into_any_element()
             });
             let strip = div().flex().items_end().justify_end().gap(px(3.)).h(px(32.)).w(px(flight::LANE_LEN as f32 * 9.))
                 .border_b_1().border_color(ca(tk.text_faint, 0.25)).children(bars);
@@ -245,7 +239,7 @@ impl Workspace {
                 .flex().items_center().gap(px(14.))
                 .child(div().absolute().left(px(0.)).top(px(10.)).bottom(px(10.)).w(px(3.)).rounded(px(2.)).bg(alpha(hue, if is_working || is_sel { 1.0 } else { 0.35 })))
                 .child(div().w(px(22.)).flex().flex_col().items_center().gap(px(4.))
-                    .child(ui::mark(("lane-mark", slot), mark, 12., cx))
+                    .child(ui::mark_live(("lane-mark", slot), mark, 12., beat, cx))
                     .child(div().font_family(mono(cx)).text_size(px(t::TEXT_TAG)).text_color(hue).child(SharedString::from(format!("#{slot}")))))
                 .child(div().flex_1().min_w_0().flex().flex_col().gap(px(5.))
                     .child(div().flex().items_center().gap(px(8.))

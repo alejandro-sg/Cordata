@@ -88,7 +88,7 @@ handoff shows what the next worker is given. No usability study has been run; th
 
 ### The menu bar item
 
-While the app runs, a mark sits in the menu bar: `C▯` quiet, `(█` working, `C█ 2` when two things wait on you. Its menu
+While the app runs, a mark sits in the menu bar: `C` quiet, `(•` working, `C● 2` when two things wait on you. Its menu
 lists what needs you (thread, exact command with credential-shaped spans masked, Allow and Reject), runs (Hold or
 Resume), up to six threads (working first), then Open Cordata, Show the field, New thread, Settings and Quit. Allow is
 offered only for a call the engine does not rate high risk, and a click answers only the call the menu showed. Closing

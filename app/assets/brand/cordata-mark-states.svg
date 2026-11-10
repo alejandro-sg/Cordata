@@ -1,9 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 100" fill="none">
   <title>Cordata states: idle, working, needs you, done, error</title>
   <rect width="400" height="100" fill="#0E1013"/>
-  <g transform="translate(18 18)"><path d="M45 7.201A28 28 0 1 0 45 56.799V45.856A19 19 0 1 1 45 18.144Z" fill="#E8EAED"/><rect x="50.25" y="21.25" width="7.5" height="21.5" fill="none" stroke="#E8EAED" stroke-opacity=".55" stroke-width="2.5"/></g>
-  <g transform="translate(94 18)"><path d="M45 7.201A28 28 0 1 0 45 56.799V45.856A19 19 0 1 1 45 18.144Z" fill="#E8EAED"/><path d="M26.5 20h10v24h-10Z" fill="#3DC9A4"/></g>
-  <g transform="translate(170 18)"><path d="M45 7.201A28 28 0 1 0 45 56.799V45.856A19 19 0 1 1 45 18.144Z" fill="#E8EAED"/><path d="M49 20h10v24H49Z" fill="#E2A640"/></g>
-  <g transform="translate(246 18)"><path d="M32 4A28 28 0 1 0 32 60A28 28 0 1 0 32 4ZM32 13A19 19 0 1 1 32 51A19 19 0 1 1 32 13Z" fill="#E8EAED" fill-rule="evenodd"/></g>
-  <g transform="translate(322 18)"><path d="M45 7.201A28 28 0 1 0 45 56.799V45.856A19 19 0 1 1 45 18.144Z" fill="#E8EAED"/><path d="M49 20h10v10.5L49 33.5Z M49 35.5L59 32.5V44H49Z" fill="#E5584E"/></g>
+  <g transform="translate(18 18)"><path d="M47.606 17.948A21 21 0 1 0 47.606 46.052" stroke="#E8EAED" stroke-width="7" stroke-linecap="round" stroke-opacity=".45"/></g>
+  <g transform="translate(94 18)"><path d="M47.606 17.948A21 21 0 1 0 47.606 46.052" stroke="#E8EAED" stroke-width="7" stroke-linecap="round"/><circle cx="32" cy="32" r="7" fill="#3DC9A4"/></g>
+  <g transform="translate(170 18)"><path d="M47.606 17.948A21 21 0 1 0 47.606 46.052" stroke="#E8EAED" stroke-width="7" stroke-linecap="round"/><circle cx="53" cy="32" r="7" fill="#E2A640"/></g>
+  <g transform="translate(246 18)"><circle cx="32" cy="32" r="21" stroke="#E8EAED" stroke-width="7"/></g>
+  <g transform="translate(322 18)"><path d="M47.606 17.948A21 21 0 1 0 47.606 46.052" stroke="#E8EAED" stroke-width="7" stroke-linecap="round"/><path d="M49.5 39.5L56.5 24.5" stroke="#E5584E" stroke-width="5.5" stroke-linecap="round"/></g>
 </svg>

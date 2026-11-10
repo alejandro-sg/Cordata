@@ -61,7 +61,7 @@ impl Workspace {
             self.tray_action(&id, window, cx);
         }
         self.tray_tick = self.tray_tick.wrapping_add(1);
-        if self.tray_tick % RUNS_EVERY == 0 && !(self.desk_mode == DeskMode::Rack && self.rack_view_mode == RackViewMode::Field) {
+        if self.tray_tick.is_multiple_of(RUNS_EVERY) && !(self.desk_mode == DeskMode::Rack && self.rack_view_mode == RackViewMode::Field) {
             self.refresh_runs(cx);
         }
         if self.tray_tick % SYNC_EVERY == 1 {

@@ -89,7 +89,7 @@ impl Workspace {
                     .cursor_pointer()
                     .hover(move |s| s.bg(hover))
                     .on_click(cx.listener(|this, _, window, cx| this.open_overlay(Overlay::Picker, window, cx)))
-                    .child(div().flex_shrink_0().font_family(mono(cx)).text_size(px(14.)).text_color(c(tk.amber)).child("C█"))
+                    .child(ui::cordata_logo(20., cx))
                     .child(div().flex_1().min_w_0().truncate().text_size(px(t::TEXT_TITLE)).font_weight(FontWeight::SEMIBOLD).text_color(c(tk.text_primary)).child(SharedString::from(self.project_name())))
                     .child(div().flex_shrink_0().text_color(c(tk.text_faint)).child(gpui_component::Icon::new(gpui_kit_assets::IconName::ChevronDown).size(px(13.))))
             )
@@ -220,17 +220,21 @@ impl Workspace {
                 .child(
                     div()
                         .id("work-brief")
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
+                        // What needs you is never the part that gets cut: the brief keeps its width.
+                        .flex_shrink_0()
+                        .whitespace_nowrap()
                         .text_size(px(t::TEXT_TAG))
                         .text_color(c(if needs { tk.attention } else { tk.text_faint }))
                         .when(needs, |d| d.cursor_pointer().tooltip(ui::tip("Go to what needs you  ⌘J")).on_click(cx.listener(|this, _, window, cx| this.next_attention(&super::NextAttention, window, cx))))
                         .child(SharedString::from(rail.brief().map(|b| format!("· {b}")).unwrap_or_default())),
                 )
                 .child(
+                    div().flex_1().min_w_0(),
+                )
+                .child(
                     div()
                         .id("open-rack")
+                        .flex_shrink_0()
                         .role(gpui::Role::Button)
                         .cursor_pointer()
                         .px(px(6.))
@@ -243,9 +247,10 @@ impl Workspace {
                         .text_size(px(t::TEXT_TAG))
                         .text_color(c(if self.desk_mode == super::DeskMode::Rack { tk.amber } else { tk.text_muted }))
                         .hover(|s| s.text_color(c(tk.text_primary)))
-                        .tooltip(ui::tip("Supervisory Control Room & Agent Graph Canvas  ⌘0"))
+                        .tooltip(ui::tip("Every thread at once  ⌘0"))
                         .on_click(cx.listener(|this, _, _, cx| this.toggle_rack(cx)))
-                        .child("canvas  ⌘0"),
+                        .aria_label("Every thread at once (⌘0)")
+                        .child("⌘0"),
                 )
                 .child(
                     ui::icon_action("new-session", gpui_kit_assets::IconName::SquarePen, cx)
@@ -264,6 +269,7 @@ impl Workspace {
                 Mark::Idle => ui::MarkState::Idle,
             };
             let index = row.index;
+            let beat = self.beat_of(index, cx);
             let group = SharedString::from(format!("thread-row-{ix}"));
             let close_group = group.clone();
             let tip = if index <= 8 { format!("{}  ⌘{}", shown(&row.title), index + 1) } else { shown(&row.title) };
@@ -294,7 +300,7 @@ impl Workspace {
                         this.show(entity, cx);
                     }
                 }))
-                .child(ui::mark(("thread-mark", ix), mark, 11., cx))
+                .child(ui::mark_live(("thread-mark", ix), mark, 11., beat, cx))
                 .child(
                     div()
                         .flex_1()

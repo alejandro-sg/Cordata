@@ -7,10 +7,9 @@ use acp_core::{ApprovalDecision, PermissionInfo};
 use cordata_theme::tokens as t;
 use cordata_view::app::{ConnState, Message};
 use cordata_view::shown;
-use std::time::Duration;
 
 use gpui::prelude::FluentBuilder as _;
-use gpui::{Animation, AnimationExt as _, ease_in_out};
+use gpui::{Animation, AnimationExt as _};
 use gpui::{AnyElement, App, BoxShadow, Context, FontWeight, InteractiveElement as _, IntoElement, MouseButton, ParentElement, SharedString, StatefulInteractiveElement as _, Styled, StyledImage as _, div, point, px, relative};
 use gpui_component::input::Textarea;
 
@@ -45,7 +44,7 @@ fn attention_rule(id: &str, cx: &App) -> AnyElement {
     if !ui::motion(cx) {
         return bar.bottom(px(0.)).into_any_element();
     }
-    bar.with_animation(SharedString::from(format!("rule-{id}")), Animation::new(Duration::from_millis(240)).with_easing(gpui::ease_out_quint()), |el, t| el.h(relative(t)))
+    bar.with_animation(SharedString::from(format!("rule-{id}")), Animation::new(crate::motion::ARRIVE).with_easing(gpui::ease_out_quint()), |el, t| el.h(relative(t)))
         .into_any_element()
 }
 
@@ -67,7 +66,9 @@ pub fn prompt_mark(ink: gpui::Hsla, cx: &App) -> AnyElement {
 /// The header's bottom edge, Cordata's one moving part: a hairline at rest, a short signal segment sweeping across it
 /// while the agent works, the attention colour from end to end when it needs you, the danger colour when the engine
 /// stopped. Everything else on screen stays still.
-pub fn live_line(status: Status, cx: &App) -> AnyElement {
+/// The header's bottom edge is the cord. While the agent works it is drawn in the signal colour, and its events send
+/// a pulse along it (`tug`, from `motion::Tugs`): one pass per burst, none while the agent is silent.
+pub fn live_line(status: Status, tug: u64, cx: &App) -> AnyElement {
     let tk = tk(cx);
     let base = div().absolute().left(px(0.)).right(px(0.)).bottom(px(0.)).h(px(1.));
     match status {
@@ -75,22 +76,12 @@ pub fn live_line(status: Status, cx: &App) -> AnyElement {
         Status::Closed => base.bg(c(tk.danger)).into_any_element(),
         Status::Running if !ui::motion(cx) => base.bg(c(tk.amber)).into_any_element(),
         Status::Running => {
-            let mut glow = c(tk.amber);
-            glow.a = 0.9;
-            base.bg(line(cx, t::LINE_SUBTLE))
-                .overflow_hidden()
-                .child(
-                    div()
-                        .absolute()
-                        .top(px(0.))
-                        .h(px(1.))
-                        .w(relative(0.22))
-                        .bg(glow)
-                        .with_animation("live-line", Animation::new(Duration::from_millis(1600)).repeat().with_easing(ease_in_out), |el, delta| {
-                            // From just off the left edge to just off the right.
-                            el.left(relative(-0.22 + 1.22 * delta))
-                        }),
-                )
+            // The cord holds 3:1 at rest; the pulse is the same colour at full strength and twice as thick, so it is
+            // told apart by size as well as brightness.
+            let pulse = div().absolute().bottom(px(0.)).h(px(2.)).w(relative(crate::motion::TUG_LEN)).bg(c(tk.amber));
+            div().absolute().left(px(0.)).right(px(0.)).bottom(px(0.)).h(px(2.)).overflow_hidden()
+                .child(base.bg(ca(tk.amber, t::LIVE_REST)))
+                .child(crate::motion::tug(pulse, "live-line", tug))
                 .into_any_element()
         }
         Status::Idle | Status::Connecting => base.bg(line(cx, t::LINE_SUBTLE)).into_any_element(),
@@ -126,7 +117,7 @@ impl Workspace {
             .pl(px(if sidebar_on { 24. } else { 78. }))
             .pr(px(12.))
             .overflow_hidden()
-            .child(live_line(status, cx))
+            .child(live_line(status, self.tugs.at(self.session.read(cx).version, std::time::Instant::now()), cx))
             .when(!sidebar_on, |row| {
                 row.child(
                     ui::icon_action("show-sidebar", gpui_kit_assets::IconName::PanelLeft, cx)
@@ -173,7 +164,7 @@ impl Workspace {
                             .bg(if self.desk_mode == super::DeskMode::Rack { ca(tk.amber, 0.16) } else { gpui::transparent_black() })
                             .text_color(c(if self.desk_mode == super::DeskMode::Rack { tk.amber } else { tk.text_muted }))
                             .hover(|s| s.text_color(c(tk.text_primary)))
-                            .tooltip(ui::tip("Supervisory Control Room & Agent Graph Canvas  ⌘0"))
+                            .tooltip(ui::tip("Every thread at once  ⌘0"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.desk_mode = super::DeskMode::Rack;
                                 super::sheet::record_ux_event("mode_switch", serde_json::json!({ "mode": "rack" }));
@@ -308,12 +299,12 @@ impl Workspace {
         let fix = starter("starter-fix", "Run the checks and fix what fails".into()).on_click(cx.listener(|this, _, window, cx| {
             this.apply_starter("Run the project's test suite and build checks, diagnose any failures, and propose clean fixes.", false, window, cx);
         }));
-        let open_canvas = starter("starter-canvas", "Open Supervisory Control Room & Agent Graph  ⌘0".into()).on_click(cx.listener(|this, _, _, cx| {
+        let open_canvas = starter("starter-canvas", "See every thread at once  ⌘0".into()).on_click(cx.listener(|this, _, _, cx| {
             this.toggle_rack(cx);
         }));
         let open_sheet = starter(
             "starter-sheet",
-            SharedString::from(format!("Open Proof-First Change Sheet ({} uncommitted file{})  ⌘D", dirty_count, if dirty_count == 1 { "" } else { "s" })),
+            SharedString::from(format!("Review what changed ({} uncommitted file{})  ⌘D", dirty_count, if dirty_count == 1 { "" } else { "s" })),
         )
         .on_click(cx.listener(|this, _, _, cx| this.toggle_change_sheet(cx)));
 
@@ -660,10 +651,11 @@ impl Workspace {
             .child(
                 div()
                     .flex()
-                    .items_center()
+                    .items_start()
                     .gap(px(8.))
-                    .child(ui::mark("gate-mark", ui::MarkState::NeedsYou, 13., cx))
-                    .child(div().text_size(px(t::TEXT_BODY)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(SharedString::from(shown(&sentence))))
+                    .child(div().pt(px(3.)).child(ui::mark("gate-mark", ui::MarkState::NeedsYou, 13., cx)))
+                    // A long path wraps inside the column; the question is never cut off by the window's edge.
+                    .child(div().flex_1().min_w_0().text_size(px(t::TEXT_BODY)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(SharedString::from(shown(&sentence))))
                     .when(self.saying, |row| row.child(ui::badge("type below · ↵ sends", Tone::Amber, cx))),
             )
             // An edit shows the change it asks about; anything else, its command or input.
@@ -753,9 +745,9 @@ impl Workspace {
                         .gap(px(10.))
                         .child(
                             div().flex().items_center().gap(px(6.))
-                                .child(ui::mark("hud-mark", if busy { MarkState::Working } else { MarkState::Idle }, 9., cx))
+                                .child(ui::mark_live("hud-mark", if busy { MarkState::Working } else { MarkState::Idle }, 9., self.session.read(cx).version, cx))
                                 .child(div().px(px(5.)).py(px(1.)).rounded(px(3.)).bg(ca(tk.amber, 0.15))
-                                    .font_family(mono(cx)).text_size(px(10.)).font_weight(FontWeight::BOLD).text_color(c(tk.amber))
+                                    .font_family(mono(cx)).text_size(px(t::TEXT_MIN)).font_weight(FontWeight::BOLD).text_color(c(tk.amber))
                                     .child(SharedString::from(format!("→ #{sel_slot}"))))
                         )
                         .child(
@@ -764,7 +756,7 @@ impl Workspace {
                         )
                         .child(
                             div().flex().items_center().gap(px(6.))
-                                .child(div().font_family(mono(cx)).text_size(px(9.)).text_color(c(tk.text_faint)).child(SharedString::from(format!("{send_key} steers #{sel_slot} · ⌘N new thread"))))
+                                .child(div().font_family(mono(cx)).text_size(px(t::TEXT_MIN)).text_color(c(tk.text_faint)).child(SharedString::from(format!("{send_key} steers #{sel_slot} · ⌘N new thread"))))
                                 .when(busy, |row| {
                                     row.child(ui::button("hud-stop", "Stop", Kind::Ghost, cx).on_click(cx.listener(|this, _, _, cx| this.session.update(cx, |s, cx| s.cancel(cx)))))
                                 })

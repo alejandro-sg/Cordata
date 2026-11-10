@@ -211,6 +211,8 @@ pub struct Workspace {
     pub(super) sheet_all_expanded: Option<bool>,
     /// Memoized desk & folded-row snapshot for the active session, avoiding per-frame message/diff scans at 120Hz.
     pub(super) desk_cache: DeskCache,
+    /// Paces the header cord's pulses to the shown thread's events.
+    pub(super) tugs: crate::motion::Tugs,
     /// Tool call ID of a high-risk gate whose challenge token was explicitly confirmed.
     pub(super) gate_unlocked: Option<String>,
     /// Inline feedback shown when a locked high-risk gate is triggered without token confirmation.
@@ -362,6 +364,11 @@ pub fn cordata_home() -> PathBuf {
 }
 
 impl Workspace {
+    /// A thread's event count (its session's `version`): what its mark beats to. 0 for a thread that is not open.
+    pub(super) fn beat_of(&self, index: usize, cx: &App) -> u64 {
+        self.sessions.get(index).map_or(0, |s| s.read(cx).version)
+    }
+
     pub fn new(connection: Connection, cwd: PathBuf, launch: Launch, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let cwd = cwd.canonicalize().unwrap_or(cwd);
         let Launch { prompt: initial_prompt, selftest, picker, show, control, shell, restore, store, open_folder } = launch;
@@ -551,6 +558,7 @@ impl Workspace {
             sheet_expanded_hunks: HashSet::new(),
             sheet_all_expanded: None,
             desk_cache: DeskCache::default(),
+            tugs: crate::motion::Tugs::default(),
             gate_unlocked: None,
             gate_hint: None,
             _subscriptions: subscriptions,
@@ -2194,8 +2202,8 @@ impl Render for Workspace {
                             if last_row && crate::ui::motion(cx) {
                                 gpui::AnimationExt::with_animation(
                                     div().relative().child(block),
-                                    ("arrive", ix), gpui::Animation::new(std::time::Duration::from_millis(200)).with_easing(gpui::ease_out_quint()), |el, t| {
-                                        el.opacity(t).top(px(6. * (1. - t)))
+                                    ("arrive", ix), gpui::Animation::new(crate::motion::SETTLE).with_easing(gpui::ease_out_quint()), |el, t| {
+                                        el.opacity(t).top(px(crate::motion::SETTLE_RISE * (1. - t)))
                                     },
                                 )
                                 .into_any_element()
@@ -2460,7 +2468,7 @@ pub fn install_menus(cx: &mut App) {
             MenuItem::action("Toggle Sidebar", ToggleSidebar),
             MenuItem::action("Toggle Panel", TogglePanel),
             MenuItem::action("Change Sheet / Transcript", ToggleDeck),
-            MenuItem::action("Supervisory Triage Rack", ToggleRack),
+            MenuItem::action("Every Thread at Once", ToggleRack),
             MenuItem::action("Terminal", ToggleTerminal),
             MenuItem::separator(),
             MenuItem::action("Show Thinking", ToggleThoughts),

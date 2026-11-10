@@ -145,71 +145,84 @@ pub fn icon_button(id: impl Into<ElementId>, glyph: &'static str, cx: &App) -> S
         .child(glyph)
 }
 
-/// The brand's one moving part, as text: the cursor cell and where it sits says the state by shape as well as colour
-/// (`app/assets/brand/README.md`, "State"). Used wherever a thread's state is shown — the rail, the gate, the receipt.
+/// What a thread is doing, said by the mark (`app/assets/brand/README.md`, "State"): the loop is the sandbox the agent
+/// works in, the gap is the gate where you stand, and the node is the live thing. Each state differs in shape and
+/// place as well as colour. Used wherever a thread's state is shown — the rail, the gate, the receipt, the field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MarkState {
-    /// Hollow cell in the mouth: nothing happening.
+    /// The open loop alone, dim: nothing happening.
     Idle,
-    /// Solid cell inside the ring: working, in the sandbox.
+    /// The node inside the loop: working, in the sandbox.
     Working,
-    /// Solid cell in the mouth: at the gate, waiting on you.
+    /// The node in the gap: at the gate, waiting on you.
     NeedsYou,
-    /// No cell; the ring closes: done.
+    /// No node; the loop closes: done.
     Done,
-    /// Cell split by a slash: something failed.
+    /// A slash across the gap: something failed.
     Error,
 }
 
-impl MarkState {
-    pub fn glyph(self) -> &'static str {
-        match self {
-            Self::Idle => "C▯",
-            Self::Working => "(█",
-            Self::NeedsYou => "C█",
-            Self::Done => "◯",
-            Self::Error => "C▚",
-        }
-    }
+const LOOP_OPEN: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none"><path d="M47.606 17.948A21 21 0 1 0 47.606 46.052" stroke="currentColor" stroke-width="7" stroke-linecap="round"/></svg>"#;
+const LOOP_CLOSED: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none"><circle cx="32" cy="32" r="21" stroke="currentColor" stroke-width="7"/></svg>"#;
+const NODE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><circle cx="32" cy="32" r="7" fill="currentColor"/></svg>"#;
+const SLASH: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none"><path d="M49.5 39.5L56.5 24.5" stroke="currentColor" stroke-width="5.5" stroke-linecap="round"/></svg>"#;
+/// How far the gate is from the loop's centre, as a share of the mark's width (21 of the 64 grid).
+const GATE: f32 = 21. / 64.;
+
+fn mark_layer(svg: &'static [u8], side: f32, colour: gpui::Hsla) -> gpui::Svg {
+    gpui::svg().data(svg).absolute().top(px(0.)).left(px(0.)).size(px(side)).text_color(colour)
 }
 
-/// The mark in a fixed-width mono box, in its state's colour. A working mark breathes (unless Reduce Motion is on).
+/// The mark in its state, still. `size` is the text size it sits beside.
 pub fn mark(id: impl Into<ElementId>, state: MarkState, size: f32, cx: &App) -> AnyElement {
+    mark_at(id, state, size, None, cx)
+}
+
+/// The mark for a thread whose events we see: `beat` is the thread's event count, and a working node lights on each
+/// one and dims between them (`motion::beat`). A thread that has stopped talking looks like it.
+pub fn mark_live(id: impl Into<ElementId>, state: MarkState, size: f32, beat: u64, cx: &App) -> AnyElement {
+    mark_at(id, state, size, Some(beat), cx)
+}
+
+fn mark_at(id: impl Into<ElementId>, state: MarkState, size: f32, beat: Option<u64>, cx: &App) -> AnyElement {
     let tk = tk(cx);
-    let ink = match state {
-        MarkState::Idle => ca(tk.text_primary, 0.38),
-        MarkState::Working => c(tk.amber),
-        MarkState::NeedsYou => c(tk.attention),
-        MarkState::Done => c(tk.text_secondary),
-        MarkState::Error => c(tk.danger),
+    // Never under 14px: below that the node and the gap close up.
+    let side = (size * 1.3).round().max(14.);
+    let (ring, ink) = match state {
+        MarkState::Idle => (LOOP_OPEN, ca(tk.text_primary, t::MARK_IDLE)),
+        MarkState::Done => (LOOP_CLOSED, c(tk.text_secondary)),
+        _ => (LOOP_OPEN, c(tk.text_primary)),
     };
-    let el = div()
-        .flex_shrink_0()
-        .w(px(size * 1.4))
-        .font_family(mono(cx))
-        .text_size(px(size))
-        .line_height(px(size * 1.2))
-        .text_color(ink)
-        .child(state.glyph());
-    if state == MarkState::Working && motion(cx) {
-        gpui::AnimationExt::with_animation(
-            el,
-            id,
-            gpui::Animation::new(std::time::Duration::from_millis(1800)).repeat().with_easing(gpui::ease_in_out),
-            |el, t| el.opacity(0.4 + 0.6 * (1.0 - (2.0 * t - 1.0).powi(2))),
-        )
-        .into_any_element()
-    } else {
-        el.into_any_element()
+    let el = div().relative().flex_shrink_0().size(px(side)).child(mark_layer(ring, side, ink));
+    match state {
+        MarkState::Working => {
+            let node = mark_layer(NODE, side, c(tk.amber));
+            el.child(match beat {
+                Some(beat) => crate::motion::beat(node, id, beat, cx),
+                None => node.into_any_element(),
+            })
+        }
+        // The node comes from inside the loop to the gate: the agent has come to you.
+        MarkState::NeedsYou => {
+            let (node, reach) = (mark_layer(NODE, side, c(tk.attention)), side * GATE);
+            el.child(if motion(cx) {
+                gpui::AnimationExt::with_animation(node, id, gpui::Animation::new(crate::motion::ARRIVE).with_easing(gpui::ease_out_quint()), move |el, t| el.left(px(reach * t))).into_any_element()
+            } else {
+                node.left(px(reach)).into_any_element()
+            })
+        }
+        MarkState::Error => el.child(mark_layer(SLASH, side, c(tk.danger))),
+        MarkState::Idle | MarkState::Done => el,
     }
+    .into_any_element()
 }
 
 /// Whether the window may animate: off when macOS Reduce Motion is on. Every animation asks this first.
 pub fn motion(cx: &App) -> bool {
-    !cx.try_global::<crate::platform::Display>().is_some_and(|d| d.reduce_motion)
+    crate::motion::on(cx)
 }
 
-/// A 24px icon action: one Lucide icon (the set embedded in `main.rs`), muted until hovered. Every action in the
+/// A 24px icon action: one of Cordata's icons (`icons.rs`), muted until hovered. Every action in the
 /// chrome uses these, so they share one stroke weight, size and baseline.
 pub fn icon_action(id: impl Into<ElementId>, icon: gpui_kit_assets::IconName, cx: &App) -> Stateful<Div> {
     let (hover, ink) = (line(cx, t::HOVER_STRONG), c(tk(cx).text_primary));
@@ -416,45 +429,16 @@ pub fn code_block(text: impl Into<SharedString>, cx: &App) -> Div {
         .child(text.into())
 }
 
-const MARK_RING_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="currentColor"><path d="M45 7.201A28 28 0 1 0 45 56.799V45.856A19 19 0 1 1 45 18.144Z"/></svg>"#;
-const MARK_CELL_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="currentColor"><path d="M49 20h10v24H49Z"/></svg>"#;
-
-/// The Cordata brand mark, adapting to light and dark themes.
-#[allow(dead_code)]
-pub fn cordata_mark(size: f32, cx: &App) -> AnyElement {
-    let t = tk(cx);
-    let ring_color = c(t.text_primary);
-    let cell_color = c(t.amber);
-    div()
-        .relative()
-        .size(px(size))
-        .child(
-            div()
-                .absolute()
-                .inset_0()
-                .child(gpui::svg().data(MARK_RING_SVG).size_full().text_color(ring_color)),
-        )
-        .child(
-            div()
-                .absolute()
-                .inset_0()
-                .child(gpui::svg().data(MARK_CELL_SVG).size_full().text_color(cell_color)),
-        )
-        .into_any_element()
-}
-
-/// The mark, flat: the ring as a mono `C` and the cell beside it in the signal colour — the same `C█` a terminal
-/// shows. No badge, glass or shadow: it is a piece of type, sized like the text around it.
+/// The logo: the loop in the ink and the node at the gate in the signal colour, flat — no badge, glass or shadow.
+/// `size` is the line it sits on.
 pub fn cordata_logo(size: f32, cx: &App) -> AnyElement {
     let tk = tk(cx);
+    let side = (size * 0.78).round();
     div()
-        .flex()
+        .relative()
         .flex_shrink_0()
-        .items_baseline()
-        .font_family(mono(cx))
-        .text_size(px(size * 0.62))
-        .line_height(px(size))
-        .child(div().text_color(c(tk.text_primary)).child("C"))
-        .child(div().text_color(c(tk.amber)).child("█"))
+        .size(px(side))
+        .child(mark_layer(LOOP_OPEN, side, c(tk.text_primary)))
+        .child(mark_layer(NODE, side, c(tk.amber)).left(px(side * GATE)))
         .into_any_element()
 }

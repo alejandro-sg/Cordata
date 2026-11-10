@@ -9,8 +9,10 @@
 mod control;
 mod detect;
 mod hud;
+mod icons;
 mod keychain;
 pub mod mcp_catalog;
+mod motion;
 mod platform;
 mod prefs;
 mod session;
@@ -88,17 +90,6 @@ fn parse_cordata_url(url: &str, args: &mut Args) {
     }
 }
 
-// The icons the window draws, embedded from Lucide (gpui-kit-assets); anything not listed loads nothing.
-gpui_kit_assets::icon_assets!(
-    Icons,
-    [
-        // Whole controls (each has a tooltip): search, the two panels, new thread, close, settings, attach, dictate, refresh.
-        Search, PanelLeft, PanelRight, SquarePen, X, Settings, Paperclip, Mic, RefreshCw,
-        // States you would otherwise read: a folder or a select open or closed.
-        ChevronDown, ChevronRight,
-    ]
-);
-
 /// Launched from Finder the working directory is `/`: the person's home is the honest default there.
 fn default_cwd() -> PathBuf {
     match std::env::current_dir() {
@@ -165,7 +156,7 @@ fn main() {
     let restore_wanted = prefs.restore_threads && args.prompt.is_none() && !args.selftest && !open_picker;
     let connection = Connection::discover();
 
-    gpui_platform::application().with_assets(Icons).run(move |cx: &mut App| {
+    gpui_platform::application().with_assets(icons::Icons).run(move |cx: &mut App| {
         cx.set_global(runtime);
         cx.set_global(display);
         cx.set_global(prefs.clone());

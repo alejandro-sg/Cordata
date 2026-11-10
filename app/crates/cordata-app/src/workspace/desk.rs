@@ -149,7 +149,7 @@ impl Workspace {
         let (running, waiting) = (view.turn_active, !view.pending.is_empty());
         let skipped = turns.len().saturating_sub(TAPE_STOPS);
         let joint = || div().w(px(18.)).h(px(1.)).flex_shrink_0().bg(line(cx, t::LINE_CONTROL_STRONG));
-        let mut row = div().flex().items_center().h(px(18.)).font_family(mono(cx)).text_size(px(10.));
+        let mut row = div().flex().items_center().h(px(18.)).font_family(mono(cx)).text_size(px(t::TEXT_MIN));
         if skipped > 0 {
             row = row.child(div().pr(px(6.)).text_color(c(tk.text_faint)).child(SharedString::from(format!("+{skipped}"))));
         }
@@ -159,7 +159,6 @@ impl Workspace {
                 row = row.child(joint());
             }
             let selected = self.selected_turn == Some(i);
-            let live = i == last && running && !waiting;
             let ink = if selected || (i == last && (running || waiting)) { c(tk.amber) } else { c(tk.text_muted) };
             let message = turn.message;
             let stop = div()
@@ -185,14 +184,7 @@ impl Workspace {
                     cx.notify();
                 }))
                 .child(if selected { "◉" } else { "●" });
-            row = row.child(if live && ui::motion(cx) {
-                gpui::AnimationExt::with_animation(stop, ("tape-live", i), gpui::Animation::new(std::time::Duration::from_millis(1600)).repeat().with_easing(gpui::ease_in_out), |el, t| {
-                    el.opacity(0.35 + 0.65 * (1.0 - (2.0 * t - 1.0).powi(2)))
-                })
-                .into_any_element()
-            } else {
-                stop.into_any_element()
-            });
+            row = row.child(stop);
         }
         if waiting {
             row = row.child(joint()).child(div().flex_shrink_0().px(px(2.)).text_color(c(tk.attention)).child("◆"));

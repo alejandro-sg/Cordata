@@ -118,12 +118,13 @@ impl Workspace {
             };
             let edge = if needs_you { c(tk.attention) } else if working { c(tk.amber) } else if sel == Some(slot) { c(tk.text_secondary) } else { line(cx, t::LINE_SUBTLE) };
             let (x, y) = cam.to_screen(n.x, n.y);
+            let beat = self.beat_of(item.index, cx);
             let card = div().id(("field-node", slot)).role(gpui::Role::Button).cursor_pointer().absolute().left(px(x)).top(px(y)).w(s(field::NODE_W)).h(s(field::NODE_H))
                 .px(s(14.)).rounded(s(14.)).border_1().border_color(edge).bg(c(tk.bg_panel)).overflow_hidden()
                 .flex().items_center().gap(s(10.))
                 .tooltip(ui::tip(format!("#{slot} {} · {}", item.title, item.now)))
                 .on_click(cx.listener(move |this, _, _, cx| this.field_click(slot, cx)))
-                .child(ui::mark(("field-mark", slot), mark, 12., cx))
+                .child(ui::mark_live(("field-mark", slot), mark, 12., beat, cx))
                 .child(div().flex_1().min_w_0().flex().flex_col().gap(s(3.))
                     .child(div().truncate().text_size(text(15.)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(SharedString::from(item.title.clone())))
                     .when(alt != Altitude::Fleet, |d| d.child(div().truncate().font_family(mono(cx)).text_size(text(t::TEXT_META))
@@ -491,7 +492,7 @@ impl Workspace {
         let folder = self.cwd.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
 
         let count = |n: usize, word: &'static str, col: gpui::Hsla| div().flex().items_baseline().gap(px(5.))
-            .child(div().text_size(px(18.)).text_color(if n > 0 { col } else { ca(tk.text_faint, 0.7) }).child(SharedString::from(n.to_string())))
+            .child(div().text_size(px(18.)).text_color(if n > 0 { col } else { c(tk.text_faint) }).child(SharedString::from(n.to_string())))
             .child(div().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.text_muted)).child(word));
         let top = div().flex().items_start().gap(px(24.)).pl(px(96.)).pr(px(20.)).py(px(10.)).border_b_1().border_color(line(cx, t::LINE_SUBTLE))
             .child(div().flex().flex_col().gap(px(2.)).w(px(150.)).pt(px(6.))

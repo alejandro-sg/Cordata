@@ -142,13 +142,13 @@ pub fn build(gates: &[GateIn], threads: &[ThreadIn], runs: &[RunIn]) -> Tray {
     let working = threads.iter().filter(|t| t.state == TabState::Working).count() + runs.iter().filter(|r| r.can_hold).count();
     let waiting = gates.len();
 
-    // Where the cell sits: in the mouth when you are needed, inside the ring while work runs, hollow when quiet.
+    // The mark as text: the node at the gate when you are needed, inside the loop while work runs, the bare loop when quiet.
     let (mark, said) = if waiting > 0 {
-        ("C█", format!("{} waiting on you", waiting))
+        ("C●", format!("{} waiting on you", waiting))
     } else if working > 0 {
-        ("(█", format!("{} working", working))
+        ("(•", format!("{} working", working))
     } else {
-        ("C▯", "all quiet".to_owned())
+        ("C", "all quiet".to_owned())
     };
     let count = if waiting > 0 { waiting } else if working > 1 { working } else { 0 };
     let title = if count > 0 { format!("{mark} {count}") } else { mark.to_owned() };
@@ -241,11 +241,11 @@ mod tests {
 
     #[test]
     fn the_mark_says_who_is_needed_then_who_is_working_then_nothing() {
-        assert_eq!(build(&[], &[], &[]).title, "C▯");
-        assert_eq!(build(&[], &[thread(1, TabState::Working)], &[]).title, "(█", "one working: no count");
-        assert_eq!(build(&[], &[thread(1, TabState::Working), thread(2, TabState::Working)], &[]).title, "(█ 2");
+        assert_eq!(build(&[], &[], &[]).title, "C");
+        assert_eq!(build(&[], &[thread(1, TabState::Working)], &[]).title, "(•", "one working: no count");
+        assert_eq!(build(&[], &[thread(1, TabState::Working), thread(2, TabState::Working)], &[]).title, "(• 2");
         let t = build(&[gate(1, false), gate(2, false)], &[thread(3, TabState::Working)], &[]);
-        assert_eq!(t.title, "C█ 2", "waiting on you outranks working");
+        assert_eq!(t.title, "C● 2", "waiting on you outranks working");
         assert_eq!(t.tooltip, "Cordata: 2 waiting on you, 1 working");
         assert_eq!(build(&[], &[], &[]).tooltip, "Cordata: all quiet");
     }
@@ -254,8 +254,8 @@ mod tests {
     fn a_live_run_counts_as_working_and_a_held_one_does_not() {
         let live = RunIn { run_id: "run-a".into(), goal: "g".into(), state: "execute".into(), can_hold: true, can_resume: false, last_handoff: None };
         let held = RunIn { run_id: "run-b".into(), goal: "g".into(), state: "paused".into(), can_hold: false, can_resume: true, last_handoff: None };
-        assert_eq!(build(&[], &[], &[live.clone()]).title, "(█");
-        assert_eq!(build(&[], &[], &[held.clone()]).title, "C▯");
+        assert_eq!(build(&[], &[], std::slice::from_ref(&live)).title, "(•");
+        assert_eq!(build(&[], &[], std::slice::from_ref(&held)).title, "C");
         let t = build(&[], &[], &[live, held]);
         assert_eq!(actions(&t)[..2], ["hold:run-a", "resume:run-b"]);
     }

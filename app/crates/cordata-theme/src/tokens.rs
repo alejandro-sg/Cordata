@@ -39,7 +39,7 @@ pub struct Tokens {
     pub text_muted_2: Rgb,
     /// Section labels.
     pub text_label: Rgb,
-    /// Shortcuts, meta.
+    /// Shortcuts, meta, group labels: the quietest ink that is still read, so it holds AA (4.5:1) like the rest.
     pub text_faint: Rgb,
     /// The faintest meta.
     pub text_faint_2: Rgb,
@@ -84,7 +84,7 @@ pub const T2049: Tokens = Tokens {
     text_muted: Rgb::hex(0x878D95),
     text_muted_2: Rgb::hex(0x7A8088),
     text_label: Rgb::hex(0x6E747C),
-    text_faint: Rgb::hex(0x626870),
+    text_faint: Rgb::hex(0x7B8188),
     text_faint_2: Rgb::hex(0x50565D),
     amber: Rgb::hex(0x3DC9A4),
     amber_hover: Rgb::hex(0x56D4B3),
@@ -115,7 +115,7 @@ pub const GRAPHITE: Tokens = Tokens {
     text_muted: Rgb::hex(0x8E8E8E),
     text_muted_2: Rgb::hex(0x7C7C7C),
     text_label: Rgb::hex(0x6E6E6E),
-    text_faint: Rgb::hex(0x626262),
+    text_faint: Rgb::hex(0x828282),
     text_faint_2: Rgb::hex(0x515151),
     ..T2049
 };
@@ -134,7 +134,7 @@ pub const DIM: Tokens = Tokens {
     text_muted: Rgb::hex(0x9A968E),
     text_muted_2: Rgb::hex(0x8A867F),
     text_label: Rgb::hex(0x7A766F),
-    text_faint: Rgb::hex(0x6E6A64),
+    text_faint: Rgb::hex(0x8C8881),
     text_faint_2: Rgb::hex(0x5E5A55),
     ..T2049
 };
@@ -156,7 +156,7 @@ pub const DAY: Tokens = Tokens {
     text_muted: Rgb::hex(0x565C65),
     text_muted_2: Rgb::hex(0x5F656D),
     text_label: Rgb::hex(0x666C74),
-    text_faint: Rgb::hex(0x70767E),
+    text_faint: Rgb::hex(0x666B73),
     text_faint_2: Rgb::hex(0x868B92),
     amber: Rgb::hex(0x0A6553),
     amber_hover: Rgb::hex(0x0C735F),
@@ -336,7 +336,7 @@ pub const TEXT_SMALL: f32 = 13.;
 pub const TEXT_META: f32 = 12.;
 pub const TEXT_STATUS: f32 = 11.5;
 pub const TEXT_LABEL: f32 = 11.;
-pub const TEXT_TAG: f32 = 10.5;
+pub const TEXT_TAG: f32 = 11.;
 pub const TEXT_SETTINGS_TITLE: f32 = 16.5;
 pub const TEXT_EMPTY: f32 = 24.;
 pub const TEXT_LOGO: f32 = 13.;
@@ -379,6 +379,14 @@ pub fn tracked_text(text: &str, tracking: Tracking, upper: bool) -> String {
     out
 }
 
+/// The mark's loop when nothing is happening: the ink at this strength. Dim, but a shape you can still find (3:1).
+pub const MARK_IDLE: f32 = 0.55;
+/// What a live thing rests at between the agent's events — the mark's node, the header's cord — as a share of the
+/// signal colour. An event lifts it to 1. Still 3:1 on every ground, so "working but quiet" is never invisible.
+pub const LIVE_REST: f32 = 0.7;
+/// The smallest text the window sets, in px.
+pub const TEXT_MIN: f32 = 11.;
+
 /// Fonts. The app bundles Geist when its files are present (`app/assets/fonts`); otherwise the system's.
 pub mod fonts {
     pub const SANS: &str = "Geist";
@@ -399,12 +407,40 @@ mod tests {
         for theme in THEMES {
             for t in [*theme, theme.high_contrast()] {
                 for ground in [t.bg_window, t.bg_main, t.bg_panel, t.bg_nav_deep, t.bg_input] {
-                    for (name, ink) in [("primary", t.text_primary), ("body", t.text_body), ("secondary", t.text_secondary), ("muted", t.text_muted)] {
+                    for (name, ink) in [("primary", t.text_primary), ("body", t.text_body), ("secondary", t.text_secondary), ("muted", t.text_muted), ("faint", t.text_faint)] {
                         let ratio = ink.contrast(ground);
                         assert!(ratio >= 4.5, "{} {name} on {}: {ratio:.2}", t.name, ground.css());
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn the_mark_is_found_in_every_state_on_every_ground() {
+        for theme in THEMES {
+            for t in [*theme, theme.high_contrast()] {
+                for ground in [t.bg_window, t.bg_main, t.bg_panel, t.bg_nav_deep, t.bg_input] {
+                    let shapes = [
+                        ("idle loop", t.text_primary.over(ground, f64::from(MARK_IDLE))),
+                        ("resting node", t.amber.over(ground, f64::from(LIVE_REST))),
+                        ("needs-you node", t.attention),
+                        ("done loop", t.text_secondary),
+                        ("error slash", t.danger),
+                    ];
+                    for (name, ink) in shapes {
+                        let ratio = ink.contrast(ground);
+                        assert!(ratio >= 3.0, "{} {name} on {}: {ratio:.2}", t.name, ground.css());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn no_type_size_is_under_the_minimum() {
+        for size in [TEXT_BODY, TEXT_TITLE, TEXT_UI, TEXT_SMALL, TEXT_META, TEXT_STATUS, TEXT_LABEL, TEXT_TAG, TEXT_LOGO] {
+            assert!(size >= TEXT_MIN, "{size}");
         }
     }
 

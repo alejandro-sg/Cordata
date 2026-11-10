@@ -680,23 +680,13 @@ pub fn activity_summary(a: &Activity) -> String {
 }
 
 /// A folded run of quiet tool calls (docs/auto-mode.md §1.1): one compact row with its counts and the newest target,
-/// a pulsing dot while the newest call runs. `body` (the member blocks) shows under it when it is open.
+/// a dot lit by each new call while the run is live. `body` (the member blocks) shows under it when it is open.
 pub fn activity(a: &Activity, expanded: bool, body: Vec<AnyElement>, cx: &App) -> AnyElement {
     let tk = tk(cx);
     let row_hover = line(cx, t::HOVER);
     let dot = div().w(px(12.)).flex_shrink_0().text_color(c(if a.running { tk.amber } else { tk.text_faint })).child(if a.running { "●" } else { "✓" });
-    let dot: AnyElement = if a.running && crate::ui::motion(cx) {
-        gpui::AnimationExt::with_animation(
-            dot,
-            ("activity-dot", a.first),
-            gpui::Animation::new(std::time::Duration::from_millis(1200)).repeat().with_easing(gpui::ease_in_out),
-            // Up and back down once a cycle: a breath, not a blink.
-            |el, t| el.opacity(0.35 + 0.65 * (1. - (2. * t - 1.).abs())),
-        )
-        .into_any_element()
-    } else {
-        dot.into_any_element()
-    };
+    // Lit by each call that joins the run, dimming between them: it goes still when the agent does.
+    let dot: AnyElement = if a.running { crate::motion::beat(dot, ("activity-dot", a.first), (a.tools() + a.thoughts) as u64, cx) } else { dot.into_any_element() };
     let hint = a.hint.as_deref().map(|h| cut(&shown(h))).unwrap_or_default();
     // Not a card: one line of the log, hanging off the same margin rule its calls use when opened.
     div()

@@ -411,20 +411,9 @@ fn group_label(text: &'static str, cx: &gpui::App) -> AnyElement {
     div().px(px(8.)).pt(px(8.)).pb(px(2.)).text_size(px(t::TEXT_LABEL)).text_color(c(tk(cx).text_faint)).child(text).into_any_element()
 }
 
-/// The live dot: the signal colour, breathing (still under Reduce Motion).
+/// The live dot: the signal colour, still — the seconds beside it are what moves.
 fn pulse(cx: &gpui::App) -> AnyElement {
-    let dot = div().size(px(6.)).rounded_full().bg(c(tk(cx).amber));
-    if crate::ui::motion(cx) {
-        gpui::AnimationExt::with_animation(
-            dot,
-            "meter-pulse",
-            gpui::Animation::new(std::time::Duration::from_millis(1400)).repeat().with_easing(gpui::ease_in_out),
-            |el, t| el.opacity(0.35 + 0.65 * (1.0 - (t * 2.0 - 1.0).abs())),
-        )
-        .into_any_element()
-    } else {
-        dot.into_any_element()
-    }
+    div().size(px(6.)).rounded_full().bg(c(tk(cx).amber)).into_any_element()
 }
 
 fn fill_colour(share: f64, cx: &gpui::App) -> Hsla {
