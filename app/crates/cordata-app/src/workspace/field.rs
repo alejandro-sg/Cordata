@@ -24,7 +24,7 @@ use gpui::{
 };
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::Workspace;
 use super::sheet::DeskMode;
@@ -34,6 +34,12 @@ use crate::ui::{self, Kind, MarkState};
 /// One wheel notch of zoom, and the step of the − / + buttons.
 const WHEEL_ZOOM: f32 = 0.004;
 const BUTTON_ZOOM: f32 = 1.25;
+/// World offset of everything on the field, so nothing sits against the window's edge.
+const PAD_X: f32 = 28.;
+const PAD_Y: f32 = 16.;
+/// The attention rail's width, and the window width under which it shows only when it has something to say.
+const RAIL_W: f32 = 284.;
+const RAIL_FROM: f32 = 1000.;
 
 fn touch_word(touch: Touch) -> &'static str {
     match touch {
@@ -58,6 +64,16 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Show the whole field: every thread and run in view at once.
+    pub(super) fn field_fit(&mut self, cx: &mut Context<Self>) {
+        let inputs = self.lane_inputs(cx);
+        let laid = field::layout(&inputs, &[]).with_runs(&self.field_runs);
+        let size = self.field_bounds.get().size;
+        // Chips and gates hang under nodes and the tape covers the bottom edge: leave them room.
+        self.field_cam = field::Camera::fit(laid.w + 2.0 * PAD_X, laid.h + 2.0 * PAD_Y + 120.0, f32::from(size.width), f32::from(size.height) - 40.0);
+        cx.notify();
+    }
+
     /// The − 100% + control for the deck's header: zoom without a wheel.
     pub(super) fn field_zoom_control(&self, cx: &mut Context<Self>) -> AnyElement {
         let tk = tk(cx);
@@ -65,9 +81,11 @@ impl Workspace {
             .child(ui::button("field-zoom-out", "−", Kind::Ghost, cx).on_click(cx.listener(|this, _, _, cx| this.field_zoom_step(1.0 / BUTTON_ZOOM, cx))))
             .child(div().id("field-zoom-reset").role(gpui::Role::Button).cursor_pointer().w(px(44.)).text_center().font_family(mono(cx)).text_size(px(t::TEXT_META))
                 .text_color(c(tk.text_muted)).hover(|s| s.text_color(c(tk.text_primary)))
+                .tooltip(ui::tip("Back to the starting view"))
                 .on_click(cx.listener(|this, _, _, cx| this.field_reset(cx)))
                 .child(SharedString::from(format!("{:.0}%", self.field_cam.zoom * 100.0))))
             .child(ui::button("field-zoom-in", "+", Kind::Ghost, cx).on_click(cx.listener(|this, _, _, cx| this.field_zoom_step(BUTTON_ZOOM, cx))))
+            .child(ui::button("field-fit", "Fit", Kind::Ghost, cx).tooltip(ui::tip("Show every thread and run at once")).on_click(cx.listener(|this, _, _, cx| this.field_fit(cx))))
             .into_any_element()
     }
 
@@ -80,14 +98,13 @@ impl Workspace {
         // In the Canvas / Diagram mode, all open agent threads are living nodes in the network constellation.
         let laid = field::layout(inputs, zones).with_runs(&self.field_runs);
         let runs_els = self.run_elements(&laid, alt, cx);
+        let wide = laid.w * z + cam.x > f32::from(self.field_bounds.get().size.width);
         let tape = self.run_tape(cx);
         // World length to screen length; text follows the zoom but never drops under a readable size.
         let s = |v: f32| px(v * z);
         let text = |base: f32| px((base * z).clamp(11., base * 1.5));
 
-        // Offset content by 28px in world space so it never clips against the left window border
-        let pad_x = 28.0;
-        let pad_y = 16.0;
+        let (pad_x, pad_y) = (PAD_X, PAD_Y);
 
         // Blueprint constellation grid dots
         let mut grid_dots: Vec<AnyElement> = Vec::new();
@@ -109,17 +126,10 @@ impl Workspace {
                 .bg(ca(tk.bg_panel, 0.55))
                 // Territory header & coordinate marker
                 .child(
-                    div().absolute().top(s(8.)).left(s(12.)).right(s(12.)).flex().items_center().justify_between()
-                        .child(
-                            div().flex().items_center().gap(s(6.))
-                                .child(div().text_size(text(12.)).text_color(c(tk.amber)).child("⬡"))
-                                .child(div().font_family(mono(cx)).text_size(text(t::TEXT_META)).font_weight(FontWeight::SEMIBOLD).text_color(c(tk.text_primary)).child(SharedString::from(tr.place.to_string())))
-                        )
-                        .child(
-                            div().flex().items_center().gap(s(6.))
-                                .child(div().size(s(5.)).rounded_full().bg(c(tk.teal)))
-                                .child(div().font_family(mono(cx)).text_size(text(10.)).text_color(c(tk.text_faint)).child("open"))
-                        )
+                    // Zoomed out, the name keeps its readable size, so it moves up to stay clear of the first node.
+                    div().absolute().top(px((field::HEAD * z - 15.).min(8. * z).max(1.))).left(s(12.)).right(s(12.)).flex().items_center().justify_between().gap(px(6.))
+                        .child(div().truncate().font_family(mono(cx)).text_size(text(t::TEXT_META)).font_weight(FontWeight::SEMIBOLD).text_color(c(tk.text_primary)).child(SharedString::from(tr.place.to_string())))
+                        .child(div().flex_shrink_0().font_family(mono(cx)).text_size(text(t::TEXT_META)).text_color(c(tk.text_muted)).child("folder"))
                 )
                 // Guide rope running down the gutter
                 .child(
@@ -202,11 +212,12 @@ impl Workspace {
                         .child(div().flex().items_baseline().gap(s(6.)).font_family(mono(cx)).text_size(text(t::TEXT_META))
                             .child(div().flex_shrink_0().text_color(c(tk.text_muted)).child(SharedString::from(format!("#{slot}"))))
                             .child(div().flex_shrink_0().text_color(status_badge.1).child(status_badge.0)))
-                        .when(alt != Altitude::Fleet, |d| {
+                        // What it is doing now; left out when that only repeats the status word above it.
+                        .when(alt != Altitude::Fleet && !item.now.is_empty() && item.now != status_badge.0, |d| {
                             d.child(
                                 div().line_clamp(2).text_ellipsis().font_family(mono(cx)).text_size(text(t::TEXT_META))
                                     .text_color(if needs_you { c(tk.attention) } else if working { c(tk.amber) } else { c(tk.text_muted) })
-                                    .child(SharedString::from(if !item.now.is_empty() { item.now.clone() } else { "waiting for you to steer".to_owned() }))
+                                    .child(SharedString::from(item.now.clone()))
                             )
                         })
                 );
@@ -229,7 +240,7 @@ impl Workspace {
                     .bg(ca(tk.attention, 0.08))
                     .child(
                         div().flex().items_center().gap(s(6.))
-                            .child(div().font_family(mono(cx)).text_size(text(10.)).text_color(c(tk.attention)).child("▲ GATE APPROVAL"))
+                            .child(div().font_family(mono(cx)).text_size(text(10.)).text_color(c(tk.attention)).child("needs your decision"))
                     )
                     .child(div().truncate().font_family(mono(cx)).text_size(text(t::TEXT_META)).text_color(c(tk.text_primary)).child(SharedString::from(shown(&title))))
                     .child(div().flex().items_center().gap(px(6.))
@@ -302,6 +313,11 @@ impl Workspace {
             .child(div().absolute().right(px(16.)).bottom(px(56.)).child(self.field_zoom_control(cx)))
             .when_some(tape, |d, t| d.child(t))
             .when(empty, |d| d.child(div().p(px(24.)).text_color(c(tk.text_muted)).text_size(px(t::TEXT_SMALL)).child("Nothing needs you and nothing is moving.")))
+            // Something stands past the right edge: say so, and offer the way to see it.
+            .when(wide && !empty, |d| d.child(div().id("field-more").role(gpui::Role::Button).cursor_pointer().absolute().right(px(16.)).bottom(px(92.)).px(px(8.)).py(px(3.)).rounded(px(t::RADIUS_CONTROL))
+                .border_1().border_color(line(cx, t::LINE_DEFAULT)).bg(c(tk.bg_panel)).font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.text_secondary))
+                .hover(|s| s.text_color(c(tk.text_primary)))
+                .on_click(cx.listener(|this, _, _, cx| this.field_fit(cx))).child("more to the right · show all")))
             .into_any_element()
     }
 }
@@ -354,8 +370,17 @@ impl Workspace {
             let (found, note) = runtime.spawn_blocking(move || read_runs(&cwd)).await.unwrap_or_default();
             let _ = this.update(cx, |this, cx| {
                 this.field_runs_busy = false;
+                // A read that failed saw nothing; only a good one may count as "nothing changed" or "this changed".
+                if note.is_none() {
+                    this.field_pulse.observe(&found, Instant::now());
+                }
                 if this.field_runs != found || this.field_runs_note != note {
+                    // Runs showing up where there were none, in a view you have not moved: bring them into it.
+                    let arrived = this.field_runs.is_empty() && !found.is_empty() && this.field_cam == field::Camera::default();
                     this.field_runs = found;
+                    if arrived && f32::from(this.field_bounds.get().size.width) > 0.0 {
+                        this.field_fit(cx);
+                    }
                     // A failed read keeps what the last good one said; its reason shows instead of the hold note.
                     this.field_runs_note = note.or_else(|| this.field_runs_note.take().filter(|n| n.starts_with("hold") || n.starts_with("resum")));
                     cx.notify();
@@ -427,17 +452,30 @@ impl Workspace {
         let bar_text = self.composer.read(cx).value().trim().to_string();
         let mut out: Vec<AnyElement> = Vec::new();
 
+        let at = |wx: f32, wy: f32| cam.to_screen(wx + PAD_X, wy + PAD_Y);
+        let (now, moving) = (Instant::now(), crate::motion::on(cx));
+
         for rt in &laid.runs {
             let Some(run) = self.field_runs.get(rt.run) else { continue };
             let rid = rt.run;
-            let (x, y) = cam.to_screen(rt.x, rt.y);
+            let (x, y) = at(rt.x, rt.y);
             let mark = match run.state.as_str() {
                 "done" => MarkState::Done,
                 "failed" | "cancelled" | "budget_exhausted" => MarkState::Error,
                 "paused" => MarkState::Idle,
                 _ => MarkState::Working,
             };
-            let state_word = if run.state == "paused" { "held".to_owned() } else { run.state.clone() };
+            let state_word = match run.state.as_str() {
+                "paused" => "held".to_owned(),
+                "budget_exhausted" => "out of budget".to_owned(),
+                "research" => "reading the project".to_owned(),
+                "plan" => "planning".to_owned(),
+                "execute" => "working".to_owned(),
+                "harden" => "hardening".to_owned(),
+                "audit" => "checking the result".to_owned(),
+                other => other.to_owned(),
+            };
+            let done = run.steps.iter().filter(|s| s.status == "completed").count();
             let buttons = (alt != Altitude::Fleet).then(|| {
                 let id = run.run_id.clone();
                 let mut row = div().flex().flex_wrap().items_center().gap(px(6.));
@@ -465,43 +503,96 @@ impl Workspace {
                 row
             });
             out.push(
-                div().id(("field-run", rid)).absolute().left(px(x)).top(px(y)).w(s(rt.w)).h(s(rt.h)).rounded(px(4.)).border_1().border_color(if run.can_hold() { ca(tk.amber, 0.5) } else { line(cx, t::LINE_SUBTLE) })
-                    .child(div().absolute().left(s(12.)).top(s(10.)).w(s(rt.w - 24.)).flex().flex_col().gap(s(6.))
+                div().id(("field-run", rid)).absolute().left(px(x)).top(px(y)).w(s(rt.w)).h(s(rt.h)).rounded(px(6.)).border_1()
+                    .border_color(if run.can_hold() { ca(tk.amber, 0.5) } else { line(cx, t::LINE_DEFAULT) }).bg(ca(tk.bg_panel, 0.55))
+                    .child(div().absolute().left(s(12.)).top(s(8.)).w(s(rt.w - 24.)).flex().flex_col().gap(s(6.))
                         .child(div().flex().items_center().gap(px(8.))
                             .child(ui::mark(("run-mark", rid), mark, 12., cx))
-                            .child(div().font_family(mono(cx)).text_size(text(t::TEXT_META)).text_color(c(tk.text_muted)).child(SharedString::from(format!("run · {state_word}")))))
-                        .child(div().line_clamp(3).text_ellipsis().text_size(text(14.)).line_height(gpui::relative(1.25)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(SharedString::from(run.goal.clone())))
+                            .child(div().flex_1().min_w_0().truncate().font_family(mono(cx)).text_size(text(t::TEXT_META)).font_weight(FontWeight::SEMIBOLD).text_color(c(tk.text_primary))
+                                .child(SharedString::from(format!("run · {state_word}"))))
+                            .child(div().flex_shrink_0().font_family(mono(cx)).text_size(text(t::TEXT_META)).text_color(c(tk.text_muted))
+                                .child(SharedString::from(format!("{done} of {} steps done", run.steps.len())))))
+                        .child(div().id(("run-goal", rid)).line_clamp(3).text_ellipsis().text_size(text(14.)).line_height(gpui::relative(1.25)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary))
+                            .tooltip(ui::tip(format!("{} · {}", run.run_id, run.goal))).child(SharedString::from(run.goal.clone())))
                         .when_some(buttons, |d, b| d.child(b)))
                     .into_any_element(),
             );
         }
 
+        // The cords between steps: which step waits on which. Drawn under the steps, so a cord that passes a step
+        // it does not stop at goes behind it.
+        let mut knots: Vec<AnyElement> = Vec::new();
+        for e in &laid.edges {
+            let Some(run) = self.field_runs.get(e.run) else { continue };
+            let (Some(from), Some(to)) = (run.steps.get(e.from), run.steps.get(e.to)) else { continue };
+            // Work has passed along this cord once the step above finished and this one started.
+            let lit = from.status == "completed" && matches!(to.status.as_str(), "running" | "completed");
+            let (ink, thick) = if lit { (ca(tk.amber, 0.75), 2.0) } else { (ca(tk.text_muted, 0.55), 1.0) };
+            // Zoomed out, handoffs are not drawn, so the cord leaves from the step itself.
+            let leave = if alt == Altitude::Fleet { laid.steps.iter().find(|n| n.run == e.run && n.step == e.from).map_or(e.y0, |n| n.y + field::STEP_H) } else { e.y0 };
+            let ((x0, y0), (x1, y1), (_, ym)) = (at(e.x0, leave), at(e.x1, e.y1), at(e.x0, e.mid));
+            let (la, lb, lc) = ((ym - y0).max(0.0), (x1 - x0).abs(), (y1 - ym).max(0.0));
+            let total = la + lb + lc;
+            let id = e.run * 1_000_000 + e.from * 1000 + e.to;
+            let down = div().absolute().left(px(x0 - thick / 2.0)).top(px(y0)).w(px(thick)).bg(ink);
+            let across = div().absolute().top(px(ym - thick / 2.0)).h(px(thick)).bg(ink);
+            let drop = div().absolute().left(px(x1 - thick / 2.0)).top(px(ym)).w(px(thick)).bg(ink);
+            // It draws itself only when a poll has just seen the step start; any other time it is simply there.
+            let started = (moving && lit && to.status == "running").then(|| self.field_pulse.started(&run.run_id, &to.id, now)).flatten();
+            match started {
+                Some(seq) => {
+                    let rightward = x1 >= x0;
+                    out.push(crate::motion::flow(down, ("edge-a", id), seq, move |el, p| el.h(px(la * crate::motion::piece(p, 0.0, la, total)))));
+                    out.push(crate::motion::flow(across, ("edge-b", id), seq, move |el, p| {
+                        let w = lb * crate::motion::piece(p, la, lb, total);
+                        el.w(px(w)).left(px(if rightward { x0 } else { x0 - w }))
+                    }));
+                    out.push(crate::motion::flow(drop, ("edge-c", id), seq, move |el, p| el.h(px(lc * crate::motion::piece(p, la + lb, lc, total)))));
+                }
+                None => {
+                    out.push(down.h(px(la)).into_any_element());
+                    if lb > 0.0 {
+                        out.push(across.left(px(x0.min(x1))).w(px(lb)).into_any_element());
+                    }
+                    out.push(drop.h(px(lc)).into_any_element());
+                }
+            }
+            // The knot where the cord ties on to the step.
+            knots.push(div().absolute().left(px(x1 - 3.0)).top(px(y1 - 3.0)).size(px(6.)).rounded_full().bg(if lit { c(tk.amber) } else { c(tk.text_muted) }).into_any_element());
+        }
+
         for sn in &laid.steps {
             let Some(run) = self.field_runs.get(sn.run) else { continue };
             let Some(step) = run.steps.get(sn.step) else { continue };
+            let key = sn.run * 1000 + sn.step;
+            let running = step.status == "running";
+            // A running step's node lights each time a poll sees it change, and rests between: the same beat a
+            // thread has, at the pace the run can be read.
             let mark = match step.status.as_str() {
-                "running" => MarkState::Working,
-                "completed" => MarkState::Done,
-                "failed" => MarkState::Error,
-                _ => MarkState::Idle,
+                "running" => ui::mark_live(("step-mark", key), MarkState::Working, 12., self.field_pulse.count(&run.run_id, &step.id), cx),
+                "completed" => ui::mark(("step-mark", key), MarkState::Done, 12., cx),
+                "failed" => ui::mark(("step-mark", key), MarkState::Error, 12., cx),
+                _ => ui::mark(("step-mark", key), MarkState::Idle, 12., cx),
             };
-            let edge = if step.status == "running" { c(tk.amber) } else { line(cx, t::LINE_SUBTLE) };
-            let (x, y) = cam.to_screen(sn.x, sn.y);
-            let step_id = step.id.clone();
+            let (edge, ground) = match step.status.as_str() {
+                "running" => (c(tk.amber), ca(tk.amber, 0.08)),
+                "failed" => (c(tk.danger), c(tk.bg_panel)),
+                _ => (line(cx, t::LINE_DEFAULT), c(tk.bg_panel)),
+            };
+            let said = runs::step_line(run, step);
+            let (x, y) = at(sn.x, sn.y);
             out.push(
-                div().id(("field-step", sn.run * 1000 + sn.step)).absolute().left(px(x)).top(px(y)).w(s(field::NODE_W)).h(s(field::STEP_H))
-                    .px(s(14.)).rounded(s(14.)).border_1().border_color(edge).bg(c(tk.bg_panel)).overflow_hidden()
+                div().id(("field-step", key)).absolute().left(px(x)).top(px(y)).w(s(field::NODE_W)).h(s(field::STEP_H))
+                    .px(s(12.)).rounded(s(6.)).border_1().border_color(edge).bg(c(tk.bg_main)).overflow_hidden()
+                    .child(div().absolute().size_full().top_0().left_0().bg(ground))
                     .flex().items_center().gap(s(10.))
-                    .tooltip(ui::tip(format!("{} · {}{}", step.name, step.status, if step.scope.is_empty() { String::new() } else { format!(" · scope {}", step.scope.join(", ")) })))
-                    .child(ui::mark(("step-mark", sn.run * 1000 + sn.step), mark, 12., cx))
-                    .child(div().flex_1().min_w_0().flex().flex_col().gap(s(3.))
-                        .child(div().line_clamp(2).text_ellipsis().text_size(text(14.)).line_height(gpui::relative(1.25)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(SharedString::from(format!("{step_id} {}", step.name))))
-                        .when(alt != Altitude::Fleet, |d| d.child(div().truncate().font_family(mono(cx)).text_size(text(t::TEXT_META)).text_color(c(tk.text_muted))
-                            .child(SharedString::from(match (&step.worker, step.attempts) {
-                                (Some(w), n) if n > 1 => format!("{w} · try {n}"),
-                                (Some(w), _) => w.clone(),
-                                (None, _) => step.status.clone(),
-                            })))))
+                    .tooltip(ui::tip(format!("{} {} · {said}{}", step.id, step.name, if step.scope.is_empty() { String::new() } else { format!(" · may edit {}", step.scope.join(", ")) })))
+                    .child(div().relative().flex_shrink_0().child(mark))
+                    .child(div().relative().flex_1().min_w_0().flex().flex_col().gap(s(3.))
+                        .child(div().line_clamp(2).text_ellipsis().text_size(text(14.)).line_height(gpui::relative(1.25)).font_weight(FontWeight::MEDIUM)
+                            .text_color(if step.status == "pending" { c(tk.text_secondary) } else { c(tk.text_primary) }).child(SharedString::from(format!("{} {}", step.id, step.name))))
+                        .when(alt != Altitude::Fleet, |d| d.child(div().truncate().font_family(mono(cx)).text_size(text(t::TEXT_META))
+                            .text_color(if running { c(tk.amber) } else if step.status == "failed" { c(tk.danger) } else { c(tk.text_muted) }).child(SharedString::from(said)))))
                     .into_any_element(),
             );
             if alt == Altitude::Fleet {
@@ -509,11 +600,11 @@ impl Workspace {
             }
             for (hi, h_ix) in sn.handoffs.iter().enumerate() {
                 let Some(h) = run.handoffs.get(*h_ix) else { continue };
-                let (hx, hy) = cam.to_screen(sn.x, sn.y + field::STEP_H + 6.0 + hi as f32 * field::HANDOFF_H);
+                let (hx, hy) = at(sn.x, sn.y + field::STEP_H + 6.0 + hi as f32 * field::HANDOFF_H);
                 let you = h.reason == "user_pause";
                 out.push(
                     div().id(("field-handoff", sn.run * 10_000 + sn.step * 100 + hi)).absolute().left(px(hx)).top(px(hy)).w(s(field::NODE_W)).h(s(field::HANDOFF_H - 4.))
-                        .px(s(8.)).rounded(px(2.)).border_1().border_color(if you { c(tk.attention) } else { line(cx, t::LINE_SUBTLE) }).flex().items_center()
+                        .px(s(8.)).rounded(px(2.)).border_1().border_color(if you { c(tk.attention) } else { line(cx, t::LINE_SUBTLE) }).bg(c(tk.bg_main)).flex().items_center()
                         .font_family(mono(cx)).text_size(text(t::TEXT_TAG)).text_color(if you { c(tk.attention) } else { c(tk.text_secondary) })
                         .tooltip(ui::tip(format!("{} → {} · {} · step {}", h.from, h.to.clone().unwrap_or_else(|| "next worker".into()), runs::reason_words(&h.reason), h.step_status)))
                         .child(div().truncate().child(SharedString::from(format!("{} → {} · {}", h.from, h.to.clone().unwrap_or_else(|| "…".into()), runs::reason_words(&h.reason)))))
@@ -521,6 +612,7 @@ impl Workspace {
                 );
             }
         }
+        out.extend(knots);
         out
     }
 
@@ -531,15 +623,15 @@ impl Workspace {
         let stops: Vec<(f64, String)> = run.history.iter().rev().take(12).rev().cloned().collect();
         Some(
             div().id("field-tape").absolute().left(px(0.)).right(px(0.)).bottom(px(0.)).px(px(24.)).py(px(8.)).border_t_1().border_color(line(cx, t::LINE_SUBTLE)).bg(c(tk.bg_panel))
-                .flex().items_center().gap(px(10.)).font_family(mono(cx)).text_size(px(t::TEXT_META))
-                .child(div().text_color(c(tk.text_muted)).child(SharedString::from(format!("tape · {}", run.run_id))))
+                .overflow_x_scroll().flex().items_center().gap(px(10.)).font_family(mono(cx)).text_size(px(t::TEXT_META))
+                .child(div().id("tape-run").flex_shrink_0().text_color(c(tk.text_muted)).tooltip(ui::tip(format!("{} · every stage this run has been through", run.run_id))).child("newest run"))
                 .children(stops.into_iter().enumerate().map(|(i, (ts, state))| {
                     let last = i + 1 == run.history.len().min(12);
-                    div().flex().items_center().gap(px(10.))
+                    div().flex_shrink_0().flex().items_center().gap(px(10.))
                         .child(div().w(px(18.)).h(px(1.)).bg(line(cx, t::LINE_SUBTLE)))
                         .child(div().id(("tape-stop", i)).text_color(if last { c(tk.text_primary) } else { c(tk.text_secondary) }).tooltip(ui::tip(ago(ts))).child(SharedString::from(state)))
                 }))
-                .when_some(self.field_runs_note.clone(), |d, n| d.child(div().ml_auto().text_color(c(tk.text_muted)).child(SharedString::from(n))))
+                .when_some(self.field_runs_note.clone(), |d, n| d.child(div().flex_shrink_0().ml_auto().pl(px(16.)).text_color(c(tk.text_muted)).child(SharedString::from(n))))
                 .into_any_element(),
         )
     }
@@ -558,7 +650,7 @@ impl Workspace {
 
     /// The field as the whole window: a goal bar on top, the field, an attention rail on the right, the tape below.
     /// No thread list and no transcript; those are one key away (`⌘1`).
-    pub(super) fn field_window(&self, composer: AnyElement, menu: Option<AnyElement>, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn field_window(&self, composer: AnyElement, menu: Option<AnyElement>, window_w: f32, cx: &mut Context<Self>) -> AnyElement {
         let tk = tk(cx);
         let inputs = self.lane_inputs(cx);
         let per_thread: Vec<_> = self
@@ -590,7 +682,7 @@ impl Workspace {
                         .child(ui::meta(SharedString::from(format!("{} thread{}", inputs.len(), if inputs.len() == 1 { "" } else { "s" })), cx)))
             )
             .child(div().flex_1().min_w(px(380.)).flex().justify_center()
-                .child(div().w_full().min_w(px(380.)).max_w(px(580.)).flex().flex_col().children(menu).child(composer)))
+                .child(div().w_full().min_w(px(380.)).max_w(px(640.)).flex().flex_col().children(menu).child(composer)))
             .child(div().flex().items_center().gap(px(16.))
                 .child(count(working + live_runs, "working", c(tk.amber)))
                 .child(count(quiet, "quiet", c(tk.text_secondary)))
@@ -601,11 +693,11 @@ impl Workspace {
                     .child(ui::button("fw-threads", "Transcript ⌘1", Kind::Ghost, cx).on_click(cx.listener(|this, _, _, cx| { this.desk_mode = DeskMode::Transcript; cx.notify(); })))));
 
         let head = |text: &'static str, col: gpui::Hsla| div().font_family(mono(cx)).text_size(px(t::TEXT_META)).font_weight(FontWeight::MEDIUM).text_color(col).child(text);
-        let mut rail = div().id("field-rail").w(px(284.)).flex_none().h_full().overflow_y_scroll().border_l_1().border_color(line(cx, t::LINE_DEFAULT)).p(px(16.)).flex().flex_col().gap(px(12.));
+        let mut rail = div().id("field-rail").w(px(RAIL_W)).flex_none().h_full().overflow_y_scroll().border_l_1().border_color(line(cx, t::LINE_DEFAULT)).p(px(16.)).flex().flex_col().gap(px(12.));
 
         let waiting_items: Vec<_> = inputs.iter().filter(|i| i.gate_title.is_some()).collect();
         if !waiting_items.is_empty() {
-            rail = rail.child(head("APPROVAL REQUIRED", c(tk.attention)));
+            rail = rail.child(head("Needs you", c(tk.attention)));
             for item in waiting_items {
                 let slot = item.slot;
                 let sig = item.gate_signature.clone().unwrap_or_default();
@@ -618,29 +710,29 @@ impl Workspace {
                     .child(div().flex().gap(px(6.))
                         .when(!item.gate_high_risk, |r| r.child(ui::button(("rail-allow", slot), "Allow ↵", Kind::Primary, cx)
                             .on_click(cx.listener(move |this, _, _, cx| this.answer_batch_gate(&sig, ApprovalDecision::Allow, cx)))))
-                        .child(ui::button(("rail-deny", slot), "Reject", Kind::Ghost, cx)
+                        .child(ui::button(("rail-deny", slot), "Deny", Kind::Ghost, cx)
                             .on_click(cx.listener(move |this, _, _, cx| this.answer_batch_gate(&sig2, ApprovalDecision::Reject, cx)))))
                     .when(item.gate_high_risk, |d| d.child(ui::meta("high risk: open the thread to allow", cx))));
             }
         } else if let Some(slot) = self.rack_selected_slot {
             if let Some(item) = inputs.iter().find(|i| i.slot == slot) {
-                rail = rail.child(head("AGENT INSPECTOR", c(tk.amber)));
+                rail = rail.child(head("Selected thread", c(tk.text_muted)));
                 rail = rail.child(
                     div().flex().flex_col().gap(px(8.)).p(px(12.)).rounded(px(4.))
                         .border_1().border_color(line(cx, t::LINE_DEFAULT))
                         .bg(ca(tk.bg_panel, 0.95))
                         .child(
                             div().flex().items_center().justify_between()
-                                .child(div().font_family(mono(cx)).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(c(tk.amber)).child(format!("AGENT #{slot}")))
-                                .child(div().font_family(mono(cx)).text_size(px(t::TEXT_MIN)).text_color(if item.state == TabState::Working { c(tk.amber) } else { c(tk.teal) })
-                                    .child(if item.state == TabState::Working { "● WORKING" } else { "✓ STANDBY" }))
+                                .child(div().font_family(mono(cx)).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(c(tk.text_secondary)).child(format!("#{slot}")))
+                                .child(div().font_family(mono(cx)).text_size(px(t::TEXT_MIN)).text_color(if item.state == TabState::Working { c(tk.amber) } else { c(tk.text_muted) })
+                                    .child(match item.state { TabState::Working => "working", TabState::Done => "done", TabState::Closed => "stopped", _ => "idle" }))
                         )
                         .child(div().font_family(crate::theme::voice(cx)).text_size(px(14.)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(SharedString::from(item.title.clone())))
-                        .child(div().font_family(mono(cx)).text_size(px(11.)).text_color(c(tk.text_muted)).child(SharedString::from(if !item.now.is_empty() { item.now.clone() } else { "idle · ready for steering".into() })))
+                        .when(!item.now.is_empty() && item.now != "idle", |d| d.child(div().font_family(mono(cx)).text_size(px(11.)).text_color(c(tk.text_muted)).child(SharedString::from(item.now.clone()))))
                         .child(div().font_family(mono(cx)).text_size(px(t::TEXT_MIN)).text_color(c(tk.text_faint)).child(format!("{} files · +{} −{}", item.files, item.added, item.removed)))
                         .child(
                             div().flex().items_center().gap(px(6.)).pt(px(4.))
-                                .child(ui::button(("rail-open-transcript", slot), "Open Transcript ⌘1", Kind::Primary, cx).on_click(cx.listener(move |this, _, _, cx| {
+                                .child(ui::button(("rail-open-transcript", slot), "Open thread ⌘1", Kind::Primary, cx).on_click(cx.listener(move |this, _, _, cx| {
                                     this.pick_lane(slot, cx);
                                     this.desk_mode = DeskMode::Transcript;
                                     cx.notify();
@@ -653,15 +745,18 @@ impl Workspace {
                 // Said plainly, from the same count the header shows: no status the app has not measured.
                 .child(div().text_size(px(t::TEXT_UI)).text_color(c(tk.text_muted)).child("Nothing is waiting on you."))
                 .child(
-                    div().pt(px(6.)).flex().flex_col().gap(px(6.))
-                        .child(ui::button("rail-diffs", "Review Uncommitted Diffs  ⌘D", Kind::Ghost, cx).on_click(cx.listener(|this, _, _, cx| this.toggle_change_sheet(cx))))
-                        .child(ui::button("rail-recenter", "Recenter Network Canvas", Kind::Ghost, cx).on_click(cx.listener(|this, _, _, cx| this.field_reset(cx))))
+                    div().flex().flex_col().items_start().gap(px(4.)).ml(px(-10.))
+                        .child(ui::button("rail-diffs", "Review what changed  ⌘D", Kind::Ghost, cx).on_click(cx.listener(|this, _, _, cx| this.toggle_change_sheet(cx))))
+                        .child(ui::button("rail-recenter", "Show every thread and run", Kind::Ghost, cx).on_click(cx.listener(|this, _, _, cx| this.field_fit(cx))))
                 );
         }
 
+        // In a narrow window the rail would take the field's room to say nothing: it shows only when it has something.
+        let mut rail_has = waiting > 0 || self.rack_selected_slot.is_some_and(|slot| inputs.iter().any(|i| i.slot == slot));
         let ready: Vec<&TriageIn> = inputs.iter().filter(|i| flight::ready(i)).collect();
+        rail_has |= !ready.is_empty() || zones.iter().any(|z| z.contested);
         if !ready.is_empty() {
-            rail = rail.child(div().pt(px(8.)).child(head("READY TO REVIEW", c(tk.teal))));
+            rail = rail.child(div().pt(px(8.)).child(head("Ready to review", c(tk.text_muted))));
             for item in ready {
                 let slot = item.slot;
                 let check = match &item.check {
@@ -678,7 +773,7 @@ impl Workspace {
 
         let contested: Vec<&Zone> = zones.iter().filter(|z| z.contested).collect();
         if !contested.is_empty() {
-            rail = rail.child(div().pt(px(8.)).child(head("CONTESTED", c(tk.text_primary))));
+            rail = rail.child(div().pt(px(8.)).child(head("Two threads, one place", c(tk.attention))));
             for z in contested {
                 let who = z.occupants.iter().filter(|o| matches!(o.touch, Touch::Edited | Touch::Working | Touch::Waiting)).map(|o| format!("#{}", o.slot)).collect::<Vec<_>>().join(" and ");
                 rail = rail.child(div().flex().flex_col().gap(px(2.)).text_size(px(13.))
@@ -691,7 +786,7 @@ impl Workspace {
             .child(top)
             .child(div().flex().flex_1().min_h_0()
                 .child(div().flex_1().min_w_0().h_full().child(self.field_view(&inputs, &zones, cx)))
-                .child(rail))
+                .when(window_w >= RAIL_FROM || (rail_has && window_w >= RAIL_W * 2.5), |d| d.child(rail)))
             .into_any_element()
     }
 }

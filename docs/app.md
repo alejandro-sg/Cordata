@@ -72,8 +72,9 @@ There is no thread list or transcript here; `⌘1` goes back to them, and clicki
   what is ready to review (files, +/−, check result; a click opens the change sheet) and the components two threads both
   write. Each fact is in one place.
 - **Runs** come from `cordata-run status --json` and `show --json` (found in `CORDATA_RUN_BIN`, `PATH`, or this
-  checkout's release build) and are read every few seconds while the field is open: steps in plan order with the worker
-  that last ran each, handoffs (why a worker stopped and who took over), and the run's own state transitions on the
+  checkout's release build) and are read every few seconds while the field is open: the plan drawn as a graph (steps that wait on the same step
+  side by side under it, joined by cords; a cord draws itself once, when a read shows its step has started), the worker
+  that last ran each step, handoffs (why a worker stopped and who took over), and the run's own state transitions on the
   tape. **Hold at next safe point** writes the pause line described in `docs/orchestrator.md`; a held run offers
   **Resume**, **Resume on** a worker family, and **Resume with the bar's text as direction**. Steps of a run never raise
   approvals in the window: workers approve inside their own scope.

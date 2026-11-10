@@ -136,12 +136,17 @@ tell stuck from busy without reading anything.
 | **slide**: drawer moves in (240 ms ease-out-quint) | ⌘B (Logbook), ⌘\ (Tool sheet) | drawers slide in over the page |
 | **tick**: numeric value rolls vertically (220 ms) | count changes (+/−, turns, cost) | digits roll into place (NumberFlow-style) |
 | **stack**: notice arrives bottom-right and stacks | notification or toast | notifications arrive without jumping |
+| **flow**: the cord draws from a finished step to the step below it (480 ms) | a read of an orchestrated run that shows a step has started | work has passed from one step to the next |
 
 One live thing per place: the rail's mark beats, the header tugs, the newest tool call beats. Everything else that is
 live is said still, in the signal colour. Events faster than a beat keep the node lit, so nothing blinks. All of it is
 off under macOS Reduce Motion; the still picture carries the same state.
 
-A thread's own events drive this. An orchestrator run is polled, not heard, so its mark is still.
+A thread's own events drive this. An orchestrator run is read every few seconds, not heard, so its events are the
+differences between two reads (`cordata_view::runs::Pulse`): a step starting, finishing or changing worker. A read
+that matches the one before moves nothing, and the first sight of a run is not an event. On the field a run is drawn
+as its plan: steps that wait on the same step stand side by side under it, joined by cords; a cord is in the signal
+colour once work has passed along it.
 
 ## Words
 
