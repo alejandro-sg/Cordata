@@ -846,15 +846,11 @@ mod tests {
                 gate_high_risk: false,
                 working_secs: Some(95),
                 overlaps: if ix == 0 { vec![2] } else { Vec::new() },
-                role: crate::work::AgentRole::Worker,
-                current_action: None,
-                confidence: crate::work::ConfidenceSignal::HighSolid,
-                wave: 1,
-                parent_slot: None,
-                stage: crate::work::PipelineStage::Probe,
-                subtasks: Vec::new(),
-                recent_actions: Vec::new(),
-                touched_files: Vec::new(),
+                now: "editing src/lib.rs".into(),
+                beats: (0..crate::flight::LANE_LEN)
+                    .map(|b| [crate::flight::Beat::Look, crate::flight::Beat::Edit, crate::flight::Beat::Run][b % 3])
+                    .collect(),
+                tips: Vec::new(),
             })
             .collect();
 

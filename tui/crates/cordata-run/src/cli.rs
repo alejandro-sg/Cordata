@@ -305,7 +305,7 @@ pub async fn run(args: RunArgs) -> i32 {
     finish(&record, args.json)
 }
 
-pub async fn resume(run_id: &str, workers: Option<String>, allow_direct: bool, max_usd: Option<f64>, as_json: bool) -> i32 {
+pub async fn resume(run_id: &str, workers: Option<String>, allow_direct: bool, max_usd: Option<f64>, allow_weaker: bool, as_json: bool) -> i32 {
     let mut environ: HashMap<String, String> = std::env::vars().collect();
     if allow_direct {
         environ.insert("CORDATA_VAULT_DIRECT".into(), "1".into());
@@ -324,6 +324,18 @@ pub async fn resume(run_id: &str, workers: Option<String>, allow_direct: bool, m
     drop(probe);
     let cwd = PathBuf::from(&record.cwd);
     let settings = settings_for(&cwd);
+    let mut run_config = config::run_config(&settings);
+    if let Some(v) = max_usd {
+        run_config.max_usd = v;
+    }
+    let drift = machine::config_drift(&record, &run_config);
+    if !drift.weakened.is_empty() && !allow_weaker && !machine::TERMINAL.contains(&record.state.as_str()) {
+        eprintln!(
+            "cordata-run: {run_id} was started with {} on and these settings turn it off. Fix the settings, or pass --allow-weaker-guards to continue anyway.",
+            drift.weakened.join(", ")
+        );
+        return 2;
+    }
     let ledger = match open_ledger(&settings) {
         Ok(l) => l,
         Err(e) => {
@@ -358,10 +370,6 @@ pub async fn resume(run_id: &str, workers: Option<String>, allow_direct: bool, m
     );
     let checkpoints = GitCheckpoints::new(Store::new(&home));
     let controls = Arc::new(FileControls::new(Some(machine::artifacts_dir(&home, run_id).join("control.ndjson")))) as Arc<dyn machine::RunControls>;
-    let mut run_config = config::run_config(&settings);
-    if let Some(v) = max_usd {
-        run_config.max_usd = v;
-    }
     let world = World {
         roster: &mut roster,
         ledger: &ledger,

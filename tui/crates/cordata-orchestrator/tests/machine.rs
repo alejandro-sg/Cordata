@@ -382,9 +382,18 @@ async fn a_pause_stops_at_the_next_safe_point_and_a_resume_finishes_the_run() {
     assert!(controls.pending().is_none(), "the request was consumed");
     assert_eq!(r.read("calc/a.txt"), None, "nothing executed yet");
 
+    assert_eq!(paused.config.as_ref().map(|c| c.harden), Some(true), "the run records the settings it started with");
+    let weaker = RunConfig { harden: false, ..config() };
+    let refused = {
+        let world = r.world(None, None, None);
+        machine::resume("run-pause", weaker, world, false).await.unwrap_err()
+    };
+    assert_eq!(refused.weakened, vec!["harden".to_owned()]);
+    assert_eq!(r.read("calc/a.txt"), None, "a refused resume executes nothing");
+
     let finished = {
         let world = r.world(None, None, None);
-        machine::resume("run-pause", config(), world).await.unwrap()
+        machine::resume("run-pause", config(), world, false).await.unwrap().unwrap()
     };
     assert_eq!(finished.state, "done", "{}", finished.reason);
     assert!(finished.history.iter().any(|h| h["resumed"] == true));
@@ -392,10 +401,10 @@ async fn a_pause_stops_at_the_next_safe_point_and_a_resume_finishes_the_run() {
     // A terminal run comes back as it is.
     let again = {
         let world = r.world(None, None, None);
-        machine::resume("run-pause", config(), world).await.unwrap()
+        machine::resume("run-pause", config(), world, false).await.unwrap().unwrap()
     };
     assert_eq!(again.state, "done");
-    assert!(machine::resume("nope", config(), r.world(None, None, None)).await.is_none());
+    assert!(machine::resume("nope", config(), r.world(None, None, None), false).await.unwrap().is_none());
 }
 
 #[tokio::test]
@@ -584,4 +593,43 @@ fn planners_alternate_families_so_a_retry_goes_to_another_cli() {
     ];
     let order: Vec<String> = cordata_orchestrator::machine::across_families(ranked).iter().map(|c| c.candidate.model.clone().unwrap()).collect();
     assert_eq!(order, ["flash", "sonnet", "pro", "opus"]);
+}
+
+#[test]
+fn drift_names_what_changed_and_only_a_guard_turned_off_counts_as_weaker() {
+    let mut record = machine::RunRecord::new("r", "g", "/p", "code", None);
+    assert_eq!(machine::config_drift(&record, &config()), machine::ConfigDrift::default(), "an older record has nothing to compare");
+    record.config = Some(config());
+    assert_eq!(machine::config_drift(&record, &config()), machine::ConfigDrift::default());
+
+    let raised = RunConfig { max_usd: 9.0, ..config() };
+    let d = machine::config_drift(&record, &raised);
+    assert_eq!(d.changed.len(), 1);
+    assert!(d.changed[0].starts_with("max_usd:"), "{:?}", d.changed);
+    assert!(d.weakened.is_empty(), "a bigger budget is not a weaker guard");
+
+    let off = RunConfig { harden: false, screen: false, ..config() };
+    let d = machine::config_drift(&record, &off);
+    let mut weakened = d.weakened.clone();
+    weakened.sort();
+    assert_eq!(weakened, vec!["harden".to_owned(), "screen".to_owned()]);
+
+    record.config = Some(RunConfig { harden: false, ..config() });
+    assert!(machine::config_drift(&record, &config()).weakened.is_empty(), "turning a guard on is never refused");
+}
+
+#[test]
+fn a_record_loads_with_or_without_the_settings_field_and_with_fields_it_does_not_know() {
+    let old = json!({ "run_id": "r", "goal": "g", "cwd": "/p", "state": "paused" });
+    let record: machine::RunRecord = serde_json::from_value(old).expect("a record from before the field existed loads");
+    assert!(record.config.is_none());
+    assert!(record.to_json().get("config").is_none(), "an empty field is not written, so older readers see the same document");
+
+    let newer = json!({ "run_id": "r", "goal": "g", "cwd": "/p", "future_field": [1, 2, 3] });
+    assert!(serde_json::from_value::<machine::RunRecord>(newer).is_ok(), "a field this version does not know is ignored");
+
+    let mut with = machine::RunRecord::new("r", "g", "/p", "code", None);
+    with.config = Some(config());
+    let back: machine::RunRecord = serde_json::from_value(with.to_json()).unwrap();
+    assert_eq!(back.config.map(|c| c.max_usd), Some(5.0), "the settings survive a save and a load");
 }

@@ -59,6 +59,39 @@ pub fn draft_schema() -> Value {
         "verifier_commands": {"type": "array", "items": {"type": "string"}}, "assumptions": {"type": "array", "items": {"type": "string"}}}})
 }
 
+// ---------------------------------------------------------------------------------------------- config drift
+
+/// Safety guards: a resume that turns one of these from on to off is refused unless the person says so.
+const GUARDS: [&str; 5] = ["harden", "tier2", "screen", "conformance", "isolate_waves"];
+
+/// How the settings of a resume differ from the ones the run was started with.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConfigDrift {
+    /// Guards that were on and are now off.
+    pub weakened: Vec<String>,
+    /// Every setting that differs, as `name: was → now` (a superset of `weakened`).
+    pub changed: Vec<String>,
+}
+
+/// Compare `now` with the settings recorded in `record`. A record with none (older run) has no drift to report.
+pub fn config_drift(record: &RunRecord, now: &RunConfig) -> ConfigDrift {
+    let Some(then) = &record.config else { return ConfigDrift::default() };
+    let (Ok(Value::Object(then)), Ok(Value::Object(now))) = (serde_json::to_value(then), serde_json::to_value(now)) else {
+        return ConfigDrift::default();
+    };
+    let mut drift = ConfigDrift::default();
+    for (key, was) in &then {
+        let is = now.get(key).unwrap_or(&Value::Null);
+        if was != is {
+            drift.changed.push(format!("{key}: {was} → {is}"));
+            if GUARDS.contains(&key.as_str()) && *was == Value::Bool(true) && *is == Value::Bool(false) {
+                drift.weakened.push(key.clone());
+            }
+        }
+    }
+    drift
+}
+
 // ---------------------------------------------------------------------------------------------- the record
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,8 +157,9 @@ fn now() -> f64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
 }
 
-/// Persisted in `orch_runs.record_json` — the same document the Python machine writes, so either can resume the other's
-/// run.
+/// Persisted in `orch_runs.record_json`. Every field but the identity has a default and unknown fields are ignored, so a
+/// record written by an older or newer build loads. (The Python machine this document was once shared with is gone from
+/// the repository; nothing here is checked against it.)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunRecord {
     pub run_id: String,
@@ -181,6 +215,10 @@ pub struct RunRecord {
     pub created: f64,
     #[serde(default = "now")]
     pub updated: f64,
+    /// The settings this run was started (or last resumed) with. A resume compares against it, so a run is not quietly
+    /// continued with its safety guards switched off. `None` on a run recorded before this existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<RunConfig>,
 }
 
 impl RunRecord {
@@ -213,6 +251,7 @@ impl RunRecord {
             step_log: HashMap::new(),
             created: now(),
             updated: now(),
+            config: None,
         }
     }
 
@@ -517,7 +556,12 @@ impl<'a> Machine<'a> {
         Self::with_record(record, config, world)
     }
 
-    pub fn with_record(record: RunRecord, config: RunConfig, world: World<'a>) -> Self {
+    pub fn with_record(mut record: RunRecord, config: RunConfig, world: World<'a>) -> Self {
+        let drift = config_drift(&record, &config);
+        if !drift.changed.is_empty() {
+            record.warnings.push(format!("resumed with changed settings: {}", drift.changed.join("; ")));
+        }
+        record.config = Some(config.clone());
         let plan = record.plan.as_ref().and_then(|p| Plan::from_json(p).ok());
         let project = std::fs::canonicalize(&record.cwd).map_or_else(|_| record.cwd.clone(), |p| p.to_string_lossy().into_owned());
         let knowledge = crate::knowledge::Knowledge::load(crate::knowledge::Knowledge::path_for(&world.home, Path::new(&project)));
@@ -1479,14 +1523,20 @@ fn short_id() -> String {
 }
 
 /// Continue a paused (or interrupted, non-terminal) run from `state.db`. A terminal or unknown run comes back as it is.
-pub async fn resume(run_id: &str, config: RunConfig, world: World<'_>) -> Option<RunRecord> {
-    let record = load(world.ledger, run_id)?;
+///
+/// Refuses (`Err`) when `config` turns a safety guard off that the run was started with, unless `allow_weaker`.
+pub async fn resume(run_id: &str, config: RunConfig, world: World<'_>, allow_weaker: bool) -> Result<Option<RunRecord>, ConfigDrift> {
+    let Some(record) = load(world.ledger, run_id) else { return Ok(None) };
     if TERMINAL.contains(&record.state.as_str()) {
-        return Some(record);
+        return Ok(Some(record));
+    }
+    let drift = config_drift(&record, &config);
+    if !drift.weakened.is_empty() && !allow_weaker {
+        return Err(drift);
     }
     let mut machine = Machine::with_record(record, config, world);
     machine.run().await;
-    Some(machine.record)
+    Ok(Some(machine.record))
 }
 
 /// `ranked` reordered so each family's best comes before any family's second: when one CLI cannot plan (a model it no

@@ -179,10 +179,8 @@ pub struct Workspace {
     pub(super) desk_mode: DeskMode,
     /// Selected agent slot in the Supervisory Control Room (`None` = overview).
     pub(super) rack_selected_slot: Option<usize>,
-    /// Whether rack canvas is in graph mode vs list mode.
-    pub(super) rack_graph_mode: bool,
-    /// Progressive exposure view mode (Topology Graph, Pipeline Stages, Decomposition Tree).
-    pub(super) rack_view_mode: cordata_view::work::RackViewMode,
+    /// Lanes (when) or ground (where) on the flight deck.
+    pub(super) rack_view_mode: cordata_view::flight::RackViewMode,
     /// Selected tape stop for forensic inspection, turn-level forking, or post-turn rollback.
     pub(super) selected_turn: Option<usize>,
     /// Whether the Change Sheet's agent summary is expanded beyond its 5-line clamp.
@@ -518,8 +516,7 @@ impl Workspace {
             model_filter,
             desk_mode: default_desk_mode,
             rack_selected_slot: None,
-            rack_graph_mode: true,
-            rack_view_mode: cordata_view::work::RackViewMode::Graph,
+            rack_view_mode: cordata_view::flight::RackViewMode::Lanes,
             selected_turn: None,
             sheet_expanded: false,
             sheet_toggled_files: HashSet::new(),
@@ -3184,7 +3181,7 @@ mod window_tests {
         cx.simulate_keystrokes("cmd-0");
         cx.run_until_parked();
         assert_eq!(view.read_with(cx, |this, _| this.desk_mode), DeskMode::Rack);
-        assert!(view.read_with(cx, |this, _| this.rack_graph_mode), "Defaults to interactive graph mode");
+        assert_eq!(view.read_with(cx, |this, _| this.rack_view_mode), cordata_view::flight::RackViewMode::Lanes, "opens on the lanes");
         assert_eq!(view.read_with(cx, |this, _| this.rack_selected_slot), None);
 
         // Select Node Slot 2 (Probe)
@@ -3195,19 +3192,13 @@ mod window_tests {
         cx.run_until_parked();
         assert_eq!(view.read_with(cx, |this, _| this.rack_selected_slot), Some(2));
 
-        // Toggle to Bands mode and back
+        // Ground and back
         view.update(cx, |this, cx| {
-            this.rack_graph_mode = false;
+            this.rack_view_mode = cordata_view::flight::RackViewMode::Ground;
             cx.notify();
         });
         cx.run_until_parked();
-        assert!(!view.read_with(cx, |this, _| this.rack_graph_mode));
-        view.update(cx, |this, cx| {
-            this.rack_graph_mode = true;
-            cx.notify();
-        });
-        cx.run_until_parked();
-        assert!(view.read_with(cx, |this, _| this.rack_graph_mode));
+        assert_eq!(view.read_with(cx, |this, _| this.rack_view_mode), cordata_view::flight::RackViewMode::Ground);
     }
 
     #[gpui::test]

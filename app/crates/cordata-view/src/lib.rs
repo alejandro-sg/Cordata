@@ -16,6 +16,7 @@ pub mod config_ui;
 pub mod custom;
 pub mod desk;
 pub mod extras;
+pub mod flight;
 pub mod fold;
 pub mod input;
 pub mod key;

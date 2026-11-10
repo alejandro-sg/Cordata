@@ -727,12 +727,12 @@ impl Workspace {
         let active_border = ready || busy || self.saying;
 
         if self.desk_mode == super::DeskMode::Rack {
-            let sel_slot = self.rack_selected_slot.unwrap_or(1);
+            let sel_slot = self.shown_slot();
             let send_key = if self.prefs.send_with == "cmd-enter" { "⌘↵" } else { "↵" };
             return div()
                 .id("composer")
                 .role(gpui::Role::Group)
-                .aria_label("Flight Director HUD")
+                .aria_label("Directive bar")
                 .capture_key_down(cx.listener(Self::composer_keys))
                 .w_full()
                 .flex()
@@ -756,7 +756,7 @@ impl Workspace {
                                 .child(ui::mark("hud-mark", if busy { MarkState::Working } else { MarkState::Idle }, 9., cx))
                                 .child(div().px(px(5.)).py(px(1.)).rounded(px(3.)).bg(ca(tk.amber, 0.15))
                                     .font_family(mono(cx)).text_size(px(10.)).font_weight(FontWeight::BOLD).text_color(c(tk.amber))
-                                    .child(SharedString::from(format!("POD #{sel_slot}"))))
+                                    .child(SharedString::from(format!("→ #{sel_slot}"))))
                         )
                         .child(
                             div().flex_1().min_w_0().text_size(px(t::TEXT_SMALL))
@@ -764,11 +764,11 @@ impl Workspace {
                         )
                         .child(
                             div().flex().items_center().gap(px(6.))
-                                .child(div().font_family(mono(cx)).text_size(px(9.)).text_color(c(tk.text_faint)).child(SharedString::from(format!("{send_key} steer · ⌘N pod"))))
+                                .child(div().font_family(mono(cx)).text_size(px(9.)).text_color(c(tk.text_faint)).child(SharedString::from(format!("{send_key} steers #{sel_slot} · ⌘N new thread"))))
                                 .when(busy, |row| {
                                     row.child(ui::button("hud-stop", "Stop", Kind::Ghost, cx).on_click(cx.listener(|this, _, _, cx| this.session.update(cx, |s, cx| s.cancel(cx)))))
                                 })
-                                .child(ui::button("hud-spawn", "+ Pod", Kind::Ghost, cx).on_click(cx.listener(|this, _, window, cx| this.open_new(window, cx))))
+                                .child(ui::button("hud-spawn", "+ Thread", Kind::Ghost, cx).on_click(cx.listener(|this, _, window, cx| this.open_new(window, cx))))
                                 .child(ui::button("hud-sheet", "Diffs ⌘D", Kind::Ghost, cx).on_click(cx.listener(|this, _, _, cx| {
                                     this.load_review(cx);
                                     this.desk_mode = super::DeskMode::ChangeSheet;
@@ -1016,7 +1016,7 @@ impl Workspace {
     pub(super) fn placeholder(&self, cx: &App) -> &'static str {
         let view = &self.session.read(cx).view;
         if self.desk_mode == super::DeskMode::Rack {
-            "Direct mission or active pod (e.g. /spawn, /pause, /synthesize, or type directive)…"
+            "Steer this thread…"
         } else if self.saying {
             "Reply in your own words — ↵ sends, esc returns to approval"
         } else if !view.pending.is_empty() {

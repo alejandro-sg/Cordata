@@ -17,7 +17,9 @@ family reviews, and the planner checks the result against its own plan.
 cordata run "Add retries to the HTTP client and test them" --cwd ~/proj --allow-direct
 cordata status            # quota left in each pool, recent runs and handoffs; spends nothing
 cordata show <run_id>     # plan, history, audit, verdicts, usage per role and worker
-cordata resume <run_id>   # continue a paused or interrupted run
+cordata resume <run_id>   # continue a paused or interrupted run (refused if your settings now turn off a safety guard
+                          # the run started with — harden, tier2, screen, conformance, isolate_waves —
+                          # unless you pass --allow-weaker-guards; other changed settings are recorded as a warning)
 ```
 
 `--allow-direct` is needed unless an Agent Vault proxy is configured (`vault.enabled`, see
