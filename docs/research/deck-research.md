@@ -32,11 +32,9 @@ where it came from. Nothing here is a benchmark of those products.
 
 ## Gaps found, not built
 
-1. **Resume does not check the configuration.** `cordata-orchestrator/src/machine.rs:1482` (`resume`) loads a paused run
-   and continues it with whatever `RunConfig` the caller passes now. Nothing records the workers, budgets or guardrails the run
-   started with. harness2 (`core/runmark.py`) fingerprints the harness that produced a rollout and refuses to reuse a
-   rollout from a different configuration or one that was never marked complete. Fix: store a digest of the config in
-   the run record at start; on resume, refuse or warn when it differs.
+1. **Resume checks guards, not budgets or workers.** Closed for the safety guards: `cordata-run resume` refuses when
+   settings now turn one off (`machine::config_drift`) unless `--allow-weaker-guards`. harness2
+   (`core/runmark.py`) fingerprints the whole harness; Cordata records other changed settings as a warning only.
 2. **No fleet view past ~10 threads.** Lanes are one row each. Warp's dot grid shows 200+ runs at once; a compact mode
    (one dot per thread, colour by state) would keep the deck useful at scale.
 3. **Budget identity is not checked.** harness2 (`core/ledger.py`) asserts that spent rollouts equal the planned budget

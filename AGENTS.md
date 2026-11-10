@@ -60,9 +60,9 @@ Only read these documents when their specific domain is relevant:
 
 | Domain | Document Reference |
 |---|---|
-| Architecture & Layers | [ARCHITECTURE.md](file:///Users/asierra-llm-mbp/Development/Cordata/ARCHITECTURE.md) |
-| Threat Model & Sandbox | [THREAT_MODEL.md](file:///Users/asierra-llm-mbp/Development/Cordata/THREAT_MODEL.md) |
-| Configuration & Settings | [docs/settings.md](file:///Users/asierra-llm-mbp/Development/Cordata/docs/settings.md) |
-| Multi-Agent Orchestrator | [docs/orchestrator.md](file:///Users/asierra-llm-mbp/Development/Cordata/docs/orchestrator.md) |
-| TUI & Command Deck | [tui/README.md](file:///Users/asierra-llm-mbp/Development/Cordata/tui/README.md) |
-| Native App Architecture | [docs/app.md](file:///Users/asierra-llm-mbp/Development/Cordata/docs/app.md) |
+| Architecture & Layers | [ARCHITECTURE.md](ARCHITECTURE.md) |
+| Threat Model & Sandbox | [THREAT_MODEL.md](THREAT_MODEL.md) |
+| Configuration & Settings | [docs/settings.md](docs/settings.md) |
+| Multi-Agent Orchestrator | [docs/orchestrator.md](docs/orchestrator.md) |
+| TUI & Command Deck | [tui/README.md](tui/README.md) |
+| Native App Architecture | [docs/app.md](docs/app.md) |

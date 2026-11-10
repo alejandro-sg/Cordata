@@ -27,9 +27,9 @@ cordata resume <run_id>   # continue a paused or interrupted run (refused if you
 still inside the Seatbelt sandbox described in [`THREAT_MODEL.md`](../THREAT_MODEL.md). `CORDATA_VAULT_DIRECT=1` is the
 environment form of the flag.
 
-`run` also takes `--workers claude_code,antigravity`, `--max-usd N`, `--max-rounds N`, `--max-parallel N` (default 3),
+`run` also takes `--workers claude_code,antigravity,ollama` (`ollama` is Ollama Cloud through Cordata's own engine and needs a key rather than a CLI), `--run-id ID`, `--max-usd N`, `--max-rounds N`, `--max-parallel N` (default 3),
 `--no-research`, `--no-harden`, `--no-tier2`, `--no-screen`, `--no-conformance` and `--json`. With no installed worker, `run` and
-`resume` exit 78 before doing anything. Ctrl+C stops the run where it is and records it `cancelled`. Every run writes
+`resume` exit 78 before doing anything. Ctrl+C stops the run where it is and records it `cancelled`. Every run has a control file, `~/.cordata/orchestrator/<run_id>/control.ndjson`: a line `{"cmd":"pause"}` pauses the run at its next safe point (never mid-call), and the window's Hold button writes exactly that. `cordata resume <run_id> --direction "…"` adds your words to the next unfinished step's task and notes it on the run; `--workers` picks who continues. Every run writes
 `~/.cordata/orchestrator/<run_id>/plan.md` and `walkthrough.md`.
 
 Set `orchestrator.pools` to your real plans so handoffs happen at the right moment. The defaults are conservative caps:
@@ -129,7 +129,7 @@ but built for untrusted workers:
 
 `tui/crates/cordata-orchestrator`: `machine.rs` (the durable state machine in `state.db`), `research.rs`, `plan.rs`,
 `executor.rs`, `audit.rs`, `handoff.rs`, `dispatch.rs` and `bandit.rs`, `synthesizer.rs`, `scope.rs`, `checkpoints.rs`,
-and `workers/` (one streaming contract, adapters for `claude` and `agy`, the Seatbelt profile and the vault gate).
+and `workers/` (one streaming contract, adapters for `claude` and `agy`, the Seatbelt profile and the vault gate). The `ollama` worker is `tui/crates/cordata-run/src/native_worker.rs`: it drives `acp-core` and answers the engine's approvals for the step (edits inside the step's files, offline commands only for roles that change files, nothing else).
 `tui/crates/cordata-run` is the command; `cordata-ledger` holds the quota pools and run records.
 
 ## What a project teaches

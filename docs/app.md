@@ -27,7 +27,9 @@ Conversation rail and transcript, approval cards with the exact command or diff,
 command palette (⌘K), project picker (⌘O), settings (⌘,: launch, appearance, shortcuts, your API key), and a side panel
 with Files, Editor, Review (per-hunk keep/revert, git and pull requests) and Terminal. Both clients share one
 conversation reducer. Like the terminal client, sessions are saved and resumable (`/history`, `/resume`, `/forget`),
-edits and commands ask first unless your `chat.allow` rules say otherwise, and there are no modes, undo or goal loops.
+edits and commands ask first unless your `chat.allow` rules say otherwise, and there is no undo or goal loop in the chat. The
+window has three views of the same threads (`⌘0` canvas, `⌘1` transcript, `⌘D` change sheet); Settings → Default workspace
+chooses the one it opens in.
 
 The rail keeps three different things apart. **Threads** are the conversations open in the window, in the order you
 opened them (a row never jumps); **Earlier** lists this project's saved conversations, and a click resumes one as a thread
@@ -53,6 +55,45 @@ thread or terminal is refused with a note instead of two engines appending to on
 Every thread in the rail shows what it is doing; one that finished while you were elsewhere is marked **Done** until
 you look, and ⌘J (Go → Thread That Needs You) goes to the next one waiting on an approval, then the next Done one. A
 notification says when a thread finishes or needs you while the window is in the back (Settings → General).
+
+### The field (⌘0)
+
+The canvas opens on the **field**: the project's open threads as nodes, this project's newest orchestrated runs beside
+them, a goal bar on top (the composer), an attention rail on the right and a tape of the newest run along the bottom.
+There is no thread list or transcript here; `⌘1` goes back to them, and clicking a picked node opens its thread.
+
+- **Only what asks for attention is drawn**: a thread with an open approval, one that is working, one that collides with
+  another on a component, one ready to review (changed files, no gate, no collision, no failed check), or the one you
+  picked. The rest is counted in one line ("N idle threads · show").
+- **Detail follows zoom** (`⌘`-scroll, or − and + in the corner): marks and names; then what each is doing and the
+  components it stands on, with its approval and Allow or Reject; then its last actions. Scroll or drag pans.
+- **The rail** holds what needs you (the exact command and Allow or Reject; a high-risk call says to open the thread),
+  what is ready to review (files, +/−, check result; a click opens the change sheet) and the components two threads both
+  write. Each fact is in one place.
+- **Runs** come from `cordata-run status --json` and `show --json` (found in `CORDATA_RUN_BIN`, `PATH`, or this
+  checkout's release build) and are read every few seconds while the field is open: steps in plan order with the worker
+  that last ran each, handoffs (why a worker stopped and who took over), and the run's own state transitions on the
+  tape. **Hold at next safe point** writes the pause line described in `docs/orchestrator.md`; a held run offers
+  **Resume**, **Resume on** a worker family, and **Resume with the bar's text as direction**. Steps of a run never raise
+  approvals in the window: workers approve inside their own scope.
+- The tape records; it does not rewind. Workers' messages on the run bus are not shown: the bus is in memory and closed
+  to everything but the run's workers.
+
+The models are pure and tested: `cordata-view`'s `field` (layout, camera, which threads matter), `runs` (what the CLI
+printed) and `tray` (below). Why it is laid out this way: threads and runs are supervised by exception (Sheridan's
+supervisory control), awareness has three levels (Endsley 1995: perceive, understand, project), and a person handed back
+control after long automation is worst placed to take it (Bainbridge 1983), so approvals show the exact command and a
+handoff shows what the next worker is given. No usability study has been run; the only usage data is the window's own
+`~/.cordata/ux-events.jsonl`, from one user.
+
+### The menu bar item
+
+While the app runs, a mark sits in the menu bar: `C▯` quiet, `(█` working, `C█ 2` when two things wait on you. Its menu
+lists what needs you (thread, exact command with credential-shaped spans masked, Allow and Reject), runs (Hold or
+Resume), up to six threads (working first), then Open Cordata, Show the field, New thread, Settings and Quit. Allow is
+offered only for a call the engine does not rate high risk, and a click answers only the call the menu showed. Closing
+the window hides the app so the item stays; ⌘Q quits. Turn it off in Settings → Show in the menu bar; it is never
+created in tests or the packaged self-test (`CORDATA_APP_TRAY=off` also skips it).
 
 ### The look
 
@@ -101,11 +142,11 @@ and the chat sandbox cannot reach the socket. `CORDATA_APP_CONTROL=off` keeps th
 ## Crates (`app/crates`)
 
 - `cordata-view`: the state the terminal and the app share: the reducer (`App::on_event`), slash commands, input, menus,
-  the settings schema and editor, run board, and the secret-masking table (`redact.rs`, tested against
+  the settings schema and editor, run board, the field, run feed and menu bar models, and the secret-masking table (`redact.rs`, tested against
   `proto/fixtures/redact_cases.json`).
 - `cordata-theme`: colour roles with WCAG contrast tests; the terminal's palette reads it.
 - `cordata-app`: the window: `session.rs` (acp-core on a tokio runtime → the reducer → effects), `workspace.rs` and its
-  modules, `transcript.rs`, `platform.rs`.
+  modules (`field.rs`, `menubar.rs`, ...), `transcript.rs`, `platform.rs`, `tray.rs` (the native status item).
 
 The UI thread only draws; the agent's events reach it over channels a task drains.
 

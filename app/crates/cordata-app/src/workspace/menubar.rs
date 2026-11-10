@@ -26,7 +26,7 @@ impl Workspace {
     /// Once, at launch: the close button hides the app while the item is up, and a small loop keeps the item honest.
     pub(super) fn start_tray(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Tests and the packaged self-test must not put anything in the real menu bar.
-        if cfg!(test) || self.selftest.is_some() || std::env::var_os("CORDATA_APP_TRAY").is_some_and(|v| v == "off") {
+        if cfg!(test) || std::env::args().any(|a| a == "--selftest") || std::env::var_os("CORDATA_APP_TRAY").is_some_and(|v| v == "off") {
             return;
         }
         window.on_window_should_close(cx, |_, cx| {
@@ -77,7 +77,7 @@ impl Workspace {
                 Some(GateIn {
                     slot: i.slot,
                     thread: i.title.clone(),
-                    command: shown(i.gate_title.as_deref()?),
+                    command: cordata_view::redact::scrub(&shown(i.gate_title.as_deref()?)).0,
                     high_risk: i.gate_high_risk,
                     sig: tray::sig_hash(i.gate_signature.as_deref()?),
                 })

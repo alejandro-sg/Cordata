@@ -1,6 +1,6 @@
 # Auto mode and a quiet transcript
 
-Status: design, 2026-11-03. Reference: how Claude Code and Antigravity solve the same two problems (read with `rea`, see
+Status: built (`app/crates/cordata-view/src/fold.rs`, `tui/crates/acp-core/src/auto.rs`); written as a design on 2026-11-03 and kept as the reasoning. Where it differs from the code, the code is right. Reference: how Claude Code and Antigravity solve the same two problems (read with `rea`, see
 "Prior art" at the end).
 
 ## The problem

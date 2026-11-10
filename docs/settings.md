@@ -82,7 +82,7 @@ Each is capped at 20,000 characters. `/memory` lists what was found and `/init` 
 
 | key | values | default | what |
 |---|---|---|---|
-| `orchestrator.workers` | comma list of `claude_code`, `antigravity` | both | which CLI families may work |
+| `orchestrator.workers` | comma list of `claude_code`, `antigravity`, `ollama` | all three | which worker families may work; `ollama` runs Ollama Cloud models through Cordata's own engine and needs an Ollama key |
 | `orchestrator.pools` | list of pools | conservative caps | your real plans, so handoffs happen at the right moment (`docs/orchestrator.md`) |
 | `orchestrator.maxUsd` | number | 2 | spend cap for one run |
 | `orchestrator.maxTokens` | number | 0 (none) | token cap for one run |
@@ -91,7 +91,7 @@ Each is capped at 20,000 characters. `/memory` lists what was found and `/init` 
 | `orchestrator.screen` | bool | true | a reviewer model screens the audit's commands before any runs (`--no-screen` for one run); the pattern guard runs either way |
 | `orchestrator.dispatch`, `.lambda`, `.mu` | | | the learned dispatch policy and its cost and risk weights |
 
-A CLI that is not installed is left out. `CORDATA_CLAUDE_BIN` and `CORDATA_AGY_BIN` name a binary explicitly.
+A family whose CLI is not installed (or, for `ollama`, whose key is missing) is left out. `CORDATA_CLAUDE_BIN` and `CORDATA_AGY_BIN` name a binary explicitly.
 
 ## Agent Vault (`vault.*`)
 
@@ -113,9 +113,10 @@ recursive deletes of `/`, `~` or `..`, and shell redirects into `.env`. It is no
 
 Kept in the window's own preferences, `~/Library/Application Support/Cordata/prefs.toml` (`CORDATA_APP_PREFS_DIR`
 moves it), and changed from Settings (⌘,): `theme` (`system`, `light` = Paper, `2049` = Ink, `graphite`, `dim`),
-`density`, `code_font_size`, `send_with`, `open_on_launch`, `notify_approval`, `notify_done`, `sound_on_completion` (the
-two sounds), `quick_ask_hotkey` and `quick_ask_key`, plus what the window remembers (`sidebar_open`, `panel_open`,
-recent projects). A file that does not parse is kept beside it as `prefs.toml.damaged-<time>` before the defaults
+`density`, `code_font_size`, `send_with`, `open_on_launch`, `default_mode` (`canvas`, `transcript`, `sheet`),
+`restore_threads`, `notify_approval`, `notify_done`, `menu_bar` (the menu bar item: on by default; while it is up the
+close button hides the app and ⌘Q quits), `sound_on_completion` (the two sounds), `quick_ask_hotkey` and
+`quick_ask_key`, plus what the window remembers (`sidebar_open`, `panel_open`, `model`, recent projects). A file that does not parse is kept beside it as `prefs.toml.damaged-<time>` before the defaults
 replace it.
 
 ## Environment

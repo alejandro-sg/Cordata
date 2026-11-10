@@ -157,6 +157,13 @@ changes state, confined commands, no keys in reach, an egress gate for workers. 
 The app runs the same engine in its own process. Its preferences live in its own file. It stores no key; the Keychain
 holds the one you set (`Settings → Account`, service `cordata-*-api-key`). Screen capture is not implemented.
 
+The menu bar item (`Settings → Show in the menu bar`, on by default) lets you answer an approval without the window.
+It offers Allow only for a call the engine does not rate high risk; a high-risk call says "Review in Cordata…". A click
+carries a hash of the call the menu showed and does nothing if the thread has since asked for a different one. The menu
+shows the command line (credential-shaped spans masked, as in saved sessions), so anyone who can see your menu bar can
+read it; turn the item off when sharing your screen. While it is up, closing the window hides the app instead of
+ending it, so a turn in progress keeps running until you quit with ⌘Q.
+
 ## Known gaps
 
 - Inside the project, an approved command can write anything, `.git/` included; read the diff.

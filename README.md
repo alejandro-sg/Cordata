@@ -13,7 +13,7 @@ A coding agent for your Mac, in three pieces:
 
 1. **`cordata`** is a chat agent that reads, edits and runs things in your project. It asks before every edit and every command, and runs commands in a macOS sandbox.
 2. **`cordata run "goal"`** is an orchestrator. It hands a bigger job to coding CLIs you already have (Claude Code and Antigravity): one model researches and plans, another implements, a model from a different family reviews, and the planner checks the result against its own plan.
-3. **Cordata.app** is an optional native window on the same engine.
+3. **Cordata.app** is an optional native window on the same engine: a field of what needs you and what is moving, and a menu bar item to answer safe approvals without opening it.
 
 Everything runs on your machine. The only network calls go to the model providers you configure. It is a single-developer project, macOS only (Apple Silicon for the app), and it changes often.
 

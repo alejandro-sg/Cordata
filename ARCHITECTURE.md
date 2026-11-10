@@ -31,11 +31,11 @@ process.
 | `tui/crates/acp-tui` | the inline terminal client |
 | `tui/crates/cordata-ledger` | quota pools, usage, handoffs, events, run records in `~/.cordata/state.db` |
 | `tui/crates/cordata-checkpoints` | the shadow-git checkpoint store behind the orchestrator's rollbacks |
-| `tui/crates/cordata-orchestrator` | plan → dispatch → execute → harden → audit, workers (`claude`, `agy`), research, the synthesizer |
+| `tui/crates/cordata-orchestrator` | plan → dispatch → execute → harden → audit, workers (`claude`, `agy`; Ollama Cloud runs through `cordata-run`'s `native_worker`), research, the synthesizer |
 | `tui/crates/cordata-run` | the `cordata run` / `status` / `show` / `resume` command |
 | `tui/crates/cordata-doctor` | `cordata doctor` |
 | `tui/crates/cordata-guard` | `cordata-secrets` (no credential in git), the pre-tool guard the chat engine calls, and credential masking (`redact`) |
-| `app/crates/cordata-view`, `cordata-theme`, `cordata-app` | state and palette shared by both front ends; the native window |
+| `app/crates/cordata-view`, `cordata-theme`, `cordata-app` | state and palette shared by both front ends; the native window, its field view and its menu bar item (`cordata-view`'s `field`, `runs` and `tray` are the pure models) |
 
 ## A turn
 
@@ -54,7 +54,7 @@ process.
    RESEARCH ─► PLAN ─► EXECUTE (waves, checkpoints, Seatbelt write scope) ─► HARDEN (other family) ─► AUDIT ─► SYNTHESIZE
         │                 │ quota line / provider limit → handoff packet → same step, another pool
         ▼
- claude -p · agy
+ claude -p · agy · native (Ollama Cloud)
 ```
 
 [`docs/orchestrator.md`](docs/orchestrator.md) has the detail.
