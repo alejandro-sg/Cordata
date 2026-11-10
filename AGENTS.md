@@ -21,7 +21,7 @@ Index and operational invariants for coding agents working on Cordata. Keep this
 
 1. **Rust only**: the agent, orchestrator, ledger and checkpoints are Rust (`tui/`, `app/`). No Python, no daemon, no Discord. `proto/` holds only a shared test fixture.
 2. **Zero Plaintext Secrets**: Never write API keys or tokens into `.env`, code, or tests. Keys reside exclusively in macOS Keychain via `make key` or `scripts/store-key.sh`.
-3. **No Unfenced File Reads**: Large files over 500 lines trigger outline-only views (`context.outlineLines = 500`). Over-limit tool outputs (>6,000 chars) are offloaded to `~/.cordata/offloaded/`.
+3. **No Unfenced File Reads**: Large files over 1,200 lines trigger outline-only views (`context.outlineLines = 1200`). Over-limit tool outputs (>6,000 chars) are offloaded to `~/.cordata/offloaded/`. Colocated self-contained pods under 1,200 lines are preferred for maximum LLM attention locality.
 4. **Hermetic Testing**: `cargo test` must pass offline with no model and no provider key. Tests that need a real CLI or sandbox skip when it is absent.
 5. **No Hallucinated Binary Behavior**: Use the `rea` MCP server (`inspect_macho`, `inspect_signature`) to verify native arm64 Mach-O binaries, load commands, and entitlements. Do not decompile whole multi-hundred-megabyte binaries with Hopper (`search_strings` times out at 330s).
 

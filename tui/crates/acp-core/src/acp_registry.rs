@@ -94,7 +94,7 @@ impl AcpRegistryCatalog {
         catalog.register(AcpRegistryAgent {
             id: "cordata".into(),
             name: "Cordata Native Agent".into(),
-            version: "0.4.0".into(),
+            version: "0.5.0".into(),
             description: "High performance native Rust agent workspace with Seatbelt isolation".into(),
             authors: vec!["Cordata Core Team".into()],
             license: Some("MIT".into()),

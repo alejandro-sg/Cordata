@@ -13,7 +13,7 @@ use super::sandbox;
 use crate::events::{FileDiff, ToolKind};
 
 /// Files over this many lines come back as an outline unless a range is asked for.
-pub(crate) const OUTLINE_LINES: usize = 500;
+pub(crate) const OUTLINE_LINES: usize = 1_200;
 /// Tool output over this many characters is written to disk and replaced by a head + pointer.
 pub(crate) const OFFLOAD_CHARS: usize = 6_000;
 const HEAD_CHARS: usize = 2_000;
@@ -37,7 +37,7 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
     vec![
         ToolSpec {
             name: Cow::Borrowed("read_file"),
-            description: Cow::Borrowed("Read a text file. Files over 500 lines return an outline unless offset/limit are given."),
+            description: Cow::Borrowed("Read a text file. Files over 1200 lines return an outline unless offset/limit are given."),
             schema: json!({"type":"object","properties":{
                 "path":{"type":"string"},
                 "offset":{"type":"integer","description":"1-based first line"},
@@ -481,12 +481,12 @@ mod tests {
     async fn long_files_come_back_as_an_outline_until_a_range_is_given() {
         let dir = tmp();
         let mut body = String::new();
-        for i in 0..600 {
+        for i in 0..700 {
             body.push_str(&format!("fn f{i}() {{}}\n// filler\n"));
         }
         std::fs::write(dir.path().join("big.rs"), &body).unwrap();
         let out = execute("read_file", &json!({"path":"big.rs"}), dir.path(), &[]).await.unwrap();
-        assert!(out.contains("1200 lines") && out.contains("fn f599"));
+        assert!(out.contains("1400 lines") && out.contains("fn f699"));
         assert!(!out.contains("filler"));
         let ranged = execute("read_file", &json!({"path":"big.rs","offset":2,"limit":1}), dir.path(), &[]).await.unwrap();
         assert_eq!(ranged, "    2  // filler\n");
