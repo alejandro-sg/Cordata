@@ -15,7 +15,7 @@ pub const RECENTS_CAP: usize = 20;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Prefs {
-    /// The person's choice for the left sidebar; `None` defaults to open.
+    /// The person's choice for the left sidebar; `None` defaults to closed (Logbook drawer ⌘B).
     pub sidebar_open: Option<bool>,
     /// The person's choice for the side panel; `None` follows the window width.
     pub panel_open: Option<bool>,

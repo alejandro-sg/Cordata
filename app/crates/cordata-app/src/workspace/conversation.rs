@@ -102,7 +102,7 @@ impl Workspace {
         };
         let _ = column_w;
         let panel_on = self.panel_open;
-        let sidebar_on = self.sidebar_open;
+        let _ = self.sidebar_open;
 
         // The Rope bar: a hairline across the top with each open thread as a mark node on it.
         // Active thread set in serif; thread needing you sits in a gap in the rope.
@@ -118,6 +118,7 @@ impl Workspace {
                 };
                 let is_active = s.entity_id() == active_id;
                 let needs_you = s_status == Status::Waiting;
+                let is_running = s_status == Status::Running;
                 let slot = slot_ix + 1;
 
                 if needs_you {
@@ -128,13 +129,13 @@ impl Workspace {
                         .cursor_pointer()
                         .flex()
                         .items_center()
-                        .gap(px(5.))
-                        .px(px(6.))
+                        .gap(px(6.))
+                        .px(px(8.))
                         .py(px(2.))
                         .rounded(px(t::RADIUS_BADGE))
-                        .bg(ca(tk.attention, 0.12))
+                        .bg(ca(tk.attention, 0.14))
                         .border_1()
-                        .border_color(ca(tk.attention, 0.35))
+                        .border_color(ca(tk.attention, 0.45))
                         .tooltip(ui::tip(SharedString::from(format!("{} (needs you) · ⌘{}", s_title, slot))))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.switch_slot(slot, cx);
@@ -144,25 +145,32 @@ impl Workspace {
                             div()
                                 .font_family(crate::theme::voice(cx))
                                 .text_size(px(t::TEXT_SMALL))
+                                .font_weight(FontWeight::MEDIUM)
                                 .text_color(c(tk.attention))
-                                .child(SharedString::from(shown(&s_title))),
+                                .child(SharedString::from(format!("{} (needs you)", shown(&s_title)))),
                         )
                         .into_any_element()
                 } else if is_active {
-                    // Active thread node on the cord: serif title
+                    // Active thread node on the cord: distinct node + serif title
                     div()
                         .id(("rope-node", slot_ix))
                         .role(gpui::Role::Button)
                         .cursor_pointer()
                         .flex()
                         .items_center()
-                        .gap(px(5.))
-                        .px(px(4.))
+                        .gap(px(6.))
+                        .px(px(6.))
                         .py(px(2.))
+                        .rounded(px(t::RADIUS_BADGE))
+                        .bg(ca(tk.amber, 0.10))
+                        .border_1()
+                        .border_color(ca(tk.amber, 0.35))
                         .tooltip(ui::tip(SharedString::from(format!("{} · ⌘{}", s_title, slot))))
                         .child(div().size(px(t::DOT)).rounded_full().bg(c(tk.amber)))
                         .child(
                             div()
+                                .max_w(px(220.))
+                                .truncate()
                                 .font_family(crate::theme::voice(cx))
                                 .text_size(px(t::TEXT_SMALL))
                                 .font_weight(FontWeight::MEDIUM)
@@ -171,29 +179,27 @@ impl Workspace {
                         )
                         .into_any_element()
                 } else {
-                    // Other open thread: quiet node on the cord
+                    // Other open thread: clean bead on the cord (no cluttered text label!)
                     div()
                         .id(("rope-node", slot_ix))
                         .role(gpui::Role::Button)
                         .cursor_pointer()
                         .flex()
                         .items_center()
-                        .gap(px(4.))
-                        .px(px(3.))
-                        .py(px(2.))
-                        .tooltip(ui::tip(SharedString::from(format!("{} · ⌘{}", s_title, slot))))
+                        .justify_center()
+                        .size(px(20.))
+                        .tooltip(ui::tip(SharedString::from(format!("⌘{} · {}", slot, s_title))))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.switch_slot(slot, cx);
                         }))
-                        .child(div().size(px(t::DOT_SMALL)).rounded_full().bg(c(tk.text_muted)))
                         .child(
                             div()
-                                .max_w(px(100.))
-                                .truncate()
-                                .text_size(px(t::TEXT_SMALL))
-                                .text_color(c(tk.text_muted))
-                                .hover(|s| s.text_color(c(tk.text_secondary)))
-                                .child(SharedString::from(shown(&s_title))),
+                                .size(px(7.))
+                                .rounded_full()
+                                .border_1()
+                                .border_color(if is_running { c(tk.amber) } else { line(cx, t::LINE_CONTROL_STRONG) })
+                                .bg(if is_running { ca(tk.amber, 0.5) } else { c(tk.bg_main) })
+                                .hover(|s| s.border_color(c(tk.amber)).bg(ca(tk.amber, 0.3)))
                         )
                         .into_any_element()
                 }
@@ -201,12 +207,14 @@ impl Workspace {
             .collect();
 
         let mut rope_bar_items: Vec<AnyElement> = Vec::new();
+        rope_bar_items.push(div().w(px(14.)).h(px(1.)).bg(line(cx, t::LINE_DEFAULT)).into_any_element());
         for (i, node) in rope_nodes.into_iter().enumerate() {
             if i > 0 {
-                rope_bar_items.push(div().w(px(12.)).h(px(1.)).bg(line(cx, t::LINE_DEFAULT)).into_any_element());
+                rope_bar_items.push(div().w(px(10.)).h(px(1.)).bg(line(cx, t::LINE_DEFAULT)).into_any_element());
             }
             rope_bar_items.push(node);
         }
+        rope_bar_items.push(div().w(px(14.)).h(px(1.)).bg(line(cx, t::LINE_DEFAULT)).into_any_element());
 
         div()
             .id("conversation-header")
@@ -216,8 +224,8 @@ impl Workspace {
             .items_center()
             .gap(px(10.))
             .h(px(t::HEADER_H))
-            // Reserve space for macOS traffic lights when the left sidebar is hidden.
-            .pl(px(if sidebar_on { 24. } else { 78. }))
+            // Reserve space for macOS traffic lights (Logbook is an overlay drawer).
+            .pl(px(78.))
             .pr(px(12.))
             .overflow_hidden()
             .child(live_line(status, self.tugs.at(self.session.read(cx).version, std::time::Instant::now()), cx))
@@ -342,7 +350,7 @@ impl Workspace {
 
     /// The column when there is nothing said yet: the project's name and three things to start from, as plain text
     /// on the left of the reading column. No logo, no cards, no keycaps; errors, if any, under them.
-    pub(super) fn empty_state(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn empty_state(&self, composer: AnyElement, menu: Option<AnyElement>, cx: &mut Context<Self>) -> AnyElement {
         let tk = tk(cx);
         let project = self.project_name();
         let dirty_count = self.review.file_count();
@@ -358,12 +366,43 @@ impl Workspace {
                 Message::Error(e) => Some(
                     div()
                         .w_full()
-                        .pl(px(12.))
-                        .border_l_2()
-                        .border_color(c(tk.danger))
-                        .text_size(px(t::TEXT_SMALL))
-                        .text_color(c(tk.danger))
-                        .child(SharedString::from(shown(e)))
+                        .flex()
+                        .flex_row()
+                        .child(
+                            div()
+                                .w(px(t::ROPE_MARGIN))
+                                .flex_shrink_0()
+                                .relative()
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .bottom_0()
+                                        .right(px(10.))
+                                        .w(px(1.))
+                                        .bg(line(cx, t::LINE_DEFAULT)),
+                                )
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .top(px(6.))
+                                        .right(px(8.5))
+                                        .size(px(4.))
+                                        .rounded_full()
+                                        .bg(c(tk.danger)),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .pl(px(12.))
+                                .border_l_2()
+                                .border_color(c(tk.danger))
+                                .text_size(px(t::TEXT_SMALL))
+                                .text_color(c(tk.danger))
+                                .child(SharedString::from(shown(e))),
+                        )
                         .into_any_element(),
                 ),
                 _ => None,
@@ -371,21 +410,91 @@ impl Workspace {
             .collect();
 
         let starter = |id: &'static str, num: &'static str, text: SharedString| {
-            let hover_ink = c(tk.text_primary);
             div()
                 .id(id)
                 .role(gpui::Role::Button)
                 .group(id)
-                .flex()
-                .items_center()
-                .gap(px(14.))
-                .py(px(6.))
                 .cursor_pointer()
-                .text_size(px(t::TEXT_BODY))
-                .text_color(c(tk.text_secondary))
-                .hover(move |s| s.text_color(hover_ink))
-                .child(div().w(px(24.)).flex_shrink_0().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.text_faint)).group_hover(id, move |s| s.text_color(c(tk.amber))).child(num))
-                .child(text)
+                .w_full()
+                .flex()
+                .flex_row()
+                // 120px left margin: cord + knot node + mono number
+                .child(
+                    div()
+                        .w(px(t::ROPE_MARGIN))
+                        .flex_shrink_0()
+                        .relative()
+                        .flex()
+                        .justify_end()
+                        .items_center()
+                        .pr(px(20.))
+                        // The continuous vertical cord line
+                        .child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .bottom_0()
+                                .right(px(10.))
+                                .w(px(1.))
+                                .bg(line(cx, t::LINE_DEFAULT)),
+                        )
+                        // The knot node on the cord
+                        .child(
+                            div()
+                                .absolute()
+                                .top(px(17.))
+                                .right(px(8.5))
+                                .size(px(4.))
+                                .rounded_full()
+                                .bg(c(tk.text_muted))
+                                .group_hover(id, move |s| s.bg(c(tk.amber))),
+                        )
+                        // The number in mono
+                        .child(
+                            div()
+                                .font_family(mono(cx))
+                                .text_size(px(t::TEXT_META))
+                                .text_color(c(tk.text_faint))
+                                .group_hover(id, move |s| s.text_color(c(tk.amber)))
+                                .child(num),
+                        ),
+                )
+                // 680px manuscript column: starter card
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .py(px(3.))
+                        .child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .px(px(14.))
+                                .py(px(9.))
+                                .rounded(px(t::RADIUS_CONTROL))
+                                .border_1()
+                                .border_color(line(cx, t::LINE_DEFAULT))
+                                .bg(line(cx, t::FILL_FAINT))
+                                .hover(move |s| s.bg(ca(tk.amber, 0.05)).border_color(ca(tk.amber, 0.35)))
+                                .child(
+                                    div()
+                                        .text_size(px(t::TEXT_BODY))
+                                        .text_color(c(tk.text_secondary))
+                                        .group_hover(id, move |s| s.text_color(c(tk.text_primary)))
+                                        .child(text),
+                                )
+                                .child(
+                                    div()
+                                        .font_family(mono(cx))
+                                        .text_size(px(t::TEXT_META))
+                                        .text_color(c(tk.text_faint))
+                                        .group_hover(id, move |s| s.text_color(c(tk.amber)))
+                                        .child("→"),
+                                ),
+                        ),
+                )
         };
         let review_text = if dirty_count > 0 {
             SharedString::from(format!("Review the {dirty_count} uncommitted file{}", if dirty_count == 1 { "" } else { "s" }))
@@ -415,6 +524,58 @@ impl Workspace {
         )
         .on_click(cx.listener(|this, _, _, cx| this.toggle_change_sheet(cx)));
 
+        let startup_notes = (!notes.is_empty()).then(|| {
+            let failed = notes.iter().filter(|n| n.contains("did not start") || n.contains("error")).count();
+            let said = match failed {
+                0 => format!("{} startup note{}", notes.len(), if notes.len() == 1 { "" } else { "s" }),
+                f => format!("{} startup notes · {f} need a look", notes.len()),
+            };
+            let list: Vec<String> = notes.iter().map(|n| shown(n)).collect();
+            div()
+                .id("startup-notes")
+                .w_full()
+                .flex()
+                .flex_row()
+                .child(
+                    div()
+                        .w(px(t::ROPE_MARGIN))
+                        .flex_shrink_0()
+                        .relative()
+                        .child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .bottom_0()
+                                .right(px(10.))
+                                .w(px(1.))
+                                .bg(line(cx, t::LINE_DEFAULT)),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .top(px(8.))
+                                .right(px(8.5))
+                                .size(px(4.))
+                                .rounded_full()
+                                .bg(c(if failed > 0 { tk.attention } else { tk.text_muted })),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("startup-notes-label")
+                        .flex_1()
+                        .min_w_0()
+                        .pt(px(4.))
+                        .pb(px(8.))
+                        .font_family(mono(cx))
+                        .text_size(px(t::TEXT_META))
+                        .text_color(c(if failed > 0 { tk.attention } else { tk.text_faint }))
+                        .tooltip(ui::tip(SharedString::from(list.join("\n"))))
+                        .child(SharedString::from(said)),
+                )
+                .into_any_element()
+        });
+
         div()
             .id("empty-state-scroll")
             .size_full()
@@ -422,62 +583,103 @@ impl Workspace {
             .flex()
             .flex_col()
             .items_center()
-            .justify_center()
             .px(px(24.))
-            .pb(px(28.))
+            .pt(px(48.))
+            .pb(px(40.))
             .child(
                 div()
                     .w_full()
-                    .max_w(px(t::PAGE_WIDTH))
+                    .max_w(px(t::PAGE_WIDTH + t::ROPE_MARGIN))
                     .flex()
                     .flex_col()
-                    .gap(px(16.))
-                    // A blank brief: the project, the question, and what "done" will mean here.
+                    // Top headline row with cord knot
                     .child(
                         div()
+                            .w_full()
                             .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .font_family(mono(cx))
-                            .text_size(px(t::TEXT_META))
-                            .text_color(c(tk.text_faint))
-                            .child(ui::cordata_logo(18., cx))
-                            .child(SharedString::from(project)),
+                            .flex_row()
+                            .child(
+                                // 120px left margin: cord starts here
+                                div()
+                                    .w(px(t::ROPE_MARGIN))
+                                    .flex_shrink_0()
+                                    .relative()
+                                    .flex()
+                                    .justify_end()
+                                    .pr(px(20.))
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .top(px(12.))
+                                            .bottom_0()
+                                            .right(px(10.))
+                                            .w(px(1.))
+                                            .bg(line(cx, t::LINE_DEFAULT)),
+                                    )
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .top(px(10.))
+                                            .right(px(7.5))
+                                            .size(px(6.))
+                                            .rounded_full()
+                                            .bg(c(tk.amber)),
+                                    ),
+                            )
+                            .child(
+                                // 680px manuscript column
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(12.))
+                                    .pb(px(20.))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(8.))
+                                            .font_family(mono(cx))
+                                            .text_size(px(t::TEXT_META))
+                                            .text_color(c(tk.text_faint))
+                                            .child(ui::cordata_logo(18., cx))
+                                            .child(SharedString::from(project)),
+                                    )
+                                    .child(
+                                        div()
+                                            .font_family(crate::theme::voice(cx))
+                                            .text_size(px(t::TEXT_EMPTY))
+                                            .line_height(relative(1.15))
+                                            .text_color(c(tk.text_primary))
+                                            .child("What should change?"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(t::TEXT_SMALL))
+                                            .text_color(c(tk.text_muted))
+                                            .child(SharedString::from(match self.check_command() {
+                                                Some(check) => format!("Say it in your own words. Here, done means {check} passes; you decide at every gate."),
+                                                None => "Say it in your own words; you decide at every gate.".to_owned(),
+                                            })),
+                                    ),
+                            ),
                     )
-                    .child(div().font_family(crate::theme::voice(cx)).text_size(px(t::TEXT_EMPTY)).line_height(relative(1.15)).text_color(c(tk.text_primary)).child("What should change?"))
+                    // The 5 starters along the cord
+                    .child(explore)
+                    .child(review)
+                    .child(fix)
+                    .child(open_canvas)
+                    .child(open_sheet)
+                    .children(notices)
+                    .children(startup_notes)
+                    // The Next-Line Composer, seamlessly continuing the cord
                     .child(
                         div()
-                            .text_size(px(t::TEXT_SMALL))
-                            .text_color(c(tk.text_muted))
-                            .child(SharedString::from(match self.check_command() {
-                                Some(check) => format!("Say it in your own words. Here, done means {check} passes; you decide at every gate."),
-                                None => "Say it in your own words; you decide at every gate.".to_owned(),
-                            })),
-                    )
-                    // The cord stub dropping down
-                    .child(div().w(px(1.)).h(px(20.)).bg(line(cx, t::LINE_DEFAULT)))
-                    .child(div().flex().flex_col().child(explore).child(review).child(fix).child(open_canvas).child(open_sheet))
-                    .children(notices)
-                    // The session's opening notes, as one line: hover lists them. A server that failed to start is
-                    // the one note worth its own words.
-                    .when(!notes.is_empty(), |col| {
-                        let failed = notes.iter().filter(|n| n.contains("did not start") || n.contains("error")).count();
-                        let said = match failed {
-                            0 => format!("{} startup note{}", notes.len(), if notes.len() == 1 { "" } else { "s" }),
-                            f => format!("{} startup notes · {f} need a look", notes.len()),
-                        };
-                        let list: Vec<String> = notes.iter().map(|n| shown(n)).collect();
-                        col.child(
-                            div()
-                                .id("startup-notes")
-                                .pt(px(6.))
-                                .font_family(mono(cx))
-                                .text_size(px(t::TEXT_META))
-                                .text_color(c(if failed > 0 { tk.attention } else { tk.text_faint }))
-                                .tooltip(ui::tip(SharedString::from(list.join("\n"))))
-                                .child(SharedString::from(said)),
-                        )
-                    }),
+                            .pt(px(16.))
+                            .children(menu)
+                            .child(composer),
+                    ),
             )
             .into_any_element()
     }
@@ -1054,57 +1256,107 @@ impl Workspace {
             .capture_key_down(cx.listener(Self::composer_keys))
             .w_full()
             .flex()
-            .flex_col()
-            .border_t_1()
-            .border_color(line(cx, t::LINE_DEFAULT))
-            .when(!queued.is_empty(), |col| col.child(div().flex().flex_col().pt(px(6.)).children(queued)))
-            .when(!chips.is_empty(), |col| col.child(div().flex().flex_wrap().gap(px(6.)).pt(px(10.)).children(chips)))
-            .when_some(note, |col, note| col.child(div().pt(px(8.)).text_size(px(t::TEXT_SMALL)).text_color(c(tk.attention)).child(SharedString::from(note))))
+            .flex_row()
+            // 120px left margin: cord + prompt mark ›
             .child(
-                // The mark hangs in the margin (12px + 10px gap), so what you type starts on the column's text edge.
                 div()
+                    .w(px(t::ROPE_MARGIN))
+                    .flex_shrink_0()
+                    .relative()
                     .flex()
+                    .justify_end()
                     .items_start()
-                    .gap(px(10.))
-                    .ml(px(-t::HANG))
-                    .pt(px(12.))
-                    .child(prompt_mark(mark, cx))
-                    // The Textarea pads its text 10px: pull it back so typing starts on the text edge, under your lines above.
-                    .child(div().flex_1().min_w_0().ml(px(-10.)).text_size(px(t::TEXT_BODY)).child(Textarea::new(&self.composer).appearance(false).aria_label("Message"))),
+                    .pr(px(14.))
+                    .pt(px(10.))
+                    // The cord coming from above to the caret node
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .h(px(18.))
+                            .right(px(10.))
+                            .w(px(1.))
+                            .bg(line(cx, t::LINE_DEFAULT)),
+                    )
+                    // The prompt mark › hanging on the cord
+                    .child(
+                        div()
+                            .absolute()
+                            .top(px(8.))
+                            .right(px(4.))
+                            .font_family(mono(cx))
+                            .text_size(px(20.))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(mark)
+                            .child("›"),
+                    ),
             )
+            // 680px manuscript column: queued, attachments, textarea, hairline, footer
             .child(
                 div()
+                    .flex_1()
+                    .min_w_0()
                     .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    // Icons sit in 24px boxes: pull the first back so its glyph lines up with the text edge.
-                    .ml(px(-5.))
-                    .h(px(28.))
-                    .text_size(px(t::TEXT_META))
-                    .text_color(c(tk.text_faint))
+                    .flex_col()
+                    .when(!queued.is_empty(), |col| col.child(div().flex().flex_col().pb(px(6.)).children(queued)))
+                    .when(!chips.is_empty(), |col| col.child(div().flex().flex_wrap().gap(px(6.)).pb(px(8.)).children(chips)))
+                    .when_some(note, |col, note| col.child(div().pb(px(6.)).text_size(px(t::TEXT_SMALL)).text_color(c(tk.attention)).child(SharedString::from(note))))
+                    // The Textarea
                     .child(
-                        ui::icon_action("attach", gpui_kit_assets::IconName::Paperclip, cx)
-                            .size(px(22.))
-                            .aria_label("Attach files or images (Shift+Command+A, or paste / drop them)")
-                            .tooltip(ui::tip("Attach files or images  ⇧⌘A — or paste / drop them"))
-                            .on_click(cx.listener(|this, _, window, cx| this.choose_attachments(window, cx))),
+                        div()
+                            .w_full()
+                            .pt(px(10.))
+                            .text_size(px(t::TEXT_BODY))
+                            .child(Textarea::new(&self.composer).appearance(false).aria_label("Message")),
                     )
+                    // Hairline UNDER the textarea
+                    .child(div().w_full().h(px(1.)).bg(line(cx, t::LINE_DEFAULT)).mt(px(8.)).mb(px(6.)))
+                    // Footer line: attach left, metadata & controls right
                     .child(
-                        ui::icon_action("dictate", gpui_kit_assets::IconName::Mic, cx)
-                            .size(px(22.))
-                            .aria_label("Dictate (system dictation)")
-                            .tooltip(ui::tip("Dictate"))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.composer.update(cx, |s, cx| s.focus(window, cx));
-                                cx.defer(|_| crate::platform::start_dictation());
-                            })),
-                    )
-                    .child(div().flex_1().min_w_0().truncate().children(view.hint.clone().map(|hint| SharedString::from(shown(&hint)))))
-                    .when_some(esc, |row, hint| row.child(div().flex_shrink_0().text_color(c(tk.attention)).child(hint)))
-                    .children(self.meter(cx))
-                    .child(self.mode_chip(cx))
-                    .when_some(model, |row, model| row.child(self.model_trigger(model, cx)))
-                    .children(action),
+                        div()
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .h(px(28.))
+                            .text_size(px(t::TEXT_META))
+                            .text_color(c(tk.text_faint))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.))
+                                    .child(
+                                        ui::icon_action("attach", gpui_kit_assets::IconName::Paperclip, cx)
+                                            .size(px(22.))
+                                            .aria_label("Attach files or images (Shift+Command+A, or paste / drop them)")
+                                            .tooltip(ui::tip("Attach files or images  ⇧⌘A — or paste / drop them"))
+                                            .on_click(cx.listener(|this, _, window, cx| this.choose_attachments(window, cx))),
+                                    )
+                                    .child(
+                                        ui::icon_action("dictate", gpui_kit_assets::IconName::Mic, cx)
+                                            .size(px(22.))
+                                            .aria_label("Dictate (system dictation)")
+                                            .tooltip(ui::tip("Dictate"))
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.composer.update(cx, |s, cx| s.focus(window, cx));
+                                                cx.defer(|_| crate::platform::start_dictation());
+                                            })),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(10.))
+                                    .child(div().flex_1().min_w_0().truncate().children(view.hint.clone().map(|hint| SharedString::from(shown(&hint)))))
+                                    .when_some(esc, |row, hint| row.child(div().flex_shrink_0().text_color(c(tk.attention)).child(hint)))
+                                    .children(self.meter(cx))
+                                    .child(self.mode_chip(cx))
+                                    .when_some(model, |row, model| row.child(self.model_trigger(model, cx)))
+                                    .children(action),
+                            ),
+                    ),
             )
             .into_any_element()
     }

@@ -15,6 +15,7 @@ use crate::ui::{self, Dot, Kind};
 
 impl Workspace {
     pub(super) fn sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let tk = tk(cx);
         ui::drawer("sidebar", ui::DrawerSide::Left, self.rail_w(), cx)
             .role(gpui::Role::Navigation)
             .aria_label("Project and threads")
@@ -26,24 +27,37 @@ impl Workspace {
                     .w_full()
                     .flex()
                     .items_center()
-                    .justify_end()
-                    .gap(px(2.))
+                    .justify_between()
                     .pl(px(78.))
                     .pr(px(10.))
                     .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move())
                     .child(
-                        ui::icon_action("rail-search", gpui_kit_assets::IconName::Search, cx)
-                            .aria_label("Search threads and commands (⌘K)")
-                            .tooltip(ui::tip("Search threads and commands  ⌘K"))
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_click(cx.listener(|this, _, window, cx| this.open_overlay(Overlay::Palette, window, cx))),
+                        div()
+                            .font_family(crate::theme::voice(cx))
+                            .text_size(px(15.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(c(tk.text_primary))
+                            .child("Logbook"),
                     )
                     .child(
-                        ui::icon_action("hide-sidebar", gpui_kit_assets::IconName::PanelLeft, cx)
-                            .aria_label("Hide sidebar (⌘B)")
-                            .tooltip(ui::tip("Hide sidebar  ⌘B"))
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_click(cx.listener(|this, _, window, cx| this.toggle_sidebar(&super::ToggleSidebar, window, cx))),
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(2.))
+                            .child(
+                                ui::icon_action("rail-search", gpui_kit_assets::IconName::Search, cx)
+                                    .aria_label("Search threads and commands (⌘K)")
+                                    .tooltip(ui::tip("Search threads and commands  ⌘K"))
+                                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                    .on_click(cx.listener(|this, _, window, cx| this.open_overlay(Overlay::Palette, window, cx))),
+                            )
+                            .child(
+                                ui::icon_action("hide-sidebar", gpui_kit_assets::IconName::PanelLeft, cx)
+                                    .aria_label("Hide sidebar (⌘B)")
+                                    .tooltip(ui::tip("Hide sidebar  ⌘B"))
+                                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                    .on_click(cx.listener(|this, _, window, cx| this.toggle_sidebar(&super::ToggleSidebar, window, cx))),
+                            ),
                     ),
             )
             .child(self.project_block(cx))
@@ -248,7 +262,10 @@ impl Workspace {
                         .size(px(22.))
                         .aria_label("New thread (⌘N)")
                         .tooltip(ui::tip("New thread  ⌘N"))
-                        .on_click(cx.listener(|this, _, window, cx| this.new_session(&super::NewSession, window, cx))),
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.new_session(&super::NewSession, window, cx);
+                            this.set_sidebar(false, cx);
+                        })),
                 ),
         );
         for (ix, row) in rail.threads.iter().enumerate() {
@@ -290,6 +307,7 @@ impl Workspace {
                     if let Some(entity) = this.sessions.get(index).cloned() {
                         this.show(entity, cx);
                     }
+                    this.set_sidebar(false, cx);
                 }))
                 .child(ui::mark_live(("thread-mark", ix), mark, 11., beat, cx))
                 .child(
@@ -350,7 +368,10 @@ impl Workspace {
                         .rounded(px(t::RADIUS_ROW))
                         .cursor_pointer()
                         .hover(move |s| s.bg(hover))
-                        .on_click(cx.listener(move |this, _, window, cx| this.open_saved(id.clone(), window, cx)))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_saved(id.clone(), window, cx);
+                            this.set_sidebar(false, cx);
+                        }))
                         // The mark's column, empty: an earlier conversation is not doing anything.
                         .child(div().w(px(11. * 1.4)).flex_shrink_0())
                         .child(
@@ -437,7 +458,10 @@ impl Workspace {
                             .rounded(px(t::RADIUS_ROW))
                             .cursor_pointer()
                             .hover(move |s| s.bg(hover))
-                            .on_click(cx.listener(move |this, _, window, cx| this.switch_project(path.clone(), window, cx)))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.switch_project(path.clone(), window, cx);
+                                this.set_sidebar(false, cx);
+                            }))
                             .child(div().flex_shrink_0().text_color(c(tk.text_faint)).font_family(mono(cx)).text_size(px(t::TEXT_META)).child("⎇"))
                             .child(
                                 div()

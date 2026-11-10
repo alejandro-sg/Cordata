@@ -16,7 +16,7 @@ pub const DOCK_MIN_W: f32 = 280.;
 pub const DOCK_MAX_W: f32 = 900.;
 /// What the conversation keeps however the columns are dragged.
 pub const CONVERSATION_MIN_W: f32 = 420.;
-const GRIP_W: f32 = 7.;
+pub(super) const GRIP_W: f32 = 7.;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Edge {
@@ -73,16 +73,14 @@ impl Workspace {
     /// The grips, laid over the column edges (absolute, so they take no width).
     pub(super) fn resize_grips(&self, window_w: f32, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut grips = Vec::new();
-        if self.sidebar_open {
-            grips.push(self.grip(Edge::Rail, self.rail_w() - GRIP_W / 2., true, cx));
-        }
+        // Edge::Rail is rendered directly on the Logbook drawer overlay slide when sidebar_open is true.
         if self.panel_open {
             grips.push(self.grip(Edge::Dock, self.dock_w(window_w) - GRIP_W / 2., false, cx));
         }
         grips
     }
 
-    fn grip(&self, edge: Edge, offset: f32, from_left: bool, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn grip(&self, edge: Edge, offset: f32, from_left: bool, cx: &mut Context<Self>) -> AnyElement {
         let active = self.resizing == Some(edge);
         let signal = c(tk(cx).amber);
         let faint = amber(cx, 0.55);

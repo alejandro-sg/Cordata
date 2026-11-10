@@ -468,7 +468,7 @@ impl Workspace {
             }
         }));
         composer.update(cx, |state, cx| state.focus(window, cx));
-        let sidebar_open = prefs.sidebar_open.unwrap_or(true);
+        let sidebar_open = prefs.sidebar_open.unwrap_or(false);
         // Closed until the person opens it (⌘\): the conversation is the window's default, not three columns.
         let panel_open = prefs.panel_open.unwrap_or(false);
         let mut this = Self {
@@ -1062,6 +1062,10 @@ impl Workspace {
     fn stop(&mut self, _: &StopTurn, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(top) = self.top_overlay() {
             self.close_overlay(top, window, cx);
+            return;
+        }
+        if self.sidebar_open {
+            self.set_sidebar(false, cx);
             return;
         }
         if self.row_menu.is_some() {
@@ -2110,7 +2114,7 @@ impl Render for Workspace {
         let window_w = size.width.as_f32();
         let sidebar_w = self.rail_w();
         let panel_w = self.dock_w(window_w);
-        let column_w = (window_w - sidebar_w - panel_w).max(0.);
+        let column_w = (window_w - panel_w).max(0.);
         let session = self.session.clone();
         let expanded = self.expanded.clone();
         let thoughts = session.read(cx).view.thoughts_expanded;
@@ -2311,26 +2315,63 @@ impl Render for Workspace {
         let actions_row = (self.desk_mode == DeskMode::Transcript).then(|| self.receipt(cx)).flatten();
         let brief = (self.desk_mode != DeskMode::Rack).then(|| self.brief_block(cx)).flatten();
         let places = (has_conversation && self.desk_mode != DeskMode::Rack && column_w >= desk::PLACES_MIN_COLUMN).then(|| self.places_margin(cx));
-        let menu = self.slash_menu(cx);
         // The field takes the whole window: no thread list, no side panel, no header, no bottom composer.
         let field_window = self.desk_mode == DeskMode::Rack && self.rack_view_mode == cordata_view::flight::RackViewMode::Field;
-        let sidebar = (self.sidebar_open && !field_window).then(|| self.sidebar(cx));
+        let sidebar_drawer = (self.sidebar_open && !field_window).then(|| {
+            div()
+                .id("sidebar-drawer-layer")
+                .absolute()
+                .inset_0()
+                .child(
+                    div()
+                        .id("sidebar-scrim")
+                        .absolute()
+                        .inset_0()
+                        .bg(ca(tk.shadow, 0.45))
+                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, _, cx| {
+                            this.set_sidebar(false, cx);
+                        }))
+                )
+                .child(
+                    div()
+                        .id("sidebar-drawer-slide")
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .bottom_0()
+                        .w(px(sidebar_w))
+                        .shadow(crate::theme::modal_shadow(cx))
+                        .child(self.sidebar(cx))
+                        .child(self.grip(crate::workspace::resize::Edge::Rail, sidebar_w - crate::workspace::resize::GRIP_W / 2., true, cx))
+                )
+        });
         let header = self.header(column_w, cx);
-        let composer = self.composer(cx);
         let panel = (self.panel_open && !field_window).then(|| self.side_panel(window_w, window, cx));
         let overlays = self.overlay_layer(window, cx);
         let grips = if field_window { Vec::new() } else { self.resize_grips(window_w, cx) };
         let drop_ring = crate::theme::amber(cx, t::AMBER_BORDER_STRONG);
-        let body: AnyElement = match self.desk_mode {
-            DeskMode::Rack => div().flex_1().min_h_0().child(self.triage_rack_view(cx)).into_any_element(),
-            DeskMode::ChangeSheet => div().flex_1().min_h_0().child(self.change_sheet(cx)).into_any_element(),
-            _ if has_conversation => div().id("transcript").role(gpui::Role::Log).aria_label("Transcript").flex_1().min_h_0().child(transcript_list).into_any_element(),
-            _ => div().flex_1().min_h_0().child(self.empty_state(cx)).into_any_element(),
+        let (body, bottom_composer): (AnyElement, Option<AnyElement>) = match self.desk_mode {
+            DeskMode::Rack => (
+                div().flex_1().min_h_0().child(self.triage_rack_view(cx)).into_any_element(),
+                Some(self.composer(cx)),
+            ),
+            DeskMode::ChangeSheet => (
+                div().flex_1().min_h_0().child(self.change_sheet(cx)).into_any_element(),
+                Some(self.composer(cx)),
+            ),
+            _ if has_conversation => (
+                div().id("transcript").role(gpui::Role::Log).aria_label("Transcript").flex_1().min_h_0().child(transcript_list).into_any_element(),
+                Some(self.composer(cx)),
+            ),
+            _ => (
+                div().flex_1().min_h_0().child(self.empty_state(self.composer(cx), self.slash_menu(cx), cx)).into_any_element(),
+                None,
+            ),
         };
 
         let header = (!field_window).then_some(header);
         let desk: AnyElement = if field_window {
-            self.field_window(composer, menu, cx)
+            self.field_window(self.composer(cx), self.slash_menu(cx), cx)
         } else {
             div()
                 .flex()
@@ -2344,15 +2385,17 @@ impl Render for Workspace {
                         .min_w_0()
                         .children(brief)
                         .child(body)
-                        .child(
-                            div()
-                                .w_full()
-                                .flex()
-                                .justify_center()
-                                .px(px(24.))
-                                .pb(px(16.))
-                                .child(div().w_full().max_w(px(t::PAGE_WIDTH + t::ROPE_MARGIN)).flex().flex_col().children(actions_row).children(pending).children(menu).child(composer)),
-                        ),
+                        .when_some(bottom_composer, |col, comp| {
+                            col.child(
+                                div()
+                                    .w_full()
+                                    .flex()
+                                    .justify_center()
+                                    .px(px(24.))
+                                    .pb(px(16.))
+                                    .child(div().w_full().max_w(px(t::PAGE_WIDTH + t::ROPE_MARGIN)).flex().flex_col().children(actions_row).children(pending).children(self.slash_menu(cx)).child(comp)),
+                            )
+                        }),
                 )
                 .children(places)
                 .into_any_element()
@@ -2419,7 +2462,6 @@ impl Render for Workspace {
                     .when(self.resizing.is_some(), |el| el.cursor_col_resize())
                     .on_mouse_move(cx.listener(move |this, event: &gpui::MouseMoveEvent, _, cx| this.on_resize_move(event, window_w, cx)))
                     .on_mouse_up(gpui::MouseButton::Left, cx.listener(|this, _, _, cx| this.end_resize(cx)))
-                    .children(sidebar)
                     .child(
                         div()
                             .id("conversation")
@@ -2438,6 +2480,7 @@ impl Render for Workspace {
                     .children(panel)
                     .children(grips),
             )
+            .children(sidebar_drawer)
             .children(overlays)
             .child(div().absolute().bottom(px(36.)).right(px(panel_w + 12.)).when(std::env::var_os("CORDATA_FPS").is_some(), |this| this.child(gpui_fps::fps_monitor(window, cx))))
     }
@@ -3179,14 +3222,14 @@ mod window_tests {
     #[gpui::test]
     fn sidebar_toggles_and_starter_cards_prepare_the_composer(cx: &mut TestAppContext) {
         let (view, cx) = workspace(cx);
-        assert!(view.read_with(cx, |this, _| this.sidebar_open), "sidebar starts open");
+        assert!(!view.read_with(cx, |this, _| this.sidebar_open), "sidebar starts closed as drawer");
         cx.simulate_keystrokes("cmd-b");
         cx.run_until_parked();
-        assert!(!view.read_with(cx, |this, _| this.sidebar_open), "⌘B hides the sidebar");
-        assert_eq!(view.read_with(cx, |this, _| this.prefs.sidebar_open), Some(false), "…and remembers it");
+        assert!(view.read_with(cx, |this, _| this.sidebar_open), "⌘B opens the Logbook drawer");
+        assert_eq!(view.read_with(cx, |this, _| this.prefs.sidebar_open), Some(true), "…and remembers it");
         cx.simulate_keystrokes("cmd-b");
         cx.run_until_parked();
-        assert!(view.read_with(cx, |this, _| this.sidebar_open), "⌘B shows the sidebar again");
+        assert!(!view.read_with(cx, |this, _| this.sidebar_open), "⌘B closes the drawer");
 
         view.update_in(cx, |this, window, cx| {
             this.apply_starter("Explore key modules", false, window, cx);
