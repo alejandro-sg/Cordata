@@ -579,7 +579,7 @@ impl Workspace {
         let count = |n: usize, word: &'static str, col: gpui::Hsla| div().flex().items_baseline().gap(px(5.))
             .child(div().text_size(px(17.)).font_weight(FontWeight::SEMIBOLD).text_color(if n > 0 { col } else { c(tk.text_faint) }).child(SharedString::from(n.to_string())))
             .child(div().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.text_muted)).child(word));
-        let top = div().flex().items_center().justify_between().gap(px(20.)).pl(px(84.)).pr(px(20.)).py(px(8.)).border_b_1().border_color(line(cx, t::LINE_DEFAULT))
+        let top = div().flex().flex_wrap().items_center().justify_between().gap_x(px(20.)).gap_y(px(6.)).pl(px(84.)).pr(px(20.)).py(px(8.)).border_b_1().border_color(line(cx, t::LINE_DEFAULT))
             .child(
                 div().flex().items_center().gap(px(10.))
                     .child(ui::cordata_logo(18., cx))
@@ -589,7 +589,7 @@ impl Workspace {
                             .child(div().font_family(mono(cx)).text_size(px(11.)).px(px(6.)).py(px(1.5)).rounded(px(2.)).bg(ca(tk.amber, 0.15)).text_color(c(tk.amber)).child(SharedString::from(self.git.branch.clone().unwrap_or_else(|| "main".into())))))
                         .child(ui::meta(SharedString::from(format!("{} thread{}", inputs.len(), if inputs.len() == 1 { "" } else { "s" })), cx)))
             )
-            .child(div().flex_1().min_w_0().flex().justify_center()
+            .child(div().flex_1().min_w(px(380.)).flex().justify_center()
                 .child(div().w_full().min_w(px(380.)).max_w(px(580.)).flex().flex_col().children(menu).child(composer)))
             .child(div().flex().items_center().gap(px(16.))
                 .child(count(working + live_runs, "working", c(tk.amber)))

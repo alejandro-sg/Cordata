@@ -148,7 +148,7 @@ impl Workspace {
         let tk = tk(cx);
         let size = window.viewport_size();
         let w = t::SETTINGS_W.min(size.width.as_f32() - 48.);
-        let h = t::SETTINGS_H.min(size.height.as_f32() - 48.);
+        let h = t::SETTINGS_H.min(size.height.as_f32() - 48. - t::HEADER_H);
         let query = self.settings_search.read(cx).value().to_string();
         let nav: Vec<AnyElement> = Section::ALL.iter().filter(|s| s.matches(&query)).map(|&section| {
             let active = self.settings_section == section;

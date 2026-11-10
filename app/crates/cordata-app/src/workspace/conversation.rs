@@ -100,7 +100,8 @@ impl Workspace {
             Status::Closed => Some(("engine stopped", tk.danger)),
             Status::Idle | Status::Running => None,
         };
-        let _ = column_w;
+        // Under this column width the three view tabs drop their key hints so they all fit; the tooltips keep them.
+        let tight = column_w < 760.;
         let panel_on = self.panel_open;
         let _ = self.sidebar_open;
 
@@ -248,6 +249,9 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .gap(px(0.))
+                    // The thread chips give way first: the view tabs always fit.
+                    .min_w_0()
+                    .overflow_hidden()
                     .children(rope_bar_items),
             )
             .when_some(word, |row, (word, ink)| row.child(div().flex_shrink_0().whitespace_nowrap().text_size(px(t::TEXT_META)).text_color(c(ink)).child(word)))
@@ -285,7 +289,7 @@ impl Workspace {
                                 super::sheet::record_ux_event("mode_switch", serde_json::json!({ "mode": "rack" }));
                                 cx.notify();
                             }))
-                            .child("Canvas ⌘0")
+                            .child(if tight { "Canvas" } else { "Canvas ⌘0" })
                     )
                     .child(
                         div()
@@ -308,7 +312,7 @@ impl Workspace {
                                 super::sheet::record_ux_event("mode_switch", serde_json::json!({ "mode": "transcript" }));
                                 cx.notify();
                             }))
-                            .child("Transcript ⌘1")
+                            .child(if tight { "Transcript" } else { "Transcript ⌘1" })
                     )
                     .child(
                         div()
@@ -332,7 +336,7 @@ impl Workspace {
                                 super::sheet::record_ux_event("mode_switch", serde_json::json!({ "mode": "sheet" }));
                                 cx.notify();
                             }))
-                            .child("Sheet ⌘D")
+                            .child(if tight { "Sheet" } else { "Sheet ⌘D" })
                     )
             )
             .children(self.branch_chip(cx))

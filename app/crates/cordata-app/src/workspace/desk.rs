@@ -135,7 +135,7 @@ impl Workspace {
                                 .child(SharedString::from(brief.clone())),
                         )
                         .child(meta)
-                        .when(!snap.turns.is_empty() || pending || turn_active, |col| col.child(self.tape(&snap.turns, cx))),
+                        .when(snap.turns.len() > 1 || ((!snap.turns.is_empty()) && (pending || turn_active)), |col| col.child(self.tape(&snap.turns, cx))),
                 )
                 .into_any_element(),
         )
@@ -150,6 +150,7 @@ impl Workspace {
         let skipped = turns.len().saturating_sub(TAPE_STOPS);
         let joint = || div().w(px(18.)).h(px(1.)).flex_shrink_0().bg(line(cx, t::LINE_CONTROL_STRONG));
         let mut row = div().flex().items_center().h(px(18.)).font_family(mono(cx)).text_size(px(t::TEXT_MIN));
+        row = row.child(div().pr(px(8.)).text_color(c(tk.text_faint)).child("turns"));
         if skipped > 0 {
             row = row.child(div().pr(px(6.)).text_color(c(tk.text_faint)).child(SharedString::from(format!("+{skipped}"))));
         }

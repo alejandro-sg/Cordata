@@ -278,7 +278,13 @@ impl Workspace {
                     .into_any_element(),
             );
         }
-        let note = if busy { "a turn is running — switch when it ends" } else { "the conversation carries on with the new model" };
+        // Rows are about 30 px with their group labels; past what the list shows, say so rather than cut a row off silently.
+        let more = rows.len() as f32 * 30. > 392.;
+        let note = match (busy, more) {
+            (true, _) => "a turn is running — switch when it ends",
+            (false, true) => "scroll for more",
+            (false, false) => "the conversation carries on with the new model",
+        };
         deferred(
             div().absolute().bottom(px(26.)).right_0().child(
                 ui::popover(cx)
