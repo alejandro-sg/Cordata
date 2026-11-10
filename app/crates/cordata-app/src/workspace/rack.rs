@@ -54,6 +54,9 @@ impl Workspace {
                 DeskMode::Rack
             }
         };
+        if self.desk_mode == DeskMode::Rack && self.rack_view_mode == RackViewMode::Field {
+            self.ensure_run_poll(cx);
+        }
         cx.notify();
     }
 
@@ -84,7 +87,7 @@ impl Workspace {
     }
 
     /// Show lane `slot`'s thread and mark it picked, so the directive bar targets it.
-    fn pick_lane(&mut self, slot: usize, cx: &mut Context<Self>) {
+    pub(super) fn pick_lane(&mut self, slot: usize, cx: &mut Context<Self>) {
         let picked = self.rack_selected_slot != Some(slot);
         self.rack_selected_slot = picked.then_some(slot);
         if picked && let Some(target) = self.sessions.get(slot - 1).cloned() {
@@ -100,7 +103,7 @@ impl Workspace {
         self.sessions.iter().position(|s| s.entity_id() == id).map_or(1, |ix| ix + 1)
     }
 
-    fn lane_inputs(&self, cx: &Context<Self>) -> Vec<TriageIn> {
+    pub(super) fn lane_inputs(&self, cx: &Context<Self>) -> Vec<TriageIn> {
         let check = self.check_command();
         let active_id = self.session.entity_id();
         let edited: Vec<(usize, std::path::PathBuf, Vec<String>)> = self
@@ -352,8 +355,41 @@ impl Workspace {
 
         let tab = |id: &'static str, m: RackViewMode, cx: &mut Context<Self>| {
             ui::button(id, m.label(), if mode == m { Kind::Tint } else { Kind::Ghost }, cx)
-                .on_click(cx.listener(move |this, _, _, cx| { this.rack_view_mode = m; cx.notify(); }))
+                .on_click(cx.listener(move |this, _, _, cx| { this.rack_view_mode = m; if m == RackViewMode::Field { this.ensure_run_poll(cx); } cx.notify(); }))
         };
+
+        let head = div().flex().items_center().justify_between()
+            .child(div().flex().items_baseline().gap(px(28.))
+                .child(div().font_family(voice(cx)).text_size(px(24.)).text_color(c(tk.text_primary)).child("Deck"))
+                .child(stat(working, "working", c(tk.teal)))
+                .child(stat(waiting, "need you", c(tk.amber)))
+                .child(stat(quiet, "quiet", c(tk.text_secondary)))
+                .when(collisions > 0, |d| d.child(stat(collisions, "collisions", c(tk.attention)))))
+            .child(div().flex().items_center().gap(px(8.))
+                .child(div().flex().items_center().gap(px(2.))
+                    .child(tab("view-lanes", RackViewMode::Lanes, cx))
+                    .child(tab("view-ground", RackViewMode::Ground, cx))
+                    .child(tab("view-field", RackViewMode::Field, cx)))
+                .child(div().id("rack-close").role(gpui::Role::Button).cursor_pointer().font_family(mono(cx)).text_size(px(t::TEXT_META))
+                    .text_color(c(tk.text_muted)).hover(|s| s.text_color(c(tk.text_primary)))
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_rack(cx))).child("thread view  ⌘0")));
+
+        // The field is not a column of rows: it takes the whole pane and pans itself.
+        if mode == RackViewMode::Field {
+            return div()
+                .id("triage-rack")
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(div().px(px(24.)).pt(px(20.)).pb(px(10.)).flex().flex_col().gap(px(14.))
+                    .child(head)
+                    .child(div().flex().items_center().justify_between().pb(px(8.)).border_b_1().border_color(line(cx, t::LINE_SUBTLE))
+                        .child(ui::meta("threads in their checkouts · scroll pans, ⌘-scroll zooms, click a node to pick it", cx))
+                        .child(self.field_zoom_control(cx)))
+                    .children(batch_cards))
+                .child(div().flex_1().min_h_0().child(self.field_view(&inputs, &zones, cx)))
+                .into_any_element();
+        }
 
         div()
             .id("triage-rack")
@@ -361,26 +397,13 @@ impl Workspace {
             .overflow_y_scroll()
             .child(div().w_full().flex().justify_center().px(px(24.)).py(px(20.))
                 .child(div().w_full().max_w(px(t::CONTENT_MAX_W + 120.)).flex().flex_col().gap(px(14.))
-                    .child(div().flex().items_center().justify_between()
-                        .child(div().flex().items_baseline().gap(px(28.))
-                            .child(div().font_family(voice(cx)).text_size(px(24.)).text_color(c(tk.text_primary)).child("Deck"))
-                            .child(stat(working, "working", c(tk.teal)))
-                            .child(stat(waiting, "need you", c(tk.amber)))
-                            .child(stat(quiet, "quiet", c(tk.text_secondary)))
-                            .when(collisions > 0, |d| d.child(stat(collisions, "collisions", c(tk.attention)))))
-                        .child(div().flex().items_center().gap(px(8.))
-                            .child(div().flex().items_center().gap(px(2.))
-                                .child(tab("view-lanes", RackViewMode::Lanes, cx))
-                                .child(tab("view-ground", RackViewMode::Ground, cx)))
-                            .child(div().id("rack-close").role(gpui::Role::Button).cursor_pointer().font_family(mono(cx)).text_size(px(t::TEXT_META))
-                                .text_color(c(tk.text_muted)).hover(|s| s.text_color(c(tk.text_primary)))
-                                .on_click(cx.listener(|this, _, _, cx| this.toggle_rack(cx))).child("thread view  ⌘0"))))
+                    .child(head)
                     .child(div().flex().items_center().justify_between().pb(px(8.)).border_b_1().border_color(line(cx, t::LINE_SUBTLE))
-                        .child(div().min_w_0().child(ui::meta(match mode { RackViewMode::Lanes => "one bar per action, oldest left · hover to read", RackViewMode::Ground => "components and the threads on them" }, cx)))
+                        .child(div().min_w_0().child(ui::meta(match mode { RackViewMode::Lanes | RackViewMode::Field => "one bar per action, oldest left · hover to read", RackViewMode::Ground => "components and the threads on them" }, cx)))
                         .child(legend))
                     .children(batch_cards)
                     .child(match mode {
-                        RackViewMode::Lanes => div().id("lanes").flex().flex_col().children(lane_rows).into_any_element(),
+                        RackViewMode::Lanes | RackViewMode::Field => div().id("lanes").flex().flex_col().children(lane_rows).into_any_element(),
                         RackViewMode::Ground if tiles.is_empty() => div().id("ground").py(px(24.)).text_color(c(tk.text_muted)).text_size(px(t::TEXT_SMALL)).child("No thread has read or changed a file yet.").into_any_element(),
                         RackViewMode::Ground => div().id("ground").flex().flex_wrap().gap(px(12.)).children(tiles).into_any_element(),
                     })))

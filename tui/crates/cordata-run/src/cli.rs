@@ -285,7 +285,9 @@ pub async fn run(args: RunArgs) -> i32 {
         move |spec| config::family_available(&spec.candidate.family, &env_for_avail),
     );
     let checkpoints = GitCheckpoints::new(Store::new(&home));
-    let controls = args.run_id.as_ref().map(|id| Arc::new(FileControls::new(Some(machine::artifacts_dir(&home, id).join("control.ndjson")))) as Arc<dyn machine::RunControls>);
+    // Always a known id, so a front door can find this run's control file to pause it.
+    let run_id = args.run_id.clone().unwrap_or_else(|| format!("run-{}", machine::short_id()));
+    let controls = Some(Arc::new(FileControls::new(Some(machine::artifacts_dir(&home, &run_id).join("control.ndjson")))) as Arc<dyn machine::RunControls>);
     let world = World {
         roster: &mut roster,
         ledger: &ledger,
@@ -299,13 +301,13 @@ pub async fn run(args: RunArgs) -> i32 {
         home: home.clone(),
     };
     let config = run_args_to_config(&args, config::run_config(&settings));
-    let mut machine = Machine::new(&args.goal, &cwd.to_string_lossy(), config, world, args.run_id.as_deref(), None, args.session_id.as_deref());
+    let mut machine = Machine::new(&args.goal, &cwd.to_string_lossy(), config, world, Some(run_id.as_str()), None, args.session_id.as_deref());
     machine.record.warnings.extend(notes);
     let record = drive(machine).await;
     finish(&record, args.json)
 }
 
-pub async fn resume(run_id: &str, workers: Option<String>, allow_direct: bool, max_usd: Option<f64>, allow_weaker: bool, as_json: bool) -> i32 {
+pub async fn resume(run_id: &str, workers: Option<String>, allow_direct: bool, max_usd: Option<f64>, allow_weaker: bool, direction: Option<String>, as_json: bool) -> i32 {
     let mut environ: HashMap<String, String> = std::env::vars().collect();
     if allow_direct {
         environ.insert("CORDATA_VAULT_DIRECT".into(), "1".into());
@@ -317,11 +319,15 @@ pub async fn resume(run_id: &str, workers: Option<String>, allow_direct: bool, m
             return 2;
         }
     };
-    let Some(record) = machine::load(&probe, run_id) else {
+    let Some(mut record) = machine::load(&probe, run_id) else {
         eprintln!("no run {run_id}");
         return 2;
     };
     drop(probe);
+    if let Some(text) = direction.as_deref() && !apply_direction(&mut record, text) {
+        eprintln!("cordata-run: the direction was empty, or {run_id} has no step left to give it to");
+        return 2;
+    }
     let cwd = PathBuf::from(&record.cwd);
     let settings = settings_for(&cwd);
     let mut run_config = config::run_config(&settings);
@@ -407,6 +413,22 @@ pub fn status_cmd(as_json: bool) -> i32 {
     0
 }
 
+/// Puts the person's words on the step that runs next, in the plan the worker is given, and notes it on the run.
+/// The text is theirs, typed in the window, so it rides the plan (trusted) and not the fenced worker data.
+pub fn apply_direction(record: &mut machine::RunRecord, text: &str) -> bool {
+    let text: String = text.trim().chars().take(2000).collect();
+    if text.is_empty() {
+        return false;
+    }
+    let Some(steps) = record.plan.as_mut().and_then(|p| p.get_mut("steps")).and_then(Value::as_array_mut) else { return false };
+    let Some(step) = steps.iter_mut().find(|s| s.get("status").and_then(Value::as_str) != Some("completed")) else { return false };
+    let id = step.get("step_id").and_then(Value::as_str).unwrap_or("").to_owned();
+    let before = step.get("description").and_then(Value::as_str).unwrap_or("").to_owned();
+    step["description"] = Value::String(format!("{before}\n\nDirection from the person (follow it where it differs from the above): {text}"));
+    record.warnings.push(format!("direction added by the person for step {id}"));
+    true
+}
+
 pub fn show_cmd(run_id: &str, as_json: bool) -> i32 {
     let Ok(ledger) = Ledger::open_default(Vec::new()) else {
         eprintln!("cannot open the ledger");
@@ -490,5 +512,40 @@ pub fn evolve_cmd(target: &str, threshold: f64, dry_run: bool, as_json: bool, cw
             eprintln!("Evolution cycle error: {e}");
             2
         }
+    }
+}
+
+#[cfg(test)]
+mod direction_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn record_with(steps: Value) -> machine::RunRecord {
+        let mut r = machine::RunRecord::from_json(&json!({"run_id": "run-t", "goal": "g", "cwd": "/p"})).expect("a record");
+        r.plan = Some(json!({"plan_id": "p", "goal": "g", "steps": steps}));
+        r
+    }
+
+    #[test]
+    fn a_direction_goes_on_the_first_step_not_yet_completed() {
+        let mut r = record_with(json!([
+            {"step_id": "s1", "name": "a", "description": "do a", "status": "completed"},
+            {"step_id": "s2", "name": "b", "description": "do b", "status": "pending"},
+        ]));
+        assert!(apply_direction(&mut r, "  keep it small  "));
+        let steps = r.plan.as_ref().unwrap()["steps"].as_array().unwrap().clone();
+        assert_eq!(steps[0]["description"], "do a", "a finished step is left alone");
+        let d = steps[1]["description"].as_str().unwrap();
+        assert!(d.starts_with("do b\n\nDirection from the person") && d.ends_with("keep it small"));
+        assert_eq!(r.warnings, vec!["direction added by the person for step s2".to_owned()]);
+    }
+
+    #[test]
+    fn an_empty_direction_or_a_finished_plan_changes_nothing() {
+        let mut r = record_with(json!([{"step_id": "s1", "name": "a", "description": "x", "status": "completed"}]));
+        assert!(!apply_direction(&mut r, "go on"), "no step left");
+        let mut r = record_with(json!([{"step_id": "s1", "name": "a", "description": "x", "status": "pending"}]));
+        assert!(!apply_direction(&mut r, "   "));
+        assert!(r.warnings.is_empty());
     }
 }

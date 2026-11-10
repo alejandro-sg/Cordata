@@ -33,6 +33,7 @@ mod attachments;
 mod conversation;
 pub(crate) use conversation::prompt_mark;
 mod desk;
+mod field;
 mod rack;
 mod sheet;
 pub use sheet::DeskMode;
@@ -181,6 +182,17 @@ pub struct Workspace {
     pub(super) rack_selected_slot: Option<usize>,
     /// Lanes (when) or ground (where) on the flight deck.
     pub(super) rack_view_mode: cordata_view::flight::RackViewMode,
+    /// Where the field looks (pan and zoom); kept while the window is open.
+    pub(super) field_cam: cordata_view::field::Camera,
+    /// The field's box in the window as last drawn, so zoom can hold the point under the cursor.
+    pub(super) field_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
+    /// Last mouse position while the ground is being dragged.
+    pub(super) field_drag: Option<gpui::Point<gpui::Pixels>>,
+    /// This project's newest orchestrated runs, read from `cordata-run` while the field is open.
+    pub(super) field_runs: Vec<cordata_view::runs::Run>,
+    pub(super) field_runs_note: Option<String>,
+    pub(super) field_runs_busy: bool,
+    pub(super) field_polling: bool,
     /// Selected tape stop for forensic inspection, turn-level forking, or post-turn rollback.
     pub(super) selected_turn: Option<usize>,
     /// Whether the Change Sheet's agent summary is expanded beyond its 5-line clamp.
@@ -516,7 +528,14 @@ impl Workspace {
             model_filter,
             desk_mode: default_desk_mode,
             rack_selected_slot: None,
-            rack_view_mode: cordata_view::flight::RackViewMode::Lanes,
+            rack_view_mode: cordata_view::flight::RackViewMode::Field,
+            field_cam: cordata_view::field::Camera::default(),
+            field_bounds: Default::default(),
+            field_drag: None,
+            field_runs: Vec::new(),
+            field_runs_note: None,
+            field_runs_busy: false,
+            field_polling: false,
             selected_turn: None,
             sheet_expanded: false,
             sheet_toggled_files: HashSet::new(),
@@ -527,6 +546,9 @@ impl Workspace {
             gate_hint: None,
             _subscriptions: subscriptions,
         };
+        if this.desk_mode == DeskMode::Rack {
+            this.ensure_run_poll(cx);
+        }
         let cwd = this.cwd.clone();
         this.prefs.touch_recent(&cwd, prefs::now());
         this.prefs.save();
@@ -574,6 +596,11 @@ impl Workspace {
             }
             _ if what == "sheet" => self.desk_mode = DeskMode::ChangeSheet,
             _ if what == "rack" => self.desk_mode = DeskMode::Rack,
+            _ if what == "field" => {
+                self.desk_mode = DeskMode::Rack;
+                self.rack_view_mode = cordata_view::flight::RackViewMode::Field;
+                self.ensure_run_poll(cx);
+            }
             _ if what == "models" => self.popup = Some(meter::Popup::Models),
             _ if what == "terminal" => {
                 self.panel_open = true;
@@ -2176,10 +2203,12 @@ impl Render for Workspace {
         let brief = (self.desk_mode != DeskMode::Rack).then(|| self.brief_block(cx)).flatten();
         let places = (has_conversation && self.desk_mode != DeskMode::Rack && column_w >= desk::PLACES_MIN_COLUMN).then(|| self.places_margin(cx));
         let menu = self.slash_menu(cx);
-        let sidebar = self.sidebar_open.then(|| self.sidebar(cx));
+        // The field takes the whole window: no thread list, no side panel, no header, no bottom composer.
+        let field_window = self.desk_mode == DeskMode::Rack && self.rack_view_mode == cordata_view::flight::RackViewMode::Field;
+        let sidebar = (self.sidebar_open && !field_window).then(|| self.sidebar(cx));
         let header = self.header(column_w, cx);
         let composer = self.composer(cx);
-        let panel = self.panel_open.then(|| self.side_panel(window_w, window, cx));
+        let panel = (self.panel_open && !field_window).then(|| self.side_panel(window_w, window, cx));
         let overlays = self.overlay_layer(window, cx);
         let grips = self.resize_grips(window_w, cx);
         let drop_ring = crate::theme::amber(cx, t::AMBER_BORDER_STRONG);
@@ -2188,6 +2217,36 @@ impl Render for Workspace {
             DeskMode::ChangeSheet => div().flex_1().min_h_0().child(self.change_sheet(cx)).into_any_element(),
             _ if has_conversation => div().id("transcript").role(gpui::Role::Log).aria_label("Transcript").flex_1().min_h_0().child(transcript_list).into_any_element(),
             _ => div().flex_1().min_h_0().child(self.empty_state(cx)).into_any_element(),
+        };
+
+        let header = (!field_window).then_some(header);
+        let desk: AnyElement = if field_window {
+            self.field_window(composer, menu, cx)
+        } else {
+            div()
+                .flex()
+                .flex_1()
+                .min_h_0()
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w_0()
+                        .children(brief)
+                        .child(body)
+                        .child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .justify_center()
+                                .px(px(24.))
+                                .pb(px(16.))
+                                .child(div().w_full().max_w(px(t::CONTENT_MAX_W)).flex().flex_col().children(actions_row).children(pending).children(menu).child(composer)),
+                        ),
+                )
+                .children(places)
+                .into_any_element()
         };
 
         div()
@@ -2264,34 +2323,8 @@ impl Render for Workspace {
                             .flex()
                             .flex_col()
                             .bg(crate::theme::glass_main_bg(cx))
-                            .child(header)
-                            // The desk: the brief over the transcript and the composer, the places in the right margin.
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_1()
-                                    .min_h_0()
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_col()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .children(brief)
-                                            .child(body)
-                                            .child(
-                                                div()
-                                                    .w_full()
-                                                    .flex()
-                                                    .justify_center()
-                                                    .px(px(24.))
-                                                    .pb(px(16.))
-                                                    .child(div().w_full().max_w(px(t::CONTENT_MAX_W)).flex().flex_col().children(actions_row).children(pending).children(menu).child(composer)),
-                                            ),
-                                    )
-                                    .children(places),
-                            )
-
+                            .children(header)
+                            .child(desk)
                     )
                     .children(panel)
                     .children(grips),
@@ -3181,7 +3214,7 @@ mod window_tests {
         cx.simulate_keystrokes("cmd-0");
         cx.run_until_parked();
         assert_eq!(view.read_with(cx, |this, _| this.desk_mode), DeskMode::Rack);
-        assert_eq!(view.read_with(cx, |this, _| this.rack_view_mode), cordata_view::flight::RackViewMode::Lanes, "opens on the lanes");
+        assert_eq!(view.read_with(cx, |this, _| this.rack_view_mode), cordata_view::flight::RackViewMode::Field, "opens on the field");
         assert_eq!(view.read_with(cx, |this, _| this.rack_selected_slot), None);
 
         // Select Node Slot 2 (Probe)
@@ -3199,6 +3232,19 @@ mod window_tests {
         });
         cx.run_until_parked();
         assert_eq!(view.read_with(cx, |this, _| this.rack_view_mode), cordata_view::flight::RackViewMode::Ground);
+
+        // The field: draws both threads as nodes, zooms from the buttons, and a reset puts the camera back.
+        view.update(cx, |this, cx| {
+            this.rack_view_mode = cordata_view::flight::RackViewMode::Field;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        view.update(cx, |this, cx| this.field_zoom_step(0.5, cx));
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |this, _| cordata_view::field::altitude(this.field_cam.zoom)), cordata_view::field::Altitude::Fleet);
+        view.update(cx, |this, cx| this.field_reset(cx));
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |this, _| this.field_cam), cordata_view::field::Camera::default());
     }
 
     #[gpui::test]

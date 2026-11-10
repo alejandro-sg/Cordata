@@ -78,6 +78,9 @@ enum Command {
         /// continue even when the settings now turn off a safety guard the run was started with
         #[arg(long)]
         allow_weaker_guards: bool,
+        /// words for the next step, added to its task (what a person says when they hold a handoff)
+        #[arg(long, value_name = "TEXT")]
+        direction: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -109,7 +112,7 @@ async fn main() -> ExitCode {
         }
         Command::Status { json } => cli::status_cmd(json),
         Command::Show { run_id, json } => cli::show_cmd(&run_id, json),
-        Command::Resume { run_id, workers, allow_direct, max_usd, allow_weaker_guards, json } => cli::resume(&run_id, workers, allow_direct, max_usd, allow_weaker_guards, json).await,
+        Command::Resume { run_id, workers, allow_direct, max_usd, allow_weaker_guards, direction, json } => cli::resume(&run_id, workers, allow_direct, max_usd, allow_weaker_guards, direction, json).await,
         Command::Evolve { target, threshold, dry_run, cwd, json } => cli::evolve_cmd(&target, threshold, dry_run, json, cwd),
     };
     ExitCode::from(u8::try_from(code).unwrap_or(1))

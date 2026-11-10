@@ -211,6 +211,8 @@ pub enum RackViewMode {
     #[default]
     Lanes,
     Ground,
+    /// Every thread as a node in its checkout (see [`crate::field`]).
+    Field,
 }
 
 impl RackViewMode {
@@ -218,6 +220,7 @@ impl RackViewMode {
         match self {
             Self::Lanes => "Lanes",
             Self::Ground => "Ground",
+            Self::Field => "Field",
         }
     }
 }

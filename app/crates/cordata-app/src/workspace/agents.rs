@@ -56,7 +56,7 @@ pub struct Agents {
 }
 
 /// `cordata-run`: `$CORDATA_RUN_BIN`, the usual install folders, or this checkout's release build.
-fn cordata_run() -> Option<PathBuf> {
+pub(super) fn cordata_run() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("CORDATA_RUN_BIN").map(PathBuf::from).filter(|p| p.is_file()) {
         return Some(path);
     }

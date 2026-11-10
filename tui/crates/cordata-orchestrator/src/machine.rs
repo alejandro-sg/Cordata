@@ -1515,7 +1515,7 @@ fn synthetic_step() -> Step {
     }
 }
 
-fn short_id() -> String {
+pub fn short_id() -> String {
     use std::hash::{BuildHasher, Hasher};
     let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
     hasher.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos()));
