@@ -268,6 +268,48 @@ pub fn search_marketplace(query: &str, category: Option<&str>) -> Vec<&'static M
         .collect()
 }
 
+/// Whether `command` can start: an absolute path that exists, or a name found on `PATH`.
+pub fn command_on_path(command: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let runs = |p: &Path| p.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0);
+    if command.contains('/') {
+        return runs(Path::new(command));
+    }
+    std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths).any(|dir| runs(&dir.join(command))))
+}
+
+/// What stands between a catalog entry and a server that starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Readiness {
+    Ready,
+    /// The program is not installed (`uvx`, `npx`, ...).
+    MissingCommand,
+    /// The server needs these variables. The engine starts servers with a cleared environment, so they must be in the
+    /// server's own `env` block; Add cannot invent them, and a secret is not written for the person.
+    NeedsEnv(&'static [&'static str]),
+}
+
+pub fn readiness(item: &MarketplaceItem) -> Readiness {
+    if !item.required_env.is_empty() {
+        Readiness::NeedsEnv(item.required_env)
+    } else if !command_on_path(item.command) {
+        Readiness::MissingCommand
+    } else {
+        Readiness::Ready
+    }
+}
+
+/// The `mcp.json` entry for `item`, with a placeholder for each variable it needs: copied for the person to fill in
+/// (the file is private to them), never written with a made-up value.
+pub fn setup_snippet(item: &MarketplaceItem) -> String {
+    let env: Map<String, Value> = item.required_env.iter().map(|k| ((*k).to_owned(), Value::String(format!("<your {k}>")))).collect();
+    let mut entry = json!({"command": item.command, "args": item.default_args});
+    if !env.is_empty() {
+        entry.as_object_mut().expect("an object").insert("env".into(), Value::Object(env));
+    }
+    serde_json::to_string_pretty(&json!({"mcpServers": {item.id: entry}})).expect("serialises") + "\n"
+}
+
 /// The servers a chat started in `cwd` would run, by the engine's rules.
 pub fn snapshot(home: &Path, cwd: &Path) -> Snapshot {
     let (user, _) = mcp::configured(Some(home), Path::new("/nonexistent"), &[]);
@@ -410,5 +452,65 @@ mod tests {
         let val: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(val["mcpServers"]["gh"]["command"], "github-mcp-server");
         assert_eq!(val["mcpServers"]["gh"]["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"], "test_tok");
+    }
+
+    #[test]
+    fn the_catalog_is_well_formed() {
+        let mut seen = std::collections::HashSet::new();
+        for item in MARKETPLACE_ITEMS {
+            assert!(seen.insert(item.id), "{}: duplicate id", item.id);
+            assert!(!item.command.is_empty() && !item.name.is_empty() && !item.description.is_empty(), "{}: empty field", item.id);
+            assert!(CATEGORIES.contains(&item.category) && item.category != "All", "{}: category {}", item.id, item.category);
+            for var in item.required_env {
+                assert!(var.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'), "{}: env name {var}", item.id);
+            }
+            // Every entry is found by its own id and by its own name.
+            assert!(search_marketplace(item.id, None).iter().any(|i| i.id == item.id), "{}: not found by id", item.id);
+            assert!(search_marketplace(item.name, Some(item.category)).iter().any(|i| i.id == item.id), "{}: not found by name in its category", item.id);
+        }
+        assert!(MARKETPLACE_ITEMS.len() >= 10);
+        // Each category on the filter holds something, so no pill leads to an empty list.
+        for category in CATEGORIES.iter().filter(|c| **c != "All") {
+            assert!(!search_marketplace("", Some(category)).is_empty(), "{category} is empty");
+        }
+    }
+
+    #[test]
+    fn readiness_says_what_is_missing_and_never_invents_a_secret() {
+        for item in MARKETPLACE_ITEMS {
+            match readiness(item) {
+                Readiness::NeedsEnv(vars) => assert_eq!(vars, item.required_env, "{}", item.id),
+                other => assert!(item.required_env.is_empty(), "{}: {other:?}", item.id),
+            }
+            let snippet: Value = serde_json::from_str(&setup_snippet(item)).expect("the snippet is JSON");
+            let entry = &snippet["mcpServers"][item.id];
+            assert_eq!(entry["command"], item.command, "{}", item.id);
+            for var in item.required_env {
+                let placeholder = entry["env"][*var].as_str().unwrap_or_default();
+                assert!(placeholder.starts_with("<your "), "{}: {var} must be a placeholder, not a value", item.id);
+            }
+            assert_eq!(entry.get("env").is_some(), !item.required_env.is_empty(), "{}", item.id);
+        }
+        assert!(command_on_path("sh") && command_on_path("/bin/sh"));
+        assert!(!command_on_path("cordata-no-such-program-xyz") && !command_on_path("/nonexistent/x"));
+    }
+
+    #[test]
+    fn adding_every_server_keeps_the_file_valid_and_each_shows_as_the_users() {
+        let home = scratch("market-all");
+        let cwd = scratch("market-cwd");
+        for item in MARKETPLACE_ITEMS {
+            install_server(&home, item.id, item.command, item.default_args).unwrap_or_else(|e| panic!("{}: {e}", item.id));
+        }
+        // Adding one twice replaces it; it does not duplicate.
+        let first = &MARKETPLACE_ITEMS[0];
+        install_server(&home, first.id, first.command, first.default_args).unwrap();
+        let file: Value = serde_json::from_str(&std::fs::read_to_string(home.join("mcp.json")).unwrap()).unwrap();
+        assert_eq!(file["mcpServers"].as_object().unwrap().len(), MARKETPLACE_ITEMS.len());
+        let snap = snapshot(&home, &cwd);
+        assert_eq!(snap.servers.len(), MARKETPLACE_ITEMS.len());
+        assert!(snap.servers.iter().all(|s| s.source == McpSource::User) && snap.held.is_empty());
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(home.join("mcp.json")).unwrap().permissions().mode() & 0o777, 0o600, "private to the person");
     }
 }

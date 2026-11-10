@@ -489,6 +489,14 @@ pub fn receipt(messages: &[Message], check: Option<&str>) -> Receipt {
             files.insert(d.path.clone());
             all_diffs.push(d.clone());
         }
+        // A thread restored from disk keeps no diffs, only that a file was edited and which: it still changed it.
+        if card.diffs.is_empty()
+            && verb(&card.name) == "edit"
+            && card.status == ToolStatus::Completed
+            && let Some(path) = card.raw_input.as_ref().and_then(|i| i.get("path")).and_then(|v| v.as_str())
+        {
+            files.insert(path.to_owned());
+        }
         let (a, d) = diff_counts(&card.diffs);
         r.added += a;
         r.removed += d;
@@ -653,6 +661,17 @@ pub fn snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_restored_edit_counts_as_a_changed_file() {
+        let messages = vec![
+            Message::User("make a.txt".into()),
+            Message::Tool(card("e1", "edit_file", serde_json::json!({"path": "a.txt"}), ToolStatus::Completed)),
+            Message::Tool(card("e2", "edit_file", serde_json::json!({"path": "a.txt"}), ToolStatus::Completed)),
+            Message::Tool(card("e3", "edit_file", serde_json::json!({"path": "b.txt"}), ToolStatus::Failed)),
+        ];
+        assert_eq!(receipt(&messages, None).files, 1, "one file edited twice; a failed edit changed nothing");
+    }
     use acp_core::ToolKind;
     use serde_json::json;
 

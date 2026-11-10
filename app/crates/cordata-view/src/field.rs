@@ -16,8 +16,8 @@ use crate::flight::Zone;
 use crate::runs::Run;
 use crate::work::TriageIn;
 
-pub const NODE_W: f32 = 264.;
-pub const NODE_H: f32 = 84.;
+pub const NODE_W: f32 = 320.;
+pub const NODE_H: f32 = 100.;
 /// A node, and the air under it before the next one.
 pub const ROW_BASE: f32 = NODE_H + 40.;
 /// One component chip under a node, the "+N more" line, and a gate (its command and buttons).
@@ -31,12 +31,12 @@ pub const GUTTER: f32 = 20.;
 pub const HEAD: f32 = 40.;
 pub const GAP: f32 = 56.;
 pub const MAX_CHIPS: usize = 3;
-pub const STEP_H: f32 = 72.;
+pub const STEP_H: f32 = 88.;
 /// One handoff line under a step, and the room above the next step.
 pub const HANDOFF_H: f32 = 26.;
 const STEP_GAP: f32 = 28.;
 /// Room under a run's name for its state line and buttons.
-pub const RUN_HEAD: f32 = 96.;
+pub const RUN_HEAD: f32 = 124.;
 
 pub const ZOOM_MIN: f32 = 0.35;
 pub const ZOOM_MAX: f32 = 2.2;

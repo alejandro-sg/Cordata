@@ -325,7 +325,7 @@ impl Workspace {
                             .bg(if self.desk_mode == super::DeskMode::ChangeSheet { ca(tk.amber, 0.16) } else { gpui::transparent_black() })
                             .text_color(c(if self.desk_mode == super::DeskMode::ChangeSheet { tk.amber } else { tk.text_muted }))
                             .hover(|s| s.text_color(c(tk.text_primary)))
-                            .tooltip(ui::tip("Proof-first change sheet and diff verification  ⌘D"))
+                            .tooltip(ui::tip("Review what changed  ⌘D"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.load_review(cx);
                                 this.desk_mode = super::DeskMode::ChangeSheet;

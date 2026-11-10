@@ -265,7 +265,7 @@ pub const DIFF_ADD_FILL: f32 = 0.07;
 pub const DIFF_DEL_FILL: f32 = 0.06;
 
 /// The modal scrim, over `bg_window`.
-pub const SCRIM: f32 = 0.40;
+pub const SCRIM: f32 = 0.55;
 pub const MODAL_SHADOW: f32 = 0.45;
 pub const MODAL_SHADOW_LIGHT: f32 = 0.16;
 pub const MODAL_SHADOW_Y: f32 = 8.;

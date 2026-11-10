@@ -181,7 +181,7 @@ impl Workspace {
             let on = self.agents.enabled.iter().any(|f| f == family);
             let pools: Vec<&Pool> = self.agents.pools.iter().filter(|p| p.family == family).collect();
             let detail = match install {
-                Some(f) => f.version.clone().unwrap_or_else(|| f.path.display().to_string()),
+                Some(f) => f.version.as_deref().map(tidy_version).unwrap_or_else(|| f.path.display().to_string()),
                 None if self.agents.found.is_none() => "looking…".into(),
                 None => "not installed".into(),
             };
@@ -242,7 +242,7 @@ impl Workspace {
                             .flex_col()
                             .gap(px(2.))
                             .child(div().text_size(px(t::TEXT_SMALL)).text_color(c(tk.text_primary)).child(SharedString::from(if f.known.vendor.eq_ignore_ascii_case(f.known.name) { f.known.name.to_owned() } else { format!("{}  ·  {}", f.known.name, f.known.vendor) })))
-                            .child(div().truncate().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.text_faint)).child(SharedString::from(f.version.clone().unwrap_or_else(|| f.path.display().to_string())))),
+                            .child(div().truncate().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.text_faint)).child(SharedString::from(f.version.as_deref().map(tidy_version).unwrap_or_else(|| f.path.display().to_string())))),
                     )
                     .child(
                         ui::button(("open-agent", ix), "Open", Kind::Ghost, cx)
@@ -342,5 +342,27 @@ mod tests {
         let v = serde_json::json!({"pool_id":"agy","family":"antigravity","pct":0.5,"level":"soft","window_seconds":18000,"resets_at":null,"limited_until":null,"source":"provider"});
         let p = Pool::from_json(&v).unwrap();
         assert_eq!((p.family.as_str(), p.level.as_str(), p.resets_at), ("antigravity", "soft", None));
+    }
+}
+
+/// A CLI's `--version` line as a version: `ollama version is 0.40.13` and `2.1.317 (Claude Code)` both read
+/// as the number. A line with no number in it is shown as it came.
+fn tidy_version(line: &str) -> String {
+    line.split_whitespace()
+        .find(|word| word.trim_start_matches('v').chars().next().is_some_and(|c| c.is_ascii_digit()) && word.contains('.'))
+        .map_or_else(|| line.trim().to_owned(), str::to_owned)
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::tidy_version;
+
+    #[test]
+    fn a_version_line_reads_as_the_number() {
+        assert_eq!(tidy_version("ollama version is 0.40.13"), "0.40.13");
+        assert_eq!(tidy_version("2.1.317 (Claude Code)"), "2.1.317");
+        assert_eq!(tidy_version("aider 0.86.2"), "0.86.2");
+        assert_eq!(tidy_version("v1.4.12"), "v1.4.12");
+        assert_eq!(tidy_version("unknown version"), "unknown version");
     }
 }

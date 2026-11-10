@@ -404,7 +404,7 @@ impl Workspace {
         let clone_dest = cx.new(|cx| InputState::new(window, cx).placeholder("~/Development"));
         let api_key_input = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("sk-ant-…"));
         let settings_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search settings…"));
-        let mcp_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search MCP servers (e.g. postgres, sqlite, docker, git)…"));
+        let mcp_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search servers"));
         let rename_input = cx.new(|cx| InputState::new(window, cx).placeholder("Conversation title"));
         let model_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter, or type any model id…"));
         let git = git_ops::Git::new(window, cx);

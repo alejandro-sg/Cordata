@@ -592,7 +592,7 @@ impl App {
                             };
                             let raw_input = if name == "run_command" {
                                 Some(serde_json::json!({ "cmd": summary }))
-                            } else if name == "read_file" || name == "code_outline" {
+                            } else if name == "read_file" || name == "code_outline" || kind == ToolKind::Edit {
                                 Some(serde_json::json!({ "path": summary }))
                             } else if name == "code_search" {
                                 Some(serde_json::json!({ "pattern": summary }))

@@ -96,7 +96,7 @@ pub const SHORTCUTS: [(&str, &str); 19] = [
     ("Switch project", "⌘O"),
     ("New conversation", "⌘N"),
     ("Switch conversation", "⌘1–9"),
-    ("Multi-agent triage rack", "⌘0"),
+    ("Every thread at once", "⌘0"),
     ("Change sheet / Transcript", "⌘D"),
     ("Toggle project sidebar", "⌘B"),
     ("Toggle side panel", "⌘\\"),
@@ -549,7 +549,13 @@ impl Workspace {
         }
         for server in &snap.servers {
             let desc = format!("{} · {} {}", server.source.label(), server.command, server.args.join(" "));
-            rows.push(setting_row_owned(server.name.clone(), desc, false, status_control(Dot::Ok, "starts with each chat", cx), cx));
+            // Said from what is on this Mac, not from the file: a server whose program is missing never starts.
+            let status = if crate::mcp_catalog::command_on_path(&server.command) {
+                status_control(Dot::Ok, "starts with each chat", cx)
+            } else {
+                status_control(Dot::Amber, &format!("will not start: {} not found", server.command), cx)
+            };
+            rows.push(setting_row_owned(server.name.clone(), desc, false, status, cx));
         }
         if !snap.held.is_empty() {
             rows.push(sub_heading("waiting for you", cx));
@@ -578,6 +584,7 @@ impl Workspace {
         rows.push(div().text_size(px(t::TEXT_SMALL)).text_color(c(tk.text_muted)).pb(px(8.)).child("Search and add verified MCP servers to ~/.cordata/mcp.json. Every call asks first.").into_any_element());
 
         let search_box = div()
+            .w(px(300.))
             .h(px(28.))
             .flex()
             .items_center()
@@ -616,10 +623,22 @@ impl Workspace {
         for (ix, item) in items.iter().enumerate() {
             let installed = snap.servers.iter().any(|s| s.name == item.id);
             let (item_id, item_cmd, item_args) = (item.id, item.command, item.default_args);
-            let action: AnyElement = if installed {
-                status_control(Dot::Ok, "added", cx)
-            } else {
-                ui::button(("mcp-install", ix), "Add", Kind::Tint, cx)
+            let ready = crate::mcp_catalog::readiness(item);
+            let action: AnyElement = match (installed, ready) {
+                (true, crate::mcp_catalog::Readiness::MissingCommand) => status_control(Dot::Amber, &format!("needs {}", item.command), cx),
+                (true, _) => status_control(Dot::Ok, "added", cx),
+                // A server that needs a token is not added with the token missing: it would be listed and never start.
+                (false, crate::mcp_catalog::Readiness::NeedsEnv(_)) => {
+                    let snippet = crate::mcp_catalog::setup_snippet(item);
+                    ui::button(("mcp-install", ix), "Copy setup", Kind::Outline, cx)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(snippet.clone()));
+                            this.settings_view.set_notice(format!("Copied the {item_id} entry. Paste it into ~/.cordata/mcp.json and put your token in place of the placeholder."), false);
+                            cx.notify();
+                        }))
+                        .into_any_element()
+                }
+                (false, _) => ui::button(("mcp-install", ix), "Add", Kind::Tint, cx)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         match crate::mcp_catalog::install_server(&super::cordata_home(), item_id, item_cmd, item_args) {
                             Ok(()) => this.settings_view.set_notice(format!("Added {item_id}: it starts with the next chat"), false),
@@ -628,11 +647,13 @@ impl Workspace {
                         this.mcp = crate::mcp_catalog::snapshot(&super::cordata_home(), &this.cwd);
                         cx.notify();
                     }))
-                    .into_any_element()
+                    .into_any_element(),
             };
             let mut desc = format!("{} · {}", item.category, item.description);
-            if !item.required_env.is_empty() {
-                desc.push_str(&format!(" · Env: {}", item.required_env.join(", ")));
+            match ready {
+                crate::mcp_catalog::Readiness::NeedsEnv(vars) => desc.push_str(&format!(" · Needs {} in its env block", vars.join(", "))),
+                crate::mcp_catalog::Readiness::MissingCommand => desc.push_str(&format!(" · Needs {} installed", item.command)),
+                crate::mcp_catalog::Readiness::Ready => {}
             }
             rows.push(setting_row_owned(item.name.into(), desc, false, action, cx));
         }

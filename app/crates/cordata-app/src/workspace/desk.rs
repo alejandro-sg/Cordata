@@ -92,7 +92,7 @@ impl Workspace {
                         })),
                 )
             })
-            .child(div().flex_1())
+            .child(div().flex_1().min_w(px(16.)))
             .child(
                 div()
                     .id("brief-mode-toggle")
@@ -100,7 +100,7 @@ impl Workspace {
                     .cursor_pointer()
                     .text_color(c(if in_sheet { tk.amber } else { tk.text_muted }))
                     .hover(|s| s.text_color(c(tk.text_primary)))
-                    .tooltip(ui::tip("Switch between proof-first change sheet and transcript  ⌘D"))
+                    .tooltip(ui::tip("Switch between what changed and the transcript  ⌘D"))
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_change_sheet(cx)))
                     .child(if in_sheet { "transcript  ⌘D" } else { "change sheet  ⌘D" }),
             );
@@ -422,7 +422,7 @@ impl Workspace {
                             row.child(link("run-check", "run check").tooltip(ui::tip("Ask the agent to run the check and fix what fails")).on_click(cx.listener(move |this, _, window, cx| this.apply_starter(&prompt, false, window, cx))))
                         })
                         .when(r.files > 0, |row| {
-                            row.child(link("open-change-sheet", "change sheet").tooltip(ui::tip("Proof-first change sheet  ⌘D")).on_click(cx.listener(|this, _, _, cx| this.toggle_change_sheet(cx))))
+                            row.child(link("open-change-sheet", "change sheet").tooltip(ui::tip("Review what changed  ⌘D")).on_click(cx.listener(|this, _, _, cx| this.toggle_change_sheet(cx))))
                             .child(link("review-files", "review").tooltip(ui::tip("Changes, hunk by hunk  ⌘⌥4")).on_click(cx.listener(|this, _, _, cx| {
                                 this.set_panel(true, cx);
                                 this.switch_dock(DockTab::Review, cx);

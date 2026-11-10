@@ -181,39 +181,32 @@ impl Workspace {
 
             let beat = self.beat_of(item.index, cx);
             let status_badge = if needs_you {
-                ("▲ GATE APPROVAL", c(tk.attention))
+                ("needs you", c(tk.attention))
             } else if working {
-                ("● WORKING", c(tk.amber))
+                ("working", c(tk.amber))
             } else if item.state == TabState::Done {
-                ("✓ COMPLETED", c(tk.teal))
+                ("done", c(tk.teal))
             } else {
-                ("○ READY", c(tk.text_muted))
+                ("idle", c(tk.text_muted))
             };
             let card = div().id(("field-node", slot)).role(gpui::Role::Button).cursor_pointer().absolute().left(px(x)).top(px(y)).w(s(field::NODE_W)).h(s(field::NODE_H))
                 .px(s(12.)).py(s(10.)).rounded(s(6.)).border_1().border_color(edge).bg(card_bg).overflow_hidden()
-                .flex().items_center().gap(s(10.))
+                .flex().items_start().gap(s(10.))
                 .tooltip(ui::tip(format!("#{slot} {} · {}", item.title, item.now)))
                 .on_click(cx.listener(move |this, _, _, cx| this.field_click(slot, cx)))
-                // Slot badge with colored accent
+                .child(div().flex_shrink_0().self_start().pt(s(3.)).child(ui::mark_live(("field-mark", slot), mark, 12., beat, cx)))
                 .child(
-                    div().px(s(6.)).py(s(2.)).rounded(px(2.)).font_family(mono(cx)).text_size(text(11.))
-                        .bg(ca(if needs_you { tk.attention } else if working { tk.amber } else { tk.text_muted }, 0.15))
-                        .text_color(if needs_you { c(tk.attention) } else if working { c(tk.amber) } else { c(tk.text_secondary) })
-                        .child(SharedString::from(format!("#{slot}")))
-                )
-                .child(ui::mark_live(("field-mark", slot), mark, 12., beat, cx))
-                .child(
-                    div().flex_1().min_w_0().flex().flex_col().gap(s(2.))
-                        .child(
-                            div().flex().items_center().justify_between().gap(s(6.))
-                                .child(div().truncate().font_family(crate::theme::voice(cx)).text_size(text(14.)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(SharedString::from(item.title.clone())))
-                                .child(div().flex_shrink_0().font_family(mono(cx)).text_size(text(10.)).text_color(status_badge.1).child(status_badge.0))
-                        )
+                    div().flex_1().min_w_0().flex().flex_col().gap(s(3.))
+                        // The title wraps to two lines; it is never cut to make room for a status.
+                        .child(div().line_clamp(2).text_ellipsis().font_family(crate::theme::voice(cx)).text_size(text(14.)).line_height(gpui::relative(1.25)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(SharedString::from(item.title.clone())))
+                        .child(div().flex().items_baseline().gap(s(6.)).font_family(mono(cx)).text_size(text(t::TEXT_META))
+                            .child(div().flex_shrink_0().text_color(c(tk.text_muted)).child(SharedString::from(format!("#{slot}"))))
+                            .child(div().flex_shrink_0().text_color(status_badge.1).child(status_badge.0)))
                         .when(alt != Altitude::Fleet, |d| {
                             d.child(
-                                div().truncate().font_family(mono(cx)).text_size(text(t::TEXT_META))
+                                div().line_clamp(2).text_ellipsis().font_family(mono(cx)).text_size(text(t::TEXT_META))
                                     .text_color(if needs_you { c(tk.attention) } else if working { c(tk.amber) } else { c(tk.text_muted) })
-                                    .child(SharedString::from(if !item.now.is_empty() { item.now.clone() } else { "idle · ready for steering".to_owned() }))
+                                    .child(SharedString::from(if !item.now.is_empty() { item.now.clone() } else { "waiting for you to steer".to_owned() }))
                             )
                         })
                 );
@@ -477,7 +470,7 @@ impl Workspace {
                         .child(div().flex().items_center().gap(px(8.))
                             .child(ui::mark(("run-mark", rid), mark, 12., cx))
                             .child(div().font_family(mono(cx)).text_size(text(t::TEXT_META)).text_color(c(tk.text_muted)).child(SharedString::from(format!("run · {state_word}")))))
-                        .child(div().truncate().text_size(text(14.)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(SharedString::from(run.goal.clone())))
+                        .child(div().line_clamp(3).text_ellipsis().text_size(text(14.)).line_height(gpui::relative(1.25)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(SharedString::from(run.goal.clone())))
                         .when_some(buttons, |d, b| d.child(b)))
                     .into_any_element(),
             );
@@ -502,7 +495,7 @@ impl Workspace {
                     .tooltip(ui::tip(format!("{} · {}{}", step.name, step.status, if step.scope.is_empty() { String::new() } else { format!(" · scope {}", step.scope.join(", ")) })))
                     .child(ui::mark(("step-mark", sn.run * 1000 + sn.step), mark, 12., cx))
                     .child(div().flex_1().min_w_0().flex().flex_col().gap(s(3.))
-                        .child(div().truncate().text_size(text(14.)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(SharedString::from(format!("{step_id} {}", step.name))))
+                        .child(div().line_clamp(2).text_ellipsis().text_size(text(14.)).line_height(gpui::relative(1.25)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(SharedString::from(format!("{step_id} {}", step.name))))
                         .when(alt != Altitude::Fleet, |d| d.child(div().truncate().font_family(mono(cx)).text_size(text(t::TEXT_META)).text_color(c(tk.text_muted))
                             .child(SharedString::from(match (&step.worker, step.attempts) {
                                 (Some(w), n) if n > 1 => format!("{w} · try {n}"),
