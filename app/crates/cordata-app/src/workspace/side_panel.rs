@@ -162,19 +162,10 @@ impl Workspace {
             }
             DockTab::Terminal => editor::pane("terminal", self.terminal_panel(window, cx), cx),
         };
-        div()
-            .id("side-panel")
+        ui::drawer("side-panel", ui::DrawerSide::Right, self.dock_w(window_w), cx)
             .role(gpui::Role::Complementary)
             .aria_label("Side panel")
             .relative()
-            .w(px(self.dock_w(window_w)))
-            .h_full()
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .bg(crate::theme::glass_panel_bg(cx))
-            .border_l_1()
-            .border_color(line(cx, t::LINE_DEFAULT))
             .child(
                 div()
                     .id("dock-tabs")

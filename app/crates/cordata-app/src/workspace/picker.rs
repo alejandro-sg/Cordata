@@ -336,7 +336,7 @@ impl Workspace {
                     .gap(px(14.))
                     .p(px(20.))
                     .rounded(px(t::RADIUS_POPOVER))
-                    .bg(crate::theme::glass_modal_bg(cx))
+                    .bg(crate::theme::c(crate::theme::tk(cx).bg_input))
                     .border_1()
                     .border_color(line(cx, t::LINE_CONTROL_STRONG))
                     .shadow(crate::theme::modal_shadow(cx))

@@ -1,7 +1,7 @@
 # Cordata.app — the native macOS workspace (docs/app.md). Core tier: built and tested in the default CI.
 #
 #   cordata-view   front-end state shared with the terminal (no UI toolkit)
-#   cordata-theme  the Blade Runner 2049 tokens, with WCAG checks; adapters for ratatui and GPUI
+#   cordata-theme  the redesign tokens, with WCAG checks; adapters for ratatui and GPUI
 #   cordata-app    the GPUI application
 #
 # The D1 gate's spike was retired; its report is archived in docs/app.md (Appendix: D1 gate report).

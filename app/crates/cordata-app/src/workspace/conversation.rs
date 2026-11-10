@@ -10,11 +10,11 @@ use cordata_view::shown;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{Animation, AnimationExt as _};
-use gpui::{AnyElement, App, BoxShadow, Context, FontWeight, InteractiveElement as _, IntoElement, MouseButton, ParentElement, SharedString, StatefulInteractiveElement as _, Styled, StyledImage as _, div, point, px, relative};
+use gpui::{AnyElement, App, Context, FontWeight, InteractiveElement as _, IntoElement, MouseButton, ParentElement, SharedString, StatefulInteractiveElement as _, Styled, StyledImage as _, div, px, relative};
 use gpui_component::input::Textarea;
 
 use super::{Overlay, TogglePanel, ToggleSidebar, Workspace, tilde};
-use crate::theme::{amber, c, ca, inset_ring, line, mono, soft_shadow, tk};
+use crate::theme::{amber, c, ca, inset_ring, line, mono, tk};
 use crate::transcript;
 use crate::ui::{self, Kind, MarkState, Tone};
 
@@ -92,8 +92,6 @@ impl Workspace {
     pub(super) fn header(&self, column_w: f32, cx: &mut Context<Self>) -> AnyElement {
         let tk = tk(cx);
         let view = &self.session.read(cx).view;
-        let title = view.title();
-        let has_brief = self.desk_cache.snap.brief_shown.is_some();
         let status = status_of(view);
         // Said only when it is not the ordinary case; the live line below says the rest.
         let word = match status {
@@ -105,6 +103,111 @@ impl Workspace {
         let _ = column_w;
         let panel_on = self.panel_open;
         let sidebar_on = self.sidebar_open;
+
+        // The Rope bar: a hairline across the top with each open thread as a mark node on it.
+        // Active thread set in serif; thread needing you sits in a gap in the rope.
+        let active_id = self.session.entity_id();
+        let sessions = self.sessions.clone();
+        let rope_nodes: Vec<AnyElement> = sessions
+            .into_iter()
+            .enumerate()
+            .map(|(slot_ix, s)| {
+                let (s_title, s_status) = {
+                    let ses = s.read(cx);
+                    (ses.view.title(), status_of(&ses.view))
+                };
+                let is_active = s.entity_id() == active_id;
+                let needs_you = s_status == Status::Waiting;
+                let slot = slot_ix + 1;
+
+                if needs_you {
+                    // Sits in a GAP in the rope: line stops, ochre node in gap
+                    div()
+                        .id(("rope-node", slot_ix))
+                        .role(gpui::Role::Button)
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .gap(px(5.))
+                        .px(px(6.))
+                        .py(px(2.))
+                        .rounded(px(t::RADIUS_BADGE))
+                        .bg(ca(tk.attention, 0.12))
+                        .border_1()
+                        .border_color(ca(tk.attention, 0.35))
+                        .tooltip(ui::tip(SharedString::from(format!("{} (needs you) · ⌘{}", s_title, slot))))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.switch_slot(slot, cx);
+                        }))
+                        .child(div().size(px(t::DOT)).rounded_full().bg(c(tk.attention)))
+                        .child(
+                            div()
+                                .font_family(crate::theme::voice(cx))
+                                .text_size(px(t::TEXT_SMALL))
+                                .text_color(c(tk.attention))
+                                .child(SharedString::from(shown(&s_title))),
+                        )
+                        .into_any_element()
+                } else if is_active {
+                    // Active thread node on the cord: serif title
+                    div()
+                        .id(("rope-node", slot_ix))
+                        .role(gpui::Role::Button)
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .gap(px(5.))
+                        .px(px(4.))
+                        .py(px(2.))
+                        .tooltip(ui::tip(SharedString::from(format!("{} · ⌘{}", s_title, slot))))
+                        .child(div().size(px(t::DOT)).rounded_full().bg(c(tk.amber)))
+                        .child(
+                            div()
+                                .font_family(crate::theme::voice(cx))
+                                .text_size(px(t::TEXT_SMALL))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(c(tk.text_primary))
+                                .child(SharedString::from(shown(&s_title))),
+                        )
+                        .into_any_element()
+                } else {
+                    // Other open thread: quiet node on the cord
+                    div()
+                        .id(("rope-node", slot_ix))
+                        .role(gpui::Role::Button)
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .px(px(3.))
+                        .py(px(2.))
+                        .tooltip(ui::tip(SharedString::from(format!("{} · ⌘{}", s_title, slot))))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.switch_slot(slot, cx);
+                        }))
+                        .child(div().size(px(t::DOT_SMALL)).rounded_full().bg(c(tk.text_muted)))
+                        .child(
+                            div()
+                                .max_w(px(100.))
+                                .truncate()
+                                .text_size(px(t::TEXT_SMALL))
+                                .text_color(c(tk.text_muted))
+                                .hover(|s| s.text_color(c(tk.text_secondary)))
+                                .child(SharedString::from(shown(&s_title))),
+                        )
+                        .into_any_element()
+                }
+            })
+            .collect();
+
+        let mut rope_bar_items: Vec<AnyElement> = Vec::new();
+        for (i, node) in rope_nodes.into_iter().enumerate() {
+            if i > 0 {
+                rope_bar_items.push(div().w(px(12.)).h(px(1.)).bg(line(cx, t::LINE_DEFAULT)).into_any_element());
+            }
+            rope_bar_items.push(node);
+        }
+
         div()
             .id("conversation-header")
             .relative()
@@ -118,23 +221,27 @@ impl Workspace {
             .pr(px(12.))
             .overflow_hidden()
             .child(live_line(status, self.tugs.at(self.session.read(cx).version, std::time::Instant::now()), cx))
-            .when(!sidebar_on, |row| {
-                row.child(
-                    ui::icon_action("show-sidebar", gpui_kit_assets::IconName::PanelLeft, cx)
-                        .aria_label("Show sidebar (⌘B)")
-                        .tooltip(ui::tip("Show sidebar  ⌘B"))
-                        .on_click(cx.listener(|this, _, window, cx| this.toggle_sidebar(&ToggleSidebar, window, cx))),
-                )
-                .child(
-                    ui::chip("header-project", SharedString::from(format!("{} ⌄", self.project_name())), cx)
-                        .role(gpui::Role::Button)
-                        .aria_label("Switch project (⌘O)")
-                        .tooltip(ui::tip("Switch project  ⌘O"))
-                        .on_click(cx.listener(|this, _, window, cx| this.open_overlay(Overlay::Picker, window, cx))),
-                )
-            })
-            // The thread's name is its brief, set under this row as the page's title; the row itself carries only state.
-            .when(!has_brief && title != "New thread", |row| row.child(div().min_w(px(60.)).flex_shrink_1().truncate().text_size(px(t::TEXT_TITLE)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(SharedString::from(shown(&title)))))
+            .child(
+                ui::icon_action("show-sidebar", gpui_kit_assets::IconName::PanelLeft, cx)
+                    .aria_label("Show Logbook (⌘B)")
+                    .tooltip(ui::tip("Logbook  ⌘B"))
+                    .on_click(cx.listener(|this, _, window, cx| this.toggle_sidebar(&ToggleSidebar, window, cx))),
+            )
+            .child(
+                ui::chip("header-project", SharedString::from(format!("{} ⌄", self.project_name())), cx)
+                    .role(gpui::Role::Button)
+                    .aria_label("Switch project (⌘O)")
+                    .tooltip(ui::tip("Switch project  ⌘O"))
+                    .on_click(cx.listener(|this, _, window, cx| this.open_overlay(Overlay::Picker, window, cx))),
+            )
+            // The Rope track with all open thread nodes
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(0.))
+                    .children(rope_bar_items),
+            )
             .when_some(word, |row, (word, ink)| row.child(div().flex_shrink_0().whitespace_nowrap().text_size(px(t::TEXT_META)).text_color(c(ink)).child(word)))
             // The empty middle drags the window.
             .child(div().flex_1().h_full().min_w(px(8.)).on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move()))
@@ -224,7 +331,7 @@ impl Workspace {
             .children(self.pr_chip(cx))
             .child(
                 ui::icon_action("panel-toggle", gpui_kit_assets::IconName::PanelRight, cx)
-                    .aria_label("Toggle side panel (⌘\\)")
+                    .aria_label("Toggle tool sheet (⌘\\)")
                     .aria_toggled(panel_on.into())
                     .tooltip(ui::tip("Files, changes and terminal  ⌘\\"))
                     .when(panel_on, |b| b.text_color(c(tk.text_primary)))
@@ -263,22 +370,21 @@ impl Workspace {
             })
             .collect();
 
-        let starter = |id: &'static str, text: SharedString| {
-            let (hover_ink, arrow) = (c(tk.text_primary), c(tk.amber));
+        let starter = |id: &'static str, num: &'static str, text: SharedString| {
+            let hover_ink = c(tk.text_primary);
             div()
                 .id(id)
                 .role(gpui::Role::Button)
                 .group(id)
                 .flex()
                 .items_center()
-                .gap(px(10.))
-                .py(px(5.))
+                .gap(px(14.))
+                .py(px(6.))
                 .cursor_pointer()
                 .text_size(px(t::TEXT_BODY))
                 .text_color(c(tk.text_secondary))
                 .hover(move |s| s.text_color(hover_ink))
-                .ml(px(-t::HANG))
-                .child(div().w(px(12.)).flex_shrink_0().text_color(c(tk.text_faint)).group_hover(id, move |s| s.text_color(arrow)).child("→"))
+                .child(div().w(px(24.)).flex_shrink_0().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.text_faint)).group_hover(id, move |s| s.text_color(c(tk.amber))).child(num))
                 .child(text)
         };
         let review_text = if dirty_count > 0 {
@@ -286,24 +392,25 @@ impl Workspace {
         } else {
             SharedString::from("Review the latest changes")
         };
-        let explore = starter("starter-explore", "Map how this project fits together".into()).on_click(cx.listener(|this, _, window, cx| {
+        let explore = starter("starter-explore", "01", "Map how this project fits together".into()).on_click(cx.listener(|this, _, window, cx| {
             this.apply_starter("Map out the architecture, key modules, and main entry points of this repository.", false, window, cx);
         }));
-        let review = starter("starter-review", review_text).on_click(cx.listener(move |this, _, window, cx| {
+        let review = starter("starter-review", "02", review_text).on_click(cx.listener(move |this, _, window, cx| {
             if dirty_count > 0 {
                 this.request_review(false, window, cx);
             } else {
                 this.apply_starter("Review the most recent changes in this repository for bugs, edge cases, and test coverage gaps.", false, window, cx);
             }
         }));
-        let fix = starter("starter-fix", "Run the checks and fix what fails".into()).on_click(cx.listener(|this, _, window, cx| {
+        let fix = starter("starter-fix", "03", "Run the checks and fix what fails".into()).on_click(cx.listener(|this, _, window, cx| {
             this.apply_starter("Run the project's test suite and build checks, diagnose any failures, and propose clean fixes.", false, window, cx);
         }));
-        let open_canvas = starter("starter-canvas", "See every thread at once  ⌘0".into()).on_click(cx.listener(|this, _, _, cx| {
+        let open_canvas = starter("starter-canvas", "04", "See every thread at once  ⌘0".into()).on_click(cx.listener(|this, _, _, cx| {
             this.toggle_rack(cx);
         }));
         let open_sheet = starter(
             "starter-sheet",
+            "05",
             SharedString::from(format!("Review what changed ({} uncommitted file{})  ⌘D", dirty_count, if dirty_count == 1 { "" } else { "s" })),
         )
         .on_click(cx.listener(|this, _, _, cx| this.toggle_change_sheet(cx)));
@@ -315,16 +422,16 @@ impl Workspace {
             .flex()
             .flex_col()
             .items_center()
-            .justify_end()
+            .justify_center()
             .px(px(24.))
             .pb(px(28.))
             .child(
                 div()
                     .w_full()
-                    .max_w(px(t::CONTENT_MAX_W))
+                    .max_w(px(t::PAGE_WIDTH))
                     .flex()
                     .flex_col()
-                    .gap(px(14.))
+                    .gap(px(16.))
                     // A blank brief: the project, the question, and what "done" will mean here.
                     .child(
                         div()
@@ -337,7 +444,7 @@ impl Workspace {
                             .child(ui::cordata_logo(18., cx))
                             .child(SharedString::from(project)),
                     )
-                    .child(div().font_family(crate::theme::voice(cx)).text_size(px(30.)).line_height(relative(1.2)).text_color(c(tk.text_primary)).child("What should change?"))
+                    .child(div().font_family(crate::theme::voice(cx)).text_size(px(t::TEXT_EMPTY)).line_height(relative(1.15)).text_color(c(tk.text_primary)).child("What should change?"))
                     .child(
                         div()
                             .text_size(px(t::TEXT_SMALL))
@@ -347,7 +454,9 @@ impl Workspace {
                                 None => "Say it in your own words; you decide at every gate.".to_owned(),
                             })),
                     )
-                    .child(div().flex().flex_col().child(open_canvas).child(open_sheet).child(explore).child(review).child(fix))
+                    // The cord stub dropping down
+                    .child(div().w(px(1.)).h(px(20.)).bg(line(cx, t::LINE_DEFAULT)))
+                    .child(div().flex().flex_col().child(explore).child(review).child(fix).child(open_canvas).child(open_sheet))
                     .children(notices)
                     // The session's opening notes, as one line: hover lists them. A server that failed to start is
                     // the one note worth its own words.
@@ -544,6 +653,7 @@ impl Workspace {
                 buttons.push(
                     ui::button("say-why", "Reply", Kind::Ghost, cx)
                         .tooltip(ui::tip("Answer in your own words instead  W"))
+                        .child(div().text_color(c(tk.text_faint)).font_family(mono(cx)).text_size(px(t::TEXT_META)).child("W"))
                         .on_click(cx.listener(|this, _, window, cx| this.begin_saying(window, cx)))
                         .into_any_element(),
                 );
@@ -551,6 +661,7 @@ impl Workspace {
                 buttons.push(
                     ui::button("reject", "Deny", Kind::Ghost, cx)
                         .tooltip(ui::tip("Deny  esc"))
+                        .child(div().text_color(c(tk.text_faint)).font_family(mono(cx)).text_size(px(t::TEXT_META)).child("esc"))
                         .on_click(cx.listener(|this, _, _, cx| this.answer_gate(ApprovalDecision::Reject, cx)))
                         .into_any_element(),
                 );
@@ -561,24 +672,31 @@ impl Workspace {
             let allowed = shown(&fold.shorten(&analysis.if_allowed));
             let denied = shown(&analysis.if_denied);
             div()
+                .w_full()
                 .flex()
-                .flex_col()
-                .gap(px(2.))
+                .gap(px(16.))
+                .pt(px(2.))
                 .font_family(mono(cx))
                 .text_size(px(t::TEXT_META))
                 .child(
                     div()
+                        .flex_1()
+                        .min_w_0()
                         .flex()
-                        .gap(px(6.))
-                        .child(div().flex_shrink_0().text_color(c(tk.text_faint)).child("If allowed →"))
-                        .child(div().min_w_0().truncate().text_color(c(tk.text_secondary)).child(SharedString::from(allowed))),
+                        .flex_col()
+                        .gap(px(2.))
+                        .child(div().text_color(c(tk.text_faint)).child("IF ALLOWED ↵"))
+                        .child(div().min_w_0().text_color(c(tk.text_secondary)).child(SharedString::from(allowed))),
                 )
                 .child(
                     div()
+                        .flex_1()
+                        .min_w_0()
                         .flex()
-                        .gap(px(6.))
-                        .child(div().flex_shrink_0().text_color(c(tk.text_faint)).child("If denied (esc) →"))
-                        .child(div().min_w_0().truncate().text_color(c(tk.text_muted)).child(SharedString::from(denied))),
+                        .flex_col()
+                        .gap(px(2.))
+                        .child(div().text_color(c(tk.text_faint)).child("IF DENIED esc"))
+                        .child(div().min_w_0().text_color(c(tk.text_muted)).child(SharedString::from(denied))),
                 )
                 .into_any_element()
         });
@@ -652,15 +770,39 @@ impl Workspace {
                 div()
                     .flex()
                     .items_start()
-                    .gap(px(8.))
-                    .child(div().pt(px(3.)).child(ui::mark("gate-mark", ui::MarkState::NeedsYou, 13., cx)))
-                    // A long path wraps inside the column; the question is never cut off by the window's edge.
-                    .child(div().flex_1().min_w_0().text_size(px(t::TEXT_BODY)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary)).child(SharedString::from(shown(&sentence))))
+                    .gap(px(10.))
+                    .child(div().pt(px(4.)).child(ui::mark("gate-mark", ui::MarkState::NeedsYou, 14., cx)))
+                    // Question in 22 px Charter (voice), editorial pull-quote style
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .font_family(crate::theme::voice(cx))
+                            .text_size(px(t::TEXT_GATE))
+                            .line_height(relative(1.25))
+                            .text_color(c(tk.text_primary))
+                            .child(SharedString::from(shown(&sentence))),
+                    )
                     .when(self.saying, |row| row.child(ui::badge("type below · ↵ sends", Tone::Amber, cx))),
             )
-            // An edit shows the change it asks about; anything else, its command or input.
+            // An edit shows the change it asks about; anything else, its command or input in a ruled mono block (top and bottom rules only).
             .when_some(diffs, |card, diffs| card.child(transcript::diff_preview(&diffs, cx)))
-            .when(!has_diff, |card| card.when_some(block, |card, text| card.child(ui::code_block(SharedString::from(shown(&text)), cx).text_color(c(tk.text_body)))))
+            .when(!has_diff, |card| {
+                card.when_some(block, |card, text| {
+                    card.child(
+                        div()
+                            .w_full()
+                            .py(px(6.))
+                            .border_t_1()
+                            .border_b_1()
+                            .border_color(line(cx, t::LINE_DEFAULT))
+                            .font_family(mono(cx))
+                            .text_size(px(t::TEXT_CODE))
+                            .text_color(c(tk.text_body))
+                            .child(SharedString::from(shown(&text))),
+                    )
+                })
+            })
             .children(counterfactual)
             .children(challenge)
             .child(div().flex().flex_wrap().items_center().gap(px(6.)).children(buttons))
@@ -770,12 +912,6 @@ impl Workspace {
                 )
                 .into_any_element();
         }
-
-        let mut ring = Vec::new();
-        if active_border {
-            ring.push(BoxShadow { color: amber(cx, 0.05), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(t::COMPOSER_RING), inset: false });
-        }
-        ring.extend(soft_shadow(cx));
 
         let chips: Vec<AnyElement> = self
             .staged

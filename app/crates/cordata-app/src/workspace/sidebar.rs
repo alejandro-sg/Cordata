@@ -15,18 +15,9 @@ use crate::ui::{self, Dot, Kind};
 
 impl Workspace {
     pub(super) fn sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
-        div()
-            .id("sidebar")
+        ui::drawer("sidebar", ui::DrawerSide::Left, self.rail_w(), cx)
             .role(gpui::Role::Navigation)
             .aria_label("Project and threads")
-            .w(px(self.rail_w()))
-            .h_full()
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .bg(crate::theme::glass_panel_bg(cx))
-            .border_r_1()
-            .border_color(line(cx, t::LINE_SUBTLE))
             // Traffic lights occupy the left ~76px of this row; empty space drags the window.
             .child(
                 div()

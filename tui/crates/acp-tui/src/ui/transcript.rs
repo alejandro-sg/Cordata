@@ -69,23 +69,23 @@ fn thought_lines(text: &str, width: usize, expanded: bool, streaming: bool) -> V
     let dim = Style::new().fg(Color::DarkGray);
     let italic = dim.add_modifier(Modifier::ITALIC);
     if expanded && !streaming {
-        return prefixed(text, width, "· ", "  ", italic, dim);
+        return prefixed(text, width, "│ · ", "│   ", italic, dim);
     }
     if streaming {
         let rows = wrap(
             &text.split_whitespace().collect::<Vec<_>>().join(" "),
-            width.saturating_sub(2).max(1),
+            width.saturating_sub(4).max(1),
         );
         let tail = &rows[rows.len().saturating_sub(2)..];
-        let mut lines = vec![Line::styled("· thinking…", dim)];
+        let mut lines = vec![Line::styled("│ · thinking…", dim)];
         lines.extend(
             tail.iter()
-                .map(|row| Line::styled(format!("  {row}"), italic)),
+                .map(|row| Line::styled(format!("│   {row}"), italic)),
         );
         return lines;
     }
     let words = text.split_whitespace().count();
-    vec![Line::styled(format!("· reasoned ({words} words)"), dim)]
+    vec![Line::styled(format!("│ · reasoned ({words} words)"), dim)]
 }
 
 /// A unified diff with the usual colours: additions green, removals red, hunk headers cyan, file headers bold.
@@ -119,8 +119,8 @@ fn message_lines(app: &App, index: usize, width: u16) -> Vec<Line<'static>> {
         Message::User(text) => prefixed(
             text,
             w,
-            "❯ ",
-            "  ",
+            "▪ ",
+            "│ ",
             Style::new().add_modifier(Modifier::BOLD),
             Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
         ),
@@ -146,8 +146,8 @@ fn message_lines(app: &App, index: usize, width: u16) -> Vec<Line<'static>> {
         Message::Info(text) => prefixed(
             text,
             w,
-            "  · ",
-            "    ",
+            "│ · ",
+            "│   ",
             Style::new().fg(Color::Gray),
             Style::new().fg(Color::Cyan),
         ),

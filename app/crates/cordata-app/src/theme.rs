@@ -7,7 +7,6 @@
 //! `observe_window_appearance`) calls `appearance_changed`, which reinstalls only when the resolved theme actually
 //! changes — one reinstall per real switch, however many notifications arrive. Increase Contrast is read once at launch.
 
-use std::borrow::Cow;
 use std::rc::Rc;
 
 use cordata_theme::tokens::{self, Tokens, fonts};
@@ -39,11 +38,11 @@ pub fn tk(cx: &App) -> Tokens {
 }
 
 pub fn sans(cx: &App) -> SharedString {
-    active(cx).map_or_else(|| SharedString::from(fonts::SANS_FALLBACK), |a| a.sans.clone())
+    active(cx).map_or_else(|| SharedString::from(fonts::SANS), |a| a.sans.clone())
 }
 
 pub fn mono(cx: &App) -> SharedString {
-    active(cx).map_or_else(|| SharedString::from(fonts::MONO_FALLBACKS[1]), |a| a.mono.clone())
+    active(cx).map_or_else(|| SharedString::from(fonts::MONO[fonts::MONO.len() - 1]), |a| a.mono.clone())
 }
 
 /// The agent's reading face.
@@ -81,61 +80,13 @@ pub fn amber(cx: &App, alpha: f32) -> Hsla {
     ca(tk(cx).amber, alpha)
 }
 
-/// The glow on a live amber dot.
-pub fn amber_glow(cx: &App) -> Vec<BoxShadow> {
-    vec![BoxShadow { color: amber(cx, tokens::AMBER_GLOW), offset: point(px(0.), px(0.)), blur_radius: px(tokens::GLOW_BLUR), spread_radius: px(0.), inset: false }]
-}
-
-/// The modal shadow with subtle Apple liquid glass specular highlight and ambient depth.
+/// The one shadow, for floating layers only (the palette, popovers, modals, drawers): tight and low, so the layer
+/// reads as lifted without haze. The chrome itself casts nothing — hairlines do the separating.
 pub fn modal_shadow(cx: &App) -> Vec<BoxShadow> {
     let t = tk(cx);
     // The shadow token, never the window ground: on paper that is near-white and the modal would cast a white halo.
-    let alpha = if t.is_dark { tokens::MODAL_SHADOW } else { 0.22 };
-    let specular = if t.is_dark { ca(t.ink, 0.12) } else { ca(t.ink, 0.70) };
-    vec![
-        // Liquid glass top specular reflection
-        BoxShadow { color: specular, offset: point(px(0.), px(1.)), blur_radius: px(0.), spread_radius: px(0.), inset: true },
-        // Deep ambient drop shadow
-        BoxShadow { color: ca(t.shadow, alpha), offset: point(px(0.), px(28.)), blur_radius: px(90.), spread_radius: px(0.), inset: false },
-        // Soft contact shadow
-        BoxShadow { color: ca(t.shadow, alpha * 0.45), offset: point(px(0.), px(4.)), blur_radius: px(14.), spread_radius: px(0.), inset: false },
-    ]
-}
-
-/// A soft shadow under popovers and the composer with liquid glass specular highlight.
-pub fn soft_shadow(cx: &App) -> Vec<BoxShadow> {
-    let t = tk(cx);
-    let specular = if t.is_dark { ca(t.ink, 0.08) } else { ca(t.ink, 0.55) };
-    vec![
-        // Liquid glass top specular reflection
-        BoxShadow { color: specular, offset: point(px(0.), px(1.)), blur_radius: px(0.), spread_radius: px(0.), inset: true },
-        // Soft ambient shadow
-        BoxShadow { color: ca(t.shadow, if t.is_dark { 0.45 } else { 0.12 }), offset: point(px(0.), px(8.)), blur_radius: px(24.), spread_radius: px(0.), inset: false },
-    ]
-}
-
-/// Liquid glass window background: subtle translucency so macOS vibrancy shines through softly.
-pub fn glass_window_bg(cx: &App) -> Hsla {
-    let t = tk(cx);
-    ca(t.bg_window, if t.is_dark { 0.85 } else { 0.88 })
-}
-
-/// Liquid glass main column background.
-pub fn glass_main_bg(cx: &App) -> Hsla {
-    let t = tk(cx);
-    ca(t.bg_main, if t.is_dark { 0.90 } else { 0.92 })
-}
-
-/// Liquid glass sidebar / side panel background (vibrant frosted look).
-pub fn glass_panel_bg(cx: &App) -> Hsla {
-    let t = tk(cx);
-    ca(t.bg_panel, if t.is_dark { 0.82 } else { 0.86 })
-}
-
-/// Liquid glass modal background: frosted glass acrylic layer.
-pub fn glass_modal_bg(cx: &App) -> Hsla {
-    let t = tk(cx);
-    ca(t.bg_input, if t.is_dark { 0.86 } else { 0.89 })
+    let alpha = if t.is_dark { tokens::MODAL_SHADOW } else { tokens::MODAL_SHADOW_LIGHT };
+    vec![BoxShadow { color: ca(t.shadow, alpha), offset: point(px(0.), px(tokens::MODAL_SHADOW_Y)), blur_radius: px(tokens::MODAL_SHADOW_BLUR), spread_radius: px(0.), inset: false }]
 }
 
 /// A 1px border drawn inside the box (the active row, an active settings item): no layout shift, no stripe.
@@ -148,45 +99,22 @@ pub fn inset_bottom(color: Hsla) -> Vec<BoxShadow> {
     vec![BoxShadow { color, offset: point(px(0.), px(-1.)), blur_radius: px(0.), spread_radius: px(0.), inset: true }]
 }
 
-/// Register the bundled fonts (Geist, Geist Mono) and choose the families: Geist when it loaded, else the system's.
-/// The files are looked for in the bundle (`Contents/Resources/fonts`) and, for a run from the checkout,
-/// `app/assets/fonts`. Nothing is fetched.
+/// Choose the families from the faces macOS ships: SF Pro (`.SystemUIFont`) for the sans, SF Mono then Menlo for the
+/// mono, Charter → Iowan Old Style → Georgia for the agent's voice. Nothing is bundled or fetched; a face the system
+/// lacks falls through to the next, and the last of each list is always present on macOS.
 pub fn load_fonts(cx: &mut App) -> (SharedString, SharedString, SharedString) {
-    let mut dirs = Vec::new();
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(contents) = exe.parent().and_then(|macos| macos.parent())
-    {
-        dirs.push(contents.join("Resources").join("fonts"));
-    }
-    dirs.push(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/fonts"));
-    let mut blobs: Vec<Cow<'static, [u8]>> = Vec::new();
-    for dir in dirs {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let is_font = path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("ttf") || e.eq_ignore_ascii_case("otf"));
-            // A font file is small; a huge one is not what we shipped.
-            if is_font && entry.metadata().is_ok_and(|m| m.len() < 8 * 1024 * 1024)
-                && let Ok(bytes) = std::fs::read(&path)
-            {
-                blobs.push(Cow::Owned(bytes));
-            }
-        }
-        if !blobs.is_empty() {
-            break;
-        }
-    }
-    if !blobs.is_empty()
-        && let Err(error) = cx.text_system().add_fonts(blobs)
-    {
-        eprintln!("cordata: the bundled fonts did not load ({error}); using the system's");
-    }
     let names = cx.text_system().all_font_names();
-    let has = |name: &str| names.iter().any(|n| n == name);
-    let sans = if has(fonts::SANS) { fonts::SANS } else { fonts::SANS_FALLBACK };
-    let mono = if has(fonts::MONO) { fonts::MONO } else { fonts::MONO_FALLBACKS.into_iter().find(|f| has(f)).unwrap_or(fonts::MONO_FALLBACKS[1]) };
-    let voice = fonts::VOICE.into_iter().find(|f| has(f)).unwrap_or(sans);
+    let (sans, mono, voice) = pick_fonts(|name| names.iter().any(|n| n == name));
     (SharedString::from(sans), SharedString::from(mono), SharedString::from(voice))
+}
+
+/// The families `load_fonts` settles on, given what is installed. `.SystemUIFont` is a GPUI alias rather than a listed
+/// family, so the sans is never looked up: it always resolves.
+fn pick_fonts(has: impl Fn(&str) -> bool) -> (&'static str, &'static str, &'static str) {
+    let sans = fonts::SANS;
+    let mono = fonts::MONO.into_iter().find(|f| has(f)).unwrap_or(fonts::MONO[fonts::MONO.len() - 1]);
+    let voice = fonts::VOICE.into_iter().find(|f| has(f)).unwrap_or(sans);
+    (sans, mono, voice)
 }
 
 /// Is this appearance a dark one?
@@ -346,7 +274,7 @@ mod tests {
     fn the_component_theme_parses_from_the_tokens() {
         for theme in tokens::THEMES {
             let p = theme.palette();
-            let config = component_theme(theme, &p, "Geist", "Geist Mono");
+            let config = component_theme(theme, &p, fonts::SANS, fonts::MONO[0]);
             assert_eq!(config.mode.is_dark(), theme.is_dark, "{}", theme.name);
             assert_eq!(config.colors.background.as_ref().map(|s| s.to_string()), Some(theme.bg_main.css()));
             assert_eq!(config.colors.primary.as_ref().map(|s| s.to_string()), Some(theme.amber.css()));
@@ -360,5 +288,13 @@ mod tests {
         assert_eq!(resolve("graphite", false).name, "graphite");
         assert_eq!(resolve("light", true).name, "light");
         assert!(is_dark(WindowAppearance::VibrantDark) && !is_dark(WindowAppearance::VibrantLight));
+    }
+
+    #[test]
+    fn the_fonts_are_the_systems_and_fall_through_in_order() {
+        assert_eq!(pick_fonts(|_| true), (".SystemUIFont", "SF Mono", "Charter"));
+        assert_eq!(pick_fonts(|f| f == "Menlo" || f == "Georgia"), (".SystemUIFont", "Menlo", "Georgia"));
+        // Nothing listed at all: the mono's last resort and the sans for the voice.
+        assert_eq!(pick_fonts(|_| false), (".SystemUIFont", "Menlo", ".SystemUIFont"));
     }
 }

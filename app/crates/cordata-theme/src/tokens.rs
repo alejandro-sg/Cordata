@@ -69,23 +69,23 @@ pub struct Tokens {
     pub shadow: Rgb,
 }
 
-/// "Ink": blue-black ground, cool greys, one signal colour (viridian) and ochre kept for what needs you. The settings
+/// "Ink": warm graphite ground, one signal colour (viridian) and ochre kept for what needs you. The settings
 /// key stays `2049` so saved preferences keep working.
 pub const T2049: Tokens = Tokens {
     name: "2049",
-    bg_window: Rgb::hex(0x0C0E11),
-    bg_main: Rgb::hex(0x0E1013),
-    bg_panel: Rgb::hex(0x0C0E11),
-    bg_nav_deep: Rgb::hex(0x0A0C0E),
-    bg_input: Rgb::hex(0x13161A),
+    bg_window: Rgb::hex(0x0E0E0D),
+    bg_main: Rgb::hex(0x111110),
+    bg_panel: Rgb::hex(0x0E0E0D),
+    bg_nav_deep: Rgb::hex(0x0B0B0A),
+    bg_input: Rgb::hex(0x171716),
     text_primary: Rgb::hex(0xE8EAED),
     text_body: Rgb::hex(0xD3D6DB),
     text_secondary: Rgb::hex(0xA2A8B0),
     text_muted: Rgb::hex(0x878D95),
     text_muted_2: Rgb::hex(0x7A8088),
-    text_label: Rgb::hex(0x6E747C),
-    text_faint: Rgb::hex(0x7B8188),
-    text_faint_2: Rgb::hex(0x50565D),
+    text_label: Rgb::hex(0x727880),
+    text_faint: Rgb::hex(0x828890),
+    text_faint_2: Rgb::hex(0x555B62),
     amber: Rgb::hex(0x3DC9A4),
     amber_hover: Rgb::hex(0x56D4B3),
     amber_soft: Rgb::hex(0x86DCC4),
@@ -101,41 +101,41 @@ pub const T2049: Tokens = Tokens {
     shadow: Rgb::hex(0x000000),
 };
 
-/// Neutral greys instead of the warm near-black; same accents.
+/// Warm neutral graphite instead of cold near-black; same accents.
 pub const GRAPHITE: Tokens = Tokens {
     name: "graphite",
-    bg_window: Rgb::hex(0x0B0C0E),
-    bg_main: Rgb::hex(0x101113),
-    bg_panel: Rgb::hex(0x131416),
-    bg_nav_deep: Rgb::hex(0x0F1012),
-    bg_input: Rgb::hex(0x17181B),
+    bg_window: Rgb::hex(0x10100F),
+    bg_main: Rgb::hex(0x131312),
+    bg_panel: Rgb::hex(0x10100F),
+    bg_nav_deep: Rgb::hex(0x0E0E0D),
+    bg_input: Rgb::hex(0x1A1A19),
     text_primary: Rgb::hex(0xEAEAEA),
     text_body: Rgb::hex(0xD6D6D6),
     text_secondary: Rgb::hex(0xA8A8A8),
     text_muted: Rgb::hex(0x8E8E8E),
     text_muted_2: Rgb::hex(0x7C7C7C),
-    text_label: Rgb::hex(0x6E6E6E),
-    text_faint: Rgb::hex(0x828282),
-    text_faint_2: Rgb::hex(0x515151),
+    text_label: Rgb::hex(0x727272),
+    text_faint: Rgb::hex(0x888888),
+    text_faint_2: Rgb::hex(0x585858),
     ..T2049
 };
 
-/// A lifted ground for bright rooms; brighter muted text so it stays readable on it.
+/// A lifted warm ground for bright rooms; brighter muted text so it stays readable on it.
 pub const DIM: Tokens = Tokens {
     name: "dim",
-    bg_window: Rgb::hex(0x121417),
-    bg_main: Rgb::hex(0x15171A),
-    bg_panel: Rgb::hex(0x191B1F),
-    bg_nav_deep: Rgb::hex(0x16181B),
-    bg_input: Rgb::hex(0x1E2025),
+    bg_window: Rgb::hex(0x141413),
+    bg_main: Rgb::hex(0x181816),
+    bg_panel: Rgb::hex(0x141413),
+    bg_nav_deep: Rgb::hex(0x121211),
+    bg_input: Rgb::hex(0x20201E),
     text_primary: Rgb::hex(0xF0EBE2),
     text_body: Rgb::hex(0xDED8CD),
     text_secondary: Rgb::hex(0xB3AEA5),
     text_muted: Rgb::hex(0x9A968E),
     text_muted_2: Rgb::hex(0x8A867F),
-    text_label: Rgb::hex(0x7A766F),
-    text_faint: Rgb::hex(0x8C8881),
-    text_faint_2: Rgb::hex(0x5E5A55),
+    text_label: Rgb::hex(0x7E7A73),
+    text_faint: Rgb::hex(0x928E87),
+    text_faint_2: Rgb::hex(0x64605B),
     ..T2049
 };
 
@@ -144,20 +144,20 @@ pub const DIM: Tokens = Tokens {
 /// Increase Contrast reaches AAA (7:1) — the tests below compute both.
 pub const DAY: Tokens = Tokens {
     name: "light",
-    // "Paper": cool off-white (no cream), one ground for every column; hairlines separate them.
-    bg_window: Rgb::hex(0xF4F5F3),
-    bg_main: Rgb::hex(0xFAFAF9),
-    bg_panel: Rgb::hex(0xF4F5F3),
-    bg_nav_deep: Rgb::hex(0xEDEEEC),
+    // "Paper": bone off-white, one ground for every column; hairlines separate them.
+    bg_window: Rgb::hex(0xEDEAE4),
+    bg_main: Rgb::hex(0xF6F4EF),
+    bg_panel: Rgb::hex(0xEDEAE4),
+    bg_nav_deep: Rgb::hex(0xE4E2DC),
     bg_input: Rgb::hex(0xFFFFFF),
     text_primary: Rgb::hex(0x111418),
     text_body: Rgb::hex(0x22262D),
     text_secondary: Rgb::hex(0x454B54),
     text_muted: Rgb::hex(0x565C65),
     text_muted_2: Rgb::hex(0x5F656D),
-    text_label: Rgb::hex(0x666C74),
-    text_faint: Rgb::hex(0x666B73),
-    text_faint_2: Rgb::hex(0x868B92),
+    text_label: Rgb::hex(0x60656D),
+    text_faint: Rgb::hex(0x60656D),
+    text_faint_2: Rgb::hex(0x7A8088),
     amber: Rgb::hex(0x0A6553),
     amber_hover: Rgb::hex(0x0C735F),
     amber_soft: Rgb::hex(0x085444),
@@ -265,8 +265,11 @@ pub const DIFF_ADD_FILL: f32 = 0.07;
 pub const DIFF_DEL_FILL: f32 = 0.06;
 
 /// The modal scrim, over `bg_window`.
-pub const SCRIM: f32 = 0.65;
-pub const MODAL_SHADOW: f32 = 0.65;
+pub const SCRIM: f32 = 0.40;
+pub const MODAL_SHADOW: f32 = 0.45;
+pub const MODAL_SHADOW_LIGHT: f32 = 0.16;
+pub const MODAL_SHADOW_Y: f32 = 8.;
+pub const MODAL_SHADOW_BLUR: f32 = 24.;
 
 
 // ------------------------------------------------------------------------------------------------ metrics (px)
@@ -274,6 +277,8 @@ pub const MODAL_SHADOW: f32 = 0.65;
 pub const HEADER_H: f32 = 52.;
 pub const STATUS_H: f32 = 28.;
 pub const SIDEBAR_W: f32 = 232.;
+pub const ROPE_MARGIN: f32 = 120.;
+pub const PAGE_WIDTH: f32 = 680.;
 pub const PANEL_MIN_W: f32 = 300.;
 pub const PANEL_MAX_W: f32 = 380.;
 /// The side panel's share of the window, clamped to `PANEL_MIN_W..=PANEL_MAX_W`.
@@ -318,27 +323,30 @@ pub const TERMINAL_OVERFLOW_W: f32 = 1240.;
 pub const HEADER_HIDE_BRANCH_W: f32 = 560.;
 pub const HEADER_SHORT_MODEL_W: f32 = 480.;
 
-pub const RADIUS_BADGE: f32 = 4.;
-pub const RADIUS_ROW: f32 = 6.;
-pub const RADIUS_CONTROL: f32 = 6.;
-pub const RADIUS_CARD: f32 = 8.;
-pub const RADIUS_POPOVER: f32 = 10.;
-pub const RADIUS_MODAL: f32 = 12.;
+pub const RADIUS_BADGE: f32 = 2.;
+pub const RADIUS_ROW: f32 = 4.;
+pub const RADIUS_CONTROL: f32 = 4.;
+pub const RADIUS_CARD: f32 = 4.;
+pub const RADIUS_POPOVER: f32 = 6.;
+pub const RADIUS_MODAL: f32 = 8.;
 pub const RADIUS_CAP: f32 = 4.;
 
 // ------------------------------------------------------------------------------------------------ type (px)
 
-pub const TEXT_BODY: f32 = 15.5;
+pub const TEXT_BODY: f32 = 17.;
 pub const LINE_HEIGHT_BODY: f32 = 1.62;
-pub const TEXT_TITLE: f32 = 14.5;
-pub const TEXT_UI: f32 = 14.;
-pub const TEXT_SMALL: f32 = 13.;
+pub const TEXT_TITLE: f32 = 16.;
+pub const TEXT_UI: f32 = 13.;
+pub const TEXT_CODE: f32 = 13.;
+pub const TEXT_SMALL: f32 = 12.;
 pub const TEXT_META: f32 = 12.;
-pub const TEXT_STATUS: f32 = 11.5;
+pub const TEXT_STATUS: f32 = 11.;
 pub const TEXT_LABEL: f32 = 11.;
 pub const TEXT_TAG: f32 = 11.;
-pub const TEXT_SETTINGS_TITLE: f32 = 16.5;
-pub const TEXT_EMPTY: f32 = 24.;
+pub const TEXT_SETTINGS_TITLE: f32 = 16.;
+pub const TEXT_EMPTY: f32 = 40.;
+pub const TEXT_HERO: f32 = 40.;
+pub const TEXT_GATE: f32 = 22.;
 pub const TEXT_LOGO: f32 = 13.;
 
 /// Letter-spacing, as GPUI has none: thin spaces between the letters (`tracked_text`).
@@ -387,10 +395,10 @@ pub const LIVE_REST: f32 = 0.7;
 /// The smallest text the window sets, in px.
 pub const TEXT_MIN: f32 = 11.;
 
-/// Fonts. The app bundles Geist when its files are present (`app/assets/fonts`); otherwise the system's.
+/// Fonts. Native macOS system faces only — nothing bundled or fetched.
 pub mod fonts {
-    pub const SANS: &str = "Geist";
-    pub const MONO: &str = "Geist Mono";
+    pub const SANS: &str = ".SystemUIFont";
+    pub const MONO: [&str; 2] = ["SF Mono", "Menlo"];
     pub const SANS_FALLBACK: &str = ".SystemUIFont";
     pub const MONO_FALLBACKS: [&str; 2] = ["SF Mono", "Menlo"];
     /// The agent's voice: a reading serif, so who is speaking shows before a word is read. Your words and the chrome
@@ -488,7 +496,7 @@ mod tests {
     #[test]
     fn the_reference_values_are_the_2049_theme() {
         assert_eq!(T2049.amber.css(), "#3DC9A4", "the signal is viridian");
-        assert_eq!(T2049.bg_main.css(), "#0E1013");
+        assert_eq!(T2049.bg_main.css(), "#111110");
         for t in THEMES {
             assert_ne!(t.attention, t.amber, "{}: needing you never looks like the accent", t.name);
             assert!(t.attention.contrast(t.bg_main) >= 4.5, "{} attention", t.name);

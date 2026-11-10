@@ -86,9 +86,10 @@ impl TasteResult {
 /// unescaped ANSI sequences, and contains no crude unhandled panic stack dumps.
 pub fn lint_terminal_output(text: &str, max_width: usize) -> TasteResult {
     let mut findings = Vec::new();
-    let mut metrics = TasteMetrics::default();
-
-    metrics.line_count = text.lines().count();
+    let mut metrics = TasteMetrics {
+        line_count: text.lines().count(),
+        ..Default::default()
+    };
 
     for (idx, line) in text.lines().enumerate() {
         let line_num = idx + 1;

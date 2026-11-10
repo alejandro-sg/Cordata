@@ -1,5 +1,4 @@
-//! The Cordata palette — a Blade Runner 2049 night: sodium-vapour amber against cold teal on near-black, the light of
-//! K's apartment and the Wallace atrium, with the thin cyan line-work of a HUD.
+//! The Cordata palette — warm graphite grounds, viridian signal, ochre attention, and lavender agents.
 //!
 //! The renderers keep using the semantic ANSI colours (`Cyan` is "accent", `Magenta` is "the second voice", `DarkGray` is
 //! "dim", `Red` is "danger"…); this module decides what those names look like on the terminal in front of the person,
@@ -14,9 +13,9 @@
 //! * `CORDATA_THEME=terminal` or a terminal without 256 colours keeps the terminal's own 16 colours;
 //! * `NO_COLOR` strips colour and keeps bold/dim/reverse.
 //!
-//! The roles, so a new widget picks the right name: **Cyan = sodium amber** (Cordata, the live thing, the prompt),
-//! **Magenta = electric teal** (agents, the orchestrator, untrusted content: the other voice), **Green = cold mint**
-//! (done, safe, plan), **Yellow = pale gold** (needs a look), **Red = vermilion** (danger, auto), **Blue = steel**.
+//! The roles, so a new widget picks the right name: **Cyan = viridian signal** (Cordata, the live thing, the prompt),
+//! **Magenta = lavender** (agents, the orchestrator, untrusted content: the other voice), **Green = viridian/ok**
+//! (done, safe, plan), **Yellow = ochre attention** (needs you, gate), **Red = vermilion** (danger, auto), **Blue = steel**.
 
 use std::sync::OnceLock;
 
@@ -91,9 +90,9 @@ fn palette(color: Color) -> Option<(u8, u8, u8)> {
 fn palette_for(light: bool, color: Color) -> Option<(u8, u8, u8)> {
     use cordata_theme::{NIGHT, Role};
     let role = match color {
-        // accent — the one colour that means "Cordata": sodium-vapour amber
+        // accent — the one colour that means "Cordata": viridian signal
         Color::Cyan | Color::LightCyan => Role::Accent,
-        // the second voice: agents, the orchestrator, untrusted content — electric teal
+        // the second voice: agents, the orchestrator, untrusted content — lavender
         Color::Magenta | Color::LightMagenta => Role::Agent,
         Color::Yellow | Color::LightYellow => Role::Attention,
         Color::Green | Color::LightGreen => Role::Ok,

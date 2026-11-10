@@ -23,7 +23,7 @@ use gpui_component::input::{InputEvent, InputState, TextareaState};
 use crate::prefs::{self, Prefs};
 use crate::session::{Connection, Session, SessionEvent, WindowRequest};
 use crate::threads;
-use crate::theme::{c, ca, line, tk};
+use crate::theme::{c, ca, line, mono, tk};
 use crate::transcript::{self, GroupEdge};
 use cordata_view::fold;
 use crate::ui::{self, Dot, Kind};
@@ -1615,7 +1615,7 @@ impl Workspace {
                     .gap(px(6.))
                     .p(px(24.))
                     .rounded(px(t::RADIUS_MODAL))
-                    .bg(crate::theme::glass_modal_bg(cx))
+                    .bg(crate::theme::c(crate::theme::tk(cx).bg_input))
                     .border_1()
                     .border_color(line(cx, t::LINE_CONTROL_STRONG))
                     .shadow(crate::theme::modal_shadow(cx))
@@ -2149,6 +2149,55 @@ impl Render for Workspace {
             let last_row = ix + 1 == rows.len();
             let row = row.clone();
             let (this, session) = (this.clone(), session.clone());
+
+            let (turn_label, is_anchor, is_pitch, is_tool) = match &row {
+                fold::Row::Message(i) => match view.messages.get(*i) {
+                    Some(cordata_view::app::Message::User(_)) => {
+                        let turn = view.messages.iter().take(*i + 1).filter(|m| matches!(m, cordata_view::app::Message::User(_))).count();
+                        (Some(format!("{:02}", turn)), true, false, false)
+                    }
+                    Some(cordata_view::app::Message::Agent(_)) => (None, false, true, false),
+                    Some(cordata_view::app::Message::Tool(_)) => (None, false, false, true),
+                    _ => (None, false, false, false),
+                },
+                fold::Row::Activity(_) => (None, false, false, true),
+            };
+
+            let block = match &row {
+                fold::Row::Message(i) => match view.messages.get(*i) {
+                    Some(message) => transcript::block(message, *i, edge, open, thoughts, &fold_ctx, cx),
+                    None => div().into_any_element(),
+                },
+                fold::Row::Activity(a) => {
+                    // Opened, the group lists its calls as plain rows (Ctrl+E opens each one's output).
+                    let body = if open {
+                        let tool_at = |j: usize| matches!(view.messages.get(j), Some(cordata_view::app::Message::Tool(_)));
+                        (a.first..=a.last)
+                            .filter_map(|j| {
+                                let message = view.messages.get(j)?;
+                                let edge = GroupEdge { first: j == a.first || !tool_at(j - 1), last: j == a.last || !tool_at(j + 1) };
+                                Some(transcript::block(message, j, edge, view.expand_tools, thoughts, &fold_ctx, cx))
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    transcript::activity(a, open, body, cx)
+                }
+            };
+            // The newest block rises 6px into place as it fades in (200 ms): you see what arrived.
+            let animated_block = if last_row && crate::ui::motion(cx) {
+                gpui::AnimationExt::with_animation(
+                    div().relative().child(block),
+                    ("arrive", ix), gpui::Animation::new(crate::motion::SETTLE).with_easing(gpui::ease_out_quint()), |el, t| {
+                        el.opacity(t).top(px(crate::motion::SETTLE_RISE * (1. - t)))
+                    },
+                )
+                .into_any_element()
+            } else {
+                block
+            };
+
             div()
                 .w_full()
                 .flex()
@@ -2158,7 +2207,7 @@ impl Render for Workspace {
                     div()
                         .id(("block", ix))
                         .w_full()
-                        .max_w(px(t::CONTENT_MAX_W))
+                        .max_w(px(t::PAGE_WIDTH + t::ROPE_MARGIN))
                         .when(card_id.is_some() || is_thought, |el| el.cursor_pointer())
                         .on_click(move |_, _, cx| {
                             if let Some(id) = &card_id {
@@ -2175,42 +2224,84 @@ impl Render for Workspace {
                                 session.update(cx, |session, cx| session.toggle_thoughts(cx));
                             }
                         })
-                        .child({
-                            let block = match &row {
-                                fold::Row::Message(i) => match view.messages.get(*i) {
-                                    Some(message) => transcript::block(message, *i, edge, open, thoughts, &fold_ctx, cx),
-                                    None => div().into_any_element(),
-                                },
-                                fold::Row::Activity(a) => {
-                                    // Opened, the group lists its calls as plain rows (Ctrl+E opens each one's output).
-                                    let body = if open {
-                                        let tool_at = |j: usize| matches!(view.messages.get(j), Some(cordata_view::app::Message::Tool(_)));
-                                        (a.first..=a.last)
-                                            .filter_map(|j| {
-                                                let message = view.messages.get(j)?;
-                                                let edge = GroupEdge { first: j == a.first || !tool_at(j - 1), last: j == a.last || !tool_at(j + 1) };
-                                                Some(transcript::block(message, j, edge, view.expand_tools, thoughts, &fold_ctx, cx))
-                                            })
-                                            .collect()
-                                    } else {
-                                        Vec::new()
-                                    };
-                                    transcript::activity(a, open, body, cx)
-                                }
-                            };
-                            // The newest block rises 6px into place as it fades in (200 ms): you see what arrived.
-                            if last_row && crate::ui::motion(cx) {
-                                gpui::AnimationExt::with_animation(
-                                    div().relative().child(block),
-                                    ("arrive", ix), gpui::Animation::new(crate::motion::SETTLE).with_easing(gpui::ease_out_quint()), |el, t| {
-                                        el.opacity(t).top(px(crate::motion::SETTLE_RISE * (1. - t)))
-                                    },
+                        .child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .flex_row()
+                                .child(
+                                    // 120px left margin: cord + marginalia
+                                    div()
+                                        .w(px(t::ROPE_MARGIN))
+                                        .flex_shrink_0()
+                                        .relative()
+                                        .flex()
+                                        .justify_end()
+                                        .items_start()
+                                        .pr(px(20.))
+                                        .pt(px(if is_anchor { 18. } else if is_pitch { 10. } else { 6. }))
+                                        // The vertical cord
+                                        .child(
+                                            div()
+                                                .absolute()
+                                                .top_0()
+                                                .bottom_0()
+                                                .right(px(10.))
+                                                .w(px(1.))
+                                                .bg(line(cx, t::LINE_DEFAULT)),
+                                        )
+                                        // Node on the cord
+                                        .child(if is_anchor {
+                                            // Small square knot
+                                            div()
+                                                .absolute()
+                                                .top(px(24.))
+                                                .right(px(8.5))
+                                                .size(px(4.))
+                                                .rounded(px(1.))
+                                                .bg(c(tk.amber))
+                                                .into_any_element()
+                                        } else if is_pitch {
+                                            // Pitch round node
+                                            div()
+                                                .absolute()
+                                                .top(px(14.))
+                                                .right(px(8.5))
+                                                .size(px(4.))
+                                                .rounded_full()
+                                                .bg(ca(tk.amber, t::LIVE_REST))
+                                                .into_any_element()
+                                        } else if is_tool {
+                                            // Quiet tool node
+                                            div()
+                                                .absolute()
+                                                .top(px(14.))
+                                                .right(px(9.))
+                                                .size(px(3.))
+                                                .rounded_full()
+                                                .bg(c(tk.text_faint))
+                                                .into_any_element()
+                                        } else {
+                                            div().into_any_element()
+                                        })
+                                        // Marginalia (turn number)
+                                        .children(turn_label.map(|lbl| {
+                                            div()
+                                                .font_family(mono(cx))
+                                                .text_size(px(t::TEXT_META))
+                                                .text_color(c(tk.text_faint))
+                                                .child(SharedString::from(lbl))
+                                        })),
                                 )
-                                .into_any_element()
-                            } else {
-                                block
-                            }
-                        }),
+                                // Manuscript column (680px)
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .max_w(px(t::PAGE_WIDTH))
+                                        .child(animated_block),
+                                ),
+                        ),
                 )
                 .into_any_element()
         })
@@ -2260,7 +2351,7 @@ impl Render for Workspace {
                                 .justify_center()
                                 .px(px(24.))
                                 .pb(px(16.))
-                                .child(div().w_full().max_w(px(t::CONTENT_MAX_W)).flex().flex_col().children(actions_row).children(pending).children(menu).child(composer)),
+                                .child(div().w_full().max_w(px(t::PAGE_WIDTH + t::ROPE_MARGIN)).flex().flex_col().children(actions_row).children(pending).children(menu).child(composer)),
                         ),
                 )
                 .children(places)
@@ -2316,7 +2407,7 @@ impl Render for Workspace {
             .relative()
             .flex()
             .flex_col()
-            .bg(crate::theme::glass_window_bg(cx))
+            .bg(crate::theme::c(crate::theme::tk(cx).bg_window))
             .font_family(crate::theme::sans(cx))
             .text_color(c(tk.text_body))
             .child(
@@ -2340,7 +2431,7 @@ impl Render for Workspace {
                             .relative()
                             .flex()
                             .flex_col()
-                            .bg(crate::theme::glass_main_bg(cx))
+                            .bg(crate::theme::c(crate::theme::tk(cx).bg_main))
                             .children(header)
                             .child(desk)
                     )

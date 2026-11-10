@@ -61,7 +61,7 @@ pub fn queue_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// Columns before the text: a space, the `❯`, a space.
+/// Columns before the text: a space, the `›`, a space.
 const LEAD: usize = 3;
 
 pub fn height_for(app: &App, width: u16) -> u16 {
@@ -70,11 +70,11 @@ pub fn height_for(app: &App, width: u16) -> u16 {
     rows.len().clamp(1, MAX_INPUT_ROWS) as u16 + 2
 }
 
-/// The prompt: a rule above and a rule below, the text between them.
+/// The prompt: a hairline above and a rule below, the text between them.
 ///
 /// ```text
-///  ━━ working — enter queues your next message ──────────────────────
-///  ❯ then run the tests
+///  ─ working — enter queues your next message ───────────────────────
+///  › then run the tests
 ///  ───────────────────────────────────────────────────────────────────
 /// ```
 /// Returns where the text cursor belongs (column, row within `buffer`) when the box accepts input, else `None`.
@@ -96,9 +96,9 @@ pub fn render(buffer: &mut Buffer, area: Rect, app: &App) -> Option<(u16, u16)> 
         }
     };
 
-    // Top rule: ` ━━ title ───────…`
-    let mut top = vec![Span::raw(" "), Span::styled("━━", Style::new().fg(accent).add_modifier(Modifier::BOLD))];
-    let mut used = 3;
+    // Top hairline: ` ─ title ───────…`
+    let mut top = vec![Span::raw(" "), Span::styled("─", rule_style)];
+    let mut used = 2;
     if !title.is_empty() {
         let shown = super::text::truncate(title, width.saturating_sub(used + 6));
         used += 2 + super::text::display_width(&shown);
@@ -114,13 +114,13 @@ pub fn render(buffer: &mut Buffer, area: Rect, app: &App) -> Option<(u16, u16)> 
     let lines: Vec<Line> = if app.input.is_empty() && enabled {
         match (&app.suggestion, app.turn_active) {
             (Some(suggestion), false) => vec![Line::from(vec![
-                Span::styled(" ❯ ", lead_style),
+                Span::styled(" › ", lead_style),
                 Span::styled(super::text::truncate(suggestion, width.saturating_sub(LEAD + 12)), Style::new().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)),
                 Span::styled("  tab ⇥", Style::new().fg(Color::DarkGray)),
             ])],
             (_, busy) => {
                 let hint = if busy { "type ahead — it is sent when the agent is done" } else { "Ask anything — / commands · @ files · ! shell" };
-                vec![Line::from(vec![Span::styled(" ❯ ", lead_style), Span::styled(hint, Style::new().fg(Color::DarkGray))])]
+                vec![Line::from(vec![Span::styled(" › ", lead_style), Span::styled(hint, Style::new().fg(Color::DarkGray))])]
             }
         }
     } else {
@@ -129,8 +129,8 @@ pub fn render(buffer: &mut Buffer, area: Rect, app: &App) -> Option<(u16, u16)> 
             .take(body_rows)
             .enumerate()
             .map(|(i, row)| {
-                // `❯` marks the first row of the prompt; wrapped rows indent under it.
-                let lead = if first + i == 0 { " ❯ " } else { "   " };
+                // `›` marks the first row of the prompt; wrapped rows indent under it.
+                let lead = if first + i == 0 { " › " } else { "   " };
                 Line::from(vec![Span::styled(lead, lead_style), Span::raw(row.clone())])
             })
             .collect()

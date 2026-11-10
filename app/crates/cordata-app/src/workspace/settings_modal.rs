@@ -217,7 +217,7 @@ impl Workspace {
                     .rounded(px(t::RADIUS_POPOVER))
                     .border_1()
                     .border_color(line(cx, t::LINE_CONTROL_STRONG))
-                    .bg(crate::theme::glass_modal_bg(cx))
+                    .bg(crate::theme::c(crate::theme::tk(cx).bg_input))
                     .shadow(crate::theme::modal_shadow(cx))
                     .child(
                         div()
@@ -226,7 +226,7 @@ impl Workspace {
                             .h_full()
                             .flex()
                             .flex_col()
-                            .bg(crate::theme::glass_panel_bg(cx))
+                            .bg(crate::theme::c(crate::theme::tk(cx).bg_panel))
                             .border_r_1()
                             .border_color(line(cx, t::LINE_DEFAULT))
                             .child(

@@ -43,7 +43,7 @@ The app draws these as vectors (`ui::mark`); the text forms are for the menu bar
 
 | role | Ink (dark) | Paper (light) | means |
 |---|---|---|---|
-| ground | `#0E1013` | `#FAFAF9` | one per theme; columns are told apart by hairlines |
+| ground | `#111110` | `#F6F4EF` | warm graphite and bone; columns are told apart by hairlines |
 | ink | `#E8EAED` | `#111418` | text and the loop |
 | signal (viridian) | `#3DC9A4` | `#0A6553` | the live thing: the node, the cord, your `›`, focus |
 | attention (ochre) | `#E2A640` | `#8A5100` | something needs you — and nothing else |
@@ -55,40 +55,48 @@ macOS Increase Contrast). No state is told by colour alone.
 
 Everything you are meant to read or find is held to a number, and a test fails if it slips: text (down to the
 faintest label) is 4.5:1 on every ground in every theme; every state of the mark, at rest and dimmed, is 3:1; no
-text is set under 11 px.
+text is set under 11 px. Tighter radii: badge 2, control 4, card 4, popover 6, modal 8.
 
 ## Type
 
-Three voices, so who is speaking shows before a word is read:
+Three voices, using native macOS system fonts only (no bundled or fetched fonts):
 
 | face | for |
 |---|---|
-| reading serif (Charter → Iowan Old Style → Georgia, all shipped with macOS) | the agent's prose and the brief |
-| Geist (sans) | your words and the chrome |
-| Geist Mono | machine facts: paths, commands, counts |
+| reading serif (Charter → Iowan Old Style → Georgia, shipped with macOS) | the agent's prose, brief, gate question (22 px), empty-state hero (40 px) |
+| SF Pro (`.SystemUIFont`) | your words, rope bar, and chrome |
+| SF Mono → Menlo | machine facts: paths, commands, marginalia, counts |
 
-## The desk
+Scale (1.2 ratio): 11 · 12 · 13 · 14 · 16 · 17 (prose) · 19 · 22 · 28 · 40.
 
-A thread is drawn as a piece of work, not a chat (`app/crates/cordata-app/src/workspace/desk.rs`, facts from
-`cordata_view::desk`):
+## The layout: "The Rope"
 
-- **Brief**: your first prompt, set as the page's title in the serif; under it "done when" (the project's check:
-  `scripts/verify.sh`, a Makefile `verify`/`test`/`check`, or the toolchain's runner), turns, files changed, and the
-  session's startup notes folded into one word (hover lists them).
-- **Tape**: one stop per prompt; the gate waiting on you is the last stop. A click walks the transcript there.
-- **Places**: the right margin lists the files the thread read and changed, by component, each with what happened to
-  it. Real paths from tool calls; nothing is guessed.
-- **Gate**: the mark with its node in the gap, the question, and one line on what yes means (an edit can be reverted;
-  a command cannot).
-- **Receipt**: after a turn, what changed, what ran, and whether the check passed, with the next step.
+A *cordata* is a roped party. The rope is the layout: one continuous line the work hangs from.
 
-The rail marks each thread with the mark's state instead of an icon. No emoji anywhere.
+- **Rope bar**: a hairline across the top with each open thread as a mark node on it. The active thread's name is set in serif. A thread that needs you sits *in a gap* in the rope with an ochre attention node. ⌘B opens the full **Logbook** (Threads / Earlier / Other checkouts) as a drawer.
+- **The page**: a manuscript column (680 px) with a **120 px left margin**. The **cord** runs down that margin as a vertical line. Every event is a node on it, with mono marginalia (turn no., time, diff counts).
+- **Anchors and pitches**: your prompt is an *anchor* (sans, medium weight, a small square knot on the cord). The agent's prose is a *pitch* in Charter at 17 px. Tool calls are quiet lines off the cord.
+- **The next line (composer)**: no box. A caret line at the end of the cord, with `›` hanging in the margin, a hairline above, and model / mode / send key in small mono right-aligned beneath.
+- **Tool sheet (⌘\)**: Files, Editor, Review and Terminal slide in over the page from the right (drawer with tight modal shadow).
+- **Empty state**: optical centre headline "What should change?" at 40 px serif, a short stub of cord dropping into the caret, and numbered starters (`01` Map how this project fits together).
+
+## The standout: the gate
+
+The gate is when the agent needs you, which is the core of the product. It is the only expressive moment in the app; everything else stays quiet.
+
+1. **Arrive** (240 ms): the cord above stops, opens a **gap**, and the node travels into it, turning ochre.
+2. The gate is set across the page as an editorial pull-quote:
+   - the question in **22 px Charter**
+   - the exact command in a ruled mono block (top and bottom rules only)
+   - **If allowed / If denied** as a two-column ledger
+   - the choices as text buttons with keycaps (`Allow ↵` · `Always (cargo)` · `Reply W` · `Deny esc`)
+3. **Close** (280 ms): when you decide, the two ends of the cord meet over the gap and the line carries on. Deny leaves a small danger-coloured slash in the margin as a record.
 
 ## Icons
 
 Cordata's own set (`app/assets/icons`, loaded by `app/crates/cordata-app/src/icons.rs`), drawn from the mark's two
-parts: an open line and, where something is set, a solid node. 16 grid, one 1.4 stroke, round ends, `currentColor`;
-a test holds every file to that.
+parts: an open line and, where something is set, a solid node. 16 grid, **1.25 stroke**, round caps, `currentColor`;
+a test holds every file to that. 17 icons in total, including `logbook`, `sheet`, `terminal`, `files`, `review`, and `gate`.
 
 An icon is used in exactly two cases:
 
@@ -121,10 +129,13 @@ tell stuck from busy without reading anything.
 
 | movement | started by | says |
 |---|---|---|
+| **draw**: cord extends down to the new node (180 ms) | a new block | the cord extends down, replacing settle |
 | **beat**: the node lights and falls back to 70% (900 ms) | an event from that thread | this is alive, and how recently |
 | **tug**: one pulse runs the header's cord, left to right (640 ms) | events on the thread you are looking at; a burst is one pass | work is passing along the cord |
-| **arrive**: the node moves from inside the loop to the gap; the gate's rule draws top to bottom (240 ms) | a gate opening | the agent has come to you |
-| **settle**: the newest block rises 6 px into place (200 ms) | a new block in the transcript | this is what just came in |
+| **arrive / close**: gate opens with ochre gap (240 ms) / decisions close it (280 ms) | gate opening or being answered | the standout moment of agent supervision |
+| **slide**: drawer moves in (240 ms ease-out-quint) | ⌘B (Logbook), ⌘\ (Tool sheet) | drawers slide in over the page |
+| **tick**: numeric value rolls vertically (220 ms) | count changes (+/−, turns, cost) | digits roll into place (NumberFlow-style) |
+| **stack**: notice arrives bottom-right and stacks | notification or toast | notifications arrive without jumping |
 
 One live thing per place: the rail's mark beats, the header tugs, the newest tool call beats. Everything else that is
 live is said still, in the signal colour. Events faster than a beat keep the node lit, so nothing blinks. All of it is

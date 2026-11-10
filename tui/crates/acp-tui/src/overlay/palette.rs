@@ -226,7 +226,7 @@ impl Palette {
         let found = format!("{count} {}", if count == 1 { "entry" } else { "entries" });
         let prompt_cap = width.saturating_sub(display_width(&found) + 6);
         let mut line = vec![
-            Span::styled(" ❯ ", Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(" › ", Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
             Span::raw(truncate(&self.query, prompt_cap)),
             Span::styled("▏", Style::new().fg(Color::Cyan)),
         ];

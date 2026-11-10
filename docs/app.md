@@ -98,15 +98,11 @@ created in tests or the packaged self-test (`CORDATA_APP_TRAY=off` also skips it
 
 ### The look
 
-A quiet instrument: one ground per theme (Paper, Ink and two dark variants), one signal colour (viridian) for what is
-live, ochre only for what needs you, no cards or shadows. Your prompts and the agent's replies share one text edge, with
-the `›` hanging in the margin. The mark is an open loop with a node: inside the loop while the agent works, in the gap
-when you are needed, the loop closed when it is done. The header's bottom edge is the cord: signal-coloured while the
-agent works, one pulse along it per burst of the thread's own events, attention-coloured end to end when you are needed.
-Nothing moves on a timer: the four movements (beat, tug, arrive, settle, `motion.rs`) are each started by an event, run
-once, and stop under Reduce Motion, so a stuck thread looks still. An orchestrator run is polled, not heard, so its mark
-is still. Icons are Cordata's own set, used only as whole controls or open/closed state; the two sounds (Settings →
-General → Sounds, off by default) play only for what you cannot see. The rules, colours and files: `app/assets/brand/README.md`.
+A quiet instrument: "The Rope" layout. The rope bar across the top displays open threads as nodes on one line (a thread needing you sits in an ochre gap). The page is a manuscript column (680 px) with a 120 px left margin cord where every event hangs with mono marginalia. Your prompt is an anchor; agent prose is a pitch in 17 px Charter; tool calls are quiet lines off the cord. The next line composer has no box: a caret line at the end of the cord with `›` hanging in the margin, a hairline above, and right-aligned footer metadata. Logbook (⌘B) and Tool sheet (⌘\) slide in over the page as drawers with tight low shadows.
+
+Typography uses native macOS system fonts exclusively: Charter (editorial prose, brief, gate question), SF Pro (`.SystemUIFont`) for prompts, rope bar and controls, and SF Mono / Menlo for machine facts. The gate is the one standout: editorial pull-quote with 22 px Charter question, ruled mono block, and two-column "If allowed / If denied" ledger.
+
+Nothing moves on a timer: movements (draw, beat, tug, arrive, close, slide, tick, stack in `motion.rs`) are started by events, run once, and stop under Reduce Motion. Icons are Cordata's own set on a 16 grid with 1.25 stroke. The rules, colours and files: `app/assets/brand/README.md`.
 
 ### Driving the window from a shell
 

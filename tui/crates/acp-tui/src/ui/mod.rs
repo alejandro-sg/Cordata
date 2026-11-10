@@ -64,6 +64,48 @@ pub fn welcome_lines(info: &SessionInfo, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
+/// A rope header across open threads: `── ● fix-tests ──── ○ docs ──── ◐ refactor ──`.
+/// One continuous line across the width with each open thread as a mark node on it.
+pub fn rope_header<'a, I>(threads: I, width: u16) -> Line<'static>
+where
+    I: IntoIterator<Item = (&'a str, cordata_view::app::TabState, bool)>,
+{
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    spans.push(Span::styled("── ", Style::new().fg(Color::DarkGray)));
+    let mut first = true;
+    for (name, state, active) in threads {
+        if !first {
+            spans.push(Span::styled(" ──── ", Style::new().fg(Color::DarkGray)));
+        }
+        first = false;
+        let (node, color) = match (state, active) {
+            (cordata_view::app::TabState::NeedsApproval, _) => ("●", Color::Yellow),
+            (cordata_view::app::TabState::Working, _) => ("◐", Color::Yellow),
+            (_, true) => ("●", Color::Cyan),
+            _ => ("○", Color::DarkGray),
+        };
+        spans.push(Span::styled(
+            node,
+            Style::new().fg(color).add_modifier(if active { ratatui::style::Modifier::BOLD } else { ratatui::style::Modifier::empty() }),
+        ));
+        spans.push(Span::raw(" "));
+        let style = if active {
+            Style::new().fg(Color::White).add_modifier(ratatui::style::Modifier::BOLD)
+        } else {
+            Style::new().fg(Color::Gray)
+        };
+        spans.push(Span::styled(name.to_owned(), style));
+    }
+    spans.push(Span::styled(" ──", Style::new().fg(Color::DarkGray)));
+    let current_w: usize = spans.iter().map(|s| text::display_width(&s.content)).sum();
+    let total_w = width as usize;
+    if total_w > current_w {
+        let fill = total_w - current_w;
+        spans.push(Span::styled("─".repeat(fill), Style::new().fg(Color::DarkGray)));
+    }
+    Line::from(spans)
+}
+
 /// Draw the live region: reply tail / running tool cards, then the prompt box (or
 /// an approval / picker panel in its place), then the footer. It is only as tall
 /// as it needs to be, up to `max_rows`.
@@ -185,7 +227,7 @@ mod tests {
         app.on_event(AppEvent::AgentText("all done".into()));
         let screen = screen(&mut app, 80, 24);
         for needle in [
-            "❯ hi there",
+            "▪ hi there",
             "╭",
             "run_command · execute",
             "$ echo hi",
@@ -278,12 +320,12 @@ mod tests {
         app.input.set_text("/c");
         app.refresh_menu();
         let shown = screen(&mut app, 90, 24);
-        for needle in ["▸ /close", "/copy", "↑↓ choose · tab complete · enter run", "❯ /c"] {
+        for needle in ["▸ /close", "/copy", "↑↓ choose · tab complete · enter run", "› /c"] {
             assert!(shown.contains(needle), "missing {needle:?} in\n{shown}");
         }
         let rows: Vec<&str> = shown.lines().collect();
         let menu = rows.iter().position(|r| r.contains("▸ /close")).unwrap();
-        let prompt = rows.iter().position(|r| r.contains("❯ /c")).unwrap();
+        let prompt = rows.iter().position(|r| r.contains("› /c")).unwrap();
         assert!(menu < prompt, "the menu is above the box:\n{shown}");
         eprintln!("{shown}");
 
@@ -301,7 +343,7 @@ mod tests {
         let mut app = connected();
         app.suggestion = Some("run the tests and show me the result".into());
         let shown = screen(&mut app, 90, 20);
-        assert!(shown.contains("❯ run the tests and show me the result") && shown.contains("tab ⇥"), "{shown}");
+        assert!(shown.contains("› run the tests and show me the result") && shown.contains("tab ⇥"), "{shown}");
         app.on_key(cordata_view::key::KeyEvent::from(cordata_view::key::KeyCode::Tab));
         assert_eq!(app.input.text(), "run the tests and show me the result");
         assert!(app.suggestion.is_none());
@@ -376,7 +418,7 @@ mod tests {
             assert!(screen.contains(needle), "missing {needle:?} in\n{screen}");
         }
         assert!(
-            !screen.contains("❯ "),
+            !screen.contains("› "),
             "no prompt box while asking:\n{screen}"
         );
     }
@@ -582,4 +624,17 @@ mod tests {
         );
     }
 
+    #[test]
+    fn rope_header_renders_nodes_and_threads_on_a_continuous_line() {
+        let threads = [
+            ("fix-tests", crate::app::TabState::Working, true),
+            ("docs", crate::app::TabState::Idle, false),
+            ("refactor", crate::app::TabState::NeedsApproval, false),
+        ];
+        let line = rope_header(threads, 80);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.starts_with("── "), "{text}");
+        assert!(text.contains("fix-tests") && text.contains("docs") && text.contains("refactor"), "{text}");
+        assert!(text.contains("────"), "{text}");
+    }
 }

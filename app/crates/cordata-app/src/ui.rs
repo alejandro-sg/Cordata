@@ -7,7 +7,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{AnyElement, AnyView, App, Div, ElementId, FontWeight, IntoElement as _, InteractiveElement as _, ParentElement, SharedString, Stateful, StatefulInteractiveElement as _, Styled, Window, div, px};
 use gpui_component::tooltip::Tooltip;
 
-use crate::theme::{amber, amber_glow, c, ca, line, mono, tk};
+use crate::theme::{amber, c, ca, line, mono, tk};
 
 /// Small mono meta text (shortcut hints, ages, counts).
 pub fn meta(text: impl Into<SharedString>, cx: &App) -> Div {
@@ -35,7 +35,7 @@ pub fn dot(kind: Dot, cx: &App) -> Div {
     let base = div().flex_shrink_0().size(px(t::DOT)).rounded_full();
     match kind {
         Dot::Hollow => base.border_1().border_color(c(tk.text_muted)),
-        Dot::Live => base.bg(c(tk.amber)).shadow(amber_glow(cx)),
+        Dot::Live => base.bg(c(tk.amber)),
         Dot::Amber => base.bg(c(tk.attention)),
         Dot::Ok => base.bg(c(tk.amber)),
         Dot::Danger => base.bg(c(tk.danger)),
@@ -341,14 +341,14 @@ pub fn select_trigger(id: impl Into<ElementId>, value: &str, cx: &App) -> Statef
         .child(div().flex_shrink_0().text_color(c(tk(cx).text_faint)).child(gpui_component::Icon::new(gpui_kit_assets::IconName::ChevronDown).size(px(13.))))
 }
 
-/// A popover surface: frosted liquid glass ground, control border, 8px radius, specular shadow.
+/// A popover surface: control border, tight shadow.
 pub fn popover(cx: &App) -> Div {
     div()
         .rounded(px(t::RADIUS_POPOVER))
         .border_1()
         .border_color(line(cx, t::LINE_CONTROL_STRONG))
-        .bg(crate::theme::glass_modal_bg(cx))
-        .shadow(crate::theme::soft_shadow(cx))
+        .bg(crate::theme::c(crate::theme::tk(cx).bg_input))
+        .shadow(crate::theme::modal_shadow(cx))
 }
 
 /// A tooltip builder for `.tooltip(…)`: the words, and the shortcut when there is one.
@@ -440,5 +440,102 @@ pub fn cordata_logo(size: f32, cx: &App) -> AnyElement {
         .size(px(side))
         .child(mark_layer(LOOP_OPEN, side, c(tk.text_primary)))
         .child(mark_layer(NODE, side, c(tk.amber)).left(px(side * GATE)))
+        .into_any_element()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DrawerSide {
+    Left,
+    Right,
+}
+
+/// A drawer surface (Logbook ⌘B from left, Tool sheet ⌘\ from right): tight low shadow,
+/// panel background, separating hairline, and 240 ms slide animation under motion.
+pub fn drawer(id: impl Into<ElementId>, side: DrawerSide, width: f32, cx: &App) -> Stateful<Div> {
+    let tk = tk(cx);
+    let is_left = matches!(side, DrawerSide::Left);
+    div()
+        .id(id)
+        .w(px(width))
+        .h_full()
+        .flex_shrink_0()
+        .flex()
+        .flex_col()
+        .bg(c(tk.bg_panel))
+        .when(is_left, |d| d.border_r_1().border_color(line(cx, t::LINE_SUBTLE)))
+        .when(!is_left, |d| d.border_l_1().border_color(line(cx, t::LINE_DEFAULT)))
+        .shadow(crate::theme::modal_shadow(cx))
+}
+
+/// A ticker displaying rolling numeric values (NumberFlow-style) with 220 ms tick animation.
+#[allow(dead_code)]
+pub fn ticker(id: impl Into<ElementId>, value: i64, prefix: Option<&str>, cx: &App) -> Stateful<Div> {
+    let tk = tk(cx);
+    let label = match prefix {
+        Some(p) => format!("{p}{value}"),
+        None => format!("{value}"),
+    };
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .font_family(mono(cx))
+        .text_size(px(t::TEXT_META))
+        .text_color(c(tk.text_faint))
+        .child(SharedString::from(label))
+}
+
+/// A notice toast for the bottom-right notice stack.
+#[allow(dead_code)]
+pub struct NoticeToast {
+    pub id: ElementId,
+    pub message: SharedString,
+    pub tone: Tone,
+}
+
+/// Stacked notice toasts (Sonner-style) pinned to bottom-right.
+#[allow(dead_code)]
+pub fn notices(stack: Vec<NoticeToast>, cx: &App) -> AnyElement {
+    if stack.is_empty() {
+        return div().into_any_element();
+    }
+    let tk = tk(cx);
+    let count = stack.len();
+    let toasts: Vec<AnyElement> = stack
+        .into_iter()
+        .enumerate()
+        .rev()
+        .map(|(ix, toast)| {
+            let offset = ((count - 1 - ix) as f32) * 6.;
+            let border_col = match toast.tone {
+                Tone::Amber => ca(tk.attention, 0.4),
+                Tone::Neutral => line(cx, t::LINE_CONTROL_STRONG),
+            };
+            div()
+                .id(toast.id)
+                .absolute()
+                .bottom(px(offset))
+                .right(px(0.))
+                .min_w(px(240.))
+                .max_w(px(360.))
+                .p(px(10.))
+                .rounded(px(t::RADIUS_CARD))
+                .bg(c(tk.bg_input))
+                .border_1()
+                .border_color(border_col)
+                .shadow(crate::theme::modal_shadow(cx))
+                .text_size(px(t::TEXT_SMALL))
+                .text_color(c(tk.text_primary))
+                .child(toast.message)
+                .into_any_element()
+        })
+        .collect();
+
+    div()
+        .id("notices-stack")
+        .absolute()
+        .bottom(px(24.))
+        .right(px(24.))
+        .children(toasts)
         .into_any_element()
 }

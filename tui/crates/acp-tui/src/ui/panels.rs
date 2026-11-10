@@ -7,7 +7,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, List, ListItem, ListState, Paragraph, StatefulWidget, Widget,
+    Block, List, ListItem, ListState, Paragraph, StatefulWidget, Widget,
 };
 
 use super::text::{truncate, wrap};
@@ -130,6 +130,21 @@ fn permission_panel(app: &App, width: u16) -> Option<Panel> {
             lines.push(Line::styled(format!("  … +{overflow} more lines"), label));
         }
     }
+    let analysis = acp_core::auto::gate_analysis(
+        &info.tool_name,
+        info.raw_input.as_ref(),
+        std::path::Path::new(cwd),
+        info.reason.as_deref(),
+    );
+    let col_w = (inner_width.saturating_sub(6) / 2).max(12);
+    let allowed_text = truncate(&format!("If allowed ↵: {}", analysis.if_allowed), col_w);
+    let denied_text = truncate(&format!("If denied (Esc): {}", analysis.if_denied), col_w);
+    lines.push(Line::from(vec![
+        Span::styled(allowed_text, Style::new().fg(Color::Gray)),
+        Span::styled("   │ ", Style::new().fg(Color::DarkGray)),
+        Span::styled(denied_text, Style::new().fg(Color::DarkGray)),
+    ]));
+
     let key = |text: &'static str, color: Color| {
         Span::styled(
             text,
@@ -185,7 +200,7 @@ fn permission_panel(app: &App, width: u16) -> Option<Panel> {
         label,
     ));
     Some(Panel {
-        title: " Permission required ".into(),
+        title: " ╵ ● ╷ Permission required ".into(),
         border: Color::Yellow,
         lines,
         selected: None,
@@ -204,8 +219,8 @@ pub fn height(panel: &Panel, max: u16) -> u16 {
 }
 
 pub fn render(buffer: &mut Buffer, area: Rect, panel: Panel) {
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
+    let block = Block::default()
+        .borders(ratatui::widgets::Borders::TOP | ratatui::widgets::Borders::BOTTOM)
         .title(panel.title)
         .border_style(Style::new().fg(panel.border).add_modifier(Modifier::BOLD));
     // The footer is carved out of the inner area before the scrolling body gets

@@ -27,7 +27,6 @@ use crossterm::event::{
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{execute, terminal};
 use futures::StreamExt;
-use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use tokio::sync::mpsc;
 
@@ -142,24 +141,24 @@ impl Workspace {
         }
     }
 
-    /// A divider written into scrollback when the shown session changes.
+    /// A rope header divider written into scrollback when the shown session changes.
     fn banner(&self) -> Line<'static> {
-        let slot = &self.slots[self.active];
-        let title = {
-            slot.app
-                .session
-                .as_ref()
-                .map(|s| s.session_id.chars().take(8).collect())
-                .unwrap_or_else(|| "connecting…".to_owned())
-        };
-        Line::styled(
-            format!(
-                "━━ session {} of {} · {title} ━━",
-                slot.number,
-                self.slots.len()
-            ),
-            Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-        )
+        let threads: Vec<(String, cordata_view::app::TabState, bool)> = self
+            .slots
+            .iter()
+            .enumerate()
+            .map(|(index, slot)| {
+                let name = slot
+                    .app
+                    .session
+                    .as_ref()
+                    .map(|s| s.session_id.chars().take(8).collect::<String>())
+                    .unwrap_or_else(|| format!("session-{}", slot.number));
+                (name, slot.app.tab_state(), index == self.active)
+            })
+            .collect();
+        let items = threads.iter().map(|(n, s, a)| (n.as_str(), *s, *a));
+        ui::rope_header(items, 80)
     }
 
     fn switch(&mut self, target: SwitchTarget) -> bool {

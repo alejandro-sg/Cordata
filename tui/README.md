@@ -28,13 +28,18 @@ shows where the Ollama key is found and whether Ollama accepts it, without print
 
 Output goes into the terminal's own scrollback: no alternate screen, so the wheel, selection and copy work and the
 conversation is still there after you quit. Only the bottom of the screen is
-live: the unfinished reply, running tool cards, the prompt box (or an approval box) and a one-line footer.
+live: the unfinished reply, running tool cards, the next-line composer (or an approval gate) and a one-line footer.
+Shared visual identity with the native app ("The Rope"):
 
+- **Cord in the gutter**: `│` with `●` nodes, `▪` for your anchors, and at a gate the line breaks `╵ ● ╷` in ochre.
+- **Rope header**: `── ● fix-tests ──── ○ docs ──── ◐ refactor ──` across active threads.
+- **Next line**: `›` caret, a `─` hairline above, and right-aligned footer metadata.
+- **The gate**: top and bottom rules only, with the two-column "If allowed / If denied" ledger.
 - **Tool calls** are bordered cards with a collapsed result (Ctrl+E expands). Edits and commands always ask first.
-- **Reasoning** shows as a live tail while the model thinks, then `· reasoned (N words)`. Ctrl+R expands it.
+- **Reasoning** shows as a live tail while the model thinks, then `│ · reasoned (N words)`. Ctrl+R expands it.
 - Agent text is stripped of terminal escape sequences before drawing.
 
-### The prompt box
+### The prompt box (Next line)
 
 | you type | what happens |
 |---|---|

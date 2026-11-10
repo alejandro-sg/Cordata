@@ -1,6 +1,6 @@
 //! Cordata's colours — one source for the terminal and the native app (docs/app.md §4b).
 //!
-//! A Blade Runner 2049 night: sodium-vapour amber against cold electric teal on near-black. Every colour is a *role*,
+//! The Rope: warm graphite grounds, viridian signal, ochre attention, and lavender agents. Every colour is a *role*,
 //! so a widget asks for "the accent" or "untrusted content", never for a hex value, and both front ends change
 //! together. The terminal maps its semantic ANSI names onto these roles (`tui/.../theme.rs`); the app reads them as
 //! GPUI colours (`Rgb::to_u32`). No dependencies: this crate is data and arithmetic.
