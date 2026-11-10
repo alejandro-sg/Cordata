@@ -76,7 +76,7 @@ pub struct Camera {
 
 impl Default for Camera {
     fn default() -> Self {
-        Self { zoom: 1.0, x: PAD, y: PAD }
+        Self { zoom: 0.85, x: PAD, y: PAD }
     }
 }
 

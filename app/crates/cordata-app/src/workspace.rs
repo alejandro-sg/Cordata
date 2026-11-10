@@ -195,6 +195,7 @@ pub struct Workspace {
     pub(super) field_runs_busy: bool,
     pub(super) field_polling: bool,
     /// Show the idle threads on the field too (they are only counted by default).
+    #[allow(dead_code)]
     pub(super) field_idle_open: bool,
     /// The menu bar item, while the pref is on (`menubar.rs`).
     pub(super) tray: Option<crate::tray::Native>,
