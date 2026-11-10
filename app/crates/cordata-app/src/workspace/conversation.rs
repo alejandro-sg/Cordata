@@ -433,15 +433,15 @@ impl Workspace {
                         .items_center()
                         .pr(px(20.))
                         // The knot node on the continuous cord
+                        // Centred on the row, whatever its height: the knot sits level with its number.
                         .child(
-                            div()
-                                .absolute()
-                                .top(px(17.))
-                                .right(px(8.5))
-                                .size(px(5.))
-                                .rounded_full()
-                                .bg(ca(tk.text_muted, 0.7))
-                                .group_hover(id, move |s| s.bg(c(tk.amber))),
+                            div().absolute().top_0().bottom_0().right(px(8.)).flex().items_center().child(
+                                div()
+                                    .size(px(5.))
+                                    .rounded_full()
+                                    .bg(c(tk.text_muted))
+                                    .group_hover(id, move |s| s.bg(c(tk.amber))),
+                            ),
                         )
                         // The number in mono
                         .child(
@@ -514,7 +514,8 @@ impl Workspace {
         let open_sheet = starter(
             "starter-sheet",
             "05",
-            SharedString::from(format!("Review what changed ({} uncommitted file{})  ⌘D", dirty_count, if dirty_count == 1 { "" } else { "s" })),
+            // 02 asks the agent to review; this one opens the changes for you to read.
+            SharedString::from("Read the changes yourself  ⌘D"),
         )
         .on_click(cx.listener(|this, _, _, cx| this.toggle_change_sheet(cx)));
 
@@ -657,7 +658,8 @@ impl Workspace {
                     .child(review)
                     .child(fix)
                     .child(open_canvas)
-                    .child(open_sheet)
+                    // Offered only when there is something to review: a starter must lead somewhere.
+                    .when(dirty_count > 0, |d| d.child(open_sheet))
                     .children(notices)
                     .children(startup_notes)
                     // The Next-Line Composer, seamlessly continuing the cord
@@ -1079,8 +1081,9 @@ impl Workspace {
                         .child(
                             div().flex().items_center().gap(px(6.))
                                 .child(ui::mark_live("hud-mark", if busy { MarkState::Working } else { MarkState::Idle }, 9., self.session.read(cx).version, cx))
-                                .child(div().px(px(5.)).py(px(1.)).rounded(px(3.)).bg(ca(tk.amber, 0.15))
+                                .child(div().id("hud-target").px(px(5.)).py(px(1.)).rounded(px(3.)).bg(ca(tk.amber, 0.15))
                                     .font_family(mono(cx)).text_size(px(t::TEXT_MIN)).font_weight(FontWeight::BOLD).text_color(c(tk.amber))
+                                    .tooltip(ui::tip(format!("{send_key} sends this to thread #{sel_slot} · ⌘N starts a new thread")))
                                     .child(SharedString::from(format!("→ #{sel_slot}"))))
                         )
                         .child(
@@ -1088,8 +1091,7 @@ impl Workspace {
                                 .child(Textarea::new(&self.composer).appearance(false).aria_label("Directive"))
                         )
                         .child(
-                            div().flex().items_center().gap(px(6.))
-                                .child(div().font_family(mono(cx)).text_size(px(t::TEXT_MIN)).text_color(c(tk.text_faint)).child(SharedString::from(format!("{send_key} steers #{sel_slot} · ⌘N new thread"))))
+                            div().flex_shrink_0().flex().items_center().gap(px(6.))
                                 .when(busy, |row| {
                                     row.child(ui::button("hud-stop", "Stop", Kind::Ghost, cx).on_click(cx.listener(|this, _, _, cx| this.session.update(cx, |s, cx| s.cancel(cx)))))
                                 })
@@ -1272,12 +1274,17 @@ impl Workspace {
                                 .bg(line(cx, t::LINE_DEFAULT)),
                         )
                     })
-                    // The prompt mark › hanging on the cord
+                    // The prompt mark › hanging on the cord: centred on it, on a patch of ground so the cord ends at
+                    // the mark and does not run through it.
                     .child(
                         div()
                             .absolute()
                             .top(px(8.))
-                            .right(px(4.))
+                            .right(px(if is_rack { 4. } else { 2.25 }))
+                            .w(px(16.))
+                            .text_center()
+                            // The patch runs to the composer's foot: the cord stops at the mark, with no stub under it.
+                            .when(!is_rack, |d| d.bottom_0().bg(c(tk.bg_main)))
                             .font_family(mono(cx))
                             .text_size(px(20.))
                             .font_weight(FontWeight::BOLD)

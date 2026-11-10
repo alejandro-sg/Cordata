@@ -34,9 +34,12 @@ pub const MAX_CHIPS: usize = 3;
 pub const STEP_H: f32 = 88.;
 /// One handoff line under a step, and the room above the next step.
 pub const HANDOFF_H: f32 = 26.;
-const STEP_GAP: f32 = 28.;
-/// Room under a run's name for its state line and buttons.
-pub const RUN_HEAD: f32 = 124.;
+pub const STEP_GAP: f32 = 36.;
+/// Sideways room between two steps that run in the same wave.
+pub const COL_GAP: f32 = 28.;
+/// Room at the top of a run for its state line and goal, and the extra a run still going needs for its buttons.
+pub const RUN_HEAD: f32 = 104.;
+pub const RUN_BUTTONS: f32 = 36.;
 
 pub const ZOOM_MIN: f32 = 0.35;
 pub const ZOOM_MAX: f32 = 2.2;
@@ -97,6 +100,12 @@ impl Camera {
 
     pub fn to_screen(&self, wx: f32, wy: f32) -> (f32, f32) {
         (wx * self.zoom + self.x, wy * self.zoom + self.y)
+    }
+
+    /// The camera that shows a `w` × `h` world whole in a `vw` × `vh` view, never larger than life.
+    pub fn fit(w: f32, h: f32, vw: f32, vh: f32) -> Camera {
+        let room = |view: f32, world: f32| if world > 0.0 { ((view - 2.0 * PAD).max(1.0)) / world } else { 1.0 };
+        Camera { zoom: room(vw, w).min(room(vh, h)).clamp(ZOOM_MIN, 1.0), x: PAD, y: PAD }
     }
 }
 
@@ -173,6 +182,38 @@ pub struct StepNode {
     pub handoffs: Vec<usize>,
 }
 
+/// The cord from one step to a step that waits on it: down from `(x0, y0)`, across at `mid`, down to `(x1, y1)`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Edge {
+    pub run: usize,
+    pub from: usize,
+    pub to: usize,
+    pub x0: f32,
+    pub y0: f32,
+    pub mid: f32,
+    pub x1: f32,
+    pub y1: f32,
+}
+
+/// The row each step stands on. With `depends_on` a step sits one row under the deepest step it waits on, so a row
+/// is steps that can run side by side; without any, the plan runs top to bottom and each step has its own row.
+pub fn rows(run: &Run) -> Vec<usize> {
+    let n = run.steps.len();
+    if run.steps.iter().all(|s| s.deps.is_empty()) {
+        return (0..n).collect();
+    }
+    let at = |id: &str| run.steps.iter().position(|s| s.id == id);
+    let mut row = vec![0usize; n];
+    // n passes settle any acyclic plan; a cycle (refused by the planner) stops at n instead of looping.
+    for _ in 0..n {
+        for i in 0..n {
+            let under = run.steps[i].deps.iter().filter_map(|d| at(d)).filter(|&d| d != i).map(|d| row[d] + 1).max().unwrap_or(0);
+            row[i] = under.min(n.saturating_sub(1));
+        }
+    }
+    row
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Note {
     pub id: String,
@@ -201,6 +242,7 @@ pub struct Field {
     pub links: Vec<Link>,
     pub runs: Vec<RunTerritory>,
     pub steps: Vec<StepNode>,
+    pub edges: Vec<Edge>,
     pub notes: Vec<Note>,
     pub w: f32,
     pub h: f32,
@@ -212,19 +254,41 @@ impl Field {
         self.notes = notes;
         self
     }
-    /// Stand the runs to the right of the threads. Steps keep plan order, so a step does not move when its worker does.
+    /// Stand the runs to the right of the threads. A step's place comes from the plan alone ([`rows`]), so it does
+    /// not move when its worker or its status does.
     pub fn with_runs(mut self, runs: &[Run]) -> Field {
         let mut x = if self.w > 0.0 { self.w + GAP } else { 0.0 };
         for (ri, run) in runs.iter().enumerate() {
-            let w = GUTTER + NODE_W + PAD * 2.0;
-            let mut y = HEAD + RUN_HEAD;
-            for (si, step) in run.steps.iter().enumerate() {
-                let handoffs: Vec<usize> = run.handoffs.iter().enumerate().filter(|(_, h)| h.step_id == step.id).map(|(i, _)| i).collect();
-                let row = STEP_H + handoffs.len() as f32 * HANDOFF_H + STEP_GAP;
-                self.steps.push(StepNode { run: ri, step: si, x: x + GUTTER + PAD, y, handoffs });
-                y += row;
+            let row = rows(run);
+            let depth = row.iter().max().map_or(0, |d| d + 1);
+            let handoffs: Vec<Vec<usize>> = run.steps.iter().map(|step| run.handoffs.iter().enumerate().filter(|(_, h)| h.step_id == step.id).map(|(i, _)| i).collect()).collect();
+            // Each row is as tall as its busiest step, so handoffs under one step never cover the row below.
+            let mut tops = Vec::with_capacity(depth);
+            let mut y = RUN_HEAD + if run.finished() { 0.0 } else { RUN_BUTTONS };
+            for d in 0..depth {
+                tops.push(y);
+                let most = (0..run.steps.len()).filter(|&i| row[i] == d).map(|i| handoffs[i].len()).max().unwrap_or(0);
+                y += STEP_H + most as f32 * HANDOFF_H + STEP_GAP;
             }
-            let h = y.max(HEAD + RUN_HEAD + STEP_H);
+            let mut filled = vec![0usize; depth];
+            let first = self.steps.len();
+            for (si, hs) in handoffs.into_iter().enumerate() {
+                let col = filled[row[si]];
+                filled[row[si]] += 1;
+                self.steps.push(StepNode { run: ri, step: si, x: x + GUTTER + PAD + col as f32 * (NODE_W + COL_GAP), y: tops[row[si]], handoffs: hs });
+            }
+            let chain = run.steps.iter().all(|s| s.deps.is_empty());
+            for (si, step) in run.steps.iter().enumerate() {
+                let before: Vec<usize> = if chain { si.checked_sub(1).into_iter().collect() } else { step.deps.iter().filter_map(|d| run.steps.iter().position(|s| &s.id == d)).filter(|&d| d != si).collect() };
+                for from in before {
+                    let (a, b) = (&self.steps[first + from], &self.steps[first + si]);
+                    let edge = Edge { run: ri, from, to: si, x0: a.x + NODE_W / 2.0, y0: a.y + STEP_H + a.handoffs.len() as f32 * HANDOFF_H, mid: b.y - STEP_GAP / 2.0, x1: b.x + NODE_W / 2.0, y1: b.y };
+                    self.edges.push(edge);
+                }
+            }
+            let cols = filled.iter().copied().max().unwrap_or(1).max(1) as f32;
+            let w = GUTTER + PAD * 2.0 + cols * NODE_W + (cols - 1.0) * COL_GAP;
+            let h = y.max(RUN_HEAD + STEP_H);
             self.runs.push(RunTerritory { run: ri, x, y: 0.0, w, h });
             self.h = self.h.max(h);
             x += w + GAP;
@@ -429,7 +493,7 @@ mod tests {
             goal: "g".into(),
             state: "execute".into(),
             reason: String::new(),
-            steps: steps.iter().map(|(id, status)| Step { id: (*id).into(), name: (*id).into(), status: (*status).into(), worker: None, attempts: 0, scope: Vec::new() }).collect(),
+            steps: steps.iter().map(|(id, status)| Step { id: (*id).into(), name: (*id).into(), status: (*status).into(), worker: None, attempts: 0, scope: Vec::new(), deps: Vec::new() }).collect(),
             handoffs: handoffs.iter().map(|(id, step)| Handoff { id: (*id).into(), step_id: (*step).into(), reason: "worker_failed".into(), from: "a".into(), to: None, step_status: "failed".into() }).collect(),
             history: Vec::new(),
         }
@@ -449,6 +513,50 @@ mod tests {
         assert_eq!(f.steps[1].handoffs, vec![0, 1]);
         assert!(f.steps[0].handoffs.is_empty());
         assert!(f.runs[0].h >= y(2) + STEP_H && f.w >= f.runs[0].x + f.runs[0].w);
+    }
+
+    #[test]
+    fn a_plan_without_dependencies_is_one_chain_top_to_bottom() {
+        let f = layout(&[], &[]).with_runs(&[run(&[("s1", "completed"), ("s2", "running"), ("s3", "pending")], &[("h1", "s1")])]);
+        assert_eq!(f.edges.iter().map(|e| (e.from, e.to)).collect::<Vec<_>>(), [(0, 1), (1, 2)]);
+        let e = &f.edges[0];
+        assert_eq!(e.x0, e.x1, "a chain drops straight down");
+        assert_eq!(e.y0, f.steps[0].y + STEP_H + HANDOFF_H, "the cord leaves under the step's handoffs");
+        assert!(e.y0 < e.mid && e.mid < e.y1 && e.y1 == f.steps[1].y);
+    }
+
+    #[test]
+    fn steps_that_wait_on_the_same_step_stand_side_by_side_under_it() {
+        let mut plan = run(&[("a", "completed"), ("b", "running"), ("c", "running"), ("d", "pending")], &[]);
+        plan.steps[1].deps = vec!["a".into()];
+        plan.steps[2].deps = vec!["a".into()];
+        plan.steps[3].deps = vec!["b".into(), "c".into(), "gone".into()];
+        assert_eq!(rows(&plan), [0, 1, 1, 2]);
+        let f = layout(&[], &[]).with_runs(&[plan]);
+        let at = |i: usize| (f.steps[i].x, f.steps[i].y);
+        assert_eq!(at(1).1, at(2).1, "one wave, one row");
+        assert_eq!(at(2).0 - at(1).0, NODE_W + COL_GAP);
+        assert!(at(3).1 > at(1).1 && at(1).1 > at(0).1);
+        assert_eq!(f.edges.iter().map(|e| (e.from, e.to)).collect::<Vec<_>>(), [(0, 1), (0, 2), (1, 3), (2, 3)], "an unknown id draws nothing");
+        assert_eq!(f.runs[0].w, GUTTER + PAD * 2.0 + 2.0 * NODE_W + COL_GAP, "wide enough for its widest wave");
+    }
+
+    #[test]
+    fn a_dependency_cycle_still_lays_out() {
+        let mut plan = run(&[("a", "pending"), ("b", "pending")], &[]);
+        plan.steps[0].deps = vec!["b".into()];
+        plan.steps[1].deps = vec!["a".into()];
+        assert!(rows(&plan).iter().all(|r| *r < 2));
+        assert_eq!(layout(&[], &[]).with_runs(&[plan]).steps.len(), 2);
+    }
+
+    #[test]
+    fn fitting_shows_the_whole_field_and_never_magnifies() {
+        let cam = Camera::fit(2000.0, 500.0, 1048.0, 800.0);
+        assert!((cam.zoom - 0.5).abs() < 1e-4);
+        assert_eq!(Camera::fit(100.0, 100.0, 1000.0, 1000.0).zoom, 1.0);
+        assert_eq!(Camera::fit(0.0, 0.0, 1000.0, 1000.0).zoom, 1.0);
+        assert_eq!(Camera::fit(1e6, 10.0, 500.0, 500.0).zoom, ZOOM_MIN);
     }
 
     #[test]

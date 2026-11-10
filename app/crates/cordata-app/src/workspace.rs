@@ -193,6 +193,8 @@ pub struct Workspace {
     pub(super) field_runs: Vec<cordata_view::runs::Run>,
     pub(super) field_runs_note: Option<String>,
     pub(super) field_runs_busy: bool,
+    /// What the run polls have seen change: the only events an orchestrated run gives the window.
+    pub(super) field_pulse: cordata_view::runs::Pulse,
     pub(super) field_polling: bool,
     /// Show the idle threads on the field too (they are only counted by default).
     #[allow(dead_code)]
@@ -549,6 +551,7 @@ impl Workspace {
             field_runs: Vec::new(),
             field_runs_note: None,
             field_runs_busy: false,
+            field_pulse: Default::default(),
             field_polling: false,
             field_idle_open: false,
             tray: None,
@@ -2372,7 +2375,7 @@ impl Render for Workspace {
 
         let header = (!field_window).then_some(header);
         let desk: AnyElement = if field_window {
-            self.field_window(self.composer(cx), self.slash_menu(cx), cx)
+            self.field_window(self.composer(cx), self.slash_menu(cx), window_w, cx)
         } else {
             div()
                 .flex()
@@ -3401,6 +3404,29 @@ mod window_tests {
         view.update(cx, |this, cx| this.field_reset(cx));
         cx.run_until_parked();
         assert_eq!(view.read_with(cx, |this, _| this.field_cam), cordata_view::field::Camera::default());
+
+        // An orchestrated run with a fan-out plan: it draws with its cords, a second read that differs counts as
+        // an event for the step that changed, and fitting never magnifies.
+        let plan = |b: &str| {
+            use cordata_view::runs::{Run, Step};
+            let step = |id: &str, status: &str, deps: &[&str]| Step { id: id.into(), name: id.into(), status: status.into(), worker: Some("w".into()), attempts: 1, scope: Vec::new(), deps: deps.iter().map(|d| (*d).to_owned()).collect() };
+            vec![Run { run_id: "run-t".into(), goal: "g".into(), state: "execute".into(), reason: String::new(), steps: vec![step("a", "completed", &[]), step("b", b, &["a"]), step("c", "pending", &["a"]), step("d", "pending", &["b", "c"])], handoffs: Vec::new(), history: Vec::new() }]
+        };
+        for status in ["pending", "running"] {
+            view.update(cx, |this, cx| {
+                this.field_runs = plan(status);
+                this.field_pulse.observe(&this.field_runs, std::time::Instant::now());
+                cx.notify();
+            });
+            cx.run_until_parked();
+        }
+        view.read_with(cx, |this, _| {
+            assert_eq!(this.field_pulse.count("run-t", "b"), 1, "b was seen to start");
+            assert_eq!(this.field_pulse.count("run-t", "c"), 0, "c did not change");
+        });
+        view.update(cx, |this, cx| this.field_fit(cx));
+        cx.run_until_parked();
+        assert!(view.read_with(cx, |this, _| this.field_cam.zoom) <= 1.0);
     }
 
     #[gpui::test]

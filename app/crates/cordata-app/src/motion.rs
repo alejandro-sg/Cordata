@@ -1,6 +1,6 @@
 //! Motion. Nothing in the window moves on a timer: every movement is started by something that happened, so a thread
 //! that has gone quiet looks quiet (`app/assets/brand/README.md`, "Motion"). There are four movements, each with one
-//! meaning, and no loop:
+//! meaning, and no loop (a fifth, `flow`, is the same idea for orchestrated runs: see `FLOW`):
 //!
 //! | movement | started by | says |
 //! |---|---|---|
@@ -31,6 +31,9 @@ pub const SETTLE: Duration = Duration::from_millis(200);
 /// How far a new block rises, in px.
 pub const SETTLE_RISE: f32 = 6.;
 
+/// The cord drawing from a finished step to the step a poll just saw start.
+pub const FLOW: Duration = Duration::from_millis(480);
+
 /// Whether the window may move: off when macOS Reduce Motion is on. Every movement asks this first.
 pub fn on(cx: &App) -> bool {
     !cx.try_global::<crate::platform::Display>().is_some_and(|d| d.reduce_motion)
@@ -54,6 +57,21 @@ pub fn beat<E: Styled + IntoElement + 'static>(el: E, id: impl Into<ElementId>, 
 /// when `seq` changes.
 pub fn tug<E: Styled + IntoElement + 'static>(el: E, id: impl Into<ElementId>, seq: u64) -> AnyElement {
     el.with_animation(keyed(id, seq), Animation::new(TUG).with_easing(gpui::ease_in_out), |el, t| el.left(gpui::relative(-TUG_LEN + (1. + TUG_LEN) * t))).into_any_element()
+}
+
+/// One run of `shape` from 0 to 1, started when `seq` changes and held at its last frame after. For the cord
+/// between two orchestrated steps, which is drawn in three straight pieces that fill one after the other.
+pub fn flow<E: IntoElement + 'static>(el: E, id: impl Into<ElementId>, seq: u64, shape: impl Fn(E, f32) -> E + 'static) -> AnyElement {
+    el.with_animation(keyed(id, seq), Animation::new(FLOW).with_easing(gpui::ease_in_out), shape).into_any_element()
+}
+
+/// How much of a piece is drawn when `t` of the whole path is: the piece starts `before` along a path `total` long
+/// and is `len` long itself. Pieces fill in order, each only once the one before is whole.
+pub fn piece(t: f32, before: f32, len: f32, total: f32) -> f32 {
+    if len <= 0.0 || total <= 0.0 {
+        return 0.0;
+    }
+    ((t * total - before) / len).clamp(0.0, 1.0)
 }
 
 /// Turns a stream of events into tugs: a new one starts only when the last has run its length, so a burst of events
@@ -95,6 +113,19 @@ mod tests {
         assert_eq!(tugs.at(2, t0 + TUG / 4), first);
         assert_eq!(tugs.at(3, t0 + TUG / 2), first);
         assert_eq!(tugs.at(4, t0 + TUG), first + 1, "an event after the pass ended starts the next");
+    }
+
+    #[test]
+    fn the_pieces_of_a_cord_fill_in_order_and_end_whole() {
+        let (a, b, c) = (10.0, 30.0, 10.0);
+        let total = a + b + c;
+        assert_eq!((piece(0.0, 0.0, a, total), piece(0.0, a, b, total), piece(0.0, a + b, c, total)), (0.0, 0.0, 0.0));
+        assert_eq!(piece(0.2, 0.0, a, total), 1.0, "the first piece is whole");
+        assert_eq!(piece(0.2, a, b, total), 0.0, "before the second starts");
+        assert!((piece(0.5, a, b, total) - 0.5).abs() < 1e-5);
+        assert_eq!(piece(0.5, a + b, c, total), 0.0);
+        assert_eq!((piece(1.0, 0.0, a, total), piece(1.0, a, b, total), piece(1.0, a + b, c, total)), (1.0, 1.0, 1.0));
+        assert_eq!(piece(0.5, 0.0, 0.0, total), 0.0, "a piece with no length draws nothing");
     }
 
     #[test]

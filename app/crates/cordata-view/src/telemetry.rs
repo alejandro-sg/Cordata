@@ -160,9 +160,14 @@ pub fn secs(value: f64) -> String {
 pub fn tokens(value: u64) -> String {
     match value {
         0..1_000 => value.to_string(),
-        1_000..1_000_000 => format!("{:.1}k", value as f64 / 1e3),
-        _ => format!("{:.2}M", value as f64 / 1e6),
+        1_000..1_000_000 => trim_zeros(format!("{:.1}", value as f64 / 1e3)) + "k",
+        _ => trim_zeros(format!("{:.2}", value as f64 / 1e6)) + "M",
     }
+}
+
+/// `200.0` reads as `200`, `1.50` as `1.5`: a trailing zero says nothing.
+fn trim_zeros(number: String) -> String {
+    number.trim_end_matches('0').trim_end_matches('.').to_owned()
 }
 
 /// Composition of the conversation's visible context across four semantic buckets, plus offloaded tool outputs.
@@ -267,7 +272,8 @@ mod tests {
     #[test]
     fn numbers_read_short() {
         assert_eq!((secs(1.24), secs(48.2), secs(185.0)), ("1.2s".into(), "48s".into(), "3m 05s".into()));
-        assert_eq!((tokens(950), tokens(12_400), tokens(1_200_000)), ("950".into(), "12.4k".into(), "1.20M".into()));
+        assert_eq!((tokens(950), tokens(12_400), tokens(1_200_000)), ("950".into(), "12.4k".into(), "1.2M".into()));
+        assert_eq!((tokens(200_000), tokens(1_050_000), tokens(2_000_000)), ("200k".into(), "1.05M".into(), "2M".into()));
     }
 
     #[test]
