@@ -200,6 +200,19 @@ pub struct EvolutionConfig {
     /// (never the project). `CORDATA_EVOLVE_TARGET` and `CORDATA_EVOLVE_BASELINE` are set. Without one, a cycle has
     /// nothing to judge and is refused.
     pub mutate_cmd: Option<String>,
+    /// Ask a model to propose the change by running the orchestrator on the sandbox. Used when `mutate_cmd` is unset.
+    pub propose: Option<ModelProposal>,
+}
+
+/// A model-driven mutator: `exe run <goal> --cwd <sandbox>`. The orchestrator confines its own workers to the sandbox,
+/// so this is not wrapped in a second Seatbelt (sandbox-exec cannot nest).
+#[derive(Debug, Clone)]
+pub struct ModelProposal {
+    /// The `cordata-run` binary.
+    pub exe: PathBuf,
+    /// Extra direction appended to the generated goal.
+    pub direction: Option<String>,
+    pub max_usd: f64,
 }
 
 impl Default for EvolutionConfig {
@@ -210,6 +223,7 @@ impl Default for EvolutionConfig {
             dry_run: false,
             project_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             mutate_cmd: None,
+            propose: None,
         }
     }
 }
@@ -547,6 +561,37 @@ pub fn propose_changes(sandbox: &Path, root: &Path, cmd: &str, target: &Evolutio
     Ok(changed_between(sandbox, root))
 }
 
+/// The goal handed to the model: improve the target's measured fitness without touching what judges it.
+pub fn proposal_goal(target: &EvolutionTarget, baseline: &FitnessScore, direction: Option<&str>) -> String {
+    let krate = match target {
+        EvolutionTarget::Repomap => "cordata-repomap",
+        EvolutionTarget::Economizer => "cordata-economizer",
+        EvolutionTarget::Guard => "cordata-guard",
+        EvolutionTarget::Custom(c) => c.as_str(),
+    };
+    format!(
+        "Improve the measured fitness of the `{krate}` crate under tui/crates/{krate}/src (current: {}). Make one small, safe change to non-test source files in that crate only. Do not edit tests, benchmarks, scripts/, AGENTS.md or Cargo.lock, and add no dependencies. Definition of done: cargo test --offline -p {krate} exits 0.{}",
+        baseline.details,
+        direction.map(|d| format!(" Direction: {d}")).unwrap_or_default()
+    )
+}
+
+/// Runs the orchestrator on `sandbox` to propose a change, then returns the files that differ from `root`.
+pub fn propose_with_model(sandbox: &Path, root: &Path, p: &ModelProposal, target: &EvolutionTarget, baseline: &FitnessScore) -> Result<Vec<PathBuf>, String> {
+    let goal = proposal_goal(target, baseline, p.direction.as_deref());
+    let out = Command::new(&p.exe)
+        .args(["run", &goal, "--allow-direct", "--no-research", "--max-rounds", "1", "--max-usd", &p.max_usd.to_string(), "--cwd"])
+        .arg(sandbox)
+        .current_dir(sandbox)
+        .output()
+        .map_err(|e| format!("failed to start the orchestrator ({}): {e}", p.exe.display()))?;
+    if !out.status.success() {
+        let tail: String = String::from_utf8_lossy(&out.stderr).chars().rev().take(300).collect::<Vec<_>>().into_iter().rev().collect();
+        eprintln!("proposal run exited {}: {tail}", out.status);
+    }
+    Ok(changed_between(sandbox, root))
+}
+
 /// Whether `root`'s git working tree has uncommitted changes (or is not a git checkout at all).
 fn tree_is_dirty(root: &Path) -> bool {
     Command::new("git")
@@ -576,19 +621,21 @@ pub fn run_evolution_cycle(config: EvolutionConfig) -> Result<EvolutionReport, S
     let sandbox = synthesizer::create(&root, None, &label, &[], synthesizer::MAX_FILES)
         .map_err(|e| format!("failed to provision APFS CoW sandbox: {e}"))?;
 
-    let candidates = match &config.mutate_cmd {
-        Some(cmd) => match propose_changes(&sandbox.root, &root, cmd, &config.target, &baseline) {
-            Ok(c) => c,
-            Err(e) => {
-                sandbox.discard();
-                return Err(e);
-            }
-        },
-        None => changed_between(&sandbox.root, &root),
+    let proposed = match (&config.mutate_cmd, &config.propose) {
+        (Some(cmd), _) => propose_changes(&sandbox.root, &root, cmd, &config.target, &baseline),
+        (None, Some(p)) => propose_with_model(&sandbox.root, &root, p, &config.target, &baseline),
+        (None, None) => Ok(changed_between(&sandbox.root, &root)),
+    };
+    let candidates = match proposed {
+        Ok(c) => c,
+        Err(e) => {
+            sandbox.discard();
+            return Err(e);
+        }
     };
     if candidates.is_empty() {
         sandbox.discard();
-        return Err("nothing to evaluate: the mutator proposed no change (pass --mutate \"<command>\" to propose one)".into());
+        return Err("nothing to evaluate: the mutator proposed no change (pass --mutate \"<command>\" or --propose)".into());
     }
 
     let (promoted_all_gates, candidate_opt, gates) = evaluate_candidate(&sandbox.root, &config.target, &baseline, &guard, config.threshold);
@@ -719,5 +766,29 @@ mod tests {
         std::fs::write(a.path().join("src/new.rs"), "new").unwrap();
         std::fs::write(a.path().join("target/out"), "build output").unwrap();
         assert_eq!(changed_between(a.path(), b.path()), vec![PathBuf::from("src/new.rs")]);
+    }
+}
+
+#[cfg(test)]
+mod proposal_tests {
+    use super::*;
+
+    #[test]
+    fn the_goal_protects_the_evaluator_and_names_the_crate() {
+        let base = FitnessScore { primary: 100.0, latency_ms: 0.0, details: "guard bench throughput: 100.0 MB/s".into() };
+        let g = proposal_goal(&EvolutionTarget::Guard, &base, Some("avoid allocation"));
+        for needle in ["cordata-guard", "100.0 MB/s", "Do not edit tests", "AGENTS.md", "avoid allocation", "cargo test --offline -p cordata-guard"] {
+            assert!(g.contains(needle), "{needle}: {g}");
+        }
+    }
+
+    #[test]
+    fn a_proposal_that_changes_nothing_is_empty_and_a_missing_exe_is_an_error() {
+        let (root, sb) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let base = FitnessScore { primary: 1.0, latency_ms: 0.0, details: String::new() };
+        let p = ModelProposal { exe: PathBuf::from("/usr/bin/true"), direction: None, max_usd: 1.0 };
+        assert!(propose_with_model(sb.path(), root.path(), &p, &EvolutionTarget::Guard, &base).unwrap().is_empty());
+        let bad = ModelProposal { exe: PathBuf::from("/nonexistent/cordata-run"), ..p };
+        assert!(propose_with_model(sb.path(), root.path(), &bad, &EvolutionTarget::Guard, &base).is_err());
     }
 }

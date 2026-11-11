@@ -123,10 +123,24 @@ fn fnmatch(name: &str, pattern: &str) -> bool {
     Regex::new(&re).is_ok_and(|r| r.is_match(name))
 }
 
+/// A step that writes Rust source runs `cargo`, which rewrites the root `Cargo.lock` as a side effect. Treating that as
+/// an out-of-scope write failed every worker on the step (a `worker_failed` handoff with no one left to hand to). The
+/// lockfile is in scope when the scope holds a `.rs` file, a `Cargo.toml` or a directory (which may hold either).
+fn lockfile_follows_scope<S: AsRef<str>>(rel: &str, scope: &[S]) -> bool {
+    rel == "Cargo.lock"
+        && scope.iter().any(|raw| {
+            let e = normalize(raw.as_ref());
+            e.ends_with(".rs") || e.ends_with("Cargo.toml") || e.ends_with('/')
+        })
+}
+
 /// Is project-relative `path` inside `scope`?
 pub fn matches<S: AsRef<str>>(path: &str, scope: &[S], root: &str) -> bool {
     let normalized = normalize(path);
     let rel = normalized.trim_end_matches('/');
+    if lockfile_follows_scope(rel, scope) {
+        return true;
+    }
     for raw in scope {
         let entry = normalize(raw.as_ref());
         if entry.is_empty() {
@@ -209,6 +223,10 @@ pub fn seatbelt_rules<S: AsRef<str>>(root: &str, scope: &[S]) -> Vec<String> {
         }
     }
     allows.extend(ancestors.iter().map(|a| format!("(literal {})", sb_string(a))));
+    if lockfile_follows_scope("Cargo.lock", scope) {
+        allows.push(format!("(literal {})", sb_string(&format!("{real}/Cargo.lock"))));
+        allows.push(format!("(regex #\"^{}\\.[^/]*$\")", ere(&format!("{real}/Cargo.lock"))));
+    }
     if !allows.is_empty() {
         lines.push(format!("(allow file-write* {})", allows.join(" ")));
     }
@@ -367,6 +385,9 @@ mod tests {
         assert!(matches("a1.py", &["a[0-9].py"], root));
         assert!(!matches("ab.py", &["a[!a-z].py"], root));
         assert_eq!(out_of_scope(&["b.py", "a.py", "src/z"], &["src/"], root), ["a.py", "b.py"]);
+        // cargo rewrites the lockfile for a Rust step; a Python step has no business with it.
+        assert!(out_of_scope(&["Cargo.lock"], &["crates/x/src/lib.rs"], root).is_empty());
+        assert_eq!(out_of_scope(&["Cargo.lock"], &["calc/add.py"], root), ["Cargo.lock"]);
     }
 
     #[test]

@@ -122,6 +122,12 @@ enum Command {
         /// shell command that proposes a change by editing files in its cwd (the CoW sandbox, never the project)
         #[arg(long)]
         mutate: Option<String>,
+        /// let a model propose the change (runs the orchestrator on the sandbox); optional direction text
+        #[arg(long, num_args = 0..=1, default_missing_value = "")]
+        propose: Option<String>,
+        /// dollar cap for the model proposal
+        #[arg(long, default_value_t = 1.0)]
+        propose_usd: f64,
         #[arg(long)]
         cwd: Option<PathBuf>,
         #[arg(long)]
@@ -173,7 +179,7 @@ async fn main() -> ExitCode {
         Command::Show { run_id, json, step, attempt, follow, timeline } => cli::show_cmd(&run_id, json, step.as_deref(), attempt, follow, timeline),
         Command::Export { run_id, otlp } => cli::export_cmd(&run_id, otlp),
         Command::Resume { run_id, workers, allow_direct, max_usd, allow_weaker_guards, direction, json } => cli::resume(&run_id, workers, allow_direct, max_usd, allow_weaker_guards, direction, json).await,
-        Command::Evolve { target, threshold, dry_run, mutate, cwd, json } => cli::evolve_cmd(&target, threshold, dry_run, json, cwd, mutate),
+        Command::Evolve { target, threshold, dry_run, mutate, propose, propose_usd, cwd, json } => cli::evolve_cmd(&target, threshold, dry_run, json, cwd, mutate, propose, propose_usd),
     };
     ExitCode::from(u8::try_from(code).unwrap_or(1))
 }

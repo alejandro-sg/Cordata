@@ -67,9 +67,10 @@ fn ping(url: &str) -> bool {
     let Some(rest) = url.strip_prefix("http://") else { return false };
     let (authority, path) = rest.split_once('/').map_or((rest, "/".to_owned()), |(a, p)| (a, format!("/{p}")));
     let host_port = if authority.contains(':') { authority.to_owned() } else { format!("{authority}:80") };
-    let Some(addr) = host_port.to_socket_addrs().ok().and_then(|mut a| a.next()) else { return false };
+    // `localhost` resolves to ::1 first on macOS while Ollama listens on 127.0.0.1: try every address, not the first.
+    let Ok(addrs) = host_port.to_socket_addrs() else { return false };
     let timeout = Duration::from_millis(1500);
-    let Ok(mut stream) = TcpStream::connect_timeout(&addr, timeout) else { return false };
+    let Some(mut stream) = addrs.into_iter().find_map(|addr| TcpStream::connect_timeout(&addr, timeout).ok()) else { return false };
     let _ = stream.set_read_timeout(Some(timeout));
     let _ = stream.set_write_timeout(Some(timeout));
     if write!(stream, "GET {path} HTTP/1.0\r\nHost: {authority}\r\nConnection: close\r\n\r\n").is_err() {
