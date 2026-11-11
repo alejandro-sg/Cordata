@@ -114,7 +114,7 @@ enum Command {
         #[arg(default_value = "repomap")]
         target: String,
         /// minimum fitness improvement threshold to promote
-        #[arg(long, default_value_t = 0.001)]
+        #[arg(long, default_value_t = 0.001, allow_hyphen_values = true)]
         threshold: f64,
         /// run gates without harvesting changes
         #[arg(long)]

@@ -321,20 +321,34 @@ pub fn evaluate_fitness(target: &EvolutionTarget, root: &Path) -> Result<Fitness
             ]);
             cmd.current_dir(root);
 
-            let output = cmd.output().map_err(|e| format!("failed to run guard bench: {e}"))?;
-            let stdout = String::from_utf8_lossy(&output.stdout);
+            // One sample moves tens of percent on an idle laptop; the best of three is the least noisy reading.
+            let mut stdout = String::new();
+            for _ in 0..3 {
+                let output = cmd.output().map_err(|e| format!("failed to run guard bench: {e}"))?;
+                stdout.push_str(&String::from_utf8_lossy(&output.stdout));
+                stdout.push('\n');
+            }
             let lat = start.elapsed().as_millis() as f64;
+            // `BENCH scrub code 100KB     123.4us | prose ...`: only the 100KB size counts; bytes per microsecond is MB/s.
             let mut throughput = 0.0;
             for line in stdout.lines() {
-                if line.contains("BENCH")
-                    && let Some(pos) = line.find("MB/s")
-                    && let Some(num_str) = line[..pos].split_whitespace().last()
-                {
-                    throughput = num_str.parse::<f64>().unwrap_or(0.0);
+                if let Some(rest) = line.split("BENCH scrub code").nth(1) {
+                    let mut it = rest.split_whitespace();
+                    let kb = it.next().and_then(|k| k.strip_suffix("KB")).and_then(|k| k.parse::<f64>().ok());
+                    let us = it.next().and_then(|u| u.strip_suffix("us")).and_then(|u| u.parse::<f64>().ok());
+                    if let (Some(kb), Some(us)) = (kb, us)
+                        && us > 0.0
+                        && kb >= 100.0
+                    {
+                        throughput = f64::max(throughput, kb * 1024.0 / us);
+                    }
                 }
             }
+            if throughput <= 0.0 {
+                return Err(format!("could not read throughput from the guard benchmark:\n{stdout}"));
+            }
             Ok(FitnessScore {
-                primary: throughput.max(1.0),
+                primary: throughput,
                 latency_ms: lat,
                 details: format!("guard bench throughput: {throughput:.1} MB/s"),
             })
@@ -494,12 +508,34 @@ fn changed_between(sandbox: &Path, root: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// Runs the mutator in `sandbox` and returns the files it changed relative to `root`. The mutator's own exit status
-/// is not trusted as a verdict: a failing mutator that left edits behind is still judged by the gates.
+/// The Seatbelt profile a mutator runs under: the worker base profile (secret and `.env` denials), then every write
+/// refused except inside `sandbox` and the null/tty devices. The project, `~/.cordata` and the rest of the disk are
+/// read-only to it, so a mutator that names the project by absolute path still cannot change it.
+pub fn mutator_profile(sandbox: &Path, home: &str) -> String {
+    let real = std::fs::canonicalize(sandbox).map_or_else(|_| sandbox.to_string_lossy().into_owned(), |p| p.to_string_lossy().into_owned());
+    let base = crate::scope::base_profile(home);
+    let (head, tail) = base.split_at(2);
+    let rules = [
+        "(deny file-write* (subpath \"/\"))".to_owned(),
+        format!("(allow file-write* (subpath {}))", crate::scope::sb_string(&real)),
+        "(allow file-write* (literal \"/dev/null\") (literal \"/dev/tty\") (literal \"/dev/dtracehelper\"))".to_owned(),
+    ];
+    head.iter().chain(rules.iter()).chain(tail.iter()).cloned().collect::<Vec<_>>().join("\n") + "\n"
+}
+
+/// Runs the mutator in `sandbox`, confined by [`mutator_profile`], and returns the files it changed relative to `root`.
+/// The mutator's own exit status is not a verdict: a failing mutator that left edits behind is still judged by the gates.
 pub fn propose_changes(sandbox: &Path, root: &Path, cmd: &str, target: &EvolutionTarget, baseline: &FitnessScore) -> Result<Vec<PathBuf>, String> {
-    let out = Command::new("sh")
-        .args(["-c", cmd])
+    if !crate::workers::cli::seatbelt_works() {
+        return Err("cannot run the mutator confined: the Seatbelt sandbox (sandbox-exec) cannot be applied here, so it would run unconfined".into());
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    let tmp = sandbox.join(".cordata/tmp");
+    std::fs::create_dir_all(&tmp).map_err(|e| format!("cannot prepare the mutator's temp dir: {e}"))?;
+    let out = Command::new("/usr/bin/sandbox-exec")
+        .args(["-p", &mutator_profile(sandbox, &home), "/bin/sh", "-c", cmd])
         .current_dir(sandbox)
+        .env("TMPDIR", &tmp)
         .env("CORDATA_EVOLVE_TARGET", target.to_string())
         .env("CORDATA_EVOLVE_BASELINE", format!("{:.6}", baseline.primary))
         .output()
@@ -649,6 +685,9 @@ mod tests {
             std::fs::write(dir.join("tests/eval.rs"), "eval").unwrap();
             std::fs::write(dir.join("lib.rs"), "v1").unwrap();
         }
+        if !crate::workers::cli::seatbelt_works() {
+            return;
+        }
         let guard = ImmutableGuard::snapshot(root.path());
         let base = FitnessScore { primary: 1.0, latency_ms: 0.0, details: String::new() };
         let t = EvolutionTarget::Guard;
@@ -657,6 +696,10 @@ mod tests {
         assert_eq!(changed, vec![PathBuf::from("lib.rs")]);
         assert_eq!(std::fs::read_to_string(root.path().join("lib.rs")).unwrap(), "v1", "project untouched");
         assert!(guard.verify(sb.path()).is_ok(), "benign edit passes gate 1");
+
+        let escape = format!("echo pwn > {}/lib.rs", std::fs::canonicalize(root.path()).unwrap().display());
+        propose_changes(sb.path(), root.path(), &escape, &t, &base).unwrap();
+        assert_eq!(std::fs::read_to_string(root.path().join("lib.rs")).unwrap(), "v1", "a write to the project by absolute path is denied");
 
         propose_changes(sb.path(), root.path(), "echo cheat > tests/eval.rs", &t, &base).unwrap();
         assert!(matches!(guard.verify(sb.path()), Err(TamperingViolation::Modified { .. })), "editing the evaluator is caught");

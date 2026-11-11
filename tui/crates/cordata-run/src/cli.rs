@@ -330,7 +330,11 @@ pub async fn resume(run_id: &str, workers: Option<String>, allow_direct: bool, m
     };
     drop(probe);
     if let Some(text) = direction.as_deref() && !apply_direction(&mut record, text) {
-        eprintln!("cordata-run: the direction was empty, or {run_id} has no step left to give it to");
+        if direction.as_deref().is_some_and(|d| d.trim().is_empty()) {
+            eprintln!("cordata-run: the direction is empty");
+        } else {
+            eprintln!("cordata-run: {run_id} has no planned step to give the direction to yet (it stopped before planning finished); resume without --direction and it plans first");
+        }
         return 2;
     }
     let cwd = PathBuf::from(&record.cwd);
