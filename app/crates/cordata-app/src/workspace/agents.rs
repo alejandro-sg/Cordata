@@ -55,10 +55,15 @@ pub struct Agents {
     pub note: Option<String>,
 }
 
-/// `cordata-run`: `$CORDATA_RUN_BIN`, the usual install folders, or this checkout's release build.
+/// `cordata-run`: `$CORDATA_RUN_BIN`, the one beside this executable (inside Cordata.app), the usual install folders, or
+/// this checkout's release build.
 pub(super) fn cordata_run() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("CORDATA_RUN_BIN").map(PathBuf::from).filter(|p| p.is_file()) {
         return Some(path);
+    }
+    let beside = std::env::current_exe().ok().and_then(|exe| Some(exe.parent()?.join("cordata-run"))).filter(|p| p.is_file());
+    if beside.is_some() {
+        return beside;
     }
     let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
     let on_path = assistants::search_dirs(std::env::var("PATH").ok().as_deref(), &home).into_iter().map(|d| d.join("cordata-run")).find(|p| p.is_file());
@@ -119,8 +124,29 @@ pub fn pool_line(pool: &Pool, now: f64) -> String {
     }
 }
 
+/// The meter's quota chip: the pool closest to its limit (or the one that is limited), `claude 38%`, and whether it
+/// needs attention. When the ledger cannot be read it says so instead of hiding.
+pub fn quota_chip(pools: &[Pool], note: Option<&str>, loaded: bool, now: f64) -> Option<(String, bool)> {
+    if !loaded {
+        return None;
+    }
+    if pools.is_empty() {
+        return note.map(|_| ("quota unavailable".to_owned(), true));
+    }
+    let limited = pools.iter().find(|p| p.limited_until.is_some_and(|u| u > now));
+    if let Some(p) = limited {
+        return Some((format!("{} limited · back {}", p.family, until(p.limited_until.unwrap_or(now), now)), true));
+    }
+    let top = pools.iter().max_by(|a, b| a.pct.total_cmp(&b.pct))?;
+    Some((format!("{} {:.0}%", top.family, top.pct * 100.0), top.pct >= 0.8))
+}
+
 impl Workspace {
     /// Detect the installed CLIs and read the ledger, off the UI thread.
+    pub(super) fn quota_chip(&self) -> Option<(String, bool)> {
+        quota_chip(&self.agents.pools, self.agents.note.as_deref(), self.agents.found.is_some(), now())
+    }
+
     pub(super) fn load_agents(&mut self, cx: &mut Context<Self>) {
         let Some(runtime) = cx.try_global::<crate::session::Runtime>().map(|r| r.0.clone()) else { return };
         if self.agents.loading {
@@ -364,5 +390,35 @@ mod version_tests {
         assert_eq!(tidy_version("aider 0.86.2"), "0.86.2");
         assert_eq!(tidy_version("v1.4.12"), "v1.4.12");
         assert_eq!(tidy_version("unknown version"), "unknown version");
+    }
+}
+
+#[cfg(test)]
+mod quota_chip_tests {
+    use super::*;
+
+    fn pool(family: &str, pct: f64, limited_until: Option<f64>) -> Pool {
+        Pool { pool_id: family.into(), family: family.into(), pct, level: "ok".into(), window_seconds: 18_000, resets_at: None, limited_until, source: "meter".into() }
+    }
+
+    #[test]
+    fn the_fullest_pool_is_shown_and_flags_at_eighty_percent() {
+        let pools = [pool("claude", 0.38, None), pool("gemini", 0.85, None)];
+        assert_eq!(quota_chip(&pools, None, true, 0.0), Some(("gemini 85%".into(), true)));
+        assert_eq!(quota_chip(&pools[..1], None, true, 0.0), Some(("claude 38%".into(), false)));
+    }
+
+    #[test]
+    fn a_limited_pool_wins_and_says_when_it_returns() {
+        let pools = [pool("claude", 0.1, Some(7200.0)), pool("gemini", 0.9, None)];
+        let (text, attention) = quota_chip(&pools, None, true, 0.0).unwrap();
+        assert!(text.starts_with("claude limited · back in 2h") && attention, "{text}");
+    }
+
+    #[test]
+    fn an_unreadable_ledger_says_so_and_nothing_shows_before_the_first_read() {
+        assert_eq!(quota_chip(&[], Some("quota needs cordata-run"), true, 0.0), Some(("quota unavailable".into(), true)));
+        assert_eq!(quota_chip(&[], None, true, 0.0), None);
+        assert_eq!(quota_chip(&[], Some("x"), false, 0.0), None);
     }
 }

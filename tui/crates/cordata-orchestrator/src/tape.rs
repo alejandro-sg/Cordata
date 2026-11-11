@@ -179,7 +179,7 @@ impl StepTape {
             Ok(f) => f,
             Err(_) => return,
         };
-        let lines: Vec<String> = BufReader::new(file).lines().filter_map(Result::ok).collect();
+        let lines: Vec<String> = BufReader::new(file).lines().map_while(Result::ok).collect();
         let total = lines.len();
         if total <= COMPACT_HEAD_LINES + COMPACT_TAIL_LINES {
             return;

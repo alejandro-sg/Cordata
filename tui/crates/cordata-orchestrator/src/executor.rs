@@ -687,9 +687,11 @@ impl<'a> StepExecutor<'a> {
                         break;
                     }
                     _ = poll_interval.tick() => {
-                        if let Some(ctrl) = &controls_ref {
-                            if let Some(req) = ctrl.pending_request() {
-                                let match_step = req.step.as_deref().map_or(true, |s| s == step_id_ref);
+                        if let Some(ctrl) = &controls_ref
+                            && let Some(req) = ctrl.pending_request()
+                        {
+                            {
+                                let match_step = req.step.as_deref().is_none_or(|s| s == step_id_ref);
                                 if match_step {
                                     if req.kind == "say" {
                                         if let Some(text) = &req.text {

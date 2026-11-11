@@ -512,8 +512,10 @@ pub fn show_step_tape(run_id: &str, step_id: &str, attempt: Option<usize>, follo
         let mut finished = false;
         println!("== Tailing step {step_id} (run {run_id}) ==");
         while !finished {
-            if path.exists() {
-                if let Ok(mut file) = std::fs::File::open(&path) {
+            if path.exists()
+                && let Ok(mut file) = std::fs::File::open(&path)
+            {
+                {
                     let _ = file.seek(SeekFrom::Start(pos));
                     let mut reader = BufReader::new(file);
                     let mut line = String::new();
@@ -608,9 +610,12 @@ pub fn show_timeline(run_id: &str, as_json: bool) -> i32 {
         sorted_entries.sort_by_key(|e| e.file_name());
         for entry in sorted_entries {
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("ndjson") {
-                if let Ok(events) = cordata_orchestrator::tape::read_tape(&path) {
-                    if let Some(first) = events.first() {
+            if path.extension().and_then(|e| e.to_str()) == Some("ndjson")
+                && let Ok(events) = cordata_orchestrator::tape::read_tape(&path)
+                && let Some(first) = events.first()
+            {
+                {
+                    {
                         let step_id = first.get("step_id").and_then(Value::as_str).unwrap_or("step");
                         let attempt = first.get("attempt").and_then(Value::as_i64).unwrap_or(1);
                         let span_id = first.get("span_id").and_then(Value::as_str).unwrap_or("").to_string();
@@ -674,8 +679,10 @@ pub fn export_cmd(run_id: &str, _otlp: bool) -> i32 {
     if let Ok(entries) = std::fs::read_dir(&steps_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("ndjson") {
-                if let Ok(events) = cordata_orchestrator::tape::read_tape(&path) {
+            if path.extension().and_then(|e| e.to_str()) == Some("ndjson")
+                && let Ok(events) = cordata_orchestrator::tape::read_tape(&path)
+            {
+                {
                     for ev in events {
                         let kind = ev.get("kind").and_then(Value::as_str).unwrap_or("");
                         let span_id = ev.get("span_id").and_then(Value::as_str).unwrap_or(&root_span_id);

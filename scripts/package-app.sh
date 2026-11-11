@@ -37,6 +37,11 @@ if compgen -G "$ROOT/app/assets/fonts/*.[ot]tf" >/dev/null; then
   cp "$ROOT"/app/assets/fonts/*.[ot]tf "$ROOT"/app/assets/fonts/OFL.txt "$APP/Contents/Resources/fonts/" 2>/dev/null || true
 fi
 cp "$ROOT/app/target/release/cordata-app" "$APP/Contents/MacOS/cordata-app"
+# The quota meter and the run field read the ledger through `cordata-run`; ship it beside the app so they work out of the
+# box (the app looks next to its own executable first).
+log "building cordata-run (release)…"
+(cd "$ROOT/tui" && cargo build --release -q -p cordata-run)
+cp "$ROOT/tui/target/release/cordata-run" "$APP/Contents/MacOS/cordata-run"
 
 # The app icon is app/assets/brand/Cordata.icns (rebuilt from cordata-icon.svg, see the README beside it); without it
 # the bundle gets the generic icon.
@@ -78,6 +83,7 @@ PLIST
 plutil -lint -s "$APP/Contents/Info.plist"
 
 IDENTITY="${SIGN_IDENTITY:--}"
+codesign --force --options runtime --identifier "dev.cordata.run" --sign "$IDENTITY" "$APP/Contents/MacOS/cordata-run" 2>&1 | grep -v 'replacing existing signature' || true
 codesign --force --options runtime --identifier "$BUNDLE_ID" --entitlements "$ROOT/app/assets/Cordata.entitlements" --sign "$IDENTITY" "$APP" 2>&1 | grep -v 'replacing existing signature' || true
 codesign --verify --strict "$APP"
 "$ROOT/app/scripts/check-bundle.sh" "$APP"
