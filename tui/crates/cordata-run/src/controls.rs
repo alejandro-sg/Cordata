@@ -41,11 +41,14 @@ impl FileControls {
         for line in data[..complete].split(|b| *b == b'\n') {
             let Ok(cmd) = serde_json::from_slice::<Value>(line) else { continue };
             let kind = cmd.get("cmd").and_then(Value::as_str).unwrap_or("");
-            if matches!(kind, "pause" | "cancel") {
+            if matches!(kind, "pause" | "cancel" | "say" | "interrupt" | "answer" | "permission") {
                 state.1 = Some(ControlRequest {
                     kind: kind.into(),
                     by: cmd.get("by").and_then(Value::as_str).unwrap_or("").into(),
                     restore: cmd.get("restore").and_then(Value::as_bool).unwrap_or(false),
+                    step: cmd.get("step").and_then(Value::as_str).map(str::to_owned),
+                    text: cmd.get("text").and_then(Value::as_str).map(str::to_owned),
+                    allowed: cmd.get("allowed").and_then(Value::as_bool),
                 });
             }
         }

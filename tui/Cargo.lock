@@ -599,6 +599,7 @@ dependencies = [
  "cordata-checkpoints",
  "cordata-guard",
  "cordata-ledger",
+ "cordata-repomap",
  "futures",
  "jsonschema",
  "libc",

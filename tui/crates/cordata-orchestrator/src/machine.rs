@@ -116,6 +116,8 @@ pub struct RunConfig {
     pub max_parallel: usize,
     pub isolate_waves: bool,
     pub max_synth_fixes: i64,
+    #[serde(default = "d_land")]
+    pub land: String,
 }
 
 impl Default for RunConfig {
@@ -137,8 +139,13 @@ impl Default for RunConfig {
             max_parallel: 3,
             isolate_waves: true,
             max_synth_fixes: 1,
+            land: "all".into(),
         }
     }
+}
+
+fn d_land() -> String {
+    "all".into()
 }
 
 fn d_true() -> bool {
@@ -467,13 +474,16 @@ pub trait Synthesis {
     fn check(&self, project: &str, files: &[String]) -> Vec<String>;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ControlRequest {
-    /// `pause` | `cancel`
+    /// `pause` | `cancel` | `say` | `interrupt` | `answer` | `permission`
     pub kind: String,
     pub by: String,
     /// A cancel that also puts the project back to the plan-start checkpoint.
     pub restore: bool,
+    pub step: Option<String>,
+    pub text: Option<String>,
+    pub allowed: Option<bool>,
 }
 
 /// The person's pause/cancel (`control.Controls`), asked at every safe point.
@@ -487,6 +497,12 @@ struct ExecControls(Arc<dyn RunControls>);
 impl executor::Controls for ExecControls {
     fn pending(&self) -> Option<String> {
         self.0.pending().map(|r| r.kind)
+    }
+    fn pending_request(&self) -> Option<ControlRequest> {
+        self.0.pending()
+    }
+    fn clear(&self) {
+        self.0.clear();
     }
 }
 
@@ -746,7 +762,17 @@ impl<'a> Machine<'a> {
     async fn one_shot(&mut self, role: &str, candidate: &Runnable, prompt: &str, schema: Option<Value>, scope: Vec<String>, timeout: f64, label: &str) -> WorkerResult {
         let (usd, tokens, _) = self.envelope_left();
         let allowance = self.ledger.step_allowance(&candidate.candidate.family, candidate.candidate.model.as_deref());
-        let mut task = TaskPacket::new(&format!("{}:{label}:{}", self.record.run_id, self.record.history.len()), role, prompt, &self.project);
+        let mut full_prompt = prompt.to_owned();
+        if role == "plan" {
+            let repomap = cordata_repomap::render_cached(std::path::Path::new(&self.project), prompt, &[], 2000);
+            if !repomap.trim().is_empty() {
+                full_prompt.push_str(&format!(
+                    "\n\nRepository structure and key definitions:\n```\n{}\n```",
+                    repomap.trim()
+                ));
+            }
+        }
+        let mut task = TaskPacket::new(&format!("{}:{label}:{}", self.record.run_id, self.record.history.len()), role, &full_prompt, &self.project);
         task.file_scope = scope;
         task.budget_usd = json_min(usd, if let cordata_ledger::Allowance::Usd(v) = allowance { Some(v) } else { None });
         task.budget_tokens = json_min(tokens, if let cordata_ledger::Allowance::Tokens(v) = allowance { Some(v) } else { None });
@@ -756,20 +782,26 @@ impl<'a> Machine<'a> {
         task.json_schema = schema;
         let pool = self.pool_id(candidate);
         self.emit("dispatch", json!({"role": label, "worker": candidate.key(), "pool_id": pool}));
+        let art_dir = artifacts_dir(&self.home, &self.record.run_id);
+        let tape = Arc::new(crate::tape::StepTape::new(&art_dir, &self.record.run_id, label, 1, None, None));
+        tape.record_prompt(&task.prompt, &task.task_id, task.model.as_deref(), &task.role);
         let sink: EventSink = {
             let listener = self.on_event.clone();
-            let (run_id, label, key, pool) = (self.record.run_id.clone(), label.to_owned(), candidate.key(), pool.clone());
+            let (run_id, label_str, key, pool) = (self.record.run_id.clone(), label.to_owned(), candidate.key(), pool.clone());
+            let tape_ref = tape.clone();
             Arc::new(move |event: WorkerEvent| {
                 if event.event_type == "done" {
                     return;
                 }
                 let payload = serde_json::from_str::<Value>(&secrets::scrub(&event.payload.to_string()).0).unwrap_or(json!({}));
+                tape_ref.record_worker_event(&event.event_type, &payload);
                 if let Some(l) = &listener {
-                    l(json!({"kind": "worker", "run_id": run_id, "step_id": label, "role": label, "worker": key, "pool_id": pool, "event_type": event.event_type, "payload": payload}));
+                    l(json!({"kind": "worker", "run_id": run_id, "step_id": label_str, "role": label_str, "worker": key, "pool_id": pool, "event_type": event.event_type, "payload": payload}));
                 }
             })
         };
         let result = candidate.worker.run(task, sink).await;
+        tape.record_result(&result.status, &serde_json::to_value(&result).unwrap_or(json!({})));
         let model = candidate.candidate.model.clone().or_else(|| result.model.clone());
         self.ledger.record_result(&self.record.run_id, Some(label), &candidate.candidate.family, model.as_deref(), &result.ledger_outcome(), Some(label), Some(&candidate.key()));
         self.record.workers.entry(label.to_owned()).or_default().push(candidate.key());
@@ -912,10 +944,11 @@ impl<'a> Machine<'a> {
             strongest_first: recovering || fix_pass,
             isolate: self.config.isolate_waves,
             isolation: self.isolation.clone(),
-            on_event: listener.map(|l| Box::new(move |e| l(e)) as Box<dyn Fn(Value) + Send + Sync>),
+            on_event: listener.map(|l| Arc::new(move |e| l(e)) as Arc<dyn Fn(Value) + Send + Sync>),
             controls: self.controls.clone().map(|c| Arc::new(ExecControls(c)) as Arc<dyn executor::Controls>),
             bus: self.run_bus(),
             benched: self.benched.clone(),
+            artifacts_dir: Some(artifacts_dir(&self.home, &self.record.run_id)),
             ..ExecConfig::default()
         };
         let executor = StepExecutor::new(&self.record.run_id, Path::new(&self.project), plan, candidates, self.ledger, self.checkpoints, cfg);
@@ -1098,6 +1131,10 @@ impl<'a> Machine<'a> {
         }
     }
 
+    fn final_state(&self) -> &'static str {
+        if self.config.land == "review" { "to_review" } else { "done" }
+    }
+
     /// Does the change conform to the plan and the brief? `accept` ends the run; `gaps` buys a fix round (then HARDEN →
     /// AUDIT → CONFORMANCE again) up to `max_rounds`; `replan` or too many rounds goes back to PLAN. An unavailable or
     /// unusable check is a warning, and the run is accepted on Tier 1. Returns the replan feedback, if any.
@@ -1113,7 +1150,8 @@ impl<'a> Machine<'a> {
             }
         };
         let Some(candidate) = self.conformance_candidate() else {
-            self.transition("done", json!({"verdict": "accept(tier1)"}));
+            let final_state = self.final_state();
+            self.transition(final_state, json!({"verdict": "accept(tier1)"}));
             return None;
         };
         let brief_text = self.record.research.as_ref().zip(self.research).map(|(b, r)| r.render(b));
@@ -1135,12 +1173,14 @@ impl<'a> Machine<'a> {
         if verdict.is_empty() {
             let problem = if result.status != "completed" { result.error_message.clone().unwrap_or_else(|| result.status.clone()) } else { "no usable verdict in the answer".to_owned() };
             self.record.warnings.push(format!("conformance check by {} unavailable ({problem}); accepted on the deterministic checks", candidate.key()));
-            self.transition("done", json!({"verdict": "accept(tier1)"}));
+            let final_state = self.final_state();
+            self.transition(final_state, json!({"verdict": "accept(tier1)"}));
             return None;
         }
         match verdict.as_str() {
             "accept" => {
-                self.transition("done", json!({"verdict": "accept", "conformance": candidate.key()}));
+                let final_state = self.final_state();
+                self.transition(final_state, json!({"verdict": "accept", "conformance": candidate.key()}));
                 None
             }
             "replan" => {
@@ -1467,7 +1507,8 @@ impl<'a> Machine<'a> {
         }
         if accepted {
             let verdict = if report.verdict.is_empty() { "accept(tier1)".to_owned() } else { report.verdict.clone() };
-            self.transition("done", json!({"verdict": verdict}));
+            let final_state = self.final_state();
+            self.transition(final_state, json!({"verdict": verdict}));
         } else if report.tier1_ok && report.verdict == "replan" {
             self.replan_or_fail(&report.items, "the auditor asked for a new plan");
             *feedback = report.items.clone();
@@ -1512,6 +1553,8 @@ fn synthetic_step() -> Step {
         grounded_in: Vec::new(),
         complexity: "medium".into(),
         depends_on: Vec::new(),
+        last_event_at: None,
+        blocked_reason: None,
     }
 }
 

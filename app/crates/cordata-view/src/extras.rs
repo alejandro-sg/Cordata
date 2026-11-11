@@ -67,6 +67,46 @@ impl App {
         })
     }
 
+    /// `/context`: itemized breakdown of prompt tokens (`G5`).
+    pub fn run_context(&mut self) {
+        if let Some(ctx) = &self.telemetry.last_context {
+            let mut lines = Vec::new();
+            lines.push(format!("Context composition (~{} tokens total):", ctx.total_estimated_tokens));
+            lines.push(format!("  - System instructions: ~{} tokens", ctx.system_tokens));
+            lines.push(format!("  - Tool schemas:        ~{} tokens ({} pruned)", ctx.tools_tokens, ctx.pruned_tools_count));
+            lines.push(format!("  - User prompts:        ~{} tokens", ctx.user_tokens));
+            lines.push(format!("  - Assistant replies:   ~{} tokens", ctx.assistant_tokens));
+            lines.push(format!("  - Tool results:        ~{} tokens", ctx.tool_results_tokens));
+            self.messages.push(Message::Info(lines.join("\n")));
+        } else {
+            let used = self.telemetry.context_used;
+            self.messages.push(Message::Info(format!("Context used: ~{used} tokens. Run a prompt to see full itemized breakdown.")));
+        }
+    }
+
+    /// `/run [goal]`: start an orchestrated multi-agent run from this thread (`G6`).
+    pub fn run_multiagent_run(&mut self, goal: Option<String>) -> Option<Effect> {
+        let goal_text = goal.unwrap_or_else(|| {
+            self.messages.iter().rev().find_map(|m| if let Message::User(t) = m { Some(t.clone()) } else { None }).unwrap_or_else(|| "build plan".into())
+        });
+        self.messages.push(Message::Info(format!("Starting orchestrated multi-agent run for goal: \"{goal_text}\"...")));
+        let home = std::env::var("HOME").unwrap_or_default();
+        let local_bin = format!("{home}/.local/bin/cordata");
+        let bin = if std::path::Path::new(&local_bin).exists() { local_bin } else { "cordata".to_string() };
+        let cwd = self.project_dir();
+        Some(Effect::Shell {
+            command: format!("\"{bin}\" run \"{}\" --cwd \"{}\"", goal_text.replace('"', "\\\""), cwd.display()),
+            share: false,
+            as_diff: false,
+        })
+    }
+
+    /// `/goldfish`: dispatch stateless sub-agent to audit git diff against invariants (`G6`).
+    pub fn run_goldfish(&mut self) -> Option<Effect> {
+        self.messages.push(Message::Info("Dispatching stateless Goldfish sub-agent review on working tree diff...".into()));
+        self.run_line_as_prompt("Please invoke the `delegate` tool to audit the current git diff against project invariants and surface unhandled edge cases.")
+    }
+
     /// `/floorplan`: visual architectural map & active-work visualizer.
     pub fn run_floorplan(&mut self, arg: Option<String>) -> Option<Effect> {
         let flag = match arg.as_deref() {

@@ -447,6 +447,20 @@ pub async fn tier1(plan: &Plan, root: &str, start_checkpoint: Option<&str>, env:
             report.warnings.push(format!("step {} was to edit {} but nothing there changed", step.step_id, step.file_scope.join(", ")));
         }
     }
+
+    for file in &report.changed {
+        let p = Path::new(root).join(file);
+        if let Ok(content) = std::fs::read_to_string(&p) {
+            let taste = crate::taste::lint_source_ergonomics(&content, &p);
+            for finding in taste.findings {
+                if finding.severity == crate::taste::TasteSeverity::Error {
+                    report.checks.push(CheckResult::new(&format!("taste-{file}"), "taste", false, finding.message, 0.0));
+                } else {
+                    report.warnings.push(format!("taste [{file}]: {}", finding.message));
+                }
+            }
+        }
+    }
     report.ambiguous = !report.warnings.is_empty();
     report.tier1_ok = report.checks.iter().all(|c| c.ok);
     report

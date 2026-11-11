@@ -223,7 +223,7 @@ async fn parallel_steps_run_in_their_own_sandboxes_and_are_harvested_into_the_pr
     });
     let plan = plan::from_draft(&step_draft(&["a.txt", "b.txt", "c.txt"], &[("s3", &["s1", "s2"])]), "/x", Options::default(), None).unwrap();
     let sink = r.events.clone();
-    let cfg = Config { isolation: Some(Arc::new(CowIsolation::default())), on_event: Some(Box::new(move |e| sink.lock().unwrap().push(e))), ..Default::default() };
+    let cfg = Config { isolation: Some(Arc::new(CowIsolation::default())), on_event: Some(Arc::new(move |e| sink.lock().unwrap().push(e))), ..Default::default() };
     let ex = StepExecutor::new("run-iso", &r.project, plan, vec![runnable(&worker, "m", "claude_code", "anthropic")], &r.ledger, &r.checkpoints, cfg);
     let out = ex.run().await;
     assert_eq!(out.status, "completed", "{}", out.reason);

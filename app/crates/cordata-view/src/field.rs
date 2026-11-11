@@ -493,7 +493,7 @@ mod tests {
             goal: "g".into(),
             state: "execute".into(),
             reason: String::new(),
-            steps: steps.iter().map(|(id, status)| Step { id: (*id).into(), name: (*id).into(), status: (*status).into(), worker: None, attempts: 0, scope: Vec::new(), deps: Vec::new() }).collect(),
+            steps: steps.iter().map(|(id, status)| Step { id: (*id).into(), name: (*id).into(), status: (*status).into(), worker: None, attempts: 0, scope: Vec::new(), deps: Vec::new(), last_event_at: None, blocked_reason: None }).collect(),
             handoffs: handoffs.iter().map(|(id, step)| Handoff { id: (*id).into(), step_id: (*step).into(), reason: "worker_failed".into(), from: "a".into(), to: None, step_status: "failed".into() }).collect(),
             history: Vec::new(),
         }

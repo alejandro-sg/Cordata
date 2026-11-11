@@ -244,7 +244,7 @@ mod tests {
         app.input.set_text("/c");
         app.refresh_menu();
         let labels: Vec<_> = app.menu.as_ref().unwrap().items.iter().map(|i| i.label.as_str()).collect();
-        assert_eq!(labels[..2], ["/close", "/copy"], "{labels:?}");
+        assert_eq!(labels[..2], ["/close", "/context"], "{labels:?}");
     }
 
     #[test]

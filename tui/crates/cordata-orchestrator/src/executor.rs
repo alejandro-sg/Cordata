@@ -63,6 +63,12 @@ pub struct ExecResult {
 pub trait Controls: Send + Sync {
     /// `"pause"` or `"cancel"` when one was requested.
     fn pending(&self) -> Option<String>;
+    /// Full request when one was requested.
+    fn pending_request(&self) -> Option<crate::machine::ControlRequest> {
+        None
+    }
+    /// Clears the pending request once handled.
+    fn clear(&self) {}
 }
 
 #[derive(Debug, Clone)]
@@ -87,7 +93,7 @@ pub trait Isolation: Send + Sync {
 }
 
 type Rerank = Box<dyn Fn(&Step, &[Runnable]) -> Vec<Runnable> + Send + Sync>;
-type Listener = Box<dyn Fn(Value) + Send + Sync>;
+type Listener = Arc<dyn Fn(Value) + Send + Sync>;
 
 pub struct Config {
     pub timeout_s: f64,
@@ -110,6 +116,7 @@ pub struct Config {
     pub bus: Option<Arc<cordata_bus::Bus>>,
     /// Workers benched by an earlier pass of this run (`ExecResult::benched`).
     pub benched: Vec<String>,
+    pub artifacts_dir: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -130,6 +137,7 @@ impl Default for Config {
             rerank: None,
             bus: None,
             benched: Vec::new(),
+            artifacts_dir: None,
         }
     }
 }
@@ -605,17 +613,117 @@ impl<'a> StepExecutor<'a> {
                 ));
             }
             task.bus = grant.clone();
+
+            // Scoped repository map (G11)
+            let mentioned_scope: Vec<&str> = task.file_scope.iter().map(String::as_str).collect();
+            let repomap = cordata_repomap::render_cached(
+                &self.project,
+                &step.description,
+                &mentioned_scope,
+                1000,
+            );
+            if !repomap.trim().is_empty() {
+                task.prompt.push_str(&format!(
+                    "\n\nRepository definitions relevant to this step:\n```\n{}\n```",
+                    repomap.trim()
+                ));
+            }
+
             let pool_id = self.pool_id(&candidate);
             self.emit(
                 "step_dispatch",
                 json!({"step_id": step.step_id, "worker": candidate.key(), "pool_id": pool_id, "complexity": step.complexity, "budget_usd": budget_usd,
                        "budget_tokens": task.budget_tokens, "handoff": ctx.packet.as_ref().map(|p| p.handoff_id.clone())}),
             );
-            let sink: EventSink = Arc::new(|_| {});
+            let tape = self.cfg.artifacts_dir.as_ref().map(|dir| {
+                Arc::new(crate::tape::StepTape::new(
+                    dir,
+                    &self.run_id,
+                    &step.step_id,
+                    attempt as usize,
+                    None,
+                    None,
+                ))
+            });
+            if let Some(t) = &tape {
+                t.record_prompt(&task.prompt, &task.task_id, task.model.as_deref(), &task.role);
+            }
+            let tape_for_sink = tape.clone();
+            let step_id_for_sink = step.step_id.clone();
+            let listener_for_sink = self.cfg.on_event.clone();
+            let run_id_for_sink = self.run_id.clone();
+            let sink: EventSink = Arc::new(move |event| {
+                if let Some(t) = &tape_for_sink {
+                    t.record_worker_event(&event.event_type, &event.payload);
+                }
+                if let Some(l) = &listener_for_sink {
+                    l(json!({
+                        "kind": "worker",
+                        "run_id": run_id_for_sink,
+                        "step_id": step_id_for_sink,
+                        "event_type": event.event_type,
+                        "payload": event.payload,
+                    }));
+                }
+            });
             let task_id = task.task_id.clone();
             self.inflight.lock().unwrap().insert(task_id.clone(), candidate.worker.clone());
-            let mut result = candidate.worker.run(task, sink).await;
+
+            let worker_ref = candidate.worker.clone();
+            let task_id_ref = task_id.clone();
+            let controls_ref = self.cfg.controls.clone();
+            let tape_ref = tape.clone();
+            let step_id_ref = step.step_id.clone();
+
+            let worker_run = candidate.worker.run(task, sink);
+            tokio::pin!(worker_run);
+
+            let mut poll_interval = tokio::time::interval(std::time::Duration::from_millis(200));
+            let mut result;
+            loop {
+                tokio::select! {
+                    res = &mut worker_run => {
+                        result = res;
+                        break;
+                    }
+                    _ = poll_interval.tick() => {
+                        if let Some(ctrl) = &controls_ref {
+                            if let Some(req) = ctrl.pending_request() {
+                                let match_step = req.step.as_deref().map_or(true, |s| s == step_id_ref);
+                                if match_step {
+                                    if req.kind == "say" {
+                                        if let Some(text) = &req.text {
+                                            if let Some(t) = &tape_ref {
+                                                t.record_worker_event("user_say", &json!({"from": "person", "text": text}));
+                                            }
+                                            let delivered = worker_ref.send_input(&task_id_ref, text);
+                                            if !delivered {
+                                                let _ = worker_ref.cancel(&task_id_ref).await;
+                                            }
+                                            ctrl.clear();
+                                        }
+                                    } else if req.kind == "interrupt" {
+                                        if let Some(t) = &tape_ref {
+                                            t.record_worker_event("user_interrupt", &json!({"from": "person"}));
+                                        }
+                                        let _ = worker_ref.cancel(&task_id_ref).await;
+                                        ctrl.clear();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             self.inflight.lock().unwrap().remove(&task_id);
+            if let Some(t) = &tape {
+                let res_json = serde_json::to_value(&result).unwrap_or(json!({}));
+                t.record_result(&result.status, &res_json);
+            }
+            self.update_step(index, |s| {
+                s.last_event_at = Some(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64()));
+                s.attempts
+            });
             if let (Some(bus), Some(grant)) = (&self.cfg.bus, &grant) {
                 bus.revoke(&grant.token);
             }
@@ -666,6 +774,19 @@ impl<'a> StepExecutor<'a> {
                     }
                 }
             if result.status == "completed" && result.out_of_scope.is_empty() {
+                // Save harvested step patch to steps/<step>.patch (G10)
+                if let (Some(artifacts_dir), Some(hash)) = (&self.cfg.artifacts_dir, &step.checkpoint_hash) {
+                    let (mut patch, _) = self.checkpoints.diff_since(&self.project, hash, diff_paths(&step.file_scope).as_deref());
+                    if patch.is_empty() {
+                        patch = self.checkpoints.diff_since(&self.project, hash, None).0;
+                    }
+                    if !patch.is_empty() {
+                        let steps_dir = artifacts_dir.join("steps");
+                        let _ = std::fs::create_dir_all(&steps_dir);
+                        let patch_path = steps_dir.join(format!("{}.patch", step.step_id));
+                        let _ = std::fs::write(&patch_path, &patch);
+                    }
+                }
                 self.update_step(index, |s| s.status = "completed".into());
                 ctx.packet = None;
                 return "completed";

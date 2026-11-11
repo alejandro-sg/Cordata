@@ -38,6 +38,7 @@ regex = "1"
 gpui-kit-assets = "=0.7.3"
 # The dock terminal's emulator and PTY (the one Zed's GPUI terminal uses): pure Rust, Apache-2.0.
 alacritty_terminal = { version = "=0.26.0", default-features = false }
+polling = "3"
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

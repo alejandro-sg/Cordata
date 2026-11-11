@@ -99,7 +99,7 @@ impl Workspace {
         let laid = field::layout(inputs, zones).with_runs(&self.field_runs);
         let runs_els = self.run_elements(&laid, alt, cx);
         let wide = laid.w * z + cam.x > f32::from(self.field_bounds.get().size.width);
-        let tape = self.run_tape(cx);
+        let tape = if self.selected_step_tape.is_some() { self.step_tape_panel(cx) } else { self.run_tape(cx) };
         // World length to screen length; text follows the zoom but never drops under a readable size.
         let s = |v: f32| px(v * z);
         let text = |base: f32| px((base * z).clamp(11., base * 1.5));
@@ -385,6 +385,9 @@ impl Workspace {
                     this.field_runs_note = note.or_else(|| this.field_runs_note.take().filter(|n| n.starts_with("hold") || n.starts_with("resum")));
                     cx.notify();
                 }
+                if this.selected_step_tape.is_some() {
+                    this.refresh_step_tape(cx);
+                }
             });
         })
         .detach();
@@ -440,6 +443,53 @@ impl Workspace {
             Ok(_) => format!("resuming {run_id}{}{}", family.map(|f| format!(" on {f}")).unwrap_or_default(), if direction.is_some() { " with your direction" } else { "" }),
             Err(e) => format!("could not resume: {e}"),
         });
+        cx.notify();
+    }
+
+    /// Select or deselect a step tape for viewing.
+    pub(super) fn select_step_tape(&mut self, run_id: &str, step_id: &str, cx: &mut Context<Self>) {
+        if self.selected_step_tape.as_ref().map(|(r, s)| (r.as_str(), s.as_str())) == Some((run_id, step_id)) {
+            self.selected_step_tape = None;
+            self.step_tape_lines.clear();
+        } else {
+            self.selected_step_tape = Some((run_id.to_string(), step_id.to_string()));
+            self.refresh_step_tape(cx);
+        }
+        cx.notify();
+    }
+
+    /// Reload the newest lines for the currently selected step tape.
+    pub(super) fn refresh_step_tape(&mut self, cx: &mut Context<Self>) {
+        let Some((run_id, step_id)) = self.selected_step_tape.as_ref() else { return };
+        let steps_dir = cordata_home().join("orchestrator").join(run_id).join("steps");
+        let prefix = format!("{step_id}-");
+        let mut tapes = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&steps_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with(&prefix) && name.ends_with(".ndjson") {
+                    tapes.push(entry.path());
+                }
+            }
+        }
+        tapes.sort();
+        if let Some(latest) = tapes.last() {
+            if let Ok(content) = std::fs::read_to_string(latest) {
+                self.step_tape_lines = content
+                    .lines()
+                    .rev()
+                    .take(200)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .map(String::from)
+                    .collect();
+            } else {
+                self.step_tape_lines = vec!["could not read step tape file".to_string()];
+            }
+        } else {
+            self.step_tape_lines = vec!["no tape recorded yet for this step".to_string()];
+        }
         cx.notify();
     }
 
@@ -572,27 +622,38 @@ impl Workspace {
                 "running" => ui::mark_live(("step-mark", key), MarkState::Working, 12., self.field_pulse.count(&run.run_id, &step.id), cx),
                 "completed" => ui::mark(("step-mark", key), MarkState::Done, 12., cx),
                 "failed" => ui::mark(("step-mark", key), MarkState::Error, 12., cx),
+                "blocked" => ui::mark(("step-mark", key), MarkState::NeedsYou, 12., cx),
                 _ => ui::mark(("step-mark", key), MarkState::Idle, 12., cx),
             };
-            let (edge, ground) = match step.status.as_str() {
+            let (mut edge, ground) = match step.status.as_str() {
                 "running" => (c(tk.amber), ca(tk.amber, 0.08)),
                 "failed" => (c(tk.danger), c(tk.bg_panel)),
+                "blocked" => (c(tk.attention), ca(tk.attention, 0.08)),
                 _ => (line(cx, t::LINE_DEFAULT), c(tk.bg_panel)),
             };
+            let is_selected_tape = self.selected_step_tape.as_ref().map(|(r, s)| (r.as_str(), s.as_str())) == Some((&run.run_id, &step.id));
+            if is_selected_tape {
+                edge = c(tk.amber);
+            }
             let said = runs::step_line(run, step);
             let (x, y) = at(sn.x, sn.y);
+            let rid = run.run_id.clone();
+            let sid = step.id.clone();
             out.push(
-                div().id(("field-step", key)).absolute().left(px(x)).top(px(y)).w(s(field::NODE_W)).h(s(field::STEP_H))
+                div().id(("field-step", key)).cursor_pointer().absolute().left(px(x)).top(px(y)).w(s(field::NODE_W)).h(s(field::STEP_H))
                     .px(s(12.)).rounded(s(6.)).border_1().border_color(edge).bg(c(tk.bg_main)).overflow_hidden()
                     .child(div().absolute().size_full().top_0().left_0().bg(ground))
                     .flex().items_center().gap(s(10.))
                     .tooltip(ui::tip(format!("{} {} · {said}{}", step.id, step.name, if step.scope.is_empty() { String::new() } else { format!(" · may edit {}", step.scope.join(", ")) })))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.select_step_tape(&rid, &sid, cx);
+                    }))
                     .child(div().relative().flex_shrink_0().child(mark))
                     .child(div().relative().flex_1().min_w_0().flex().flex_col().gap(s(3.))
                         .child(div().line_clamp(2).text_ellipsis().text_size(text(14.)).line_height(gpui::relative(1.25)).font_weight(FontWeight::MEDIUM)
                             .text_color(if step.status == "pending" { c(tk.text_secondary) } else { c(tk.text_primary) }).child(SharedString::from(format!("{} {}", step.id, step.name))))
                         .when(alt != Altitude::Fleet, |d| d.child(div().truncate().font_family(mono(cx)).text_size(text(t::TEXT_META))
-                            .text_color(if running { c(tk.amber) } else if step.status == "failed" { c(tk.danger) } else { c(tk.text_muted) }).child(SharedString::from(said)))))
+                            .text_color(if running { c(tk.amber) } else if step.status == "failed" { c(tk.danger) } else if step.status == "blocked" { c(tk.attention) } else { c(tk.text_muted) }).child(SharedString::from(said)))))
                     .into_any_element(),
             );
             if alt == Altitude::Fleet {
@@ -635,6 +696,51 @@ impl Workspace {
                 .into_any_element(),
         )
     }
+
+    /// The step tape viewer along the bottom, displaying live/durable per-step events.
+    fn step_tape_panel(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (run_id, step_id) = self.selected_step_tape.as_ref()?;
+        let tk = tk(cx);
+        let rid = run_id.clone();
+        let sid = step_id.clone();
+        let title = format!("step tape · {rid} · {sid}");
+        let count = format!("{} events", self.step_tape_lines.len());
+
+        Some(
+            div().id("field-step-tape").absolute().left(px(0.)).right(px(0.)).bottom(px(0.)).h(px(240.))
+                .border_t_1().border_color(ca(tk.amber, 0.4)).bg(ca(tk.bg_panel, 0.98))
+                .flex().flex_col()
+                .child(
+                    div().flex().items_center().justify_between().px(px(16.)).py(px(6.))
+                        .border_b_1().border_color(line(cx, t::LINE_SUBTLE))
+                        .child(
+                            div().flex().items_center().gap(px(10.))
+                                .child(div().font_family(mono(cx)).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(c(tk.amber)).child(title))
+                                .child(div().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.text_muted)).child(count))
+                        )
+                        .child(
+                            div().flex().items_center().gap(px(6.))
+                                .child(ui::button("tape-refresh", "Refresh", Kind::Ghost, cx).on_click(cx.listener(|this, _, _, cx| this.refresh_step_tape(cx))))
+                                .child(ui::button("tape-close", "Close ✕", Kind::Ghost, cx).on_click(cx.listener(|this, _, _, cx| {
+                                    this.selected_step_tape = None;
+                                    this.step_tape_lines.clear();
+                                    cx.notify();
+                                })))
+                        )
+                )
+                .child(
+                    div().id("tape-body").flex_1().min_h_0().overflow_y_scroll().p(px(12.)).font_family(mono(cx)).text_size(px(11.))
+                        .flex().flex_col().gap(px(2.))
+                        .children(self.step_tape_lines.iter().enumerate().map(|(i, line)| {
+                            let text = line.clone();
+                            div().id(("tape-line", i)).truncate().text_color(c(tk.text_secondary))
+                                .hover(|s| s.text_color(c(tk.text_primary)))
+                                .child(SharedString::from(text))
+                        }))
+                )
+                .into_any_element(),
+        )
+    }
 }
 
 impl Workspace {
@@ -665,6 +771,10 @@ impl Workspace {
         let zones = flight::territory(&per_thread);
         let working = inputs.iter().filter(|i| i.state == TabState::Working).count();
         let waiting = inputs.iter().filter(|i| i.gate_title.is_some()).count();
+        let blocked_steps: Vec<(&Run, &cordata_view::runs::Step)> = self.field_runs.iter()
+            .flat_map(|r| r.steps.iter().filter(|s| s.status == "blocked").map(move |s| (r, s)))
+            .collect();
+        let blocked_count = blocked_steps.len();
         let quiet = inputs.len().saturating_sub(working + waiting);
         let live_runs = self.field_runs.iter().filter(|r| !r.finished()).count();
 
@@ -686,7 +796,7 @@ impl Workspace {
             .child(div().flex().items_center().gap(px(16.))
                 .child(count(working + live_runs, "working", c(tk.amber)))
                 .child(count(quiet, "quiet", c(tk.text_secondary)))
-                .child(count(waiting, "need you", c(tk.attention)))
+                .child(count(waiting + blocked_count, "need you", c(tk.attention)))
                 .child(div().flex().items_center().gap(px(2.))
                     .child(ui::button("fw-lanes", "Lanes", Kind::Ghost, cx).on_click(cx.listener(|this, _, _, cx| { this.rack_view_mode = flight::RackViewMode::Lanes; cx.notify(); })))
                     .child(ui::button("fw-ground", "Ground", Kind::Ghost, cx).on_click(cx.listener(|this, _, _, cx| { this.rack_view_mode = flight::RackViewMode::Ground; cx.notify(); })))
@@ -696,7 +806,7 @@ impl Workspace {
         let mut rail = div().id("field-rail").w(px(RAIL_W)).flex_none().h_full().overflow_y_scroll().border_l_1().border_color(line(cx, t::LINE_DEFAULT)).p(px(16.)).flex().flex_col().gap(px(12.));
 
         let waiting_items: Vec<_> = inputs.iter().filter(|i| i.gate_title.is_some()).collect();
-        if !waiting_items.is_empty() {
+        if !waiting_items.is_empty() || !blocked_steps.is_empty() {
             rail = rail.child(head("Needs you", c(tk.attention)));
             for item in waiting_items {
                 let slot = item.slot;
@@ -713,6 +823,37 @@ impl Workspace {
                         .child(ui::button(("rail-deny", slot), "Deny", Kind::Ghost, cx)
                             .on_click(cx.listener(move |this, _, _, cx| this.answer_batch_gate(&sig2, ApprovalDecision::Reject, cx)))))
                     .when(item.gate_high_risk, |d| d.child(ui::meta("high risk: open the thread to allow", cx))));
+            }
+            for (run, step) in blocked_steps {
+                let run_id = run.run_id.clone();
+                let step_id = step.id.clone();
+                let step_name = step.name.clone();
+                let reason = step.blocked_reason.clone().unwrap_or_else(|| "action needs permission".to_string());
+                let rid_allow = run_id.clone();
+                let sid_allow = step_id.clone();
+                let rid_deny = run_id.clone();
+                let sid_deny = step_id.clone();
+                rail = rail.child(
+                    div().flex().flex_col().gap(px(8.)).p(px(12.)).rounded(px(4.)).border_1().border_color(c(tk.attention))
+                        .bg(ca(tk.attention, 0.08))
+                        .child(div().font_family(mono(cx)).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(c(tk.attention))
+                            .child(SharedString::from(format!("run · {run_id}"))))
+                        .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary))
+                            .child(SharedString::from(format!("{step_id} {step_name}"))))
+                        .child(div().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.text_secondary))
+                            .child(SharedString::from(reason)))
+                        .child(div().flex().gap(px(6.))
+                            .child(ui::button(SharedString::from(format!("rail-allow-{run_id}-{step_id}")), "Allow ↵", Kind::Primary, cx)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let _ = runs::request_permission(&cordata_home(), &rid_allow, &sid_allow, true);
+                                    this.refresh_runs(cx);
+                                })))
+                            .child(ui::button(SharedString::from(format!("rail-deny-{run_id}-{step_id}")), "Deny", Kind::Ghost, cx)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let _ = runs::request_permission(&cordata_home(), &rid_deny, &sid_deny, false);
+                                    this.refresh_runs(cx);
+                                }))))
+                );
             }
         } else if let Some(slot) = self.rack_selected_slot {
             if let Some(item) = inputs.iter().find(|i| i.slot == slot) {
@@ -752,7 +893,7 @@ impl Workspace {
         }
 
         // In a narrow window the rail would take the field's room to say nothing: it shows only when it has something.
-        let mut rail_has = waiting > 0 || self.rack_selected_slot.is_some_and(|slot| inputs.iter().any(|i| i.slot == slot));
+        let mut rail_has = waiting > 0 || blocked_count > 0 || self.rack_selected_slot.is_some_and(|slot| inputs.iter().any(|i| i.slot == slot));
         let ready: Vec<&TriageIn> = inputs.iter().filter(|i| flight::ready(i)).collect();
         rail_has |= !ready.is_empty() || zones.iter().any(|z| z.contested);
         if !ready.is_empty() {

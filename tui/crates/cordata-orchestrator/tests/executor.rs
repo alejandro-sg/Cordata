@@ -73,7 +73,7 @@ fn limited(id: &str, rate_limited: bool) -> WorkerResult {
 
 fn exec<'a>(env: &'a Env, plan: Plan, candidates: Vec<Runnable>, cp: &'a CopyCheckpoints, mut cfg: Config) -> StepExecutor<'a> {
     let events = env.events.clone();
-    cfg.on_event = Some(Box::new(move |e| events.lock().unwrap().push(e)));
+    cfg.on_event = Some(Arc::new(move |e| events.lock().unwrap().push(e)));
     StepExecutor::new("run-t", &env.project, plan, candidates, &env.ledger, cp, cfg)
 }
 
@@ -487,7 +487,7 @@ async fn the_fault_injection_scenario_also_holds_on_the_real_shadow_git_store() 
     let git = GitCheckpoints::new(cordata_checkpoints::Store::new(e.store.parent().unwrap().join("shadow-home")));
     let cands = vec![runnable(&a, "sonnet", "claude_code", "anthropic"), runnable(&b, "gemini", "antigravity", "google")];
     let events = e.events.clone();
-    let cfg = Config { on_event: Some(Box::new(move |ev| events.lock().unwrap().push(ev))), ..Default::default() };
+    let cfg = Config { on_event: Some(Arc::new(move |ev| events.lock().unwrap().push(ev))), ..Default::default() };
     let ex = StepExecutor::new("run-git", &e.project, plan_of(3, "rollback_checkpoint", 2.0), cands, &e.ledger, &git, cfg);
     let out = ex.run().await;
     assert_eq!(out.status, "completed", "{}", out.reason);

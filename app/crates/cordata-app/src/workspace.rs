@@ -196,6 +196,8 @@ pub struct Workspace {
     /// What the run polls have seen change: the only events an orchestrated run gives the window.
     pub(super) field_pulse: cordata_view::runs::Pulse,
     pub(super) field_polling: bool,
+    pub(super) selected_step_tape: Option<(String, String)>,
+    pub(super) step_tape_lines: Vec<String>,
     /// Show the idle threads on the field too (they are only counted by default).
     #[allow(dead_code)]
     pub(super) field_idle_open: bool,
@@ -553,6 +555,8 @@ impl Workspace {
             field_runs_busy: false,
             field_pulse: Default::default(),
             field_polling: false,
+            selected_step_tape: None,
+            step_tape_lines: Vec::new(),
             field_idle_open: false,
             tray: None,
             tray_tick: 0,
@@ -2912,7 +2916,7 @@ mod window_tests {
     #[gpui::test]
     fn cmd_j_opens_the_terminal_when_its_agent_waits_but_an_approval_comes_first(cx: &mut TestAppContext) {
         let (view, cx) = workspace(cx);
-        let waiting = crate::detect::Detection { id: "claude".into(), name: "Claude Code".into(), state: crate::detect::State::Blocked };
+        let waiting = crate::detect::Detection { id: "claude".into(), name: "Claude Code".into(), state: crate::detect::State::Blocked, declared: false };
         view.update(cx, |this, cx| {
             this.set_panel(false, cx);
             this.terminal.detection = Some(waiting);
@@ -3409,7 +3413,7 @@ mod window_tests {
         // an event for the step that changed, and fitting never magnifies.
         let plan = |b: &str| {
             use cordata_view::runs::{Run, Step};
-            let step = |id: &str, status: &str, deps: &[&str]| Step { id: id.into(), name: id.into(), status: status.into(), worker: Some("w".into()), attempts: 1, scope: Vec::new(), deps: deps.iter().map(|d| (*d).to_owned()).collect() };
+            let step = |id: &str, status: &str, deps: &[&str]| Step { id: id.into(), name: id.into(), status: status.into(), worker: Some("w".into()), attempts: 1, scope: Vec::new(), deps: deps.iter().map(|d| (*d).to_owned()).collect(), last_event_at: None, blocked_reason: None };
             vec![Run { run_id: "run-t".into(), goal: "g".into(), state: "execute".into(), reason: String::new(), steps: vec![step("a", "completed", &[]), step("b", b, &["a"]), step("c", "pending", &["a"]), step("d", "pending", &["b", "c"])], handoffs: Vec::new(), history: Vec::new() }]
         };
         for status in ["pending", "running"] {

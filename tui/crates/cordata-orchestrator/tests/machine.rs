@@ -365,7 +365,7 @@ async fn a_pause_stops_at_the_next_safe_point_and_a_resume_finishes_the_run() {
     // Ask for a pause as soon as the plan is made (when execution is announced).
     let trigger: Arc<dyn Fn(Value) + Send + Sync> = Arc::new(move |e: Value| {
         if e["kind"] == "state" && e["state"] == "execute" {
-            *c2.0.lock().unwrap() = Some(ControlRequest { kind: "pause".into(), by: "me".into(), restore: false });
+            *c2.0.lock().unwrap() = Some(ControlRequest { kind: "pause".into(), by: "me".into(), restore: false, ..Default::default() });
         }
         events.lock().unwrap().push(e);
     });
@@ -416,7 +416,7 @@ async fn a_cancel_with_restore_saves_a_patch_and_puts_the_project_back() {
     // Cancel (with restore) once the work is done and the run is about to harden.
     let trigger: Arc<dyn Fn(Value) + Send + Sync> = Arc::new(move |e: Value| {
         if e["kind"] == "state" && e["state"] == "harden" {
-            *c2.0.lock().unwrap() = Some(ControlRequest { kind: "cancel".into(), by: String::new(), restore: true });
+            *c2.0.lock().unwrap() = Some(ControlRequest { kind: "cancel".into(), by: String::new(), restore: true, ..Default::default() });
         }
         events.lock().unwrap().push(e);
     });

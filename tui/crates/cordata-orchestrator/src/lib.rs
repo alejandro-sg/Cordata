@@ -25,6 +25,7 @@ pub mod research;
 pub mod scope;
 pub mod secrets;
 pub mod synthesizer;
+pub mod tape;
 pub mod taste;
 pub mod testkit;
 pub mod worker;

@@ -53,17 +53,35 @@ enum Command {
         run_id: Option<String>,
         #[arg(long)]
         session_id: Option<String>,
+        /// how changes are landed: "all" directly into working tree, or "review" to finish in to_review state
+        #[arg(long)]
+        land: Option<String>,
+        /// detach run into background session (setsid) so it survives terminal closure
+        #[arg(long)]
+        detach: bool,
     },
     /// pool headroom, recent runs and handoffs
     Status {
         #[arg(long)]
         json: bool,
     },
-    /// show one run's plan, history, and audit
+    /// show one run's plan, history, audit, or a step's live tape
     Show {
         run_id: String,
         #[arg(long)]
         json: bool,
+        /// step id to inspect its live activity / tape
+        #[arg(long)]
+        step: Option<String>,
+        /// attempt number (defaults to latest)
+        #[arg(long)]
+        attempt: Option<usize>,
+        /// tail / follow the step tape live
+        #[arg(long)]
+        follow: bool,
+        /// show timeline waterfall of GenAI spans
+        #[arg(long)]
+        timeline: bool,
     },
     /// continue a paused or interrupted run
     Resume {
@@ -83,6 +101,12 @@ enum Command {
         direction: Option<String>,
         #[arg(long)]
         json: bool,
+    },
+    /// export a run as OpenTelemetry GenAI spans
+    Export {
+        run_id: String,
+        #[arg(long)]
+        otlp: bool,
     },
     /// recursive self-improvement cycle across Iron Gates
     Evolve {
@@ -106,12 +130,45 @@ enum Command {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     let code = match Cli::parse().command {
-        Command::Run { goal, cwd, workers, dispatch, allow_direct, max_usd, max_rounds, max_parallel, no_harden, no_research, research, no_conformance, no_tier2, no_screen, json, run_id, session_id } => {
+        Command::Run { goal, cwd, workers, dispatch, allow_direct, max_usd, max_rounds, max_parallel, no_harden, no_research, research, no_conformance, no_tier2, no_screen, json, run_id, session_id, land, detach } => {
+            if detach {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::process::CommandExt;
+                    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("cordata-run"));
+                    let mut cmd = std::process::Command::new(exe);
+                    for arg in std::env::args().skip(1) {
+                        if arg != "--detach" {
+                            cmd.arg(arg);
+                        }
+                    }
+                    unsafe {
+                        cmd.pre_exec(|| {
+                            libc::setsid();
+                            Ok(())
+                        });
+                    }
+                    cmd.stdin(std::process::Stdio::null());
+                    cmd.stdout(std::process::Stdio::null());
+                    cmd.stderr(std::process::Stdio::null());
+                    match cmd.spawn() {
+                        Ok(child) => {
+                            println!("Detached run started with PID {}", child.id());
+                            return ExitCode::from(0);
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to spawn detached run: {e}");
+                            return ExitCode::from(1);
+                        }
+                    }
+                }
+            }
             let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-            cli::run(RunArgs { goal, cwd, workers, dispatch, allow_direct, max_usd, max_rounds, max_parallel, no_harden, no_research, research, no_conformance, no_tier2, no_screen, json, run_id, session_id }).await
+            cli::run(RunArgs { goal, cwd, workers, dispatch, allow_direct, max_usd, max_rounds, max_parallel, no_harden, no_research, research, no_conformance, no_tier2, no_screen, json, run_id, session_id, land, detach }).await
         }
         Command::Status { json } => cli::status_cmd(json),
-        Command::Show { run_id, json } => cli::show_cmd(&run_id, json),
+        Command::Show { run_id, json, step, attempt, follow, timeline } => cli::show_cmd(&run_id, json, step.as_deref(), attempt, follow, timeline),
+        Command::Export { run_id, otlp } => cli::export_cmd(&run_id, otlp),
         Command::Resume { run_id, workers, allow_direct, max_usd, allow_weaker_guards, direction, json } => cli::resume(&run_id, workers, allow_direct, max_usd, allow_weaker_guards, direction, json).await,
         Command::Evolve { target, threshold, dry_run, cwd, json } => cli::evolve_cmd(&target, threshold, dry_run, json, cwd),
     };

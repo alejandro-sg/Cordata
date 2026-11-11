@@ -471,6 +471,13 @@ impl App {
                     session.model = model;
                 }
             }
+            AppEvent::Compacted { before, after, summary } => {
+                let note = format!("compacted conversation (~{before} → ~{after} tokens):\n{summary}");
+                self.messages.push(Message::Info(note));
+            }
+            AppEvent::Context(breakdown) => {
+                self.telemetry.last_context = Some(breakdown);
+            }
             AppEvent::AutoAllowed { id, reason } => {
                 self.auto_meta.insert(id, format!("auto · {}", sanitize(&reason)));
             }
@@ -1129,6 +1136,9 @@ impl App {
             }
             Command::Diff => return self.run_diff(),
             Command::Copy => return self.run_copy(),
+            Command::Context => self.run_context(),
+            Command::Run(arg) => return self.run_multiagent_run(arg),
+            Command::Goldfish => return self.run_goldfish(),
             Command::Export(arg) => self.run_export(arg),
             Command::Palette => return self.open_overlay(crate::overlay::Kind::Palette),
             Command::Review => return self.open_overlay(crate::overlay::Kind::Review),

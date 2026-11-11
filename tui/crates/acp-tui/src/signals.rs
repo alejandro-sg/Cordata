@@ -94,6 +94,16 @@ pub fn progress_sequence(state: TabState) -> &'static str {
     }
 }
 
+/// Declared agent state sequence (OSC 7501) understood by Herdr, Cordata, and compliant hosts.
+pub fn osc_7501_sequence(state: TabState) -> &'static str {
+    match state {
+        TabState::Working => "\x1b]7501;state=working\x07",
+        TabState::NeedsApproval => "\x1b]7501;state=blocked;kind=permission\x07",
+        TabState::Done => "\x1b]7501;state=done\x07",
+        TabState::Connecting | TabState::Idle | TabState::Closed => "\x1b]7501;state=idle\x07",
+    }
+}
+
 pub fn notification(kind: Notify, title: &str, body: &str) -> Option<String> {
     let (title, body) = (clean(title, 60), clean(body, 200));
     match kind {
@@ -108,6 +118,7 @@ pub fn notification(kind: Notify, title: &str, body: &str) -> Option<String> {
 pub struct Shown {
     title: Option<String>,
     progress: Option<&'static str>,
+    osc_7501: Option<&'static str>,
 }
 
 impl Shown {
@@ -128,6 +139,11 @@ impl Shown {
                 self.progress = Some(sequence);
             }
         }
+        let osc_7501 = osc_7501_sequence(state);
+        if self.osc_7501 != Some(osc_7501) {
+            out.push_str(osc_7501);
+            self.osc_7501 = Some(osc_7501);
+        }
         out
     }
 }
@@ -140,6 +156,7 @@ pub fn enter(caps: &Caps) -> &'static str {
 /// What to write on the way out, a crash included: the progress bar cleared and the old title back.
 pub fn restore(caps: &Caps) -> String {
     let mut out = String::new();
+    out.push_str(osc_7501_sequence(TabState::Idle));
     if caps.progress {
         out.push_str(progress_sequence(TabState::Idle));
     }
@@ -196,15 +213,15 @@ mod tests {
         let caps = caps(&[("TERM_PROGRAM", "ghostty")]);
         let mut shown = Shown::default();
         let first = shown.update(&caps, TabState::Working, 0, "t");
-        assert!(first.contains("\x1b]2;⠋ t · cordata\x07") && first.contains("\x1b]9;4;3\x07"));
+        assert!(first.contains("\x1b]2;⠋ t · cordata\x07") && first.contains("\x1b]9;4;3\x07") && first.contains("\x1b]7501;state=working\x07"));
         assert_eq!(shown.update(&caps, TabState::Working, 0, "t"), "");
         let next = shown.update(&caps, TabState::Working, 1, "t");
-        assert!(next.contains('⠙') && !next.contains("9;4"), "the spinner moves, the progress bar stays");
+        assert!(next.contains('⠙') && !next.contains("9;4") && !next.contains("7501"), "the spinner moves, other sequences stay");
         assert!(shown.update(&caps, TabState::Idle, 1, "t").contains("\x1b]9;4;0\x07"));
-        assert_eq!(restore(&caps), format!("\x1b]9;4;0\x07{POP_TITLE}"));
+        assert_eq!(restore(&caps), format!("\x1b]7501;state=idle\x07\x1b]9;4;0\x07{POP_TITLE}"));
         assert_eq!(enter(&caps), PUSH_TITLE);
         let iterm = super::Caps { title: false, ..caps };
-        assert_eq!(restore(&Caps { progress: false, ..iterm }), "");
+        assert_eq!(restore(&Caps { progress: false, ..iterm }), "\x1b]7501;state=idle\x07");
     }
 
     #[test]

@@ -179,6 +179,18 @@ pub enum Restored {
     Tool { name: String, summary: String },
 }
 
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, Default)]
+pub struct ContextBreakdown {
+    pub system_tokens: usize,
+    pub skills_tokens: usize,
+    pub tools_tokens: usize,
+    pub pruned_tools_count: usize,
+    pub user_tokens: usize,
+    pub assistant_tokens: usize,
+    pub tool_results_tokens: usize,
+    pub total_estimated_tokens: usize,
+}
+
 #[derive(Debug)]
 pub enum AppEvent {
     Connected(SessionInfo),
@@ -195,6 +207,14 @@ pub enum AppEvent {
     Usage(TokenUsage),
     /// The session now answers with another model (`SessionHandle::set_model`); the conversation carries on.
     ModelChanged(String),
+    /// Context window compaction happened (`G4`).
+    Compacted {
+        before: usize,
+        after: usize,
+        summary: String,
+    },
+    /// Itemized breakdown of prompt context tokens (`G5`).
+    Context(ContextBreakdown),
     /// Auto mode allowed tool call `id` without a card (`auto::judge`), for this reason.
     AutoAllowed {
         id: String,

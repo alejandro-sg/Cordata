@@ -52,6 +52,7 @@ pub struct Telemetry {
     pub session_in: u64,
     pub session_out: u64,
     pub session_cached: u64,
+    pub last_context: Option<acp_core::ContextBreakdown>,
 }
 
 impl Telemetry {

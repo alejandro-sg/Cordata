@@ -15,7 +15,7 @@ pub const CRITERION_TYPES: [&str; 5] = ["command", "test", "file_exists", "file_
 pub const RISKS: [&str; 3] = ["read_only", "edits_files", "destructive"];
 pub const ROLLBACK: [&str; 2] = ["rollback_checkpoint", "keep_partial"];
 pub const COMPLEXITIES: [&str; 3] = ["low", "medium", "high"];
-pub const STEP_STATUSES: [&str; 6] = ["pending", "running", "completed", "failed", "partial", "skipped"];
+pub const STEP_STATUSES: [&str; 7] = ["pending", "running", "completed", "failed", "partial", "skipped", "blocked"];
 pub const MAX_STEPS: usize = 12;
 pub const MAX_CRITERIA: usize = 20;
 
@@ -83,6 +83,10 @@ pub struct Step {
     pub complexity: String,
     #[serde(default)]
     pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub last_event_at: Option<f64>,
+    #[serde(default)]
+    pub blocked_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -555,6 +559,8 @@ pub fn from_draft(draft: &Value, root: &str, options: Options, findings: Option<
                 grounded_in: strings(s.get("grounded_in")),
                 complexity: s.get("complexity").and_then(Value::as_str).unwrap_or("medium").to_owned(),
                 depends_on: strings(s.get("depends_on")),
+                last_event_at: None,
+                blocked_reason: None,
             }
         })
         .collect();

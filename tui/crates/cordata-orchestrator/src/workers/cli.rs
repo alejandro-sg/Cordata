@@ -155,6 +155,7 @@ pub fn seatbelt_works() -> bool {
 struct Running {
     pid: Option<u32>,
     cancelled: bool,
+    stdin_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 }
 
 #[derive(Default)]
@@ -462,7 +463,7 @@ impl CliWorker {
         if let (Some(bus), Some(pid)) = (&task.bus, pid) {
             bus.pid.set(pid);
         }
-        self.running.lock().unwrap().insert(task.task_id.clone(), Running { pid, cancelled: false });
+        self.running.lock().unwrap().insert(task.task_id.clone(), Running { pid, cancelled: false, stdin_tx: None });
         if let (Some(mut pipe), Some(text)) = (child.stdin.take(), stdin) {
             tokio::spawn(async move {
                 // The child may exit before reading its prompt; its exit code says why.
@@ -653,5 +654,28 @@ impl Worker for CliWorker {
             kill_group(r.pid);
             true
         })
+    }
+
+    fn send_input(&self, task_id: &str, text: &str) -> bool {
+        let running = self.running.lock().unwrap();
+        let Some(r) = running.get(task_id) else { return false };
+        let Some(tx) = &r.stdin_tx else { return false };
+        let formatted = if self.dialect.family() == "claude_code" {
+            if text.trim_start().starts_with('{') {
+                format!("{}\n", text.trim())
+            } else {
+                let msg = json!({
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": text.trim(),
+                    }
+                });
+                format!("{}\n", msg)
+            }
+        } else {
+            if text.ends_with('\n') { text.to_owned() } else { format!("{text}\n") }
+        };
+        tx.send(formatted).is_ok()
     }
 }

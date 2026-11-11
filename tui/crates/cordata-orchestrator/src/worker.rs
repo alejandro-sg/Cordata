@@ -162,4 +162,9 @@ pub trait Worker: Send + Sync {
 
     /// Stops a running task (its process group is killed; `run` then returns a `cancelled` result).
     fn cancel<'a>(&'a self, task_id: &'a str) -> BoxFuture<'a, bool>;
+
+    /// Sends mid-run input (steering, answers) into a running task's stdin if supported.
+    fn send_input(&self, _task_id: &str, _text: &str) -> bool {
+        false
+    }
 }

@@ -18,17 +18,19 @@ const TERMINAL: [&str; 4] = ["done", "failed", "budget_exhausted", "cancelled"];
 /// Runs shown for a project: this many, newest first.
 pub const MAX_RUNS: usize = 2;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Step {
     pub id: String,
     pub name: String,
-    /// `pending`, `running`, `completed` or `failed`.
+    /// `pending`, `running`, `completed`, `failed` or `blocked`.
     pub status: String,
     pub worker: Option<String>,
     pub attempts: i64,
     pub scope: Vec<String>,
     /// Ids of the steps that must finish first (`depends_on`). Empty everywhere: the plan runs top to bottom.
     pub deps: Vec<String>,
+    pub last_event_at: Option<f64>,
+    pub blocked_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,7 +77,22 @@ pub fn step_line(run: &Run, step: &Step) -> String {
     let tries = if step.attempts > 1 { format!(" · try {}", step.attempts) } else { String::new() };
     let with = |word: &str| who.map_or_else(|| word.to_owned(), |w| format!("{word} · {w}"));
     match step.status.as_str() {
-        "running" => with("running") + &tries,
+        "running" => {
+            let mut line = with("running") + &tries;
+            if let Some(ts) = step.last_event_at {
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+                let quiet_s = (now - ts).max(0.0);
+                if quiet_s > 60.0 {
+                    let m = (quiet_s / 60.0).floor() as u64;
+                    line.push_str(&format!(" · quiet for {m}m"));
+                }
+            }
+            line
+        }
+        "blocked" => {
+            let reason = step.blocked_reason.as_deref().unwrap_or("needs you");
+            with(reason) + &tries
+        }
         "completed" => with("done") + &tries,
         "failed" => with("failed") + &tries,
         _ => {
@@ -131,6 +148,8 @@ pub fn parse(show: &Value, status: &Value) -> Option<Run> {
             attempts: s.get("attempts").and_then(Value::as_i64).unwrap_or(0),
             scope: s.get("file_scope").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect(),
             deps: s.get("depends_on").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect(),
+            last_event_at: s.get("last_event_at").and_then(Value::as_f64),
+            blocked_reason: s.get("blocked_reason").and_then(Value::as_str).map(str::to_owned),
         })
         .collect();
     let handoffs = status
@@ -245,6 +264,66 @@ pub fn request_hold(home: &Path, run_id: &str, by: &str) -> std::io::Result<()> 
     writeln!(out, "{}", serde_json::json!({"cmd": "pause", "now": false, "restore": false, "by": by, "at": at}))
 }
 
+/// Deliver an answer to a blocked step waiting on a question (G3).
+pub fn request_answer(home: &Path, run_id: &str, step_id: &str, text: &str) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    if run_id.is_empty() || !run_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a run id"));
+    }
+    let path = control_file(home, run_id);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut out = std::fs::OpenOptions::new().append(true).create(true).mode(0o600).open(path)?;
+    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+    writeln!(out, "{}", serde_json::json!({"cmd": "answer", "step": step_id, "text": text, "at": at}))
+}
+
+/// Grant or deny permission to a blocked step (G3).
+pub fn request_permission(home: &Path, run_id: &str, step_id: &str, allow: bool) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    if run_id.is_empty() || !run_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a run id"));
+    }
+    let path = control_file(home, run_id);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut out = std::fs::OpenOptions::new().append(true).create(true).mode(0o600).open(path)?;
+    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+    writeln!(out, "{}", serde_json::json!({"cmd": "permission", "step": step_id, "allow": allow, "at": at}))
+}
+
+/// Steer a running step with a live message (G2).
+pub fn request_say(home: &Path, run_id: &str, step_id: &str, text: &str) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    if run_id.is_empty() || !run_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a run id"));
+    }
+    let path = control_file(home, run_id);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut out = std::fs::OpenOptions::new().append(true).create(true).mode(0o600).open(path)?;
+    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+    writeln!(out, "{}", serde_json::json!({"cmd": "say", "step": step_id, "text": text, "at": at}))
+}
+
+/// Interrupt a running step mid-call (G2).
+pub fn request_interrupt(home: &Path, run_id: &str, step_id: &str) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    if run_id.is_empty() || !run_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a run id"));
+    }
+    let path = control_file(home, run_id);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut out = std::fs::OpenOptions::new().append(true).create(true).mode(0o600).open(path)?;
+    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+    writeln!(out, "{}", serde_json::json!({"cmd": "interrupt", "step": step_id, "at": at}))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,7 +364,7 @@ mod tests {
         });
         let run = parse(&show, &status()).unwrap();
         assert_eq!((run.state.as_str(), run.steps.len(), run.handoffs.len()), ("paused", 2, 1));
-        assert_eq!(run.steps[0], Step { id: "s1".into(), name: "guard".into(), status: "running".into(), worker: Some("claude_code:fast".into()), attempts: 2, scope: vec!["src/**".into()], deps: Vec::new() });
+        assert_eq!(run.steps[0], Step { id: "s1".into(), name: "guard".into(), status: "running".into(), worker: Some("claude_code:fast".into()), attempts: 2, scope: vec!["src/**".into()], deps: Vec::new(), last_event_at: None, blocked_reason: None });
         assert_eq!(run.steps[1].worker, None);
         assert_eq!(run.steps[1].deps, vec!["s1".to_owned()]);
         assert_eq!((run.handoffs[0].id.as_str(), run.handoffs[0].to.as_deref()), ("h1", Some("antigravity:x")));
@@ -320,7 +399,7 @@ mod tests {
             goal: String::new(),
             state: "execute".into(),
             reason: String::new(),
-            steps: vec![Step { id: "s1".into(), name: "n".into(), status: status.into(), worker: worker.map(str::to_owned), attempts: 1, scope: Vec::new(), deps: Vec::new() }],
+            steps: vec![Step { id: "s1".into(), name: "n".into(), status: status.into(), worker: worker.map(str::to_owned), attempts: 1, scope: Vec::new(), deps: Vec::new(), last_event_at: None, blocked_reason: None }],
             handoffs: Vec::new(),
             history: Vec::new(),
         }
@@ -355,7 +434,7 @@ mod tests {
     #[test]
     fn a_step_says_what_it_is_doing_or_waiting_for() {
         let mut run = one_step("completed", Some("claude_code:haiku"));
-        run.steps.push(Step { id: "s2".into(), name: "n".into(), status: "pending".into(), worker: None, attempts: 0, scope: Vec::new(), deps: vec!["s1".into()] });
+        run.steps.push(Step { id: "s2".into(), name: "n".into(), status: "pending".into(), worker: None, attempts: 0, scope: Vec::new(), deps: vec!["s1".into()], last_event_at: None, blocked_reason: None });
         assert_eq!(step_line(&run, &run.steps[0]), "done · claude_code:haiku");
         assert_eq!(step_line(&run, &run.steps[1]), "not started", "what it waited on is done");
         run.steps[0].status = "running".into();

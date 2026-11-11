@@ -19,7 +19,7 @@ use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{Config, Term, TermMode};
-use alacritty_terminal::tty::{self, Shell};
+use alacritty_terminal::tty::{self, EventedPty, EventedReadWrite, Shell};
 use alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
 use tokio::sync::mpsc;
 
@@ -50,12 +50,146 @@ impl<'a> Launch<'a> {
     }
 }
 
+/// Parse OSC 7501 escape sequences from the byte stream:
+/// Format: `\x1b]7501;state=<state>[;kind=<kind>]\x07` or `\x1b]7501;... \x1b\\`
+/// States: working, blocked, idle, done, error
+/// Kinds: permission, question, auth
+pub fn parse_osc_7501(bytes: &[u8]) -> Option<(crate::detect::State, Option<String>)> {
+    let header = b"\x1b]7501;";
+    let mut pos = 0;
+    while let Some(start) = bytes[pos..].windows(header.len()).position(|w| w == header) {
+        let abs_start = pos + start + header.len();
+        let mut term_idx = None;
+        for i in abs_start..bytes.len() {
+            if bytes[i] == 0x07 {
+                term_idx = Some(i);
+                break;
+            }
+            if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'\\' {
+                term_idx = Some(i);
+                break;
+            }
+        }
+        if let Some(end) = term_idx {
+            if let Ok(payload) = std::str::from_utf8(&bytes[abs_start..end]) {
+                let mut state_str = None;
+                let mut kind_str = None;
+                for part in payload.split(';') {
+                    let part = part.trim();
+                    if let Some(val) = part.strip_prefix("state=") {
+                        state_str = Some(val);
+                    } else if let Some(val) = part.strip_prefix("kind=") {
+                        kind_str = Some(val.to_owned());
+                    } else if state_str.is_none() && matches!(part, "working" | "blocked" | "idle" | "done" | "error") {
+                        state_str = Some(part);
+                    } else if kind_str.is_none() && matches!(part, "permission" | "question" | "auth") {
+                        kind_str = Some(part.to_owned());
+                    }
+                }
+                if let Some(s) = state_str {
+                    let state = match s {
+                        "working" => crate::detect::State::Working,
+                        "blocked" | "error" => crate::detect::State::Blocked,
+                        "idle" | "done" => crate::detect::State::Idle,
+                        _ => crate::detect::State::Idle,
+                    };
+                    return Some((state, kind_str));
+                }
+            }
+            pos = end + 1;
+        } else {
+            break;
+        }
+    }
+    None
+}
+
+fn parse_osc_7501_stream(stream_buf: &mut Vec<u8>, incoming: &[u8], declared: &FairMutex<Option<(crate::detect::State, Option<String>)>>) {
+    stream_buf.extend_from_slice(incoming);
+    if let Some(found) = parse_osc_7501(stream_buf) {
+        *declared.lock() = Some(found);
+    }
+    if stream_buf.len() > 1024 {
+        let keep = stream_buf.len().saturating_sub(512);
+        stream_buf.drain(..keep);
+    }
+}
+
+pub struct MonitoredReader {
+    file: std::fs::File,
+    declared: Arc<FairMutex<Option<(crate::detect::State, Option<String>)>>>,
+    buf: Vec<u8>,
+}
+
+impl std::io::Read for MonitoredReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.file.read(buf)?;
+        if n > 0 {
+            parse_osc_7501_stream(&mut self.buf, &buf[..n], &self.declared);
+        }
+        Ok(n)
+    }
+}
+
+pub struct MonitoredPty {
+    pty: tty::Pty,
+    reader: MonitoredReader,
+}
+
+impl MonitoredPty {
+    pub fn new(pty: tty::Pty, declared: Arc<FairMutex<Option<(crate::detect::State, Option<String>)>>>) -> std::io::Result<Self> {
+        let file = pty.file().try_clone()?;
+        Ok(Self {
+            pty,
+            reader: MonitoredReader { file, declared, buf: Vec::new() },
+        })
+    }
+}
+
+impl EventedReadWrite for MonitoredPty {
+    type Reader = MonitoredReader;
+    type Writer = std::fs::File;
+
+    unsafe fn register(&mut self, poll: &Arc<polling::Poller>, interest: polling::Event, poll_opts: polling::PollMode) -> std::io::Result<()> {
+        unsafe { self.pty.register(poll, interest, poll_opts) }
+    }
+
+    fn reregister(&mut self, poll: &Arc<polling::Poller>, interest: polling::Event, poll_opts: polling::PollMode) -> std::io::Result<()> {
+        self.pty.reregister(poll, interest, poll_opts)
+    }
+
+    fn deregister(&mut self, poll: &Arc<polling::Poller>) -> std::io::Result<()> {
+        self.pty.deregister(poll)
+    }
+
+    fn reader(&mut self) -> &mut Self::Reader {
+        &mut self.reader
+    }
+
+    fn writer(&mut self) -> &mut Self::Writer {
+        self.pty.writer()
+    }
+}
+
+impl EventedPty for MonitoredPty {
+    fn next_child_event(&mut self) -> Option<tty::ChildEvent> {
+        self.pty.next_child_event()
+    }
+}
+
+impl alacritty_terminal::event::OnResize for MonitoredPty {
+    fn on_resize(&mut self, window_size: WindowSize) {
+        self.pty.on_resize(window_size);
+    }
+}
+
 struct Inner {
     term: Arc<FairMutex<Term<Proxy>>>,
     sender: EventLoopSender,
     size: FairMutex<(u16, u16)>,
     /// A second handle on the PTY's controlling side, only to ask which process group is in the foreground.
     controller: std::fs::File,
+    declared: Arc<FairMutex<Option<(crate::detect::State, Option<String>)>>>,
 }
 
 /// One running terminal. Cloning shares it; `shutdown` ends the shell.
@@ -87,13 +221,24 @@ impl Session {
         let size = window_size(launch.cols, launch.lines, (8, 16));
         let pty = tty::new(&options, size, 0)?;
         let controller = pty.file().try_clone()?;
+        let declared = Arc::new(FairMutex::new(None));
+        let monitored = MonitoredPty::new(pty, declared.clone())?;
         let dims = TermSize::new(size.num_cols as usize, size.num_lines as usize);
         let term = Arc::new(FairMutex::new(Term::new(Config::default(), &dims, proxy.clone())));
-        let event_loop = EventLoop::new(term.clone(), proxy, pty, true, false)?;
+        let event_loop = EventLoop::new(term.clone(), proxy, monitored, true, false)?;
         let sender = event_loop.channel();
         event_loop.spawn();
-        let inner = Inner { term, sender, size: FairMutex::new((size.num_cols, size.num_lines)), controller };
+        let inner = Inner { term, sender, size: FairMutex::new((size.num_cols, size.num_lines)), controller, declared };
         Ok((Self(Arc::new(inner)), rx))
+    }
+
+    pub fn declared_state(&self) -> Option<(crate::detect::State, Option<String>)> {
+        self.0.declared.lock().clone()
+    }
+
+    #[allow(dead_code)]
+    pub fn clear_declared_state(&self) {
+        *self.0.declared.lock() = None;
     }
 
     pub fn write(&self, bytes: impl Into<Cow<'static, [u8]>>) {
@@ -622,5 +767,22 @@ mod tests {
         session.resize(30, 4, (8, 16));
         assert_eq!(session.size(), (30, 4));
         session.shutdown();
+    }
+
+    #[test]
+    fn parse_osc_7501_parses_states_and_kinds() {
+        assert_eq!(
+            parse_osc_7501(b"\x1b]7501;state=blocked;kind=permission\x07"),
+            Some((crate::detect::State::Blocked, Some("permission".into())))
+        );
+        assert_eq!(
+            parse_osc_7501(b"junk\x1b]7501;working\x07more"),
+            Some((crate::detect::State::Working, None))
+        );
+        assert_eq!(
+            parse_osc_7501(b"\x1b]7501;state=done\x1b\\"),
+            Some((crate::detect::State::Idle, None))
+        );
+        assert_eq!(parse_osc_7501(b"no osc here"), None);
     }
 }

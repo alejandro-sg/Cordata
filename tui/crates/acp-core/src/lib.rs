@@ -17,7 +17,7 @@ pub mod transport;
 
 pub use error::{Error, Result};
 pub use events::{
-    AppEvent, FileDiff, PlanItem, PlanItemStatus, PlanUpdate, Restored, SessionInfo, StopReason,
+    AppEvent, ContextBreakdown, FileDiff, PlanItem, PlanItemStatus, PlanUpdate, Restored, SessionInfo, StopReason,
     TokenUsage, ToolCallInfo, ToolCallPatch, ToolKind, ToolStatus,
 };
 pub use permission::{ApprovalDecision, PermissionInfo};

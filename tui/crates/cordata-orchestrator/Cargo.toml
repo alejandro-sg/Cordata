@@ -10,6 +10,7 @@ cordata-checkpoints = { path = "../cordata-checkpoints" }
 cordata-guard = { path = "../cordata-guard" }
 cordata-ledger = { path = "../cordata-ledger" }
 cordata-bus = { path = "../cordata-bus" }
+cordata-repomap = { path = "../cordata-repomap", version = "0.5.0", features = ["embed"] }
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true

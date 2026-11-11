@@ -37,6 +37,12 @@ pub enum Command {
     Resume(Option<String>),
     /// Delete this project's saved sessions; `/forget confirm` does it, plain `/forget` says what it would delete.
     Forget(Option<String>),
+    /// Itemized breakdown of prompt tokens.
+    Context,
+    /// Launch an orchestrated multi-agent run from this thread (`/run [goal]`).
+    Run(Option<String>),
+    /// Run stateless goldfish audit on working tree diff.
+    Goldfish,
     /// The rules, network and write scope the agent runs under.
     Permissions,
     /// Switch the chat model (`/model <name>`), or list the known ones.
@@ -60,6 +66,9 @@ pub const HELP: &[(&str, &str)] = &[
     ("/history", "this project's saved sessions"),
     ("/resume [id]", "continue a saved session (the last one by default)"),
     ("/forget", "delete this project's saved sessions"),
+    ("/context", "itemized breakdown of prompt tokens (instructions, skills, tools, history)"),
+    ("/run [goal]", "start an orchestrated multi-agent run from this thread"),
+    ("/goldfish", "dispatch stateless sub-agent to audit git diff against invariants"),
     ("/permissions", "what runs without asking, what is refused, network and write scope"),
     ("/memory", "show the instruction files the agent reads"),
     ("/init", "have the agent draft CORDATA.md"),
@@ -94,6 +103,9 @@ pub fn parse(input: &str) -> Option<Command> {
         "status" => Command::Status,
         "diff" | "changes" => Command::Diff,
         "copy" => Command::Copy,
+        "context" => Command::Context,
+        "run" => Command::Run(arg),
+        "goldfish" => Command::Goldfish,
         "export" => Command::Export(arg),
         "palette" | "deck" => Command::Palette,
         "diffview" | "dv" => Command::Review,

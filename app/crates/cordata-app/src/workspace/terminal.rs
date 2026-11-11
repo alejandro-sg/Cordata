@@ -191,7 +191,13 @@ impl Workspace {
         let detection = match &self.terminal.session {
             Some(session) if self.terminal.exited.is_none() => session.foreground().and_then(|argv| {
                 let lines = session.text();
-                let view = detect::View { title: self.terminal.title.as_deref(), lines: &lines, active: self.terminal.active(Instant::now()) };
+                let declared = session.declared_state().map(|(s, _)| s);
+                let view = detect::View {
+                    title: self.terminal.title.as_deref(),
+                    lines: &lines,
+                    active: self.terminal.active(Instant::now()),
+                    declared,
+                };
                 self.terminal.rules.detect(&argv, view)
             }),
             _ => None,

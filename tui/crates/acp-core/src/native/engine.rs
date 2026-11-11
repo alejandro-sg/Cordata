@@ -406,6 +406,136 @@ pub(crate) async fn drive(
     let _ = events.send(AppEvent::Closed);
 }
 
+fn compact_tool_output(output: &str, profile: &cordata_economizer::Profile, state_dir: Option<&Path>) -> String {
+    let offload_dir = state_dir.map(|d| d.join("offloaded")).unwrap_or_else(|| {
+        std::env::temp_dir().join("cordata_offload")
+    });
+    let compacted = cordata_economizer::compactor::compact(output, profile.output_chars, &offload_dir);
+    compacted.text
+}
+
+fn age_history(history: &mut [Msg], profile: &cordata_economizer::Profile) {
+    let total_user_turns = history.iter().filter(|m| matches!(m, Msg::User { .. })).count();
+    let mut current_turn = 0;
+    let mut tool_names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+    for msg in history.iter_mut() {
+        match msg {
+            Msg::User { .. } => {
+                current_turn += 1;
+            }
+            Msg::Assistant { calls, .. } => {
+                for c in calls {
+                    tool_names.insert(c.id.clone(), c.name.clone());
+                }
+            }
+            Msg::ToolResult { id, output } => {
+                let turns_old = total_user_turns.saturating_sub(current_turn);
+                let tool_name = tool_names.get(id).map(String::as_str).unwrap_or("tool");
+                if let Some(aged) = cordata_economizer::compactor::age(tool_name, output, turns_old, profile) {
+                    *output = aged;
+                }
+            }
+        }
+    }
+}
+
+fn estimate_context_breakdown(system: &str, history: &[Msg], specs: &[tools::ToolSpec], pruned_count: usize) -> crate::events::ContextBreakdown {
+    let est_tok = |text: &str| text.len().div_ceil(4);
+    let system_tokens = est_tok(system);
+    let skills_tokens = 0;
+    let tools_tokens: usize = specs.iter().map(|s| est_tok(&s.name) + est_tok(&s.schema.to_string())).sum();
+    let mut user_tokens = 0;
+    let mut assistant_tokens = 0;
+    let mut tool_results_tokens = 0;
+
+    for m in history {
+        match m {
+            Msg::User { text } => user_tokens += est_tok(text),
+            Msg::Assistant { text, calls } => {
+                assistant_tokens += est_tok(text);
+                for c in calls {
+                    assistant_tokens += est_tok(&c.name) + est_tok(&c.args.to_string());
+                }
+            }
+            Msg::ToolResult { output, .. } => tool_results_tokens += est_tok(output),
+        }
+    }
+    let total = system_tokens + tools_tokens + user_tokens + assistant_tokens + tool_results_tokens;
+    crate::events::ContextBreakdown {
+        system_tokens,
+        skills_tokens,
+        tools_tokens,
+        pruned_tools_count: pruned_count,
+        user_tokens,
+        assistant_tokens,
+        tool_results_tokens,
+        total_estimated_tokens: total,
+    }
+}
+
+fn summarize_history(history: &[Msg]) -> String {
+    let mut files = BTreeSet::new();
+    let mut decisions = Vec::new();
+    let mut goal = String::new();
+    for m in history {
+        match m {
+            Msg::User { text } => {
+                if goal.is_empty() {
+                    goal = text.lines().next().unwrap_or(text).chars().take(120).collect();
+                }
+            }
+            Msg::Assistant { text, calls } => {
+                for c in calls {
+                    if let Some(path) = c.args.get("path").and_then(serde_json::Value::as_str) {
+                        files.insert(path.to_string());
+                    }
+                }
+                for line in text.lines().filter(|l| l.contains("decid") || l.contains("Decision")) {
+                    decisions.push(line.trim().chars().take(100).collect::<String>());
+                }
+            }
+            Msg::ToolResult { .. } => {}
+        }
+    }
+    format!(
+        "Summary of prior conversation:\nGoal: {goal}\nDecisions: {}\nFiles touched: {}\nOpen questions: None\nNext step: Continuing from current context.",
+        if decisions.is_empty() { "Iterative implementation".to_string() } else { decisions.join("; ") },
+        if files.is_empty() { "(none)".to_string() } else { files.into_iter().collect::<Vec<_>>().join(", ") }
+    )
+}
+
+fn compact_history_if_needed(history: &mut Vec<Msg>, threshold_tokens: usize) -> Option<(usize, usize, String)> {
+    let est_tok = |text: &str| text.len().div_ceil(4);
+    let total_tokens: usize = history.iter().map(|m| match m {
+        Msg::User { text } => est_tok(text),
+        Msg::Assistant { text, calls } => est_tok(text) + calls.iter().map(|c| est_tok(&c.name) + est_tok(&c.args.to_string())).sum::<usize>(),
+        Msg::ToolResult { output, .. } => est_tok(output),
+    }).sum();
+
+    if total_tokens < threshold_tokens || history.len() <= 4 {
+        return None;
+    }
+
+    let summary = summarize_history(history);
+    let keep_start = history.len().saturating_sub(4);
+    let recent = history[keep_start..].to_vec();
+
+    let mut compacted = Vec::with_capacity(recent.len() + 2);
+    compacted.push(Msg::User { text: format!("[Prior conversation summary]:\n{summary}") });
+    compacted.push(Msg::Assistant { text: "Acknowledged. Proceeding with the goal and decisions preserved.".into(), calls: Vec::new() });
+    compacted.extend(recent);
+
+    let after_tokens: usize = compacted.iter().map(|m| match m {
+        Msg::User { text } => est_tok(text),
+        Msg::Assistant { text, calls } => est_tok(text) + calls.iter().map(|c| est_tok(&c.name) + est_tok(&c.args.to_string())).sum::<usize>(),
+        Msg::ToolResult { output, .. } => est_tok(output),
+    }).sum();
+
+    *history = compacted;
+    Some((total_tokens, after_tokens, summary))
+}
+
 impl Agent<'_> {
     /// The model answering now.
     fn llm(&self) -> &dyn Provider {
@@ -421,13 +551,49 @@ impl Agent<'_> {
         let system = self.system_prompt(&prompt).to_owned();
         let tools_json = specs.iter().map(|s| format!("{}{}", s.name, s.schema)).collect::<String>();
         self.economizer.prefix.observe(&system, &tools_json);
+
+        // G4: age older tool results in history
+        age_history(history, &self.economizer.profile);
+
+        // G5: estimate and emit context breakdown
+        let pruned_count = tools::specs().len().saturating_sub(specs.len());
+        let breakdown = estimate_context_breakdown(&system, history, &specs, pruned_count);
+        let _ = events.send(AppEvent::Context(breakdown));
+
+        // G4: threshold compaction (80% model window)
+        let window_limit = match self.economizer.profile.kind {
+            cordata_economizer::profile::ProviderKind::Ollama => 6_000,
+            _ => 120_000,
+        };
+        if let Some((before, after, summary)) = compact_history_if_needed(history, window_limit) {
+            let _ = events.send(AppEvent::Compacted { before, after, summary });
+        }
+
         for _ in 0..MAX_ROUNDS {
             let stream = match interruptible(self.llm().stream(&system, history.clone(), &specs), commands, events, &self.mode).await {
                 Ok(Ok(stream)) => stream,
-                Ok(Err(error)) => return {
-                    self.fail(history, events, error);
-                    Ok(())
-                },
+                Ok(Err(error)) => {
+                    let is_context_err = error.contains("context") || error.contains("too long") || error.contains("token") || error.contains("maximum");
+                    if is_context_err && history.len() > 4 {
+                        if let Some((before, after, summary)) = compact_history_if_needed(history, 1) {
+                            let _ = events.send(AppEvent::Compacted { before, after, summary });
+                            match interruptible(self.llm().stream(&system, history.clone(), &specs), commands, events, &self.mode).await {
+                                Ok(Ok(s)) => s,
+                                Ok(Err(err2)) => {
+                                    self.fail(history, events, err2);
+                                    return Ok(());
+                                }
+                                Err(interrupt) => return self.interrupted(interrupt, history, String::new(), events),
+                            }
+                        } else {
+                            self.fail(history, events, error);
+                            return Ok(());
+                        }
+                    } else {
+                        self.fail(history, events, error);
+                        return Ok(());
+                    }
+                }
                 Err(interrupt) => return self.interrupted(interrupt, history, String::new(), events),
             };
             let mut stream = stream;
@@ -473,7 +639,10 @@ impl Agent<'_> {
             history.push(Msg::Assistant { text, calls: calls.clone() });
             for (index, call) in calls.iter().enumerate() {
                 match self.run_call(call, commands, events).await {
-                    Ok(output) => history.push(Msg::ToolResult { id: call.id.clone(), output }),
+                    Ok(output) => {
+                        let compact_out = compact_tool_output(&output, &self.economizer.profile, self.economizer.state_dir.as_deref());
+                        history.push(Msg::ToolResult { id: call.id.clone(), output: compact_out });
+                    }
                     Err(interrupt) => {
                         // Every call the model made needs a result, or the next request is malformed.
                         for rest in &calls[index..] {

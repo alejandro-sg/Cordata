@@ -16,7 +16,7 @@ use cordata_orchestrator::machine::{self, Machine, RunConfig, RunRecord, World};
 use cordata_orchestrator::plan::Plan;
 use cordata_orchestrator::research::FileResearch;
 use cordata_orchestrator::synthesizer::{CowIsolation, FileSynthesis};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::config;
 use crate::controls::FileControls;
@@ -44,6 +44,8 @@ pub struct RunArgs {
     pub json: bool,
     pub run_id: Option<String>,
     pub session_id: Option<String>,
+    pub land: Option<String>,
+    pub detach: bool,
 }
 
 /// Exit status of `run`/`resume` when no worker can run (`EX_CONFIG`): nothing has been done at that point.
@@ -173,6 +175,9 @@ pub fn run_args_to_config(args: &RunArgs, base: RunConfig) -> RunConfig {
     }
     if args.research {
         c.research = true;
+    }
+    if let Some(v) = &args.land {
+        c.land = v.clone();
     }
     c
 }
@@ -429,7 +434,13 @@ pub fn apply_direction(record: &mut machine::RunRecord, text: &str) -> bool {
     true
 }
 
-pub fn show_cmd(run_id: &str, as_json: bool) -> i32 {
+pub fn show_cmd(run_id: &str, as_json: bool, step: Option<&str>, attempt: Option<usize>, follow: bool, timeline: bool) -> i32 {
+    if timeline {
+        return show_timeline(run_id, as_json);
+    }
+    if let Some(step_id) = step {
+        return show_step_tape(run_id, step_id, attempt, follow, as_json);
+    }
     let Ok(ledger) = Ledger::open_default(Vec::new()) else {
         eprintln!("cannot open the ledger");
         return 2;
@@ -466,6 +477,241 @@ pub fn show_cmd(run_id: &str, as_json: bool) -> i32 {
             println!("{line}");
         }
     }
+    0
+}
+
+pub fn show_step_tape(run_id: &str, step_id: &str, attempt: Option<usize>, follow: bool, as_json: bool) -> i32 {
+    let home = cordata_home(&std::env::vars().collect());
+    let art_dir = machine::artifacts_dir(&home, run_id);
+    let path = cordata_orchestrator::tape::tape_path(&art_dir, step_id, attempt);
+    if !path.exists() && !follow {
+        eprintln!("no tape found for step {step_id} in run {run_id} at {}", path.display());
+        return 2;
+    }
+
+    if !follow {
+        match cordata_orchestrator::tape::read_tape(&path) {
+            Ok(events) => {
+                if as_json {
+                    println!("{}", serde_json::to_string_pretty(&events).unwrap());
+                } else {
+                    for ev in &events {
+                        print_tape_event(ev);
+                    }
+                }
+                0
+            }
+            Err(e) => {
+                eprintln!("error reading tape: {e}");
+                2
+            }
+        }
+    } else {
+        use std::io::{BufRead, BufReader, Seek, SeekFrom};
+        let mut pos = 0u64;
+        let mut finished = false;
+        println!("== Tailing step {step_id} (run {run_id}) ==");
+        while !finished {
+            if path.exists() {
+                if let Ok(mut file) = std::fs::File::open(&path) {
+                    let _ = file.seek(SeekFrom::Start(pos));
+                    let mut reader = BufReader::new(file);
+                    let mut line = String::new();
+                    while let Ok(n) = reader.read_line(&mut line) {
+                        if n == 0 {
+                            break;
+                        }
+                        pos += n as u64;
+                        if let Ok(val) = serde_json::from_str::<Value>(&line) {
+                            if as_json {
+                                println!("{}", line.trim());
+                            } else {
+                                print_tape_event(&val);
+                            }
+                            if val.get("kind").and_then(Value::as_str) == Some("result") {
+                                finished = true;
+                                break;
+                            }
+                        }
+                        line.clear();
+                    }
+                }
+            }
+            if !finished {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+        }
+        0
+    }
+}
+
+fn print_tape_event(ev: &Value) {
+    let kind = ev.get("kind").and_then(Value::as_str).unwrap_or("event");
+    let ts = ev.get("at").and_then(Value::as_f64).unwrap_or(0.0);
+    let time_str = local_time(ts, "%H:%M:%S");
+    let payload = ev.get("payload").unwrap_or(&Value::Null);
+
+    match kind {
+        "prompt" => {
+            let role = payload.get("role").and_then(Value::as_str).unwrap_or("worker");
+            let model = payload.get("model").and_then(Value::as_str).unwrap_or("default");
+            println!("{time_str} [prompt] role={role} model={model}");
+        }
+        "tool_use" => {
+            let tool = payload.get("tool").or_else(|| payload.get("name")).and_then(Value::as_str).unwrap_or("tool");
+            let args = payload.get("args").or_else(|| payload.get("input")).unwrap_or(&Value::Null);
+            println!("{time_str} [tool_use] {tool}: {args}");
+        }
+        "text" => {
+            let text = payload.get("text").and_then(Value::as_str).unwrap_or("");
+            for line in text.lines() {
+                println!("{time_str} [text] {line}");
+            }
+        }
+        "progress" => {
+            println!("{time_str} [progress] {payload}");
+        }
+        "result" => {
+            let status = payload.get("status").and_then(Value::as_str).unwrap_or("unknown");
+            let cost = payload.get("cost_usd").and_then(Value::as_f64).unwrap_or(0.0);
+            let in_tok = payload.get("tokens_in").and_then(Value::as_i64).unwrap_or(0);
+            let out_tok = payload.get("tokens_out").and_then(Value::as_i64).unwrap_or(0);
+            println!("{time_str} [result] status={status} in={in_tok} out={out_tok} cost=${cost:.4}");
+        }
+        "omitted" => {
+            let count = ev.get("omitted_count").and_then(Value::as_i64).unwrap_or(0);
+            println!("{time_str} ... [omitted {count} intermediate lines] ...");
+        }
+        other => {
+            println!("{time_str} [{other}] {payload}");
+        }
+    }
+}
+
+pub fn show_timeline(run_id: &str, as_json: bool) -> i32 {
+    let home = cordata_home(&std::env::vars().collect());
+    let art_dir = machine::artifacts_dir(&home, run_id);
+    let steps_dir = art_dir.join("steps");
+    let trace_id = cordata_orchestrator::tape::trace_id_for_run(run_id);
+    let mut spans = Vec::new();
+
+    spans.push(json!({
+        "name": "invoke_agent",
+        "span_id": trace_id[..16].to_string(),
+        "trace_id": trace_id,
+        "parent_span_id": null,
+        "kind": "agent",
+    }));
+
+    if let Ok(entries) = std::fs::read_dir(&steps_dir) {
+        let mut sorted_entries: Vec<_> = entries.flatten().collect();
+        sorted_entries.sort_by_key(|e| e.file_name());
+        for entry in sorted_entries {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("ndjson") {
+                if let Ok(events) = cordata_orchestrator::tape::read_tape(&path) {
+                    if let Some(first) = events.first() {
+                        let step_id = first.get("step_id").and_then(Value::as_str).unwrap_or("step");
+                        let attempt = first.get("attempt").and_then(Value::as_i64).unwrap_or(1);
+                        let span_id = first.get("span_id").and_then(Value::as_str).unwrap_or("").to_string();
+                        let start_at = first.get("at").and_then(Value::as_f64).unwrap_or(0.0);
+                        let last = events.last().unwrap_or(first);
+                        let end_at = last.get("at").and_then(Value::as_f64).unwrap_or(start_at);
+                        let dur = (end_at - start_at).max(0.0);
+                        let status = last.get("payload").and_then(|p| p.get("status")).and_then(Value::as_str).unwrap_or("completed");
+
+                        spans.push(json!({
+                            "name": format!("step:{step_id}:attempt_{attempt}"),
+                            "span_id": span_id,
+                            "trace_id": trace_id,
+                            "parent_span_id": trace_id[..16].to_string(),
+                            "duration_s": (dur * 100.0).round() / 100.0,
+                            "status": status,
+                            "event_count": events.len(),
+                        }));
+                    }
+                }
+            }
+        }
+    }
+
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&spans).unwrap());
+        return 0;
+    }
+
+    println!("Timeline for run {run_id} (trace: {trace_id}):");
+    println!("  [0.00s] ◉ invoke_agent");
+    for span in &spans[1..] {
+        let name = span.get("name").and_then(Value::as_str).unwrap_or("");
+        let dur = span.get("duration_s").and_then(Value::as_f64).unwrap_or(0.0);
+        let status = span.get("status").and_then(Value::as_str).unwrap_or("");
+        let count = span.get("event_count").and_then(Value::as_i64).unwrap_or(0);
+        println!("    ├─ ▷ {name:<24} ({dur:5.2}s) [{status}] {count} events");
+    }
+    0
+}
+
+pub fn export_cmd(run_id: &str, _otlp: bool) -> i32 {
+    let home = cordata_home(&std::env::vars().collect());
+    let art_dir = machine::artifacts_dir(&home, run_id);
+    let trace_id = cordata_orchestrator::tape::trace_id_for_run(run_id);
+    let root_span_id = trace_id[..16].to_string();
+
+    let mut otlp_spans = Vec::new();
+    otlp_spans.push(json!({
+        "traceId": trace_id,
+        "spanId": root_span_id,
+        "name": "invoke_agent",
+        "kind": 1,
+        "attributes": [
+            {"key": "gen_ai.system", "value": {"stringValue": "cordata"}},
+            {"key": "gen_ai.operation.name", "value": {"stringValue": "orchestrator_run"}},
+        ]
+    }));
+
+    let steps_dir = art_dir.join("steps");
+    if let Ok(entries) = std::fs::read_dir(&steps_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("ndjson") {
+                if let Ok(events) = cordata_orchestrator::tape::read_tape(&path) {
+                    for ev in events {
+                        let kind = ev.get("kind").and_then(Value::as_str).unwrap_or("");
+                        let span_id = ev.get("span_id").and_then(Value::as_str).unwrap_or(&root_span_id);
+                        if matches!(kind, "tool_use" | "result" | "prompt") {
+                            otlp_spans.push(json!({
+                                "traceId": trace_id,
+                                "spanId": span_id,
+                                "parentSpanId": root_span_id,
+                                "name": format!("execute_{kind}"),
+                                "kind": 3,
+                                "attributes": [
+                                    {"key": "gen_ai.system", "value": {"stringValue": "cordata"}},
+                                    {"key": "gen_ai.event.kind", "value": {"stringValue": kind}},
+                                ]
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let otlp = json!({
+        "resourceSpans": [{
+            "resource": {
+                "attributes": [
+                    {"key": "service.name", "value": {"stringValue": "cordata"}}
+                ]
+            },
+            "scopeSpans": [{
+                "scope": {"name": "cordata-orchestrator", "version": "0.5.0"},
+                "spans": otlp_spans
+            }]
+        }]
+    });
+    println!("{}", serde_json::to_string_pretty(&otlp).unwrap());
     0
 }
 
@@ -547,5 +793,22 @@ mod direction_tests {
         let mut r = record_with(json!([{"step_id": "s1", "name": "a", "description": "x", "status": "pending"}]));
         assert!(!apply_direction(&mut r, "   "));
         assert!(r.warnings.is_empty());
+    }
+
+    #[test]
+    fn show_step_tape_and_timeline_read_from_tape() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        let run_id = "run-tape-test";
+        let art_dir = machine::artifacts_dir(home, run_id);
+        let tape = cordata_orchestrator::tape::StepTape::new(&art_dir, run_id, "s1", 1, None, None);
+        tape.record_prompt("Build feature", "t1", Some("claude"), "execute");
+        tape.record_worker_event("tool_use", &json!({"tool": "read_file", "path": "main.rs"}));
+        tape.record_result("completed", &json!({"cost_usd": 0.01, "tokens_in": 100, "tokens_out": 50}));
+
+        let tape_path = cordata_orchestrator::tape::tape_path(&art_dir, "s1", Some(1));
+        assert!(tape_path.exists());
+        let events = cordata_orchestrator::tape::read_tape(&tape_path).unwrap();
+        assert_eq!(events.len(), 3);
     }
 }

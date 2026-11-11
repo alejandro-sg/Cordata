@@ -1109,6 +1109,7 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "objc2-user-notifications",
+ "polling",
  "raw-window-handle",
  "regex",
  "security-framework",

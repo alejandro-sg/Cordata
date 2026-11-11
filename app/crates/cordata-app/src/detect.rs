@@ -96,6 +96,8 @@ pub struct View<'a> {
     pub lines: &'a [String],
     /// Output arrived just now, not as the echo of a key.
     pub active: bool,
+    /// Declared state from OSC 7501, if any.
+    pub declared: Option<State>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,6 +105,7 @@ pub struct Detection {
     pub id: String,
     pub name: String,
     pub state: State,
+    pub declared: bool,
 }
 
 fn parse(text: &str, origin: &str) -> Result<Vec<Agent>, String> {
@@ -219,7 +222,10 @@ impl Rules {
     /// Which agent runs in the foreground (its argv) and what it is doing.
     pub fn detect(&self, argv: &[String], view: View<'_>) -> Option<Detection> {
         let agent = self.agent(&program_names(argv))?;
-        Some(Detection { id: agent.id.clone(), name: agent.name.clone(), state: Self::state(agent, view) })
+        if let Some(state) = view.declared {
+            return Some(Detection { id: agent.id.clone(), name: agent.name.clone(), state, declared: true });
+        }
+        Some(Detection { id: agent.id.clone(), name: agent.name.clone(), state: Self::state(agent, view), declared: false })
     }
 }
 
@@ -242,7 +248,7 @@ mod tests {
 
     fn state(rules: &Rules, program: &str, title: Option<&str>, screen: &str, active: bool) -> Option<State> {
         let rows = lines(screen);
-        rules.detect(&argv(&[program]), View { title, lines: &rows, active }).map(|d| d.state)
+        rules.detect(&argv(&[program]), View { title, lines: &rows, active, declared: None }).map(|d| d.state)
     }
 
     #[test]
@@ -308,12 +314,21 @@ mod tests {
         let (rules, warning) = Rules::with_user(Some(&file));
         assert!(warning.is_none());
         let rows = lines("HALT");
-        let found = rules.detect(&argv(&["claude"]), View { title: None, lines: &rows, active: false }).unwrap();
+        let found = rules.detect(&argv(&["claude"]), View { title: None, lines: &rows, active: false, declared: None }).unwrap();
         assert_eq!((found.name.as_str(), found.state), ("Mine", State::Blocked));
         std::fs::write(&file, "[[agent]]\nid = \"x\"\nname = \"x\"\n[[agent.rule]]\nstate = \"working\"\nregion = \"middle\"\n").unwrap();
         let (rules, warning) = Rules::with_user(Some(&file));
         assert!(warning.unwrap().contains("unknown region"));
         assert!(rules.agent(&argv(&["claude"])).is_some_and(|a| a.name == "Claude Code"), "the built-in rules stay");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn declared_state_beats_screen_rules() {
+        let rules = Rules::builtin();
+        let rows = lines("Thinking...");
+        let found = rules.detect(&argv(&["claude"]), View { title: None, lines: &rows, active: true, declared: Some(State::Blocked) }).unwrap();
+        assert_eq!(found.state, State::Blocked);
+        assert!(found.declared);
     }
 }
