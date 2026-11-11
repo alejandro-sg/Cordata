@@ -732,7 +732,7 @@ pub fn export_cmd(run_id: &str, _otlp: bool) -> i32 {
     0
 }
 
-pub fn evolve_cmd(target: &str, threshold: f64, dry_run: bool, as_json: bool, cwd: Option<PathBuf>, mutate_cmd: Option<String>, propose: Option<String>, propose_usd: f64) -> i32 {
+pub fn evolve_cmd(target: &str, threshold: f64, dry_run: bool, as_json: bool, cwd: Option<PathBuf>, mutate_cmd: Option<String>, propose: Option<String>, propose_usd: f64, propose_workers: Option<String>) -> i32 {
     let target: EvolutionTarget = target.parse().unwrap_or(EvolutionTarget::Repomap);
     let project_root = cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let config = EvolutionConfig {
@@ -743,7 +743,7 @@ pub fn evolve_cmd(target: &str, threshold: f64, dry_run: bool, as_json: bool, cw
         mutate_cmd,
         propose: propose.and_then(|d| {
             let exe = std::env::current_exe().ok()?;
-            Some(cordata_orchestrator::evolution::ModelProposal { exe, direction: (!d.trim().is_empty()).then_some(d), max_usd: propose_usd })
+            Some(cordata_orchestrator::evolution::ModelProposal { exe, direction: (!d.trim().is_empty()).then_some(d), max_usd: propose_usd, workers: propose_workers.clone() })
         }),
     };
     if !as_json {

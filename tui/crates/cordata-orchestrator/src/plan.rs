@@ -483,7 +483,7 @@ pub fn problems(draft: &Value, root: &str, findings: Option<&HashSet<String>>) -
                     Some(reason) => out.push(format!("criterion {cid}: {reason}")),
                     None => {
                         checkable += 1;
-                        if ctype == "file_not_changed" && scope::matches(&target, &writable, root) {
+                        if ctype == "file_not_changed" && scope::names(&target, &writable, root) {
                             out.push(format!("criterion {cid} says {} must not change, but a step's scope allows changing it", scope::py_repr(&target)));
                         }
                     }
@@ -653,6 +653,12 @@ mod tests {
         let mut d = draft();
         d["acceptance_criteria"] = json!([{"id":"a","type":"file_not_changed","description":"x","target":"calc/add.py"}]);
         assert!(problems_of(&d).iter().any(|m| m.contains("must not change, but a step's scope allows changing it")));
+
+        // A Rust step tolerates cargo rewriting the lockfile; promising it stays unchanged is not a contradiction.
+        let mut d = draft();
+        d["steps"][0]["file_scope"] = json!(["crates/x/src/lib.rs"]);
+        d["acceptance_criteria"] = json!([{"id":"a","type":"file_not_changed","description":"x","target":"Cargo.lock"}]);
+        assert!(!problems_of(&d).iter().any(|m| m.contains("must not change")), "{:?}", problems_of(&d));
         d["acceptance_criteria"] = json!([{"id":"a","type":"regex_match","description":"x","target":"f.py::("}]);
         let p = problems_of(&d);
         assert!(p[0].starts_with("criterion 'a': bad regex"), "{p:?}");

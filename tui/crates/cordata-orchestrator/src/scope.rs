@@ -136,11 +136,14 @@ fn lockfile_follows_scope<S: AsRef<str>>(rel: &str, scope: &[S]) -> bool {
 
 /// Is project-relative `path` inside `scope`?
 pub fn matches<S: AsRef<str>>(path: &str, scope: &[S], root: &str) -> bool {
+    lockfile_follows_scope(normalize(path).trim_end_matches('/'), scope) || names(path, scope, root)
+}
+
+/// Does `scope` itself name `path`? Unlike [`matches`] this leaves out the lockfile a Rust step is merely tolerated to
+/// rewrite, so a plan may still promise that `Cargo.lock` does not change.
+pub fn names<S: AsRef<str>>(path: &str, scope: &[S], root: &str) -> bool {
     let normalized = normalize(path);
     let rel = normalized.trim_end_matches('/');
-    if lockfile_follows_scope(rel, scope) {
-        return true;
-    }
     for raw in scope {
         let entry = normalize(raw.as_ref());
         if entry.is_empty() {

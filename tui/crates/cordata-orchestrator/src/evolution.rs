@@ -213,6 +213,8 @@ pub struct ModelProposal {
     /// Extra direction appended to the generated goal.
     pub direction: Option<String>,
     pub max_usd: f64,
+    /// Comma-separated worker families passed as `--workers`; unset uses the families enabled in settings.
+    pub workers: Option<String>,
 }
 
 impl Default for EvolutionConfig {
@@ -569,8 +571,15 @@ pub fn proposal_goal(target: &EvolutionTarget, baseline: &FitnessScore, directio
         EvolutionTarget::Guard => "cordata-guard",
         EvolutionTarget::Custom(c) => c.as_str(),
     };
+    // Say what the number is computed from: a change outside the measured path cannot move it.
+    let measured = match target {
+        EvolutionTarget::Repomap => " The fitness is the ranking benchmark's MRR on code-word and paraphrased queries, with a latency penalty.",
+        EvolutionTarget::Economizer => " The fitness is how fast the crate's hermetic test suite passes.",
+        EvolutionTarget::Guard => " The fitness is the throughput of `scrub()` on 100KB of code, timed by the ignored `bench_scrub` test in src/redact.rs; nothing else is measured.",
+        EvolutionTarget::Custom(_) => "",
+    };
     format!(
-        "Improve the measured fitness of the `{krate}` crate under tui/crates/{krate}/src (current: {}). Make one small, safe change to non-test source files in that crate only. Do not edit tests, benchmarks, scripts/, AGENTS.md or Cargo.lock, and add no dependencies. Definition of done: cargo test --offline -p {krate} exits 0.{}",
+        "Improve the measured fitness of the `{krate}` crate under tui/crates/{krate}/src (current: {}).{measured} Make one small, safe change to non-test source files in that crate only. Do not edit tests, benchmarks, scripts/, AGENTS.md or Cargo.lock, and add no dependencies. Definition of done: cargo test --offline -p {krate} exits 0.{}",
         baseline.details,
         direction.map(|d| format!(" Direction: {d}")).unwrap_or_default()
     )
@@ -579,14 +588,16 @@ pub fn proposal_goal(target: &EvolutionTarget, baseline: &FitnessScore, directio
 /// Runs the orchestrator on `sandbox` to propose a change, then returns the files that differ from `root`.
 pub fn propose_with_model(sandbox: &Path, root: &Path, p: &ModelProposal, target: &EvolutionTarget, baseline: &FitnessScore) -> Result<Vec<PathBuf>, String> {
     let goal = proposal_goal(target, baseline, p.direction.as_deref());
-    let out = Command::new(&p.exe)
-        .args(["run", &goal, "--allow-direct", "--no-research", "--max-rounds", "1", "--max-usd", &p.max_usd.to_string(), "--cwd"])
-        .arg(sandbox)
-        .current_dir(sandbox)
-        .output()
-        .map_err(|e| format!("failed to start the orchestrator ({}): {e}", p.exe.display()))?;
+    let mut cmd = Command::new(&p.exe);
+    cmd.args(["run", &goal, "--allow-direct", "--no-research", "--max-rounds", "1", "--max-usd", &p.max_usd.to_string()]);
+    if let Some(workers) = &p.workers {
+        cmd.args(["--workers", workers]);
+    }
+    let out = cmd.arg("--cwd").arg(sandbox).current_dir(sandbox).output().map_err(|e| format!("failed to start the orchestrator ({}): {e}", p.exe.display()))?;
     if !out.status.success() {
-        let tail: String = String::from_utf8_lossy(&out.stderr).chars().rev().take(300).collect::<Vec<_>>().into_iter().rev().collect();
+        // `cordata-run run` reports why it stopped on stdout; stderr is usually empty.
+        let said = if out.stderr.iter().all(u8::is_ascii_whitespace) { &out.stdout } else { &out.stderr };
+        let tail: String = String::from_utf8_lossy(said).trim_end().chars().rev().take(600).collect::<Vec<_>>().into_iter().rev().collect();
         eprintln!("proposal run exited {}: {tail}", out.status);
     }
     Ok(changed_between(sandbox, root))
@@ -786,7 +797,7 @@ mod proposal_tests {
     fn a_proposal_that_changes_nothing_is_empty_and_a_missing_exe_is_an_error() {
         let (root, sb) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let base = FitnessScore { primary: 1.0, latency_ms: 0.0, details: String::new() };
-        let p = ModelProposal { exe: PathBuf::from("/usr/bin/true"), direction: None, max_usd: 1.0 };
+        let p = ModelProposal { exe: PathBuf::from("/usr/bin/true"), direction: None, max_usd: 1.0, workers: None };
         assert!(propose_with_model(sb.path(), root.path(), &p, &EvolutionTarget::Guard, &base).unwrap().is_empty());
         let bad = ModelProposal { exe: PathBuf::from("/nonexistent/cordata-run"), ..p };
         assert!(propose_with_model(sb.path(), root.path(), &bad, &EvolutionTarget::Guard, &base).is_err());

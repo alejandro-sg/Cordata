@@ -128,6 +128,9 @@ enum Command {
         /// dollar cap for the model proposal
         #[arg(long, default_value_t = 1.0)]
         propose_usd: f64,
+        /// worker families the model proposal may use, comma-separated (default: those enabled in settings)
+        #[arg(long, value_name = "FAMILIES")]
+        propose_workers: Option<String>,
         #[arg(long)]
         cwd: Option<PathBuf>,
         #[arg(long)]
@@ -179,7 +182,7 @@ async fn main() -> ExitCode {
         Command::Show { run_id, json, step, attempt, follow, timeline } => cli::show_cmd(&run_id, json, step.as_deref(), attempt, follow, timeline),
         Command::Export { run_id, otlp } => cli::export_cmd(&run_id, otlp),
         Command::Resume { run_id, workers, allow_direct, max_usd, allow_weaker_guards, direction, json } => cli::resume(&run_id, workers, allow_direct, max_usd, allow_weaker_guards, direction, json).await,
-        Command::Evolve { target, threshold, dry_run, mutate, propose, propose_usd, cwd, json } => cli::evolve_cmd(&target, threshold, dry_run, json, cwd, mutate, propose, propose_usd),
+        Command::Evolve { target, threshold, dry_run, mutate, propose, propose_usd, propose_workers, cwd, json } => cli::evolve_cmd(&target, threshold, dry_run, json, cwd, mutate, propose, propose_usd, propose_workers),
     };
     ExitCode::from(u8::try_from(code).unwrap_or(1))
 }
