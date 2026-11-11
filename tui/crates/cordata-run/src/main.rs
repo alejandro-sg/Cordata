@@ -119,6 +119,9 @@ enum Command {
         /// run gates without harvesting changes
         #[arg(long)]
         dry_run: bool,
+        /// shell command that proposes a change by editing files in its cwd (the CoW sandbox, never the project)
+        #[arg(long)]
+        mutate: Option<String>,
         #[arg(long)]
         cwd: Option<PathBuf>,
         #[arg(long)]
@@ -170,7 +173,7 @@ async fn main() -> ExitCode {
         Command::Show { run_id, json, step, attempt, follow, timeline } => cli::show_cmd(&run_id, json, step.as_deref(), attempt, follow, timeline),
         Command::Export { run_id, otlp } => cli::export_cmd(&run_id, otlp),
         Command::Resume { run_id, workers, allow_direct, max_usd, allow_weaker_guards, direction, json } => cli::resume(&run_id, workers, allow_direct, max_usd, allow_weaker_guards, direction, json).await,
-        Command::Evolve { target, threshold, dry_run, cwd, json } => cli::evolve_cmd(&target, threshold, dry_run, json, cwd),
+        Command::Evolve { target, threshold, dry_run, mutate, cwd, json } => cli::evolve_cmd(&target, threshold, dry_run, json, cwd, mutate),
     };
     ExitCode::from(u8::try_from(code).unwrap_or(1))
 }

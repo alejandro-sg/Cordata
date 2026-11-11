@@ -380,7 +380,13 @@ pub async fn resume(run_id: &str, workers: Option<String>, allow_direct: bool, m
         move |spec| config::family_available(&spec.candidate.family, &env_for_avail),
     );
     let checkpoints = GitCheckpoints::new(Store::new(&home));
-    let controls = Arc::new(FileControls::new(Some(machine::artifacts_dir(&home, run_id).join("control.ndjson")))) as Arc<dyn machine::RunControls>;
+    // Nothing is running, so every request already in the control file was answered by the pause or stop that ended the
+    // last process. Replaying a stale `pause` would stop the resumed run at its first safe point.
+    let control_file = machine::artifacts_dir(&home, run_id).join("control.ndjson");
+    if control_file.exists() {
+        let _ = std::fs::write(&control_file, "");
+    }
+    let controls = Arc::new(FileControls::new(Some(control_file))) as Arc<dyn machine::RunControls>;
     let world = World {
         roster: &mut roster,
         ledger: &ledger,
@@ -722,7 +728,7 @@ pub fn export_cmd(run_id: &str, _otlp: bool) -> i32 {
     0
 }
 
-pub fn evolve_cmd(target: &str, threshold: f64, dry_run: bool, as_json: bool, cwd: Option<PathBuf>) -> i32 {
+pub fn evolve_cmd(target: &str, threshold: f64, dry_run: bool, as_json: bool, cwd: Option<PathBuf>, mutate_cmd: Option<String>) -> i32 {
     let target: EvolutionTarget = target.parse().unwrap_or(EvolutionTarget::Repomap);
     let project_root = cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let config = EvolutionConfig {
@@ -730,6 +736,7 @@ pub fn evolve_cmd(target: &str, threshold: f64, dry_run: bool, as_json: bool, cw
         threshold,
         dry_run,
         project_root,
+        mutate_cmd,
     };
     if !as_json {
         println!("Cordata Recursive Self-Improvement Engine (RSI)");

@@ -196,6 +196,10 @@ pub struct EvolutionConfig {
     pub threshold: f64,
     pub dry_run: bool,
     pub project_root: PathBuf,
+    /// Shell command that proposes a change by editing files in its working directory, which is the CoW sandbox
+    /// (never the project). `CORDATA_EVOLVE_TARGET` and `CORDATA_EVOLVE_BASELINE` are set. Without one, a cycle has
+    /// nothing to judge and is refused.
+    pub mutate_cmd: Option<String>,
 }
 
 impl Default for EvolutionConfig {
@@ -205,6 +209,7 @@ impl Default for EvolutionConfig {
             threshold: 0.005,
             dry_run: false,
             project_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            mutate_cmd: None,
         }
     }
 }
@@ -489,6 +494,23 @@ fn changed_between(sandbox: &Path, root: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// Runs the mutator in `sandbox` and returns the files it changed relative to `root`. The mutator's own exit status
+/// is not trusted as a verdict: a failing mutator that left edits behind is still judged by the gates.
+pub fn propose_changes(sandbox: &Path, root: &Path, cmd: &str, target: &EvolutionTarget, baseline: &FitnessScore) -> Result<Vec<PathBuf>, String> {
+    let out = Command::new("sh")
+        .args(["-c", cmd])
+        .current_dir(sandbox)
+        .env("CORDATA_EVOLVE_TARGET", target.to_string())
+        .env("CORDATA_EVOLVE_BASELINE", format!("{:.6}", baseline.primary))
+        .output()
+        .map_err(|e| format!("failed to run mutator: {e}"))?;
+    if !out.status.success() {
+        let tail: String = String::from_utf8_lossy(&out.stderr).chars().rev().take(400).collect::<Vec<_>>().into_iter().rev().collect();
+        eprintln!("mutator exited {}: {tail}", out.status);
+    }
+    Ok(changed_between(sandbox, root))
+}
+
 /// Whether `root`'s git working tree has uncommitted changes (or is not a git checkout at all).
 fn tree_is_dirty(root: &Path) -> bool {
     Command::new("git")
@@ -501,8 +523,8 @@ fn tree_is_dirty(root: &Path) -> bool {
 
 /// Executes a full, sandboxed evolution cycle for `config.target`.
 ///
-/// Refuses, rather than reporting gates, when there is nothing to judge: nothing in this crate proposes a change yet,
-/// so a fresh sandbox is identical to the tree and a "cycle" would only re-measure the baseline. A promotion is copied
+/// Refuses, rather than reporting gates, when there is nothing to judge: with no `mutate_cmd`, or one that changes
+/// nothing, a fresh sandbox is identical to the tree and a "cycle" would only re-measure the baseline. A promotion is copied
 /// over the working tree only when that tree is clean, so `git checkout .` always undoes it.
 pub fn run_evolution_cycle(config: EvolutionConfig) -> Result<EvolutionReport, String> {
     let start_time = Instant::now();
@@ -518,10 +540,19 @@ pub fn run_evolution_cycle(config: EvolutionConfig) -> Result<EvolutionReport, S
     let sandbox = synthesizer::create(&root, None, &label, &[], synthesizer::MAX_FILES)
         .map_err(|e| format!("failed to provision APFS CoW sandbox: {e}"))?;
 
-    let candidates = changed_between(&sandbox.root, &root);
+    let candidates = match &config.mutate_cmd {
+        Some(cmd) => match propose_changes(&sandbox.root, &root, cmd, &config.target, &baseline) {
+            Ok(c) => c,
+            Err(e) => {
+                sandbox.discard();
+                return Err(e);
+            }
+        },
+        None => changed_between(&sandbox.root, &root),
+    };
     if candidates.is_empty() {
         sandbox.discard();
-        return Err("nothing to evaluate: no change was proposed in the sandbox (no mutator is wired up yet)".into());
+        return Err("nothing to evaluate: the mutator proposed no change (pass --mutate \"<command>\" to propose one)".into());
     }
 
     let (promoted_all_gates, candidate_opt, gates) = evaluate_candidate(&sandbox.root, &config.target, &baseline, &guard, config.threshold);
@@ -608,6 +639,29 @@ mod tests {
         assert_eq!("economizer".parse::<EvolutionTarget>().unwrap(), EvolutionTarget::Economizer);
         assert_eq!("guard".parse::<EvolutionTarget>().unwrap(), EvolutionTarget::Guard);
         assert_eq!("custom_subsystem".parse::<EvolutionTarget>().unwrap(), EvolutionTarget::Custom("custom_subsystem".into()));
+    }
+
+    #[test]
+    fn mutator_edits_land_in_sandbox_only_and_tampering_is_caught() {
+        let (root, sb) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        for dir in [root.path(), sb.path()] {
+            std::fs::create_dir_all(dir.join("tests")).unwrap();
+            std::fs::write(dir.join("tests/eval.rs"), "eval").unwrap();
+            std::fs::write(dir.join("lib.rs"), "v1").unwrap();
+        }
+        let guard = ImmutableGuard::snapshot(root.path());
+        let base = FitnessScore { primary: 1.0, latency_ms: 0.0, details: String::new() };
+        let t = EvolutionTarget::Guard;
+
+        let changed = propose_changes(sb.path(), root.path(), "echo v2 > lib.rs", &t, &base).unwrap();
+        assert_eq!(changed, vec![PathBuf::from("lib.rs")]);
+        assert_eq!(std::fs::read_to_string(root.path().join("lib.rs")).unwrap(), "v1", "project untouched");
+        assert!(guard.verify(sb.path()).is_ok(), "benign edit passes gate 1");
+
+        propose_changes(sb.path(), root.path(), "echo cheat > tests/eval.rs", &t, &base).unwrap();
+        assert!(matches!(guard.verify(sb.path()), Err(TamperingViolation::Modified { .. })), "editing the evaluator is caught");
+        let (ok, _, gates) = evaluate_candidate(sb.path(), &t, &base, &guard, 0.0);
+        assert!(!ok && gates.len() == 1 && gates[0].gate_number == 1, "gate 1 stops it before any build or test runs");
     }
 
     #[test]

@@ -154,8 +154,7 @@ fn a_pause_request_stops_the_run_and_resume_finishes_it() {
     let record: Value = serde_json::from_slice(&e.run(&["show", "run-pause", "--json"]).stdout).unwrap();
     assert_eq!((record["state"].as_str(), record["resume_state"].as_str()), (Some("paused"), Some("plan")));
 
-    // The request is answered; clear the file, then resume.
-    std::fs::write(control_dir.join("control.ndjson"), "").unwrap();
+    // The pause request is still in the file: resume must not replay it.
     let resumed = e.run(&["resume", "run-pause", "--allow-direct", "--workers", "claude_code"]);
     assert_eq!(resumed.status.code(), Some(0), "{} {}", text(&resumed), String::from_utf8_lossy(&resumed.stderr));
     assert!(text(&resumed).contains("run-pause: done"));
