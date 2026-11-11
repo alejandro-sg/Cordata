@@ -61,6 +61,11 @@ fn is_limit(error: &str) -> bool {
     e.contains("429") || e.contains("rate limit") || e.contains("usage limit") || e.contains("quota") || e.contains("too many requests")
 }
 
+/// The follow-up sent when a turn ended without an answer the schema accepts.
+fn answer_nudge(problem: &str) -> String {
+    format!("Your turn ended without a usable answer ({problem}). Do not call any more tools. Reply now with only the JSON object the task asked for, built from what you have already read.")
+}
+
 impl Worker for NativeWorker {
     fn worker_id(&self) -> &str {
         &self.id
@@ -91,6 +96,7 @@ impl Worker for NativeWorker {
             let outcome: Result<(), String> = if let Err(e) = session.send_prompt(prompt) {
                 Err(e.to_string())
             } else {
+                let mut nudged = false;
                 let deadline = tokio::time::sleep(Duration::from_secs_f64(task.timeout_s.max(1.0)));
                 tokio::pin!(deadline);
                 loop {
@@ -109,7 +115,22 @@ impl Worker for NativeWorker {
                             Some(AppEvent::ConnectionError(e)) => break Err(e),
                             Some(AppEvent::TurnFailed(e)) => break Err(e),
                             Some(AppEvent::TurnComplete(StopReason::Cancelled)) => break Err("cancelled".into()),
-                            Some(AppEvent::TurnComplete(_)) => break Ok(()),
+                            Some(AppEvent::TurnComplete(_)) => {
+                                // A model that spent its turn exploring, or answered off-schema, gets one chance to
+                                // answer properly on the same session: its context is paid for, a fresh worker's is not.
+                                let problem = task.json_schema.as_ref().and_then(|schema| schema_problem(prompting::parse_json_answer(&text).as_ref(), schema));
+                                match problem {
+                                    Some(problem) if !nudged => {
+                                        nudged = true;
+                                        text.clear();
+                                        events(WorkerEvent { event_type: "nudge".into(), payload: json!({"problem": problem}) });
+                                        if let Err(e) = session.send_prompt(answer_nudge(&problem)) {
+                                            break Err(e.to_string());
+                                        }
+                                    }
+                                    _ => break Ok(()),
+                                }
+                            }
                             Some(AppEvent::AgentText(t)) => text.push_str(&t),
                             Some(AppEvent::Usage(u)) => {
                                 requests += 1;

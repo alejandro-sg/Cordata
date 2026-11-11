@@ -473,6 +473,9 @@ pub fn problems(draft: &Value, root: &str, findings: Option<&HashSet<String>>) -
             "command" | "test" => {
                 if target.trim().is_empty() {
                     out.push(format!("criterion {cid} ({ctype}) has no command in target"));
+                } else if target.split_whitespace().next().is_some_and(|word| word.contains("::")) {
+                    // A test's name is not a command: the shell answers 127 and no edit can ever make it pass.
+                    out.push(format!("criterion {cid} ({ctype}) needs a shell command in target (for example `cargo test -p <crate> <test name>`), not the name of a test"));
                 } else {
                     checkable += 1;
                 }
@@ -653,6 +656,10 @@ mod tests {
         let mut d = draft();
         d["acceptance_criteria"] = json!([{"id":"a","type":"file_not_changed","description":"x","target":"calc/add.py"}]);
         assert!(problems_of(&d).iter().any(|m| m.contains("must not change, but a step's scope allows changing it")));
+
+        let mut d = draft();
+        d["acceptance_criteria"] = json!([{"id":"a","type":"test","description":"x","target":"retry::tests::it_retries"}]);
+        assert!(problems_of(&d).iter().any(|m| m.contains("needs a shell command in target")));
 
         // A Rust step tolerates cargo rewriting the lockfile; promising it stays unchanged is not a contradiction.
         let mut d = draft();

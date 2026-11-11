@@ -519,3 +519,70 @@ async fn the_fault_injection_scenario_also_holds_on_the_real_shadow_git_store() 
     assert!(packet.diff_patch.contains("+++ b/calc/s1.txt") && packet.diff_patch.contains("+half done"), "{}", packet.diff_patch);
     assert!(packet.diff_stat.contains("1 file changed"), "{}", packet.diff_stat);
 }
+
+#[tokio::test]
+async fn a_step_whose_change_does_not_build_is_retried_with_the_compiler_errors() {
+    let e = env(two_pools(100_000.0));
+    let mut d = draft(1, "rollback_checkpoint");
+    d["steps"][0]["file_scope"] = json!(["calc/s1.rs"]);
+    d["acceptance_criteria"][0]["target"] = json!("calc/s1.rs");
+    let plan = plan::from_draft(&d, "/nonexistent", Options { max_usd: 2.0, plan_id: Some("plan-t".into()), ..Default::default() }, None).unwrap();
+    let writes = |id: &'static str, text: &'static str| {
+        ScriptedWorker::new(id, move |task, _| {
+            std::fs::write(Path::new(&task.cwd).join("calc/s1.rs"), text).unwrap();
+            let mut r = WorkerResult::new(id, "completed");
+            r.files_changed = vec!["calc/s1.rs".into()];
+            r
+        })
+    };
+    let (a, b) = (writes("a", "broken"), writes("b", "fine"));
+    let cp = CopyCheckpoints::new(&e.store);
+    let cands = vec![runnable(&a, "m", "claude_code", "anthropic"), runnable(&b, "m", "antigravity", "google")];
+    let check: cordata_orchestrator::executor::StepCheck = Arc::new(|root: std::path::PathBuf| {
+        Box::pin(async move { (std::fs::read_to_string(root.join("calc/s1.rs")).unwrap_or_default() == "broken").then(|| "error[E0425]: cannot find value `x`".to_owned()) })
+    });
+    let ex = exec(&e, plan, cands, &cp, Config { step_check: Some(check), ..Config::default() });
+    let out = ex.run().await;
+    assert_eq!(out.status, "completed", "{}", out.reason);
+    assert_eq!((a.calls.lock().unwrap().len(), b.calls.lock().unwrap().len()), (1, 1), "the broken change costs one retry, on the other worker");
+    let retry = b.calls.lock().unwrap()[0].clone();
+    assert!(retry.prompt.contains("the change does not build") && retry.prompt.contains("E0425"), "{}", retry.prompt);
+    assert_eq!(read(&e, "calc/s1.rs").as_deref(), Some("fine"));
+    let verdicts: Vec<bool> = kinds(&e, "step_check").iter().map(|v| v["ok"].as_bool().unwrap()).collect();
+    assert_eq!(verdicts, [false, true]);
+}
+
+#[tokio::test]
+async fn steps_that_build_alone_but_not_together_do_not_fail_the_step_that_follows() {
+    let e = env(two_pools(100_000.0));
+    let mut d = draft(3, "rollback_checkpoint");
+    for i in 0..3 {
+        d["steps"][i]["file_scope"] = json!([format!("calc/s{}.rs", i + 1)]);
+    }
+    d["steps"][2]["depends_on"] = json!(["s1", "s2"]);
+    d["acceptance_criteria"][0]["target"] = json!("calc/s1.rs");
+    let plan = plan::from_draft(&d, "/nonexistent", Options { max_usd: 2.0, plan_id: Some("plan-t".into()), ..Default::default() }, None).unwrap();
+    let w = ScriptedWorker::new("a", |task, _| {
+        let file = task.file_scope[0].clone();
+        std::fs::write(Path::new(&task.cwd).join(&file), "x").unwrap();
+        let mut r = WorkerResult::new("a", "completed");
+        r.files_changed = vec![file];
+        r
+    });
+    let cp = CopyCheckpoints::new(&e.store);
+    // The two parallel steps pass their own checks; the tree with both of them in it does not build.
+    let asked = Arc::new(Mutex::new(0));
+    let n = asked.clone();
+    let check: cordata_orchestrator::executor::StepCheck = Arc::new(move |_| {
+        let mut c = n.lock().unwrap();
+        *c += 1;
+        let broken = *c > 2;
+        Box::pin(async move { broken.then(|| "error[E0599]: no method named `owner_text`".to_owned()) })
+    });
+    let ex = exec(&e, plan, vec![runnable(&w, "m", "claude_code", "anthropic")], &cp, Config { step_check: Some(check), ..Config::default() });
+    let out = ex.run().await;
+    assert_eq!(out.status, "completed", "{}", out.reason);
+    assert_eq!(w.calls.lock().unwrap().len(), 3, "the third step ran once: it is not retried for a break it did not cause");
+    assert_eq!(*asked.lock().unwrap(), 3, "two step checks and one check of the merged wave; none after the tree is known broken");
+    assert_eq!(kinds(&e, "wave_check").len(), 1);
+}

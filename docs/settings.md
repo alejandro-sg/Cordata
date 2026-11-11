@@ -83,11 +83,13 @@ Each is capped at 20,000 characters. `/memory` lists what was found and `/init` 
 | key | values | default | what |
 |---|---|---|---|
 | `orchestrator.workers` | comma list of `claude_code`, `antigravity`, `ollama` | all three | which worker families may work; `ollama` runs Ollama Cloud models through Cordata's own engine and needs an Ollama key |
+| `orchestrator.models` | list of model ids | unset | a family with a model named here runs only the named models (for example `["gemini-3.8-flash-medium"]` keeps antigravity on that one model); other families keep their roster |
 | `orchestrator.pools` | list of pools | conservative caps | your real plans, so handoffs happen at the right moment (`docs/orchestrator.md`) |
 | `orchestrator.maxUsd` | number | 2 | spend cap for one run |
 | `orchestrator.maxTokens` | number | 0 (none) | token cap for one run |
 | `orchestrator.harden` | bool | true | a second model family reviews each step |
 | `orchestrator.tier2` | bool | true | the planner audits the result against its plan |
+| `orchestrator.stepCheck` | bool | true | after each step that changed Rust sources, `cargo check` runs where the step worked; a change that does not build fails the step and the next attempt gets the compiler errors. Off for a run whose project did not build before its first step |
 | `orchestrator.screen` | bool | true | a reviewer model screens the audit's commands before any runs (`--no-screen` for one run); the pattern guard runs either way |
 | `orchestrator.dispatch`, `.lambda`, `.mu` | | | the learned dispatch policy and its cost and risk weights |
 

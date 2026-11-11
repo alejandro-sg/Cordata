@@ -40,6 +40,7 @@ pub struct RunArgs {
     pub research: bool,
     pub no_conformance: bool,
     pub no_tier2: bool,
+    pub no_step_check: bool,
     pub no_screen: bool,
     pub json: bool,
     pub run_id: Option<String>,
@@ -162,6 +163,7 @@ pub fn run_args_to_config(args: &RunArgs, base: RunConfig) -> RunConfig {
     }
     c.harden &= !args.no_harden;
     c.tier2 &= !args.no_tier2;
+    c.step_check &= !args.no_step_check;
     c.screen &= !args.no_screen;
     if let Some(v) = args.max_rounds {
         c.max_rounds = v.max(0);
@@ -267,7 +269,7 @@ pub async fn run(args: RunArgs) -> i32 {
         }
     };
     let home = cordata_home(&environ);
-    let (specs, dropped) = config::live_specs(config::specs(&requested), &environ);
+    let (specs, dropped) = config::live_specs(config::only_models(config::specs(&requested), &settings), &environ);
     notes.extend(dropped);
     let wanted = args.dispatch.clone().unwrap_or_else(|| config::setting(&settings, "orchestrator.dispatch").and_then(Value::as_str).unwrap_or("auto").to_owned());
     let mode = if wanted == "auto" {
@@ -340,6 +342,10 @@ pub async fn resume(run_id: &str, workers: Option<String>, allow_direct: bool, m
     let cwd = PathBuf::from(&record.cwd);
     let settings = settings_for(&cwd);
     let mut run_config = config::run_config(&settings);
+    // The limits a run was started with are its own: resuming must not quietly swap them for the settings' defaults.
+    if let Some(then) = &record.config {
+        (run_config.max_usd, run_config.max_rounds) = (then.max_usd, then.max_rounds);
+    }
     if let Some(v) = max_usd {
         run_config.max_usd = v;
     }
@@ -371,7 +377,7 @@ pub async fn resume(run_id: &str, workers: Option<String>, allow_direct: bool, m
         eprintln!("cordata-run: {reason}");
         return NO_EGRESS;
     }
-    let (specs, _) = config::live_specs(config::specs(&families), &environ);
+    let (specs, _) = config::live_specs(config::only_models(config::specs(&families), &settings), &environ);
     let env_for_avail = environ.clone();
     let mut roster = LearnedRoster::new(
         specs,

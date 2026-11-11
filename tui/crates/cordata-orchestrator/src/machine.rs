@@ -118,6 +118,9 @@ pub struct RunConfig {
     pub max_synth_fixes: i64,
     #[serde(default = "d_land")]
     pub land: String,
+    /// Build-check every step that changed build inputs (`audit::build_check_command`).
+    #[serde(default = "d_true")]
+    pub step_check: bool,
 }
 
 impl Default for RunConfig {
@@ -140,6 +143,7 @@ impl Default for RunConfig {
             isolate_waves: true,
             max_synth_fixes: 1,
             land: "all".into(),
+            step_check: true,
         }
     }
 }
@@ -532,6 +536,8 @@ pub struct Machine<'a> {
     recovery_note: String,
     /// Workers that gave up after a refusal in an earlier pass: later passes go to the others first.
     benched: Vec<String>,
+    /// `None` until decided; then the build-check command, or `None` inside when the run has none.
+    step_check_command: Option<Option<String>>,
     /// What earlier runs on this project learned; this run adds to it when it ends.
     knowledge: crate::knowledge::Knowledge,
     /// Every command screened this run, so a re-audit after a fix pass only sends the new ones.
@@ -602,6 +608,7 @@ impl<'a> Machine<'a> {
             last_report: None,
             recovery_note: String::new(),
             benched: Vec::new(),
+            step_check_command: None,
             screened: audit::Screen::default(),
             bus: None,
         }
@@ -876,7 +883,11 @@ impl<'a> Machine<'a> {
         if let Some(preferred) = self.record.planner.clone() {
             planners.sort_by_key(|c| c.key() != preferred); // the worker that researched the project plans it, when it still can
         }
-        for candidate in across_families(planners).into_iter().take(3) {
+        // A refused plan goes back once to the planner that wrote it, with the refusals: it has the context to fix a
+        // malformed criterion, where the next planner would start over.
+        let mut queue: Vec<(Runnable, bool)> = across_families(planners).into_iter().take(3).map(|c| (c, false)).collect();
+        queue.reverse();
+        while let Some((candidate, retried)) = queue.pop() {
             let timeout = self.config.plan_timeout_s;
             let result = self.one_shot("plan", &candidate, &prompt, Some(draft_schema()), Vec::new(), timeout, "plan").await;
             if result.status != "completed" {
@@ -897,6 +908,9 @@ impl<'a> Machine<'a> {
                     problems.push(format!("{}: the plan was refused: {}", candidate.key(), refusals.join("; ")));
                     self.observe("plan", &candidate.candidate, Outcome::default());
                     prompt.push_str(&format!("\n\nYour previous answer was refused:\n- {}", refusals.iter().take(20).cloned().collect::<Vec<_>>().join("\n- ")));
+                    if !retried {
+                        queue.push((candidate, true));
+                    }
                 }
             }
         }
@@ -915,6 +929,30 @@ impl<'a> Machine<'a> {
             }
         }
         self.bus.clone()
+    }
+
+    /// The per-step build check, decided once per run. A project that does not build before any step ran gets none:
+    /// every step would fail a check it did not break.
+    async fn step_check(&mut self) -> Option<executor::StepCheck> {
+        const TIMEOUT_S: f64 = 900.0;
+        if self.step_check_command.is_none() {
+            let mut command = self.config.step_check.then(|| audit::build_check_command(Path::new(&self.project))).flatten();
+            if let Some(cmd) = &command
+                && let Some(problem) = audit::build_check(&self.project, cmd, TIMEOUT_S, &self.audit_env.environ).await
+            {
+                let first = problem.lines().find(|l| !l.trim().is_empty()).unwrap_or("").chars().take(200).collect::<String>();
+                self.record.warnings.push(format!("per-step build check off: the project did not pass `{cmd}` before the first step ({first})"));
+                command = None;
+            }
+            self.emit("step_check", json!({"command": command}));
+            self.step_check_command = Some(command);
+        }
+        let command = self.step_check_command.clone().flatten()?;
+        let environ = self.audit_env.environ.clone();
+        Some(Arc::new(move |root: PathBuf| {
+            let (command, environ) = (command.clone(), environ.clone());
+            Box::pin(async move { audit::build_check(&root.to_string_lossy(), &command, TIMEOUT_S, &environ).await })
+        }))
     }
 
     async fn execute_phase(&mut self, extra_prompt: &str, steps: Option<Vec<Step>>) -> ExecResult {
@@ -949,6 +987,7 @@ impl<'a> Machine<'a> {
             bus: self.run_bus(),
             benched: self.benched.clone(),
             artifacts_dir: Some(artifacts_dir(&self.home, &self.record.run_id)),
+            step_check: self.step_check().await,
             ..ExecConfig::default()
         };
         let executor = StepExecutor::new(&self.record.run_id, Path::new(&self.project), plan, candidates, self.ledger, self.checkpoints, cfg);
@@ -1202,6 +1241,13 @@ impl<'a> Machine<'a> {
         }
     }
 
+    /// Steps that ran in parallel each built in their own sandbox; this is the first build of all of them together.
+    async fn combined_build_problem(&self) -> Option<String> {
+        let command = self.step_check_command.clone().flatten()?;
+        let problem = audit::build_check(&self.project, &command, 900.0, &self.audit_env.environ).await?;
+        Some(format!("the combined change does not build (`{command}`):\n{problem}"))
+    }
+
     async fn synthesize_phase(&mut self) {
         let plan = self.plan.clone().expect("a plan exists");
         let mut synthesis = self.record.synthesis.clone().unwrap_or_else(|| json!({"harvested": [], "conflicts": [], "problems": []}));
@@ -1214,6 +1260,7 @@ impl<'a> Machine<'a> {
         files.dedup();
         let check = |m: &Self| m.synthesis.map_or_else(Vec::new, |s| s.check(&m.project, &files));
         let mut problems = check(self);
+        problems.extend(self.combined_build_problem().await);
         while !problems.is_empty() && self.record.synth_fixes < self.config.max_synth_fixes {
             self.record.synth_fixes += 1;
             self.emit("synthesis", json!({"problems": problems.iter().take(30).collect::<Vec<_>>(), "fix": self.record.synth_fixes}));
@@ -1231,6 +1278,7 @@ impl<'a> Machine<'a> {
                 return;
             }
             problems = check(self);
+            problems.extend(self.combined_build_problem().await);
         }
         synthesis["problems"] = json!(problems);
         self.record.synthesis = Some(synthesis);

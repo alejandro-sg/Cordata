@@ -244,7 +244,7 @@ impl AuditReport {
         if failed.is_empty() || !self.out_of_scope.is_empty() {
             return None;
         }
-        failed.iter().map(|c| (c.kind == "command").then(|| missing_tool(&c.detail)).flatten()).collect()
+        failed.iter().map(|c| matches!(c.kind.as_str(), "command" | "test").then(|| missing_tool(&c.detail)).flatten()).collect()
     }
 
     pub fn failures(&self) -> Vec<String> {
@@ -283,6 +283,45 @@ pub fn audit_profile(root: &str, home: &str) -> String {
 
 fn py_g(x: f64) -> String {
     crate::workers::claude::py_g(x)
+}
+
+/// The orchestrator's own commands need no screening: no model wrote them.
+struct Trusted;
+impl CommandGuard for Trusted {
+    fn score(&self, _command: &str, _root: &str) -> (f64, String) {
+        (0.0, String::new())
+    }
+}
+
+/// The cheapest command that proves a Rust project still compiles, tests included, or `None` when `project` is not
+/// one. A workspace one directory down (`tui/Cargo.toml`) counts: that is where this repository keeps its own.
+pub fn build_check_command(project: &Path) -> Option<String> {
+    const CHECK: &str = "cargo check --offline --workspace --all-targets --quiet";
+    if project.join("Cargo.toml").is_file() {
+        return Some(CHECK.to_owned());
+    }
+    let mut nested: Vec<String> = std::fs::read_dir(project)
+        .ok()?
+        .flatten()
+        .filter(|e| !e.file_name().to_string_lossy().starts_with('.') && e.file_name() != "target")
+        .filter(|e| std::fs::read_to_string(e.path().join("Cargo.toml")).is_ok_and(|toml| toml.contains("[workspace]")))
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| scope::valid(name).is_none() && !name.contains(char::is_whitespace))
+        .collect();
+    nested.sort();
+    (!nested.is_empty()).then(|| nested.iter().map(|dir| format!("{CHECK} --manifest-path {dir}/Cargo.toml")).collect::<Vec<_>>().join(" && "))
+}
+
+/// Does a change to these files call for a build check?
+pub fn touches_build(changed: &[String]) -> bool {
+    changed.iter().any(|p| p.ends_with(".rs") || p.ends_with("Cargo.toml"))
+}
+
+/// Runs the orchestrator's own build check in `root` under the audit sandbox. `None` when it passed, else what the
+/// compiler said (its tail).
+pub async fn build_check(root: &str, command: &str, timeout_s: f64, environ: &std::collections::HashMap<String, String>) -> Option<String> {
+    let (ok, detail) = run_command(root, command, &Trusted, timeout_s, 0, environ).await;
+    (!ok).then(|| detail.chars().rev().take(2500).collect::<Vec<_>>().into_iter().rev().collect())
 }
 
 /// Runs `command` under the audit sandbox. `(ok, detail)` — `ok` means the exit code was `expected`.
@@ -614,6 +653,20 @@ pub fn conformance_verdict(mut result: WorkerResult) -> (String, Vec<Gap>, Worke
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_build_check_is_found_at_the_root_or_one_directory_down() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(build_check_command(dir.path()), None, "not a Rust project");
+        std::fs::create_dir_all(dir.path().join("tui")).unwrap();
+        std::fs::create_dir_all(dir.path().join("docs")).unwrap();
+        std::fs::write(dir.path().join("tui/Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
+        let nested = build_check_command(dir.path()).unwrap();
+        assert!(nested.starts_with("cargo check --offline") && nested.ends_with("--manifest-path tui/Cargo.toml"), "{nested}");
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\n").unwrap();
+        assert!(!build_check_command(dir.path()).unwrap().contains("--manifest-path"), "the root manifest wins");
+        assert!(touches_build(&["src/a.rs".into()]) && touches_build(&["x/Cargo.toml".into()]) && !touches_build(&["README.md".into()]));
+    }
 
     #[test]
     fn the_guard_refuses_destructive_commands_and_passes_test_runs() {

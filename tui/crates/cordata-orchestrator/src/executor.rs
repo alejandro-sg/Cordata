@@ -94,6 +94,8 @@ pub trait Isolation: Send + Sync {
 
 type Rerank = Box<dyn Fn(&Step, &[Runnable]) -> Vec<Runnable> + Send + Sync>;
 type Listener = Arc<dyn Fn(Value) + Send + Sync>;
+/// Checks that the tree at a path still builds: `None` when it does, else the compiler's words.
+pub type StepCheck = Arc<dyn Fn(PathBuf) -> futures::future::BoxFuture<'static, Option<String>> + Send + Sync>;
 
 pub struct Config {
     pub timeout_s: f64,
@@ -117,6 +119,9 @@ pub struct Config {
     /// Workers benched by an earlier pass of this run (`ExecResult::benched`).
     pub benched: Vec<String>,
     pub artifacts_dir: Option<PathBuf>,
+    /// Run after every step that changed build inputs, where the step's work is, before the work is taken. A step
+    /// whose change does not build has failed: caught here it costs one retry, caught at the audit it costs the run.
+    pub step_check: Option<StepCheck>,
 }
 
 impl Default for Config {
@@ -138,6 +143,7 @@ impl Default for Config {
             bus: None,
             benched: Vec::new(),
             artifacts_dir: None,
+            step_check: None,
         }
     }
 }
@@ -195,6 +201,9 @@ pub struct StepExecutor<'a> {
     pub current: Mutex<Option<Runnable>>,
     pub packet: Mutex<Option<HandoffPacket>>,
     out: Mutex<ExecResult>,
+    /// The steps of a wave each built alone but not together. Until the synthesis pass repairs that, no later step
+    /// can be judged by a build: it would fail for what it did not break.
+    tree_broken: std::sync::atomic::AtomicBool,
     /// task id → the worker running it, while it runs.
     inflight: Mutex<HashMap<String, Arc<dyn Worker>>>,
     /// The bus messages already reported as events.
@@ -225,6 +234,7 @@ impl<'a> StepExecutor<'a> {
             current: Mutex::new(None),
             packet: Mutex::new(packet),
             out: Mutex::new(ExecResult { status: "completed".into(), benched, ..Default::default() }),
+            tree_broken: std::sync::atomic::AtomicBool::new(false),
             inflight: Mutex::new(HashMap::new()),
             bus_reported: Mutex::new(0),
         }
@@ -421,6 +431,13 @@ impl<'a> StepExecutor<'a> {
                 let runs = wave.iter().zip(contexts.iter_mut()).map(|(s, c)| self.run_step(index_of[&s.step_id], c));
                 futures::future::join_all(runs).await
             };
+            if wave.len() > 1 && verdicts.iter().all(|v| *v == "completed") && !self.tree_broken.load(std::sync::atomic::Ordering::Relaxed)
+                && let Some(check) = &self.cfg.step_check
+                && let Some(problem) = check(self.project.clone()).await
+            {
+                self.tree_broken.store(true, std::sync::atomic::Ordering::Relaxed);
+                self.emit("wave_check", json!({"steps": wave.iter().map(|s| s.step_id.clone()).collect::<Vec<_>>(), "ok": false, "problem": problem.chars().take(600).collect::<String>()}));
+            }
             self.report_bus();
             if let Some(last) = contexts.iter().rev().find_map(|c| c.current.clone()) {
                 *self.current.lock().unwrap() = Some(last);
@@ -760,6 +777,17 @@ impl<'a> StepExecutor<'a> {
                        "error": result.error_message, "files": result.files_changed.iter().take(50).collect::<Vec<_>>()}),
             );
 
+            if result.status == "completed" && result.out_of_scope.is_empty() && step.risk != "read_only" && crate::audit::touches_build(&result.files_changed)
+                && !self.tree_broken.load(std::sync::atomic::Ordering::Relaxed)
+                && let Some(check) = &self.cfg.step_check {
+                    let at = ctx.sandbox.as_ref().filter(|_| ctx.isolated).map_or_else(|| self.project.clone(), |sb| sb.root.clone());
+                    let problem = check(at).await;
+                    self.emit("step_check", json!({"step_id": step.step_id, "worker": candidate.key(), "ok": problem.is_none(), "problem": problem.as_deref().map(|p| p.chars().take(600).collect::<String>())}));
+                    if let Some(problem) = problem {
+                        result.status = "failed".into();
+                        result.error_message = Some(format!("the change does not build; fix these errors, do not start over blindly:\n{problem}"));
+                    }
+                }
             if result.status == "completed" && result.out_of_scope.is_empty() && ctx.isolated
                 && let (Some(sandbox), Some(isolation)) = (&ctx.sandbox, &self.cfg.isolation) {
                     let taken = isolation.harvest(sandbox, &result.files_changed, &step.file_scope);

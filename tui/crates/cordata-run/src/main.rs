@@ -44,6 +44,9 @@ enum Command {
         no_conformance: bool,
         #[arg(long)]
         no_tier2: bool,
+        /// skip the build check after each step
+        #[arg(long)]
+        no_step_check: bool,
         /// skip the model screen of the audit's commands (the pattern guard still runs)
         #[arg(long)]
         no_screen: bool,
@@ -142,7 +145,7 @@ enum Command {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     let code = match Cli::parse().command {
-        Command::Run { goal, cwd, workers, dispatch, allow_direct, max_usd, max_rounds, max_parallel, no_harden, no_research, research, no_conformance, no_tier2, no_screen, json, run_id, session_id, land, detach } => {
+        Command::Run { goal, cwd, workers, dispatch, allow_direct, max_usd, max_rounds, max_parallel, no_harden, no_research, research, no_conformance, no_tier2, no_step_check, no_screen, json, run_id, session_id, land, detach } => {
             if detach {
                 #[cfg(unix)]
                 {
@@ -176,7 +179,7 @@ async fn main() -> ExitCode {
                 }
             }
             let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-            cli::run(RunArgs { goal, cwd, workers, dispatch, allow_direct, max_usd, max_rounds, max_parallel, no_harden, no_research, research, no_conformance, no_tier2, no_screen, json, run_id, session_id, land, detach }).await
+            cli::run(RunArgs { goal, cwd, workers, dispatch, allow_direct, max_usd, max_rounds, max_parallel, no_harden, no_research, research, no_conformance, no_tier2, no_step_check, no_screen, json, run_id, session_id, land, detach }).await
         }
         Command::Status { json } => cli::status_cmd(json),
         Command::Show { run_id, json, step, attempt, follow, timeline } => cli::show_cmd(&run_id, json, step.as_deref(), attempt, follow, timeline),

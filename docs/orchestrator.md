@@ -28,7 +28,7 @@ still inside the Seatbelt sandbox described in [`THREAT_MODEL.md`](../THREAT_MOD
 environment form of the flag.
 
 `run` also takes `--workers claude_code,antigravity,ollama` (`ollama` is Ollama Cloud through Cordata's own engine and needs a key rather than a CLI), `--run-id ID`, `--max-usd N`, `--max-rounds N`, `--max-parallel N` (default 3),
-`--no-research`, `--no-harden`, `--no-tier2`, `--no-screen`, `--no-conformance` and `--json`. With no installed worker, `run` and
+`--no-research`, `--no-harden`, `--no-tier2`, `--no-step-check`, `--no-screen`, `--no-conformance` and `--json`. With no installed worker, `run` and
 `resume` exit 78 before doing anything. Ctrl+C stops the run where it is and records it `cancelled`. Every run has a control file, `~/.cordata/orchestrator/<run_id>/control.ndjson`: a line `{"cmd":"pause"}` pauses the run at its next safe point (never mid-call), and the window's Hold button writes exactly that. `cordata resume <run_id> --direction "…"` adds your words to the next unfinished step's task and notes it on the run; `--workers` picks who continues. Every run writes
 `~/.cordata/orchestrator/<run_id>/plan.md` and `walkthrough.md`.
 
