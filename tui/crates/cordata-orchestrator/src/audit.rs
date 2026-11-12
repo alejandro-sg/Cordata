@@ -9,7 +9,7 @@
 //!
 //! **Tier 1 — deterministic, no model.** Everything a plan promised that can be checked by running something: the scope
 //! (every file changed since the plan-start checkpoint must be inside the union of the steps' scopes), the acceptance
-//! criteria (`command`/`test` with their expected exit code, `file_exists`, `file_not_changed`, `regex_match`), the plan's
+//! criteria (`command`/`test` with their expected exit code, `file_exists`, `file_not_changed`, `regex_match`, `regex_absent`), the plan's
 //! verifier commands, and diff integrity (an editing step that changed nothing makes Tier 1 *ambiguous*, which is what
 //! Tier 2 is for). The commands are model-written, so they never run as the harness: each is scored by a [`CommandGuard`]
 //! first (a destructive one is refused and its criterion fails), then runs under Seatbelt with the network denied
@@ -415,6 +415,34 @@ fn read_in_project(root: &str, rel: &str) -> Option<String> {
     std::fs::read(&path).ok().map(|b| String::from_utf8_lossy(&b).into_owned())
 }
 
+/// The first project file at or under `rel` whose text matches `re`, as a project-relative path. A path that does not
+/// exist holds nothing, so a deleted file or directory counts as absent. Build output, VCS data, dependencies, secrets
+/// and files over 2 MB are not read.
+fn first_match_under(root: &str, rel: &str, re: &regex::Regex) -> Option<String> {
+    const SKIP: [&str; 4] = [".git", "target", "node_modules", ".next"];
+    let real_root = std::fs::canonicalize(root).ok()?;
+    let start = std::fs::canonicalize(Path::new(root).join(rel)).ok().filter(|p| p.starts_with(&real_root))?;
+    let mut stack = vec![start];
+    while let Some(path) = stack.pop() {
+        let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
+        if meta.is_dir() {
+            if path.file_name().is_some_and(|n| SKIP.contains(&n.to_string_lossy().as_ref())) {
+                continue;
+            }
+            let mut children: Vec<_> = std::fs::read_dir(&path).into_iter().flatten().flatten().map(|e| e.path()).collect();
+            children.sort();
+            children.reverse();
+            stack.extend(children);
+        } else if meta.is_file() && meta.len() <= 2_000_000 && !scope::is_secret_path(&path.to_string_lossy()) {
+            let matched = std::fs::read(&path).is_ok_and(|bytes| re.is_match(&String::from_utf8_lossy(&bytes)));
+            if matched {
+                return Some(path.strip_prefix(&real_root).unwrap_or(&path).to_string_lossy().into_owned());
+            }
+        }
+    }
+    None
+}
+
 /// What the deterministic audit needs from the world.
 pub struct AuditEnv<'a> {
     pub checkpoints: &'a dyn Checkpoints,
@@ -465,6 +493,16 @@ pub async fn tier1(plan: &Plan, root: &str, start_checkpoint: Option<&str>, env:
                 let text = read_in_project(root, path);
                 let matched = text.as_ref().is_some_and(|t| RegexBuilder::new(pattern).multi_line(true).build().is_ok_and(|re| re.is_match(t)));
                 (matched, if matched { "matched" } else if text.is_none() { "file missing" } else { "no match" }.to_owned())
+            }
+            "regex_absent" => {
+                let (path, pattern) = target.split_once("::").unwrap_or((target, ""));
+                match RegexBuilder::new(pattern).multi_line(true).build() {
+                    Err(_) => (false, "bad regex".to_owned()),
+                    Ok(re) => match first_match_under(root, path, &re) {
+                        Some(file) => (false, format!("still matches in {file}")),
+                        None => (true, "absent".to_owned()),
+                    },
+                }
             }
             other => (false, format!("unknown criterion type {}", scope::py_repr(other))),
         };
@@ -653,6 +691,23 @@ pub fn conformance_verdict(mut result: WorkerResult) -> (String, Vec<Gap>, Worke
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn absence_holds_for_a_clean_tree_a_deleted_path_and_ignores_build_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_string_lossy().into_owned();
+        std::fs::create_dir_all(dir.path().join("crates/a/src")).unwrap();
+        std::fs::create_dir_all(dir.path().join("crates/target")).unwrap();
+        std::fs::write(dir.path().join("crates/a/src/lib.rs"), "pub struct Concierge;\n").unwrap();
+        std::fs::write(dir.path().join("crates/target/old.rs"), "Concierge").unwrap();
+        let re = regex::Regex::new("Concierge").unwrap();
+        assert_eq!(first_match_under(&root, "crates", &re).as_deref(), Some("crates/a/src/lib.rs"));
+        assert_eq!(first_match_under(&root, "crates/a/src/lib.rs", &re).as_deref(), Some("crates/a/src/lib.rs"));
+        std::fs::write(dir.path().join("crates/a/src/lib.rs"), "pub struct Gone;\n").unwrap();
+        assert_eq!(first_match_under(&root, "crates", &re), None, "build output is not searched");
+        assert_eq!(first_match_under(&root, "crates/a/src/concierge.rs", &re), None, "a deleted file holds nothing");
+        assert_eq!(first_match_under(&root, "../outside", &re), None);
+    }
 
     #[test]
     fn the_build_check_is_found_at_the_root_or_one_directory_down() {

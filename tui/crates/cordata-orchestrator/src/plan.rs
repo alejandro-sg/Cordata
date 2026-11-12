@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 use crate::scope;
 
-pub const CRITERION_TYPES: [&str; 5] = ["command", "test", "file_exists", "file_not_changed", "regex_match"];
+pub const CRITERION_TYPES: [&str; 6] = ["command", "test", "file_exists", "file_not_changed", "regex_match", "regex_absent"];
 pub const RISKS: [&str; 3] = ["read_only", "edits_files", "destructive"];
 pub const ROLLBACK: [&str; 2] = ["rollback_checkpoint", "keep_partial"];
 pub const COMPLEXITIES: [&str; 3] = ["low", "medium", "high"];
@@ -492,7 +492,7 @@ pub fn problems(draft: &Value, root: &str, findings: Option<&HashSet<String>>) -
                     }
                 }
             }
-            "regex_match" => match target.split_once("::") {
+            "regex_match" | "regex_absent" => match target.split_once("::") {
                 Some((path, pattern)) if !path.is_empty() && !pattern.is_empty() => match Regex::new(pattern) {
                     Err(error) => out.push(format!("criterion {cid}: bad regex ({error})")),
                     Ok(_) => match scope::valid(path) {
@@ -500,7 +500,7 @@ pub fn problems(draft: &Value, root: &str, findings: Option<&HashSet<String>>) -
                         None => checkable += 1,
                     },
                 },
-                _ => out.push(format!("criterion {cid} (regex_match) needs target 'path::pattern'")),
+                _ => out.push(format!("criterion {cid} ({ctype}) needs target 'path::pattern'")),
             },
             _ => {}
         }
@@ -656,6 +656,12 @@ mod tests {
         let mut d = draft();
         d["acceptance_criteria"] = json!([{"id":"a","type":"file_not_changed","description":"x","target":"calc/add.py"}]);
         assert!(problems_of(&d).iter().any(|m| m.contains("must not change, but a step's scope allows changing it")));
+
+        let mut d = draft();
+        d["acceptance_criteria"] = json!([{"id":"a","type":"regex_absent","description":"gone","target":"calc::Concierge"}]);
+        assert!(problems_of(&d).is_empty(), "absence is checkable without a model: {:?}", problems_of(&d));
+        d["acceptance_criteria"][0]["target"] = json!("calc");
+        assert!(problems_of(&d).iter().any(|m| m.contains("(regex_absent) needs target 'path::pattern'")));
 
         let mut d = draft();
         d["acceptance_criteria"] = json!([{"id":"a","type":"test","description":"x","target":"retry::tests::it_retries"}]);

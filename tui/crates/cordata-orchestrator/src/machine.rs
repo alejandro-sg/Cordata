@@ -43,7 +43,7 @@ use crate::worker::{EventSink, TaskPacket, WorkerEvent, WorkerResult};
 pub const STATES: [&str; 12] = ["research", "plan", "execute", "synthesize", "harden", "audit", "conformance", "done", "failed", "paused", "budget_exhausted", "cancelled"];
 pub const TERMINAL: [&str; 4] = ["done", "failed", "budget_exhausted", "cancelled"];
 
-pub const PLAN_BRIEF: &str = "Plan the work below for this project. Steps must be small and ordered; each lists exactly the files it may create or change (file_scope, project-relative). Acceptance criteria must be checkable without judgement: a command or test with its expected exit code, a file that must exist or must not change, or 'path::regex'. Prefer the project's own test command as a criterion.";
+pub const PLAN_BRIEF: &str = "Plan the work below for this project. Steps must be small and ordered; each lists exactly the files it may create or change (file_scope, project-relative). Acceptance criteria must be checkable without judgement: a command or test with its expected exit code, a file that must exist or must not change, or 'path::regex'. To require that something is gone, use the regex_absent type ('path::regex', where path is a file or a directory): it passes when nothing there matches or the path no longer exists; never use regex_match on a file the plan deletes. Every verifier command must exit 0 exactly when the work is right: a bare grep for text that should be absent exits 1 on success, so write `! grep ...` or use regex_absent, and never end a command with `; echo ...` or `|| true`. Prefer the project's own test command as a criterion.";
 
 /// The draft schema a planner answers against.
 pub fn draft_schema() -> Value {

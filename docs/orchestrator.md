@@ -49,7 +49,8 @@ Other `orchestrator.*` settings are in [`settings.md`](settings.md).
    quote). A deterministic check, no model, verifies each file reference; unverifiable findings are dropped, and the
    brief is refused if fewer than half survive.
 2. **Plan.** Steps name the files they may write, carry acceptance criteria that need no judgement (`command`, `test`,
-   `file_exists`, `file_not_changed`, `regex_match`), a `complexity` and `depends_on`. A plan with an unknown dependency,
+   `file_exists`, `file_not_changed`, `regex_match`, and `regex_absent` for text that must be gone from a file or a whole
+   directory), a `complexity` and `depends_on`. A plan with an unknown dependency,
    a cycle, or no step grounded in a finding is refused.
 3. **Execute.** Steps whose dependencies are done and whose write scopes are disjoint run together in copy-on-write
    sandboxes; a rollback restores only that step's scope. A step that defeats every attempt is retried with the strongest
