@@ -120,7 +120,9 @@ pub struct RunConfig {
     pub land: String,
     /// Build-check every step that changed build inputs (`audit::build_check_command`).
     #[serde(default = "d_true")]
-    pub step_check: bool,
+    pub step_check: bool,    /// End in `to_review` with the work kept, rather than restore, when a sound change fails only a few checks.
+    #[serde(default = "d_true")]
+    pub keep_for_review: bool,
 }
 
 impl Default for RunConfig {
@@ -144,6 +146,7 @@ impl Default for RunConfig {
             max_synth_fixes: 1,
             land: "all".into(),
             step_check: true,
+            keep_for_review: true,
         }
     }
 }
@@ -897,7 +900,11 @@ impl<'a> Machine<'a> {
             }
             let draft = result.structured.clone().unwrap_or(Value::Null);
             let options = Options { max_usd: self.config.max_usd, max_tokens: self.config.max_tokens, plan_id: None, version: self.record.replans + 1 };
-            match plan::from_draft(&draft, &self.project, options, findings.as_ref()) {
+            let drafted = match plan::from_draft(&draft, &self.project, options, findings.as_ref()) {
+                Ok(plan) => self.screened_plan(plan).await,
+                Err(refused) => Err(refused),
+            };
+            match drafted {
                 Ok(plan) => {
                     let (id, steps) = (plan.plan_id.clone(), plan.steps.len());
                     self.plan = Some(plan);
@@ -1084,6 +1091,30 @@ impl<'a> Machine<'a> {
 
     /// Has a reviewer screen the commands of `plan` not screened yet this run. The result holds every score so far and
     /// the notes of this pass only; each note also becomes a run warning.
+    /// Screens a new plan's commands before any work is done on it. A command the screen refuses would be refused
+    /// again at the audit, where it counts as a failed check no edit can fix and the finished work is thrown away.
+    /// A refused verifier is dropped (the criteria still judge the work); a refused criterion sends the plan back.
+    async fn screened_plan(&mut self, mut plan: Plan) -> Result<Plan, PlanError> {
+        let screen = self.screen_commands(&plan).await;
+        let refused = |command: &str| screen.scores.get(command).filter(|(risk, _)| *risk >= audit::GUARD_REFUSE).map(|(_, why)| why.clone());
+        let problems: Vec<String> = plan
+            .acceptance_criteria
+            .iter()
+            .filter(|c| matches!(c.kind.as_str(), "command" | "test"))
+            .filter_map(|c| refused(&c.target).map(|why| format!("criterion {} runs `{}`, which the command screen refuses: {why}. Give it a command whose exit code depends on what it checks (no `; echo ...`, no `|| true`), or use another criterion type", crate::scope::py_repr(&c.id), c.target)))
+            .collect();
+        if !problems.is_empty() {
+            return Err(PlanError { problems });
+        }
+        let (kept, dropped): (Vec<String>, Vec<String>) = std::mem::take(&mut plan.verifier_commands).into_iter().partition(|c| refused(c).is_none());
+        plan.verifier_commands = kept;
+        for command in dropped {
+            let why = refused(&command).unwrap_or_default();
+            self.record.warnings.push(format!("verifier dropped from the plan, the command screen refuses it: `{command}` ({why})"));
+        }
+        Ok(plan)
+    }
+
     async fn screen_commands(&mut self, plan: &Plan) -> audit::Screen {
         let fresh: Vec<String> = audit::audit_commands(plan).into_iter().filter(|c| !self.screened.scores.contains_key(c)).collect();
         let mut notes = Vec::new();
@@ -1543,6 +1574,25 @@ impl<'a> Machine<'a> {
         }
     }
 
+    /// The last resort before a run's work is thrown away. When the retries and the replan are spent, the change is in
+    /// scope, it builds, and at least two checks in three pass, what is left is more often a check the planner wrote
+    /// badly than a broken change. The work stays in the tree and the run ends in `to_review`, naming what failed, for
+    /// a person to judge. Anything less sound is restored as before.
+    async fn keep_for_review(&mut self, report: &AuditReport, items: &[String]) -> bool {
+        if !self.config.keep_for_review || !report.out_of_scope.is_empty() || report.changed.is_empty() {
+            return false;
+        }
+        let failed = report.checks.iter().filter(|c| !c.ok).count();
+        if failed == 0 || failed * 3 > report.checks.len() || self.combined_build_problem().await.is_some() {
+            return false;
+        }
+        let failing: Vec<String> = report.failures().into_iter().take(5).map(|f| f.lines().next().unwrap_or("").chars().take(200).collect()).collect();
+        self.record.reason = format!("kept for review: {failed} of {} checks still fail after the retries: {}", report.checks.len(), failing.join("; "));
+        self.record.warnings.push(format!("the change was kept in the project, not restored: it builds and {} of {} checks pass. Review it; failing: {}", report.checks.len() - failed, report.checks.len(), failing.join("; ")));
+        self.transition("to_review", json!({"kept": true, "failed_checks": failed, "checks": report.checks.len(), "items": items.iter().take(20).collect::<Vec<_>>()}));
+        true
+    }
+
     async fn audit_state(&mut self, feedback: &mut Vec<String>) {
         let report = self.audit_phase().await;
         if report.tier1_ok && self.conformance_loop() {
@@ -1574,6 +1624,9 @@ impl<'a> Machine<'a> {
                     self.record.drift_retries += 1;
                     self.transition("execute", json!({"drift_retry": self.record.drift_retries, "items": items.iter().take(20).collect::<Vec<_>>()}));
                     self.fix(&items, false).await;
+                    return;
+                }
+                if self.record.replans >= self.config.max_replans && self.keep_for_review(&report, &items).await {
                     return;
                 }
                 self.replan_or_fail(&items, "drift persisted after the retries");

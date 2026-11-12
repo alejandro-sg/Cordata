@@ -777,6 +777,12 @@ impl<'a> StepExecutor<'a> {
                        "error": result.error_message, "files": result.files_changed.iter().take(50).collect::<Vec<_>>()}),
             );
 
+            // A step that was to edit files and edited none has not been done, whatever its worker reports: it read
+            // until its turns ran out. (A step resumed on kept partial work may rightly find nothing left to do.)
+            if result.status == "completed" && result.out_of_scope.is_empty() && step.risk == "edits_files" && !step.file_scope.is_empty() && result.files_changed.is_empty() && step.rollback_policy != "keep_partial" {
+                result.status = "failed".into();
+                result.error_message = Some("the step changed no file: it explored without editing. Make the edits early; read only what the edit needs".into());
+            }
             if result.status == "completed" && result.out_of_scope.is_empty() && step.risk != "read_only" && crate::audit::touches_build(&result.files_changed)
                 && !self.tree_broken.load(std::sync::atomic::Ordering::Relaxed)
                 && let Some(check) = &self.cfg.step_check {

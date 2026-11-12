@@ -265,7 +265,9 @@ async fn writes_outside_the_scope_fail_the_step_and_are_rolled_back() {
             return r;
         }
         write(task, &step, "ok");
-        WorkerResult::new("bad", "completed")
+        let mut r = WorkerResult::new("bad", "completed");
+        r.files_changed = vec![format!("calc/{step}.txt")];
+        r
     });
     let cp = CopyCheckpoints::new(&e.store);
     let ex = exec(&e, plan_of(1, "rollback_checkpoint", 2.0), vec![runnable(&bad, "m", "claude_code", "anthropic")], &cp, Config::default());
@@ -585,4 +587,20 @@ async fn steps_that_build_alone_but_not_together_do_not_fail_the_step_that_follo
     assert_eq!(w.calls.lock().unwrap().len(), 3, "the third step ran once: it is not retried for a break it did not cause");
     assert_eq!(*asked.lock().unwrap(), 3, "two step checks and one check of the merged wave; none after the tree is known broken");
     assert_eq!(kinds(&e, "wave_check").len(), 1);
+}
+
+#[tokio::test]
+async fn an_edit_step_that_changed_nothing_is_not_done() {
+    let e = env(two_pools(100_000.0));
+    // `a` reads until its turns run out and reports success with nothing written; `b` does the work.
+    let a = ScriptedWorker::new("a", |_, _| WorkerResult::new("a", "completed"));
+    let b = worker("b", 1, 0.0, |_, _| None);
+    let cp = CopyCheckpoints::new(&e.store);
+    let cands = vec![runnable(&a, "m", "claude_code", "anthropic"), runnable(&b, "m", "antigravity", "google")];
+    let ex = exec(&e, plan_of(1, "rollback_checkpoint", 2.0), cands, &cp, Config::default());
+    let out = ex.run().await;
+    assert_eq!(out.status, "completed", "{}", out.reason);
+    assert_eq!((a.calls.lock().unwrap().len(), b.calls.lock().unwrap().len()), (1, 1));
+    assert!(b.calls.lock().unwrap()[0].prompt.contains("the step changed no file"));
+    assert_eq!(read(&e, "calc/s1.txt").as_deref(), Some("ok s1"));
 }

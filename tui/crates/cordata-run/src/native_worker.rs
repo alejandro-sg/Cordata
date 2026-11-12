@@ -61,6 +61,21 @@ fn is_limit(error: &str) -> bool {
     e.contains("429") || e.contains("rate limit") || e.contains("usage limit") || e.contains("quota") || e.contains("too many requests")
 }
 
+/// How many times a turn cut off at the engine's round limit is continued on the same session.
+const MAX_CONTINUES: usize = 5;
+/// Starts the error of a worker that was still working when its last turn ran out.
+pub const CUT_OFF: &str = "cut off";
+
+/// What a worker is told when its turn hit the round limit and it gets another.
+fn continue_prompt(wants_answer: bool, left: usize) -> String {
+    let budget = if left == 0 { "This is your last turn".to_owned() } else { format!("You have this turn and at most {left} more") };
+    if wants_answer {
+        format!("Your turn ended at the tool-call limit before you answered. {budget}. Do not re-read what you have already read. If you know enough, answer now with only the JSON object the task asked for; otherwise look up only what is still missing, then answer.")
+    } else {
+        format!("Your turn ended at the tool-call limit before the step was finished. {budget}. Carry on from where you stopped: do not re-read files you have already read, make the remaining edits now, run the step's check, then say you are done.")
+    }
+}
+
 /// The follow-up sent when a turn ended without an answer the schema accepts.
 fn answer_nudge(problem: &str) -> String {
     format!("Your turn ended without a usable answer ({problem}). Do not call any more tools. Reply now with only the JSON object the task asked for, built from what you have already read.")
@@ -97,6 +112,7 @@ impl Worker for NativeWorker {
                 Err(e.to_string())
             } else {
                 let mut nudged = false;
+                let mut continues = 0usize;
                 let deadline = tokio::time::sleep(Duration::from_secs_f64(task.timeout_s.max(1.0)));
                 tokio::pin!(deadline);
                 loop {
@@ -115,6 +131,22 @@ impl Worker for NativeWorker {
                             Some(AppEvent::ConnectionError(e)) => break Err(e),
                             Some(AppEvent::TurnFailed(e)) => break Err(e),
                             Some(AppEvent::TurnComplete(StopReason::Cancelled)) => break Err("cancelled".into()),
+                            // The engine ends a turn after a fixed number of model round-trips. For a person at a
+                            // terminal that is a pause; for a step it used to be the end, reported as done with
+                            // nothing written. The session goes on from where it stopped instead.
+                            Some(AppEvent::TurnComplete(StopReason::MaxTurnRequests)) if continues < MAX_CONTINUES => {
+                                continues += 1;
+                                events(WorkerEvent { event_type: "continue".into(), payload: json!({"n": continues, "of": MAX_CONTINUES}) });
+                                if task.json_schema.is_some() {
+                                    text.clear();
+                                }
+                                if let Err(e) = session.send_prompt(continue_prompt(task.json_schema.is_some(), MAX_CONTINUES - continues)) {
+                                    break Err(e.to_string());
+                                }
+                            }
+                            Some(AppEvent::TurnComplete(StopReason::MaxTurnRequests)) if task.json_schema.is_none() => {
+                                break Err(format!("{CUT_OFF}: it used every round it was given ({} turns) without finishing", continues + 1));
+                            }
                             Some(AppEvent::TurnComplete(_)) => {
                                 // A model that spent its turn exploring, or answered off-schema, gets one chance to
                                 // answer properly on the same session: its context is paid for, a fresh worker's is not.

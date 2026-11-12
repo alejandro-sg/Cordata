@@ -96,6 +96,7 @@ pub fn run_config(settings: &Settings) -> RunConfig {
         harden: setting_bool(settings, "orchestrator.harden", true),
         tier2: setting_bool(settings, "orchestrator.tier2", true),
         step_check: setting_bool(settings, "orchestrator.stepCheck", true),
+        keep_for_review: setting_bool(settings, "orchestrator.keepForReview", true),
         screen: setting_bool(settings, "orchestrator.screen", true),
         research: true, // a code default, not a setting: `run --no-research` turns it off for one run
         ..RunConfig::default()
