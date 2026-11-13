@@ -91,28 +91,70 @@ pub struct ClaudeStream {
     st: ParserState,
     usage_seen: Vec<(String, (i64, i64))>,
     pending: HashMap<String, String>,
-    /// The live estimate (`--include-partial-messages`): what finished requests cost, and the current request's input
-    /// cost, output price and output so far. It lets the meter stop a call mid-request, before it passes its budget.
+    /// The live estimate (`--include-partial-messages`): every request of the call, sub-agents' included, priced as it
+    /// streams. It lets the meter stop a call mid-request, before it passes its budget.
     estimate: LiveCost,
 }
 
+/// Per request (by message id): its model's prices and the most usage seen so far; and which request each stream
+/// (the main conversation, or a sub-agent's `parent_tool_use_id`) is in now, since `message_delta` names no id.
 #[derive(Default)]
 struct LiveCost {
-    finished: f64,
-    input: f64,
-    out_price: f64,
-    out_tokens: i64,
+    requests: HashMap<String, (Prices, Value)>,
+    current: HashMap<String, String>,
 }
 
-/// List prices in dollars per million tokens (input, output), rounded *up* across each family's versions so the live
-/// estimate never reads low: Fable/Mythos 10/50, Opus 4.0-4.1 15/75, other Opus 5/25, Sonnet 3/15, Haiku 1/5. Cache
-/// reads are priced at a tenth of input and cache writes at 1.25 times. `None`: unknown model, no live estimate (the
-/// CLI's own `--max-budget-usd` and the per-request hold still apply).
-fn list_price(model: &str) -> Option<(f64, f64)> {
-    let m = model.to_ascii_lowercase();
-    let old_opus = ["opus-4-0", "opus-4-1", "opus-4-2025", "claude-3-opus"].iter().any(|o| m.contains(o));
-    [("fable", (10.0, 50.0)), ("mythos", (10.0, 50.0)), ("opus", if old_opus { (15.0, 75.0) } else { (5.0, 25.0) }), ("sonnet", (3.0, 15.0)), ("haiku", (1.0, 5.0))]
-        .into_iter().find(|(family, _)| m.contains(family)).map(|(_, p)| p)
+impl LiveCost {
+    fn total(&self) -> f64 {
+        self.requests.values().map(|(p, usage)| p.cost(usage)).sum()
+    }
+}
+
+/// Dollars per million tokens. From Anthropic's published list prices (cached 2026-11-03), taking the dearest version
+/// in each family so the estimate errs high: Fable/Mythos 10/50, Opus 4.0-4.1 15/75, other Opus 5/25, Sonnet 3/15
+/// (6/22.5 past 200K input, Sonnet 4.x's long-context tier), Haiku 1/5. An unknown or missing model is priced as the
+/// dearest (15/75). Cache reads cost a tenth of input; cache writes 1.25x for five minutes, 2x for an hour.
+#[derive(Clone, Copy)]
+struct Prices {
+    input: f64,
+    output: f64,
+}
+
+impl Prices {
+    fn of(model: &str, input_tokens: i64) -> Self {
+        let m = model.to_ascii_lowercase();
+        let old_opus = m.ends_with("opus-4") || ["opus-4-0", "opus-4-1", "opus-4-2025", "opus-4@", "claude-3-opus"].iter().any(|o| m.contains(o));
+        let (input, output) = if m.contains("fable") || m.contains("mythos") {
+            (10.0, 50.0)
+        } else if m.contains("opus") {
+            if old_opus { (15.0, 75.0) } else { (5.0, 25.0) }
+        } else if m.contains("sonnet") {
+            if m.contains("sonnet-4") && input_tokens > 200_000 { (6.0, 22.5) } else { (3.0, 15.0) }
+        } else if m.contains("haiku") {
+            (1.0, 5.0)
+        } else {
+            (15.0, 75.0)
+        };
+        Self { input, output }
+    }
+
+    fn cost(&self, usage: &Value) -> f64 {
+        let n = |path: &str| int(usage.pointer(path)) as f64;
+        let hour = n("/cache_creation/ephemeral_1h_input_tokens");
+        let writes = n("/cache_creation_input_tokens");
+        (n("/input_tokens") * self.input + (writes - hour).max(0.0) * self.input * 1.25 + hour * self.input * 2.0
+            + n("/cache_read_input_tokens") * self.input * 0.1 + n("/output_tokens") * self.output) / 1e6
+    }
+}
+
+/// `usage` with every count raised to the most seen (`message_delta` counts are cumulative).
+fn raise(usage: &mut Value, seen: &Value) {
+    for key in ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"] {
+        let most = int(usage.get(key)).max(int(seen.get(key)));
+        usage[key] = json!(most);
+    }
+    let hour = int(usage.pointer("/cache_creation/ephemeral_1h_input_tokens")).max(int(seen.pointer("/cache_creation/ephemeral_1h_input_tokens")));
+    usage["cache_creation"] = json!({"ephemeral_1h_input_tokens": hour});
 }
 
 impl ClaudeStream {
@@ -205,23 +247,29 @@ impl LineParser for ClaudeStream {
             }
             Some("stream_event") => {
                 let raw = event.get("event").unwrap_or(&Value::Null);
-                let e = &mut self.estimate;
+                let stream = event.get("parent_tool_use_id").and_then(Value::as_str).unwrap_or("").to_owned();
                 match raw.get("type").and_then(Value::as_str) {
                     Some("message_start") => {
                         let message = raw.get("message").unwrap_or(&Value::Null);
+                        let id = message.get("id").and_then(Value::as_str).map_or_else(|| format!("live-{}", self.estimate.requests.len()), str::to_owned);
+                        let usage = message.get("usage").cloned().unwrap_or(json!({}));
                         let model = message.get("model").and_then(Value::as_str).map(str::to_owned).or_else(|| self.st.model.clone()).unwrap_or_default();
-                        e.finished += e.input + e.out_tokens as f64 * e.out_price;
-                        (e.input, e.out_price, e.out_tokens) = (0.0, 0.0, 0);
-                        if let Some((input, output)) = list_price(&model) {
-                            let u = |k: &str| int(message.pointer(&format!("/usage/{k}"))) as f64;
-                            e.input = (u("input_tokens") * input + u("cache_creation_input_tokens") * input * 1.25 + u("cache_read_input_tokens") * input * 0.1) / 1e6;
-                            e.out_price = output / 1e6;
+                        let input = int(usage.get("input_tokens")) + int(usage.get("cache_creation_input_tokens")) + int(usage.get("cache_read_input_tokens"));
+                        let mut counted = json!({});
+                        raise(&mut counted, &usage);
+                        self.estimate.requests.insert(id.clone(), (Prices::of(&model, input), counted));
+                        self.estimate.current.insert(stream, id.clone());
+                        // Counted now, so a call stopped mid-request reports it with its cost (meter() dedupes by id).
+                        self.meter(&json!({"id": id, "usage": usage}));
+                    }
+                    Some("message_delta") => {
+                        if let Some((_, counted)) = self.estimate.current.get(&stream).and_then(|id| self.estimate.requests.get_mut(id)) {
+                            raise(counted, raw.get("usage").unwrap_or(&Value::Null));
                         }
                     }
-                    Some("message_delta") => e.out_tokens = e.out_tokens.max(int(raw.pointer("/usage/output_tokens"))),
                     _ => {}
                 }
-                self.st.cost_usd = self.st.cost_usd.max(e.finished + e.input + e.out_tokens as f64 * e.out_price);
+                self.st.cost_usd = self.st.cost_usd.max(self.estimate.total());
             }
             Some("assistant") => {
                 let message = event.get("message").cloned().unwrap_or(Value::Null);

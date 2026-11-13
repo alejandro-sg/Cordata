@@ -143,6 +143,32 @@ async fn a_request_is_stopped_while_it_streams_once_its_estimate_passes_the_budg
     assert!(std::fs::read_to_string(f.dir.path().join("argv.txt")).unwrap().contains("--include-partial-messages"));
 }
 
+/// The main request and a sub-agent's stream at once; the main one writes an hour-long cache, the sub-agent's model is
+/// one the price list does not know.
+const CLAUDE_INTERLEAVED: &str = r##"echo '{"type":"system","subtype":"init","session_id":"sess-3","model":"claude-opus-5-5"}'
+echo '{"type":"stream_event","event":{"type":"message_start","message":{"id":"main-1","model":"claude-opus-5-5","usage":{"input_tokens":0,"cache_creation_input_tokens":4000,"cache_creation":{"ephemeral_1h_input_tokens":4000}}}}}'
+echo '{"type":"stream_event","parent_tool_use_id":"t1","event":{"type":"message_start","message":{"id":"sub-1","model":"some-new-model","usage":{"input_tokens":1000}}}}'
+echo '{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":1000}}}'
+sleep 0.2
+echo '{"type":"stream_event","parent_tool_use_id":"t1","event":{"type":"message_delta","usage":{"output_tokens":1000}}}'
+sleep 10
+echo '{"type":"result","subtype":"success","is_error":false,"result":"late","total_cost_usd":0.5}'"##;
+
+#[tokio::test]
+async fn interleaved_requests_are_each_priced_and_summed() {
+    let f = fixture();
+    let w = claude_worker(&f.script("claude", CLAUDE_INTERLEAVED), Arc::new(Direct));
+    let mut task = f.task("execute", &["calc/a.txt"]);
+    task.budget_usd = Some(0.15);
+    let started = std::time::Instant::now();
+    let (r, _) = run(&w, task).await;
+    // Main: 4,000 hour-cache tokens at 2 x $5 = $0.04, 1,000 out at $25 = $0.025. Sub-agent, unknown model priced as the
+    // dearest ($15/$75): $0.015 in, $0.075 out. Only together ($0.155) do they pass $0.15.
+    assert!(started.elapsed() < std::time::Duration::from_secs(5), "stopped mid-request");
+    assert!((r.cost_usd - 0.155).abs() < 1e-6, "{}", r.cost_usd);
+    assert_eq!(r.requests, 2, "the stopped requests are counted with their cost");
+}
+
 #[tokio::test]
 async fn refusals_happen_before_anything_is_spawned() {
     let f = fixture();
