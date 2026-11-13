@@ -108,6 +108,9 @@ fn a_native_run_plans_executes_audits_and_can_be_read_back() {
     assert_eq!(states(&events), ["plan", "execute", "harden", "audit", "done"]);
     assert_eq!(e.read("calc/a.txt").unwrap(), "ok a");
     assert_eq!(e.read("calc/b.txt").unwrap(), "ok b");
+    let receipt: Value = serde_json::from_str(&std::fs::read_to_string(e.home.join("orchestrator/run-e2e/receipt.json")).unwrap()).unwrap();
+    assert_eq!((receipt["state"].clone(), receipt["criteria_ok"].clone()), (json!("done"), json!(true)), "{receipt}");
+    assert!(receipt["diffstat"].as_str().unwrap().contains("2 files changed") && receipt["wall_seconds"].is_u64(), "{receipt}");
     let kinds: Vec<&str> = events.iter().map(|ev| ev["kind"].as_str().unwrap()).collect();
     for k in ["dispatch", "usage", "step_dispatch", "step_result"] {
         assert!(kinds.contains(&k), "{k} missing in {kinds:?}");

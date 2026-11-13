@@ -225,17 +225,19 @@ async fn drive(mut machine: Machine<'_>) -> RunRecord {
     machine.record.clone()
 }
 
-fn finish(record: &RunRecord, as_json: bool) -> i32 {
+fn finish(record: &RunRecord, as_json: bool, receipt: &str) -> i32 {
     if !as_json {
         println!("\n{}: {}{}", record.run_id, record.state, if record.reason.is_empty() { String::new() } else { format!(" — {}", record.reason) });
         for w in &record.warnings {
             println!("  warning: {w}");
         }
+        println!("{receipt}");
     }
     i32::from(record.state != "done")
 }
 
 pub async fn run(args: RunArgs) -> i32 {
+    let started = std::time::Instant::now();
     let environ: HashMap<String, String> = std::env::vars().collect();
     let cwd = std::fs::canonicalize(&args.cwd).unwrap_or_else(|_| args.cwd.clone());
     let settings = settings_for(&cwd);
@@ -318,10 +320,12 @@ pub async fn run(args: RunArgs) -> i32 {
     let mut machine = Machine::new(&args.goal, &cwd.to_string_lossy(), config, world, Some(run_id.as_str()), None, args.session_id.as_deref());
     machine.record.warnings.extend(notes);
     let record = drive(machine).await;
-    finish(&record, args.json)
+    let summary = crate::receipt::write(&home, &crate::receipt::build(&record, &ledger, &checkpoints, started.elapsed()));
+    finish(&record, args.json, &summary)
 }
 
 pub async fn resume(run_id: &str, workers: Option<String>, allow_direct: bool, max_usd: Option<f64>, allow_weaker: bool, direction: Option<String>, as_json: bool) -> i32 {
+    let started = std::time::Instant::now();
     let mut environ: HashMap<String, String> = std::env::vars().collect();
     if allow_direct {
         environ.insert("CORDATA_VAULT_DIRECT".into(), "1".into());
@@ -414,14 +418,14 @@ pub async fn resume(run_id: &str, workers: Option<String>, allow_direct: bool, m
         isolation: Some(Arc::new(CowIsolation::default())),
         on_event: Some(printer(as_json)),
         controls: Some(controls),
-        home,
+        home: home.clone(),
     };
     let record = {
         let machine = Machine::with_record(record, run_config, world);
         if machine::TERMINAL.contains(&machine.record.state.as_str()) { machine.record.clone() } else { drive(machine).await }
     };
-    println!("{}: {}{}", record.run_id, record.state, if record.reason.is_empty() { String::new() } else { format!(" — {}", record.reason) });
-    i32::from(record.state != "done")
+    let summary = crate::receipt::write(&home, &crate::receipt::build(&record, &ledger, &checkpoints, started.elapsed()));
+    finish(&record, as_json, &summary)
 }
 
 pub fn status_cmd(as_json: bool) -> i32 {
