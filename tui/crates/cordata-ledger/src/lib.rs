@@ -168,6 +168,16 @@ pub fn pools_from_settings(raw: Option<&Value>) -> Vec<Pool> {
 }
 
 /// The `orchestrator.pools` entries [`pools_from_settings`] drops because their `model_regex` does not compile.
+impl Drop for Ledger {
+    /// One last try at the spend the database refused, so it is not lost with the process.
+    fn drop(&mut self) {
+        let rows = std::mem::take(&mut *self.unrecorded.lock().unwrap_or_else(|e| e.into_inner()));
+        for row in rows {
+            let _ = self.record(&row);
+        }
+    }
+}
+
 pub fn bad_pool_regexes(raw: Option<&Value>) -> Vec<String> {
     let parsed = match raw {
         Some(Value::String(text)) => serde_json::from_str::<Value>(text).unwrap_or(Value::Null),
@@ -707,14 +717,19 @@ impl Ledger {
 
     /// `budget` less what one more request may cost, so the request that crosses the line still lands inside it. A CLI
     /// checks its dollar budget only after a request, and cost is known only then: holding back the costliest
-    /// request this run has made (never more than half the budget) is what makes the cap hold. Unknown: half.
+    /// request this run has made (before its first, the costliest the ledger has seen; never more than half the
+    /// budget) is what makes the cap hold. A ledger that cannot be read holds back half.
     pub fn hold_back(&self, session_id: &str, budget: Option<f64>) -> Option<f64> {
-        let largest = self.conn.query_row(
-            "SELECT COALESCE(MAX(cost_usd / MAX(requests, 1)), 0) FROM quota_usage WHERE session_id = ?",
-            params![session_id],
-            |r| r.get::<_, f64>(0),
-        );
-        budget.map(|b| b - largest.unwrap_or(b / 2.0).min(b / 2.0))
+        let costliest = |sql: &str, args: &[&dyn rusqlite::ToSql]| self.conn.query_row(sql, args, |r| r.get::<_, Option<f64>>(0));
+        let per_request = "MAX(cost_usd / MAX(requests, 1))";
+        let in_run = costliest(&format!("SELECT {per_request} FROM quota_usage WHERE session_id = ?"), &[&session_id]);
+        let largest = match in_run {
+            Ok(Some(v)) => Ok(v),
+            Ok(None) => costliest(&format!("SELECT {per_request} FROM quota_usage"), &[]).map(|v| v.unwrap_or(0.0)),
+            Err(e) => Err(e),
+        };
+        let unrecorded = self.unrecorded.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|r| r.cost_usd / r.requests.max(1) as f64).fold(0.0, f64::max);
+        budget.map(|b| b - largest.map_or(b / 2.0, |l| l.max(unrecorded)).min(b / 2.0))
     }
 
     pub fn envelope(&self, session_id: &str, max_usd: Option<f64>, max_tokens: Option<i64>) -> EnvelopeState {
