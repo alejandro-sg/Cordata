@@ -15,6 +15,9 @@ use super::tools::ToolSpec;
 
 /// The context window asked for when `chat.ollamaNumCtx` is not set.
 pub(crate) const DEFAULT_NUM_CTX: u64 = 65_536;
+/// How long to wait for the server to accept, and for any next byte of a reply (a cold model load can be slow).
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 pub(crate) struct OllamaChat {
     /// `host:port` of the local server.
@@ -47,7 +50,10 @@ impl OllamaChat {
 
     pub(crate) async fn stream(&self, body: Value) -> Result<BoxStream<'static, Result<Delta, String>>, String> {
         let unreachable = |e: std::io::Error| format!("ollama at {}: {e} (is `ollama serve` running?)", self.addr);
-        let mut sock = tokio::net::TcpStream::connect(&self.addr).await.map_err(unreachable)?;
+        let mut sock = match tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(&self.addr)).await {
+            Ok(connected) => connected.map_err(unreachable)?,
+            Err(_) => return Err(format!("ollama at {}: no answer in {}s", self.addr, CONNECT_TIMEOUT.as_secs())),
+        };
         let payload = body.to_string();
         let request = format!("POST /api/chat HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}", self.addr, payload.len());
         sock.write_all(request.as_bytes()).await.map_err(unreachable)?;
@@ -58,7 +64,8 @@ impl OllamaChat {
                 break i + 4;
             }
             let mut chunk = [0u8; 8192];
-            match sock.read(&mut chunk).await.map_err(unreachable)? {
+            let read = tokio::time::timeout(IDLE_TIMEOUT, sock.read(&mut chunk)).await.map_err(|_| format!("ollama: no reply in {}s", IDLE_TIMEOUT.as_secs()))?;
+            match read.map_err(unreachable)? {
                 0 => return Err("ollama: the connection closed before a reply".into()),
                 n => raw.extend_from_slice(&chunk[..n]),
             }
@@ -66,7 +73,7 @@ impl OllamaChat {
         let head = String::from_utf8_lossy(&raw[..head_end]).to_ascii_lowercase();
         let status = head.split_whitespace().nth(1).unwrap_or("").to_owned();
         let chunked = head.contains("transfer-encoding: chunked");
-        let state = Reader { sock, buf: raw.split_off(head_end), chunked, chunk_left: 0, text: String::new(), calls: 0, eof: false };
+        let state = Reader { sock, buf: raw.split_off(head_end), chunked, chunk_left: 0, text: Vec::new(), calls: 0, eof: false, done: false, failed: None };
         if status != "200" {
             let body: Vec<_> = state.into_stream().collect().await;
             let detail = body.into_iter().find_map(Result::err).unwrap_or_default();
@@ -83,22 +90,26 @@ struct Reader {
     chunked: bool,
     /// Bytes still due in the current chunk (chunked replies only).
     chunk_left: usize,
-    text: String,
+    /// Decoded body bytes not yet split into lines (kept as bytes so a character split across reads survives).
+    text: Vec<u8>,
     calls: usize,
     eof: bool,
+    /// Ollama said `done`; a body that ends without it was cut off.
+    done: bool,
+    failed: Option<String>,
 }
 
 impl Reader {
     /// Moves what `buf` holds of the body into `text`, stopping at an incomplete chunk header.
     fn decode(&mut self) {
         if !self.chunked {
-            self.text.push_str(&String::from_utf8_lossy(&std::mem::take(&mut self.buf)));
+            self.text.append(&mut self.buf);
             return;
         }
         loop {
             if self.chunk_left > 0 {
                 let n = self.chunk_left.min(self.buf.len());
-                self.text.push_str(&String::from_utf8_lossy(&self.buf.drain(..n).collect::<Vec<_>>()));
+                self.text.extend(self.buf.drain(..n));
                 self.chunk_left -= n;
                 if self.chunk_left > 0 {
                     return;
@@ -110,7 +121,12 @@ impl Reader {
                 self.buf.drain(..2);
             }
             let Some(eol) = self.buf.windows(2).position(|w| w == b"\r\n") else { return };
-            let size = usize::from_str_radix(String::from_utf8_lossy(&self.buf[..eol]).split(';').next().unwrap_or("").trim(), 16).unwrap_or(0);
+            let Ok(size) = usize::from_str_radix(String::from_utf8_lossy(&self.buf[..eol]).split(';').next().unwrap_or("").trim(), 16) else {
+                self.failed = Some("ollama: a malformed chunk in the reply".into());
+                self.buf.clear();
+                self.eof = true;
+                return;
+            };
             self.buf.drain(..eol + 2);
             if size == 0 {
                 self.eof = true;
@@ -124,26 +140,34 @@ impl Reader {
         stream::unfold(self, |mut r| async move {
             loop {
                 r.decode();
-                if let Some(end) = r.text.find('\n') {
-                    let line: String = r.text.drain(..=end).collect();
+                if let Some(end) = r.text.iter().position(|b| *b == b'\n') {
+                    let line: Vec<u8> = r.text.drain(..=end).collect();
+                    let line = String::from_utf8_lossy(&line);
                     if line.trim().is_empty() {
                         continue;
                     }
                     let items = deltas(&line, &mut r.calls);
+                    r.done |= items.iter().any(|d| matches!(d, Ok(Delta::Usage(_))));
                     return Some((stream::iter(items), r));
                 }
                 if r.eof {
-                    let rest = std::mem::take(&mut r.text);
-                    return (!rest.trim().is_empty()).then(|| (stream::iter(deltas(&rest, &mut r.calls)), r));
+                    let rest = String::from_utf8_lossy(&std::mem::take(&mut r.text)).into_owned();
+                    let mut items = if rest.trim().is_empty() { Vec::new() } else { deltas(&rest, &mut r.calls) };
+                    r.done |= items.iter().any(|d| matches!(d, Ok(Delta::Usage(_))));
+                    if let Some(why) = r.failed.take() {
+                        items.push(Err(why));
+                    } else if !r.done && !items.iter().any(Result::is_err) {
+                        items.push(Err("ollama: the reply ended before the model finished".into()));
+                    }
+                    r.done = true;
+                    return (!items.is_empty()).then(|| (stream::iter(items), r));
                 }
                 let mut chunk = [0u8; 8192];
-                match r.sock.read(&mut chunk).await {
-                    Ok(0) => r.eof = true,
-                    Ok(n) => r.buf.extend_from_slice(&chunk[..n]),
-                    Err(e) => {
-                        r.eof = true;
-                        return Some((stream::iter(vec![Err(format!("ollama: {e}"))]), r));
-                    }
+                match tokio::time::timeout(IDLE_TIMEOUT, r.sock.read(&mut chunk)).await {
+                    Ok(Ok(0)) => r.eof = true,
+                    Ok(Ok(n)) => r.buf.extend_from_slice(&chunk[..n]),
+                    Ok(Err(e)) => (r.failed, r.eof) = (Some(format!("ollama: {e}")), true),
+                    Err(_) => (r.failed, r.eof) = (Some(format!("ollama: no more reply for {}s", IDLE_TIMEOUT.as_secs())), true),
                 }
             }
         })
@@ -222,26 +246,55 @@ mod tests {
         assert!(deltas(r#"{"error":"model not found"}"#, &mut n)[0].as_ref().unwrap_err().contains("model not found"));
     }
 
-    #[tokio::test]
-    async fn a_streamed_reply_is_read_across_split_chunks() {
+    /// A one-shot local server that answers with `reply` and hands back what it was sent.
+    async fn serve(reply: Vec<u8>) -> (String, tokio::task::JoinHandle<String>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let seen = tokio::spawn(async move {
+        let addr = listener.local_addr().unwrap().to_string();
+        let task = tokio::spawn(async move {
             let (mut sock, _) = listener.accept().await.unwrap();
             let mut buf = vec![0u8; 65_536];
             let n = sock.read(&mut buf).await.unwrap();
-            // Chunked, with a line split across two chunks, the way Ollama streams.
-            let (a, b) = ("{\"message\":{\"content\":\"he\"},\"done\":false}\n{\"message\":{\"con", "tent\":\"llo\"},\"done\":true,\"eval_count\":2}\n");
-            let reply = format!("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{a}\r\n{:x}\r\n{b}\r\n0\r\n\r\n", a.len(), b.len());
-            sock.write_all(reply.as_bytes()).await.unwrap();
+            sock.write_all(&reply).await.unwrap();
             String::from_utf8_lossy(&buf[..n]).into_owned()
         });
-        let chat = OllamaChat::at(&addr.to_string(), 65_536);
-        let stream = chat.stream(chat.body("llama3", "s", &[Msg::User { text: "hi".into() }], &[])).await.unwrap();
-        let got: Vec<_> = stream.collect().await;
-        let text: String = got.iter().filter_map(|d| if let Ok(Delta::Text(t)) = d { Some(t.as_str()) } else { None }).collect();
-        assert_eq!(text, "hello");
-        assert!(seen.await.unwrap().contains("\"num_ctx\":65536"));
+        (addr, task)
+    }
+
+    async fn reply_of(reply: Vec<u8>) -> (Vec<Result<Delta, String>>, String) {
+        let (addr, seen) = serve(reply).await;
+        let chat = OllamaChat::at(&addr, 65_536);
+        let got = chat.stream(chat.body("llama3", "s", &[Msg::User { text: "hi".into() }], &[])).await.unwrap().collect().await;
+        (got, seen.await.unwrap())
+    }
+
+    fn text_of(got: &[Result<Delta, String>]) -> String {
+        got.iter().filter_map(|d| if let Ok(Delta::Text(t)) = d { Some(t.as_str()) } else { None }).collect()
+    }
+
+    #[tokio::test]
+    async fn a_streamed_reply_is_read_across_split_chunks() {
+        // Chunked the way Ollama streams, with a line split across chunks and the two bytes of "é" split too.
+        let a: &[u8] = b"{\"message\":{\"content\":\"he\"},\"done\":false}\n{\"message\":{\"content\":\"ll\xC3";
+        let b: &[u8] = b"\xA9\"},\"done\":true,\"eval_count\":2}\n";
+        let mut reply = format!("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n", a.len()).into_bytes();
+        reply.extend_from_slice(a);
+        reply.extend_from_slice(format!("\r\n{:x}\r\n", b.len()).as_bytes());
+        reply.extend_from_slice(b);
+        reply.extend_from_slice(b"\r\n0\r\n\r\n");
+        let (got, seen) = reply_of(reply).await;
+        assert_eq!(text_of(&got), "hellé");
+        assert!(got.iter().all(Result::is_ok), "{got:?}");
+        assert!(seen.contains("\"num_ctx\":65536"));
+    }
+
+    #[tokio::test]
+    async fn a_reply_cut_off_before_done_is_an_error() {
+        let body = "{\"message\":{\"content\":\"half\"},\"done\":false}\n";
+        let (got, _) = reply_of(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}", body.len()).into_bytes()).await;
+        assert_eq!(text_of(&got), "half");
+        assert!(got.last().unwrap().as_ref().unwrap_err().contains("ended before the model finished"), "{got:?}");
+        let (got, _) = reply_of(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nxx\r\n".to_vec()).await;
+        assert!(got.last().unwrap().as_ref().unwrap_err().contains("malformed chunk"), "{got:?}");
     }
 
     /// Against a real local server: `CORDATA_LIVE_OLLAMA=1 cargo test -p acp-core live_ollama -- --ignored`.
