@@ -253,6 +253,10 @@ pub async fn run(args: RunArgs) -> i32 {
     };
     let mut notes = Vec::new();
     if config::setting(&settings, "orchestrator.pools").is_some() {
+        let bad = cordata_ledger::bad_pool_regexes(config::setting(&settings, "orchestrator.pools"));
+        if !bad.is_empty() {
+            notes.push(format!("orchestrator.pools: {} dropped, the regex does not compile; its models run under the default cap", bad.join(", ")));
+        }
         let pooled = config::pools(&settings);
         let added: Vec<String> = cordata_ledger::default_pools().into_iter().filter(|d| requested.contains(&d.family) && !pooled.iter().any(|p| p.pool_id == d.pool_id)).map(|d| d.pool_id).collect();
         if !added.is_empty() {

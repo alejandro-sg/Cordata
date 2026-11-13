@@ -167,6 +167,17 @@ pub fn pools_from_settings(raw: Option<&Value>) -> Vec<Pool> {
     if pools.is_empty() { default_pools() } else { pools }
 }
 
+/// The `orchestrator.pools` entries [`pools_from_settings`] drops because their `model_regex` does not compile.
+pub fn bad_pool_regexes(raw: Option<&Value>) -> Vec<String> {
+    let parsed = match raw {
+        Some(Value::String(text)) => serde_json::from_str::<Value>(text).unwrap_or(Value::Null),
+        Some(v) => v.clone(),
+        None => Value::Null,
+    };
+    parsed.as_array().into_iter().flatten().filter_map(|item| serde_json::from_value::<Pool>(item.clone()).ok())
+        .filter(|p| Regex::new(&p.model_regex).is_err()).map(|p| format!("{} (model_regex `{}`)", p.pool_id, p.model_regex)).collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PoolState {
     pub pool_id: String,
@@ -379,6 +390,9 @@ pub struct Ledger {
     conn: Connection,
     pub pools: Vec<Pool>,
     clock: Box<dyn Fn() -> f64 + Send>,
+    /// Spend the database refused to store (twice). Kept here and counted by pool states and envelopes, so a busy or
+    /// broken database never makes a run look cheaper than it was.
+    unrecorded: std::sync::Mutex<Vec<UsageRow>>,
 }
 
 impl Ledger {
@@ -399,7 +413,7 @@ impl Ledger {
         let mut pools = pools;
         let missing: Vec<Pool> = default_pools().into_iter().filter(|d| !pools.iter().any(|p| p.pool_id == d.pool_id)).collect();
         pools.extend(missing);
-        let ledger = Self { conn, pools, clock: Box::new(now) };
+        let ledger = Self { conn, pools, clock: Box::new(now), unrecorded: std::sync::Mutex::default() };
         ledger.sync_pools()?;
         Ok(ledger)
     }
@@ -519,7 +533,10 @@ impl Ledger {
             role: role.map(Into::into),
             worker: worker.map(Into::into),
         };
-        let _ = self.record(&row); // never raises into a run
+        // Never raises into a run: a write that fails twice is kept in memory and still counted.
+        if self.record(&row).is_err() && self.record(&row).is_err() {
+            self.unrecorded.lock().unwrap_or_else(|e| e.into_inner()).push(row.clone());
+        }
         row
     }
 
@@ -706,6 +723,8 @@ impl Ledger {
             params![session_id],
             |r| Ok((r.get::<_, f64>(0)?, r.get::<_, i64>(1)?)),
         );
+        let lost = self.unrecorded.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|u| u.session_id == session_id).fold((0.0, 0), |(u, t), r| (u + r.cost_usd, t + r.tokens_in + r.tokens_out));
+        let sums = sums.map(|(u, t)| (u + lost.0, t + lost.1));
         let Ok((usd, tok)) = sums else {
             return EnvelopeState { session_id: session_id.into(), spent_usd: 0.0, spent_tokens: 0, max_usd, max_tokens, exhausted: true, remaining_usd: None, remaining_tokens: None };
         };
@@ -845,6 +864,12 @@ impl Ledger {
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
+        let unrecorded = self.unrecorded.lock().unwrap_or_else(|e| e.into_inner());
+        let mut rows = rows;
+        rows.extend(unrecorded.iter().filter(|u| u.pool_id == pool_id && u.ts > since).map(|u| Row {
+            ts: u.ts, tokens_in: u.tokens_in, tokens_out: u.tokens_out, cost_usd: u.cost_usd, requests: u.requests,
+            is_error_limit: u.is_error_limit, reset_ts: u.reset_ts,
+        }));
         Ok(rows)
     }
 }
