@@ -246,3 +246,25 @@ mod tests {
         assert_eq!(args.prompt.as_deref(), Some("review this code"));
     }
 }
+
+/// A folder for one test, under this test run's own `cordata-app-tests-<pid>` in the temp dir. Tests leave their
+/// folders behind (some are shared across tests), so the first call also removes earlier runs' parents that have sat
+/// untouched for an hour: leftovers stay bounded instead of piling up run after run.
+#[cfg(test)]
+pub(crate) fn test_dir(name: &str) -> std::path::PathBuf {
+    static SWEPT: std::sync::Once = std::sync::Once::new();
+    let tmp = std::env::temp_dir();
+    SWEPT.call_once(|| {
+        let mine = format!("cordata-app-tests-{}", std::process::id());
+        for entry in std::fs::read_dir(&tmp).into_iter().flatten().flatten() {
+            let file = entry.file_name().to_string_lossy().into_owned();
+            let stale = entry.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age.as_secs() > 3600);
+            if file.starts_with("cordata-app-tests-") && file != mine && stale {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    });
+    let parent = tmp.join(format!("cordata-app-tests-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&parent);
+    parent.join(name)
+}

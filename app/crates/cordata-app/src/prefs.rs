@@ -238,7 +238,7 @@ mod tests {
 
     #[test]
     fn round_trips_and_repairs_bad_values() {
-        let dir = std::env::temp_dir().join(format!("cordata-prefs-{}", std::process::id()));
+        let dir = crate::test_dir("prefs");
         let file = dir.join("prefs.toml");
         let mut prefs = Prefs { theme: "dim".into(), panel_open: Some(false), ..Prefs::default() };
         prefs.touch_recent(Path::new("/tmp/a"), 1);
@@ -267,7 +267,7 @@ mod tests {
                 let _ = std::fs::remove_dir_all(&self.0);
             }
         }
-        let dir = Dir(std::env::temp_dir().join(format!("cordata-damaged-{}", std::process::id())));
+        let dir = Dir(crate::test_dir("damaged"));
         let _ = std::fs::remove_dir_all(dir.path());
         std::fs::create_dir_all(dir.path()).unwrap();
         let file = dir.path().join("prefs.toml");

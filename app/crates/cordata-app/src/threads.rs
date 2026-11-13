@@ -172,7 +172,7 @@ mod tests {
     struct Dir(PathBuf);
     impl Dir {
         fn new(tag: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!("cordata-threads-{tag}-{}", std::process::id()));
+            let dir = crate::test_dir(&format!("threads-{tag}"));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             Self(std::fs::canonicalize(dir).unwrap())

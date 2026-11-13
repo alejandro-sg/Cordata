@@ -893,7 +893,7 @@ mod tests {
 
     #[test]
     fn a_task_cycles_on_disk_and_a_stale_one_is_refused() {
-        let dir = std::env::temp_dir().join(format!("cordata-plan-test-{}", std::process::id()));
+        let dir = crate::test_dir("plan-test");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("PLAN.md");
         std::fs::write(&path, "# Plan\n  - [ ] first\n- [x] second\n").unwrap();

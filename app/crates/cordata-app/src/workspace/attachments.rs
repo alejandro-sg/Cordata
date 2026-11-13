@@ -439,7 +439,7 @@ mod tests {
 
     fn dir() -> std::path::PathBuf {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let d = std::env::temp_dir().join(format!("cordata-attach-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        let d = crate::test_dir(&format!("attach-{}", NEXT.fetch_add(1, Ordering::Relaxed)));
         std::fs::create_dir_all(&d).unwrap();
         d
     }
