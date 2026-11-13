@@ -131,9 +131,9 @@ Not covered: a started server runs with your rights, outside the command sandbox
 ## Tool hooks
 
 A project's `.cordata/hooks.json` names shell commands the chat runs around tool calls, outside the sandbox. Like a
-project MCP server it runs only as approved: an `mcp.approved` entry pins the folder and a SHA-256 of the file, so any
-change to that file holds it back. Scripts a hook command calls are not pinned, so an approved hook that runs a script
-from the repository runs whatever that script says now. Your own `~/.cordata/hooks.json` needs no approval. An approved
+project MCP server it runs only as approved: an `mcp.approved` entry pins the folder and a SHA-256 of the file and of
+every file a hook command names by path, so a change to any of them holds it back. Code those scripts reach indirectly
+(a sourced file, a program on `PATH`) is not pinned. Each hook is killed after its timeout (default 30 s). Your own `~/.cordata/hooks.json` needs no approval. An approved
 hook runs with your rights.
 
 ## Saved sessions

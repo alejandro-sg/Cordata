@@ -109,7 +109,7 @@ The coding CLIs' traffic goes through the Agent Vault proxy, or the run is refus
 ## Tool hooks (`hooks.json`)
 
 The chat engine runs hooks around each tool call. It reads `.cordata/hooks.json` in the project when you have approved
-that exact file, otherwise `~/.cordata/hooks.json` (the two are not merged). Code: `tui/crates/acp-core/src/hooks.rs`.
+that exact file, otherwise `~/.cordata/hooks.json` (`$CORDATA_HOME/hooks.json`; the two are not merged). Code: `tui/crates/acp-core/src/hooks.rs`.
 
 ```json
 { "hooks": {
@@ -121,13 +121,14 @@ that exact file, otherwise `~/.cordata/hooks.json` (the two are not merged). Cod
 - `matcher` is a tool name or `*`.
 - `command` gets `{event, tool, args, cwd}` (plus `output` and `success` after the call) as JSON on stdin. Stdout of
   `{"decision":"block","reason":"…"}` (or, after the call only, `{"decision":"feedback","reason":"…"}`) decides; otherwise a non-zero exit
-  blocks with stderr as the reason, and exit 0 allows. `timeout_secs` is accepted but not enforced yet.
+  blocks with stderr as the reason, and exit 0 allows. A hook that runs past `timeout_secs` (default 30) is killed and blocks the call.
 - `checksyntax` (JSON, TOML, Rust) and `checkassertions` (refuses edits that strip test assertions) run after edits only.
 - Hook commands run through `/bin/sh` outside the sandbox and without a per-call prompt. A project `hooks.json` is code
   the repository would run on your machine, so it runs only once approved: the chat's notice gives the entry
-  (`<folder>|.cordata/hooks.json|sha256:<digest of the file>`) to add to `mcp.approved` in `~/.cordata/settings.json`.
-  Any edit to the file holds it back again. The approval pins `hooks.json` only, not scripts its commands call: point
-  hooks at commands you trust, not at scripts the repository can change.
+  (`<folder>|.cordata/hooks.json|sha256:<digest>`) to add to `mcp.approved` in `~/.cordata/settings.json`. The digest
+  covers the file and every file in the project that a hook command names (`./scripts/check.sh`), so editing either
+  holds it back again. A script reached some other way (sourced by a named script, found on `PATH`) is not pinned. A
+  malformed project file does not run, and the chat says so.
 
 ## Built-in guard
 

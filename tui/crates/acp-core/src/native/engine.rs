@@ -326,7 +326,7 @@ pub(crate) async fn drive(
     let (mcp, mut startup) = super::mcp::McpManager::start(servers, &options.cwd).await;
     startup.held = held;
     let (hooks, held_hooks) = HooksRegistry::load_for_workspace(&options.cwd, &approvals);
-    for notice in startup.notices().into_iter().chain(held_hooks.as_deref().map(crate::hooks::held_notice)) {
+    for notice in startup.notices().into_iter().chain(held_hooks) {
         let _ = events.send(AppEvent::Notice(notice));
     }
     let mode = ModeSwitch::new(policy.mode);
@@ -1270,7 +1270,7 @@ mod tests {
             vec![text("done")],
         ]);
         let events = session(&fake, dir.path(), &["go"], |_| ApprovalDecision::Allow).await;
-        assert!(!asked(&events).is_empty() && events.iter().any(|e| matches!(e, AppEvent::Notice(n) if n.contains("hooks.json is not approved"))));
+        assert!(!asked(&events).is_empty() && events.iter().any(|e| matches!(e, AppEvent::Notice(n) if n.contains("is not approved"))));
         let seen = fake.seen.lock().unwrap();
         assert!(!matches!(&seen[1][2], Msg::ToolResult { output, .. } if output.contains("blocked by c8 lifecycle hook")));
     }
