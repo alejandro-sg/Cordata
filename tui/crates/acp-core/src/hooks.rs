@@ -212,6 +212,11 @@ impl HooksRegistry {
     }
 }
 
+/// What the chat says when a project's hooks are held back, with the entry that would let them run.
+pub fn held_notice(entry: &str) -> String {
+    format!("hooks: this project's .cordata/hooks.json is not approved (or changed), so it does not run. To run it, add \"{entry}\" to mcp.approved in ~/.cordata/settings.json.")
+}
+
 /// The `mcp.approved` entry that lets a project's hooks run: `<folder>|.cordata/hooks.json|sha256:<digest of the file>`.
 pub fn project_approval(cwd: &Path, content: &str) -> String {
     use sha2::{Digest as _, Sha256};

@@ -325,14 +325,11 @@ pub(crate) async fn drive(
     let (servers, held) = super::mcp::configured(mcp_home.as_deref(), &options.cwd, &approvals);
     let (mcp, mut startup) = super::mcp::McpManager::start(servers, &options.cwd).await;
     startup.held = held;
-    for notice in startup.notices() {
+    let (hooks, held_hooks) = HooksRegistry::load_for_workspace(&options.cwd, &approvals);
+    for notice in startup.notices().into_iter().chain(held_hooks.as_deref().map(crate::hooks::held_notice)) {
         let _ = events.send(AppEvent::Notice(notice));
     }
     let mode = ModeSwitch::new(policy.mode);
-    let (hooks, held_hooks) = HooksRegistry::load_for_workspace(&options.cwd, &approvals);
-    if let Some(entry) = held_hooks {
-        let _ = events.send(AppEvent::Notice(format!("hooks: this project's .cordata/hooks.json is not approved (or changed), so it does not run. To run it, add \"{entry}\" to mcp.approved in ~/.cordata/settings.json.")));
-    }
     let mut agent = Agent { provider, switched: None, cwd: options.cwd.clone(), offload, always: HashSet::new(), economizer, policy, mode, mcp, hooks };
     let mut history: Vec<Msg> = Vec::new();
     while let Some(command) = commands.recv().await {
@@ -1273,8 +1270,7 @@ mod tests {
             vec![text("done")],
         ]);
         let events = session(&fake, dir.path(), &["go"], |_| ApprovalDecision::Allow).await;
-        assert!(!asked(&events).is_empty(), "the call reaches the normal approval prompt");
-        assert!(events.iter().any(|e| matches!(e, AppEvent::Notice(n) if n.contains("hooks.json is not approved"))));
+        assert!(!asked(&events).is_empty() && events.iter().any(|e| matches!(e, AppEvent::Notice(n) if n.contains("hooks.json is not approved"))));
         let seen = fake.seen.lock().unwrap();
         assert!(!matches!(&seen[1][2], Msg::ToolResult { output, .. } if output.contains("blocked by c8 lifecycle hook")));
     }
