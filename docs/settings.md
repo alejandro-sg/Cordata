@@ -39,6 +39,8 @@ in effect.
 | `chat.deny` | list of rules | none | calls refused without asking; any file may add them |
 | `chat.network` | `ask`, `off` | `ask` | commands run offline; `ask` lets a command request the network (you are asked), `off` refuses it. A project may set `off` |
 | `chat.writable` | list of absolute paths (`~/` allowed) | none | folders commands may write besides the project, temporary folders and package caches. **User file only** |
+| `chat.history` | `on`, `off` | `on` | save sessions to `~/.cordata/sessions` for `/resume`. A project may set `off` |
+| `chat.ollamaNumCtx` | integer ≥ 2048 | `65536` | the context window asked of a local Ollama model on every request (`options.num_ctx`); without it Ollama uses its small server default and drops the start of long chats. **User file only**. Ollama Cloud is unaffected. A bigger window needs more memory for the model's cache (at 65536, several GB for a 7-8B model); lower it on a small Mac. A model name no provider prefix claims (not `claude…`, `gemini…`, `gpt…`, `ollama_cloud::…`) is treated as a local Ollama model |
 | `mcp.approved` | list of `<folder>\|<name>\|sha256:<digest>` | none | project MCP servers you approved, each pinned to its exact command, arguments and environment; written by Settings → MCP → Approve. **User file only** |
 
 MCP servers: `~/.cordata/mcp.json` (`{"mcpServers": {name: {command, args, env}}}`) applies everywhere; a project's
@@ -47,8 +49,6 @@ MCP servers: `~/.cordata/mcp.json` (`{"mcpServers": {name: {command, args, env}}
 `code_map` (the repo map tool) ranks definitions by the reference graph and the question's words; with a Model2Vec model
 in `~/.cordata/models/potion-code-16M` (or `CORDATA_EMBED_MODEL=<folder>`) it adds meaning. Nothing is downloaded for you:
 `config.json`, `tokenizer.json` and `model.safetensors` from huggingface.co/minishlab/potion-code-16M (64 MB).
-| `chat.ollamaNumCtx` | integer ≥ 2048 | `65536` | the context window asked of a local Ollama model on every request (`options.num_ctx`); without it Ollama uses its small server default and drops the start of long chats. **User file only**. Ollama Cloud is unaffected |
-| `chat.history` | `on`, `off` | `on` | save sessions to `~/.cordata/sessions` for `/resume`. A project may set `off` |
 
 A rule is `tool` or `tool(pattern)`, for `read_file`, `edit_file`, `run_command`, `code_search`, `code_outline`. For
 `run_command` the pattern is a glob over the whole command (`*` matches anything); for the file tools a glob over the
