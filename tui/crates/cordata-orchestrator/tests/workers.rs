@@ -117,6 +117,32 @@ async fn a_claude_run_completes_and_is_accounted() {
     assert!(!env.contains("CARGO") && !env.contains("ANTHROPIC_API_KEY"), "{env}");
 }
 
+/// One request that would run long: output tokens stream in, the result never comes in time.
+const CLAUDE_RUNAWAY: &str = r##"echo "$@" > "$OUT/argv.txt"
+echo '{"type":"system","subtype":"init","session_id":"sess-2","model":"claude-opus-5-5"}'
+echo '{"type":"stream_event","event":{"type":"message_start","message":{"model":"claude-opus-5-5","usage":{"input_tokens":1000,"output_tokens":1}}}}'
+for n in 1000 2000 3000 4000 5000 6000 7000 8000; do
+  echo "{\"type\":\"stream_event\",\"event\":{\"type\":\"message_delta\",\"usage\":{\"output_tokens\":$n}}}"
+  sleep 0.2
+done
+sleep 10
+echo '{"type":"result","subtype":"success","is_error":false,"result":"late","total_cost_usd":0.21}'"##;
+
+#[tokio::test]
+async fn a_request_is_stopped_while_it_streams_once_its_estimate_passes_the_budget() {
+    let f = fixture();
+    let w = claude_worker(&f.script("claude", CLAUDE_RUNAWAY), Arc::new(Direct));
+    let mut task = f.task("execute", &["calc/a.txt"]);
+    task.budget_usd = Some(0.10);
+    let started = std::time::Instant::now();
+    let (r, _) = run(&w, task).await;
+    // Opus is estimated at $5 in / $25 out per million: 1,000 in is $0.005, so $0.10 passes at the 4,000th output token.
+    assert!(started.elapsed() < std::time::Duration::from_secs(5), "stopped mid-request, not at the result");
+    assert_ne!(r.status, "completed");
+    assert!(r.cost_usd > 0.10 && r.cost_usd <= 0.105 + 1e-9, "stopped at the first delta past the line: {}", r.cost_usd);
+    assert!(std::fs::read_to_string(f.dir.path().join("argv.txt")).unwrap().contains("--include-partial-messages"));
+}
+
 #[tokio::test]
 async fn refusals_happen_before_anything_is_spawned() {
     let f = fixture();

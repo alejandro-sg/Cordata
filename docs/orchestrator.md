@@ -48,8 +48,11 @@ so what your list leaves out runs under the default caps, not uncapped. To keep 
 it starts; its retries spend from that share, and a step that spends it waits for the next wave. A CLI learns a
 request's cost only after it, so every worker is given its budget less a hold for one more request: twice the costliest
 request this run has made (before its first, the costliest in the ledger), at least a tenth of the budget and at most
-half. Each request re-sends a longer conversation, hence the doubling. A single request dearer than that hold can still
-pass the line by the difference; after it the run stops at its next check.
+half. Each request re-sends a longer conversation, hence the doubling. Claude Code steps also stream their token counts
+(`--include-partial-messages`): Cordata prices each request as it streams, at list prices rounded up per model family,
+and stops the CLI at the first update past the budget. What a request can still add after the line is its input (known
+when it starts) and the output of one update; unknown models fall back to the hold. Antigravity and Ollama Cloud steps
+are metered by the hold alone.
 
 Other `orchestrator.*` settings are in [`settings.md`](settings.md).
 
