@@ -106,6 +106,26 @@ The coding CLIs' traffic goes through the Agent Vault proxy, or the run is refus
 | `vault.addr` | the proxy address (default `http://127.0.0.1:14322`) |
 | `CORDATA_VAULT_DIRECT` | environment; allow direct egress for orchestrator runs |
 
+## Tool hooks (`hooks.json`)
+
+The chat engine runs hooks around each tool call. It reads `.cordata/hooks.json` in the project, or, if that file is
+missing or invalid, `~/.cordata/hooks.json` (the two are not merged). Code: `tui/crates/acp-core/src/hooks.rs`.
+
+```json
+{ "hooks": {
+    "PreToolUse":  [{ "matcher": "run_command", "hooks": [{ "type": "command", "command": "./scripts/check.sh" }] }],
+    "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "checksyntax" }, { "type": "checkassertions" }] }]
+} }
+```
+
+- `matcher` is a tool name or `*`.
+- `command` gets `{event, tool, args, cwd}` (plus `output` and `success` after the call) as JSON on stdin. Stdout of
+  `{"decision":"block","reason":"…"}` or `{"decision":"feedback","reason":"…"}` decides; otherwise a non-zero exit
+  blocks with stderr as the reason, and exit 0 allows. `timeout_secs` is accepted but not enforced yet.
+- `checksyntax` (JSON, TOML, Rust) and `checkassertions` (refuses edits that strip test assertions) run after edits only.
+- Hook commands run through `/bin/sh` outside the sandbox and without an approval prompt. A project `hooks.json` is
+  therefore code the repository can run on your machine: read it before you open an untrusted project.
+
 ## Built-in guard
 
 Before the approval prompt, the chat engine refuses (without asking) edits to `.env` files and inside `.git/`,
