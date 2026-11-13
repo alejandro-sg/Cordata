@@ -126,7 +126,8 @@ that exact file, otherwise `~/.cordata/hooks.json` (the two are not merged). Cod
 - Hook commands run through `/bin/sh` outside the sandbox and without a per-call prompt. A project `hooks.json` is code
   the repository would run on your machine, so it runs only once approved: the chat's notice gives the entry
   (`<folder>|.cordata/hooks.json|sha256:<digest of the file>`) to add to `mcp.approved` in `~/.cordata/settings.json`.
-  Any edit to the file holds it back again.
+  Any edit to the file holds it back again. The approval pins `hooks.json` only, not scripts its commands call: point
+  hooks at commands you trust, not at scripts the repository can change.
 
 ## Built-in guard
 

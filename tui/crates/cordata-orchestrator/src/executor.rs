@@ -164,11 +164,13 @@ struct StepCtx {
     /// formed, less what its own attempts spent: a retry spends from its share, never from a sibling's.
     wave: usize,
     share: (Option<f64>, Option<i64>),
+    /// Per pool, this step's share of the headroom it saw first, less its own spend in that pool's unit.
+    pool_share: HashMap<String, f64>,
 }
 
 impl StepCtx {
     fn new(candidates: Vec<Runnable>, current: Option<Runnable>, packet: Option<HandoffPacket>) -> Self {
-        Self { candidates, current, packet, scoped: false, sibling_scope: Vec::new(), reason: String::new(), last_packet: None, isolated: false, sandbox: None, wave: 1, share: (None, None) }
+        Self { candidates, current, packet, scoped: false, sibling_scope: Vec::new(), reason: String::new(), last_packet: None, isolated: false, sandbox: None, wave: 1, share: (None, None), pool_share: HashMap::new() }
     }
 }
 
@@ -401,13 +403,10 @@ impl<'a> StepExecutor<'a> {
                 self.out(|o| (o.status, o.reason) = (status.into(), reason.into()));
                 return;
             }
-            let mut wave = form_wave(&pending, &done, self.cfg.max_parallel);
-            // Each step of a wave gets a share of the run's budget reserved now; a share of zero tokens could do
-            // nothing, so a nearly spent run runs fewer steps at once.
+            let wave = form_wave(&pending, &done, self.cfg.max_parallel);
+            // Each step of a wave gets a share of the run's budget reserved now. A step that spends its share goes back
+            // to pending, and the next wave shares out what is left again.
             let left = self.envelope();
-            if let Some(tokens) = left.remaining_tokens {
-                wave.truncate((tokens.max(1) as usize).min(wave.len()));
-            }
             if wave.is_empty() {
                 let ids: Vec<&str> = pending.iter().map(|s| s.step_id.as_str()).collect();
                 self.out(|o| {
@@ -449,7 +448,7 @@ impl<'a> StepExecutor<'a> {
             }
             *self.packet.lock().unwrap() = None;
             for (ctx, verdict) in contexts.iter().zip(&verdicts) {
-                if *verdict != "completed" {
+                if !matches!(*verdict, "completed" | "deferred") {
                     self.out(|o| {
                         o.status = (*verdict).into();
                         if !ctx.reason.is_empty() {
@@ -555,7 +554,12 @@ impl<'a> StepExecutor<'a> {
             let envelope = self.envelope();
             let step = self.step(index);
             let share_spent = ctx.share.0.is_some_and(|u| u <= 0.0) || ctx.share.1.is_some_and(|t| t <= 0);
-            if envelope.exhausted || share_spent {
+            if share_spent && !envelope.exhausted {
+                self.update_step(index, |s| if s.status == "running" { s.status = "pending".into() });
+                self.emit("share_spent", json!({"step_id": step.step_id}));
+                return "deferred";
+            }
+            if envelope.exhausted {
                 self.update_step(index, |s| if s.status == "running" { s.status = "failed".into() });
                 self.fail_with(ctx, format!("the plan's budget envelope is spent (${:.4}, {} tokens)", envelope.spent_usd, envelope.spent_tokens));
                 self.emit("budget_exhausted", json!({"step_id": step.step_id, "envelope": envelope}));
@@ -598,10 +602,13 @@ impl<'a> StepExecutor<'a> {
             });
             let allowance = self.ledger.step_allowance(&candidate.candidate.family, candidate.candidate.model.as_deref());
             // In a wave, the pool's headroom is split too, and the run's money comes from this step's reserved share.
+            let pool = self.pool_id(&candidate);
+            let wave = ctx.wave as f64;
+            let mut reserve = |v: f64| if ctx.wave > 1 { ctx.pool_share.entry(pool.clone()).or_insert(v / wave).min(v) } else { v };
             let (pool_usd, pool_tokens) = match allowance {
-                Allowance::Usd(v) => (Some(v / ctx.wave as f64), None),
-                Allowance::Tokens(v) => (None, Some(v / ctx.wave as i64)),
-                _ => (None, None),
+                Allowance::Usd(v) => (Some(reserve(v)), None),
+                Allowance::Tokens(v) => (None, Some(reserve(v as f64) as i64)),
+                Allowance::Unbounded => (None, None),
             };
             let (run_usd, run_tokens) = if ctx.wave > 1 { ctx.share } else { (envelope.remaining_usd, envelope.remaining_tokens) };
             let budget_usd = min_opt(pool_usd, run_usd);
@@ -773,6 +780,10 @@ impl<'a> StepExecutor<'a> {
             }
             self.record(&step.step_id, &candidate, &result);
             ctx.share = (ctx.share.0.map(|u| u - result.cost_usd), ctx.share.1.map(|t| t - result.tokens_in - result.tokens_out));
+            let spent_in_unit = if matches!(allowance, Allowance::Usd(_)) { result.cost_usd } else { (result.tokens_in + result.tokens_out) as f64 };
+            if let Some(left) = ctx.pool_share.get_mut(&pool) {
+                *left -= spent_in_unit;
+            }
             if !ctx.sibling_scope.is_empty() {
                 result.out_of_scope.retain(|p| !scope::matches(p, &ctx.sibling_scope, &root));
                 result.files_changed.retain(|p| !scope::matches(p, &ctx.sibling_scope, &root));

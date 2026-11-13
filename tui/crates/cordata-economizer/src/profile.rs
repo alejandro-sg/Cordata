@@ -46,10 +46,10 @@ impl Profile {
 
 /// The parameter count a model tag states, like `8b` in `llama3.1:8b`, `1.5b` in `qwen2.5-coder-1.5b` or `360m`.
 fn size_in_billions(name: &str) -> Option<f64> {
-    name.split([':', '-', '_']).find_map(|part| match part.strip_suffix('m') {
-        Some(millions) => millions.parse::<f64>().ok().map(|m| m / 1000.0),
-        None => part.strip_suffix('b')?.parse::<f64>().ok(),
-    })
+    // A `b` tag wins over an `m` one: `qwen2.5-1m:32b` is a 32b model with a one-million-token context.
+    let parts = || name.split([':', '-', '_']);
+    parts().find_map(|p| p.strip_suffix('b')?.parse::<f64>().ok())
+        .or_else(|| parts().find_map(|p| p.strip_suffix('m')?.parse::<f64>().ok().map(|m| m / 1000.0)))
 }
 
 #[cfg(test)]
@@ -71,7 +71,7 @@ mod tests {
 
     #[test]
     fn unknown_or_large_models_get_the_standard_profile() {
-        for model in ["llama3", "qwen3-coder", "deepseek-v4-pro:0813", "gpt-oss:120b", "qwen3:32b", "some-new-model"] {
+        for model in ["qwen2.5-1m:32b", "llama3", "qwen3-coder", "deepseek-v4-pro:0813", "gpt-oss:120b", "qwen3:32b", "some-new-model"] {
             let p = Profile::for_model(model);
             assert_eq!((p.kind, p.max_tools, p.output_chars), (ProviderKind::Other, 8, 6_000), "{model}");
         }

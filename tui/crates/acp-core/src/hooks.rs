@@ -93,7 +93,10 @@ impl HooksRegistry {
             cwd: cwd.to_path_buf(),
         };
         let mut held = None;
-        if let Ok(content) = std::fs::read_to_string(cwd.join(".cordata").join("hooks.json")) {
+        // A regular file of sane size only: a repository can ship a symlink to a FIFO or /dev/zero.
+        let project = cwd.join(".cordata").join("hooks.json");
+        let readable = std::fs::metadata(&project).is_ok_and(|m| m.is_file() && m.len() <= 256 * 1024);
+        if let Some(content) = readable.then(|| std::fs::read_to_string(&project).ok()).flatten() {
             let entry = project_approval(cwd, &content);
             match serde_json::from_str::<HooksConfig>(&content) {
                 Ok(cfg) if approvals.contains(&entry) => {
@@ -330,6 +333,10 @@ mod tests {
         std::fs::write(&file, body.replace("exit 3", "exit 4")).unwrap();
         let (reg, held) = HooksRegistry::load_for_workspace(dir.path(), &[entry]);
         assert!(held.is_some() && reg.config.hooks.pre_tool_use.is_empty(), "an edited file needs a new approval");
+        std::fs::remove_file(&file).unwrap();
+        std::os::unix::fs::symlink("/dev/zero", &file).unwrap();
+        let (reg, held) = HooksRegistry::load_for_workspace(dir.path(), &[]);
+        assert!(held.is_none() && reg.config.hooks.pre_tool_use.is_empty(), "a symlink to a device is not read");
     }
 
     #[test]

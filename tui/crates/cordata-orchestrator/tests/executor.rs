@@ -455,6 +455,51 @@ async fn a_retry_in_a_wave_spends_its_own_share_not_a_siblings() {
     }
 }
 
+/// s1's first attempt fails after spending `cost` dollars and `tokens`; every attempt's budgets are recorded.
+async fn wave_of_three(e: &Env, cost: f64, tokens: i64, max_usd: f64) -> (ExecResult, Vec<(String, usize, Option<f64>, Option<i64>)>) {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let sink = seen.clone();
+    let a = ScriptedWorker::new("a", move |task, n| {
+        let step = step_of(task);
+        sink.lock().unwrap().push((step.clone(), n, task.budget_usd, task.budget_tokens));
+        if step == "s1" && n == 1 {
+            let mut r = WorkerResult::new("a", "failed");
+            (r.cost_usd, r.tokens_in, r.error_message) = (cost, tokens, Some("broke".into()));
+            return r;
+        }
+        write(task, &step, "ok");
+        let mut r = WorkerResult::new("a", "completed");
+        r.files_changed = vec![format!("calc/{step}.txt")];
+        r
+    });
+    let cp = CopyCheckpoints::new(&e.store);
+    let mut d = draft(4, "rollback_checkpoint");
+    d["steps"][3]["depends_on"] = json!(["s1", "s2", "s3"]);
+    let plan = plan::from_draft(&d, "/x", Options { max_usd, ..Default::default() }, None).unwrap();
+    let ex = exec(e, plan, vec![runnable(&a, "m", "claude_code", "anthropic")], &cp, Config::default());
+    let out = ex.run().await;
+    let seen = seen.lock().unwrap().clone();
+    (out, seen)
+}
+
+#[tokio::test]
+async fn a_retry_in_a_wave_spends_its_own_share_of_the_pool_too() {
+    let e = env(two_pools(300.0)); // tokens: 95% hard line = 285 → 95 per step of three
+    let (_, seen) = wave_of_three(&e, 0.0, 30, 100.0).await;
+    let retry = seen.iter().find(|(s, n, ..)| s == "s1" && *n == 2).expect("s1 retried").3.unwrap();
+    assert_eq!(retry, 65, "95 reserved less the 30 its first attempt used: {seen:?}");
+}
+
+#[tokio::test]
+async fn a_step_that_spends_its_share_waits_for_the_next_wave_instead_of_ending_the_run() {
+    let e = env(two_pools(100_000.0));
+    let (out, seen) = wave_of_three(&e, 0.5, 0, 1.5).await;
+    assert_eq!(out.status, "completed", "{} {seen:?}", out.reason);
+    let s1: Vec<f64> = seen.iter().filter(|(s, ..)| s == "s1").map(|(.., u, _)| u.unwrap()).collect();
+    assert_eq!(s1.len(), 2, "{seen:?}");
+    assert!((s1[1] - 1.0).abs() < 1e-9, "alone in the next wave it gets what is left: {seen:?}");
+}
+
 #[tokio::test]
 async fn a_failed_step_in_a_wave_rolls_back_only_its_own_scope() {
     let e = env(two_pools(100_000.0));
