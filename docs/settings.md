@@ -124,11 +124,14 @@ that exact file, otherwise `~/.cordata/hooks.json` (`$CORDATA_HOME/hooks.json`; 
   `{"decision":"block","reason":"…"}` (or, after the call only, `{"decision":"feedback","reason":"…"}`) decides; otherwise a non-zero exit
   blocks with stderr as the reason, and exit 0 allows. A hook that runs past `timeout_secs` (default 30) is killed and blocks the call.
 - `checksyntax` (JSON, TOML, Rust) and `checkassertions` (refuses edits that strip test assertions) run after edits only.
-- Hook commands run through `/bin/sh` outside the sandbox and without a per-call prompt. A project `hooks.json` is code
+- Hook commands run through `/bin/sh` without a per-call prompt; your own hooks run unconfined, a project's run inside
+  the same Seatbelt sandbox as `run_command` (offline, writing only the project and temp folders, no `.env` or
+  credential files). A project `hooks.json` is code
   the repository would run on your machine, so it runs only once approved: the chat's notice gives the entry
   (`<folder>|.cordata/hooks.json|sha256:<digest>`) to add to `mcp.approved` in `~/.cordata/settings.json`. The digest
   covers the file and every file in the project that a hook command names (`./scripts/check.sh`), so editing either
-  holds it back again. A script reached some other way (sourced by a named script, found on `PATH`) is not pinned. A
+  holds it back again. A script reached some other way (sourced by a named script, found on `PATH`) is not pinned, but
+  runs inside the sandbox all the same. A
   malformed project file does not run, and the chat says so.
 
 ## Built-in guard

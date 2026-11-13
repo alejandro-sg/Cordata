@@ -164,7 +164,7 @@ impl HooksRegistry {
                             "args": tool_args,
                             "cwd": self.cwd,
                         });
-                        let decision = run_command_hook(command, &payload, &self.cwd, *timeout_secs);
+                        let decision = run_command_hook(command, &payload, &self.cwd, *timeout_secs, self.pinned.is_some());
                         if let HookDecision::Block { .. } = decision {
                             return decision;
                         }
@@ -206,7 +206,7 @@ impl HooksRegistry {
                             "success": success,
                             "cwd": self.cwd,
                         });
-                        let decision = run_command_hook(command, &payload, &self.cwd, *timeout_secs);
+                        let decision = run_command_hook(command, &payload, &self.cwd, *timeout_secs, self.pinned.is_some());
                         match decision {
                             HookDecision::Block { .. } => return decision,
                             HookDecision::Feedback { reason } => {
@@ -272,7 +272,9 @@ fn matches_matcher(matcher: &str, tool_name: &str) -> bool {
 /// A hook gets this long when it names no `timeout_secs`; then it is killed and the call is blocked.
 const DEFAULT_HOOK_TIMEOUT_SECS: u64 = 30;
 
-fn run_command_hook(cmd: &str, payload: &serde_json::Value, cwd: &Path, timeout_secs: Option<u64>) -> HookDecision {
+/// `confined` (a project's hooks): the command runs in the Seatbelt sandbox, so whatever it reaches indirectly (a
+/// sourced file, a program on `PATH`, an unpinned script) is confined too; no sandbox here means it does not run.
+fn run_command_hook(cmd: &str, payload: &serde_json::Value, cwd: &Path, timeout_secs: Option<u64>, confined: bool) -> HookDecision {
     use std::io::{Read as _, Write as _};
     use std::os::unix::process::CommandExt as _;
     use std::process::{Command, Stdio};
@@ -280,7 +282,17 @@ fn run_command_hook(cmd: &str, payload: &serde_json::Value, cwd: &Path, timeout_
 
     let limit = timeout_secs.unwrap_or(DEFAULT_HOOK_TIMEOUT_SECS);
     // Its own process group, so a timeout stops everything the hook started, not only the shell.
-    let mut child = match Command::new("/bin/sh").arg("-c").arg(cmd).current_dir(cwd).process_group(0)
+    let mut command = if confined {
+        match crate::native::sandbox::hook_command(cmd, cwd) {
+            Some(command) => command,
+            None => return HookDecision::Block { reason: format!("hook `{cmd}` did not run: the Seatbelt sandbox cannot be applied here") },
+        }
+    } else {
+        let mut command = Command::new("/bin/sh");
+        command.arg("-c").arg(cmd);
+        command
+    };
+    let mut child = match command.current_dir(cwd).process_group(0)
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
     {
         Ok(child) => child,
@@ -435,16 +447,28 @@ mod tests {
     }
 
     #[test]
+    fn a_project_hook_runs_inside_the_sandbox() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".env"), "TOKEN=hook-should-not-see-this").unwrap();
+        if crate::native::sandbox::hook_command("true", dir.path()).is_none() {
+            return eprintln!("skipped: sandbox-exec cannot be applied here");
+        }
+        let d = run_command_hook("cat .env", &serde_json::json!({}), dir.path(), Some(5), true);
+        assert!(matches!(&d, HookDecision::Block { reason } if !reason.contains("hook-should-not-see-this")), "{d:?}");
+        assert_eq!(run_command_hook("echo ok > out.txt", &serde_json::json!({}), dir.path(), Some(5), true), HookDecision::Allow, "the project stays writable");
+    }
+
+    #[test]
     fn a_hook_that_runs_too_long_is_stopped_and_blocks() {
         for cmd in ["sleep 5", "sleep 5; sleep 5", "sleep 5 & echo started", "sleep 5 & exit 0"] {
             let started = std::time::Instant::now();
-            let d = run_command_hook(cmd, &serde_json::json!({}), Path::new("/tmp"), Some(1));
+            let d = run_command_hook(cmd, &serde_json::json!({}), Path::new("/tmp"), Some(1), false);
             assert!(matches!(&d, HookDecision::Block { reason } if reason.contains("longer than 1s")), "{cmd}: {d:?}");
             assert!(started.elapsed() < std::time::Duration::from_secs(3), "{cmd}");
         }
         // A hook that never reads its input does not stall on a payload bigger than the pipe buffer.
         let big = serde_json::json!({"output": "x".repeat(200_000)});
-        assert_eq!(run_command_hook("exit 0", &big, Path::new("/tmp"), Some(2)), HookDecision::Allow);
+        assert_eq!(run_command_hook("exit 0", &big, Path::new("/tmp"), Some(2), false), HookDecision::Allow);
     }
 
     #[test]

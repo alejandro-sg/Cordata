@@ -7,7 +7,7 @@ mod keys;
 pub mod mcp;
 mod ollama;
 mod provider;
-mod sandbox;
+pub(crate) mod sandbox;
 mod tools;
 
 pub(crate) use engine::run;
