@@ -47,7 +47,7 @@ fn a_sandbox_is_a_private_copy_with_dependencies_linked_and_git_left_out() {
     write(&root, "node_modules/pkg/index.js", "dep\n");
     std::os::unix::fs::symlink("a.py", root.join("src/link.py")).unwrap();
     let sb = create(&root, Some(dir.path()), "step-1", &[], 100).unwrap();
-    assert!(sb.root.starts_with(dir.path()) && sb.root.file_name().unwrap().to_string_lossy().starts_with("cordata-step-1-"));
+    assert!(sb.root.starts_with(dir.path()) && sb.root.file_name().unwrap().to_string_lossy().starts_with("cordata-sandbox-step-1-"));
     assert_eq!(read(&sb.root, "src/a.py").unwrap(), "dirty, uncommitted\n");
     assert_eq!(read(&sb.root, "src/deep/b.txt").unwrap(), "b\n");
     assert!(!sb.root.join(".git").exists() && !sb.root.join(".cordata").exists());
@@ -116,11 +116,12 @@ fn harvest_copies_in_scope_changes_back_and_never_overwrites_a_conflict() {
 #[test]
 fn sweep_removes_only_old_cordata_sandboxes() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir(dir.path().join("cordata-old-1")).unwrap();
+    std::fs::create_dir(dir.path().join("cordata-sandbox-old-1")).unwrap();
     std::fs::create_dir(dir.path().join("keep-me")).unwrap();
+    std::fs::create_dir(dir.path().join("cordata-attach-1")).unwrap();
     assert_eq!(sweep(std::time::Duration::from_secs(3600), Some(dir.path())), 0, "too young");
     assert_eq!(sweep(std::time::Duration::ZERO, Some(dir.path())), 1);
-    assert!(dir.path().join("keep-me").exists() && !dir.path().join("cordata-old-1").exists());
+    assert!(dir.path().join("keep-me").exists() && dir.path().join("cordata-attach-1").exists() && !dir.path().join("cordata-sandbox-old-1").exists());
 }
 
 #[test]
@@ -235,7 +236,7 @@ async fn parallel_steps_run_in_their_own_sandboxes_and_are_harvested_into_the_pr
     assert_eq!(harvested, ["calc/a.txt", "calc/b.txt"], "only the wave of two was isolated; the dependent step ran alone in the shared tree");
     let cwds = cwds.lock().unwrap().clone();
     let project_s = r.project.to_string_lossy().into_owned();
-    assert!(cwds.iter().filter(|(s, _)| s == "s1" || s == "s2").all(|(_, c)| *c != project_s && Path::new(c).file_name().unwrap().to_string_lossy().starts_with("cordata-s")));
+    assert!(cwds.iter().filter(|(s, _)| s == "s1" || s == "s2").all(|(_, c)| *c != project_s && Path::new(c).file_name().unwrap().to_string_lossy().starts_with("cordata-sandbox-s")));
     assert_eq!(cwds.iter().find(|(s, _)| s == "s3").unwrap().1, project_s);
     assert!(cwds.iter().filter(|(s, _)| s != "s3").all(|(_, c)| !Path::new(c).exists()), "sandboxes are discarded afterwards");
     assert_eq!(r.events.lock().unwrap().iter().filter(|e| e["kind"] == "harvest").count(), 2);

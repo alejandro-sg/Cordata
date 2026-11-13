@@ -240,6 +240,8 @@ fn finish(record: &RunRecord, as_json: bool, receipt: &str) -> i32 {
 
 pub async fn run(args: RunArgs) -> i32 {
     let started = std::time::Instant::now();
+    // Sandboxes a crashed run left behind; a day untouched is long past any live step.
+    cordata_orchestrator::synthesizer::sweep(std::time::Duration::from_secs(24 * 3600), None);
     let environ: HashMap<String, String> = std::env::vars().collect();
     let cwd = std::fs::canonicalize(&args.cwd).unwrap_or_else(|_| args.cwd.clone());
     let settings = settings_for(&cwd);
