@@ -160,11 +160,13 @@ struct StepCtx {
     last_packet: Option<HandoffPacket>,
     isolated: bool,
     sandbox: Option<SandboxHandle>,
+    /// Steps running at once in this wave: each may spend only its share of what the run has left.
+    wave: usize,
 }
 
 impl StepCtx {
     fn new(candidates: Vec<Runnable>, current: Option<Runnable>, packet: Option<HandoffPacket>) -> Self {
-        Self { candidates, current, packet, scoped: false, sibling_scope: Vec::new(), reason: String::new(), last_packet: None, isolated: false, sandbox: None }
+        Self { candidates, current, packet, scoped: false, sibling_scope: Vec::new(), reason: String::new(), last_packet: None, isolated: false, sandbox: None, wave: 1 }
     }
 }
 
@@ -423,6 +425,7 @@ impl<'a> StepExecutor<'a> {
                 let siblings: Vec<String> = wave.iter().filter(|o| o.step_id != step.step_id).flat_map(|o| o.file_scope.clone()).collect();
                 let mut ctx = StepCtx::new(self.candidates.lock().unwrap().clone(), self.current.lock().unwrap().clone(), start_packet.take());
                 ctx.scoped = wave.len() > 1;
+                ctx.wave = wave.len();
                 ctx.sibling_scope = siblings;
                 ctx.isolated = self.cfg.isolate && wave.len() > 1 && self.cfg.isolation.is_some();
                 contexts.push(ctx);
@@ -591,8 +594,8 @@ impl<'a> StepExecutor<'a> {
                 }
             });
             let allowance = self.ledger.step_allowance(&candidate.candidate.family, candidate.candidate.model.as_deref());
-            let budget_usd = min_opt(if let Allowance::Usd(v) = allowance { Some(v) } else { None }, envelope.remaining_usd);
-            let budget_tokens = min_opt(if let Allowance::Tokens(v) = allowance { Some(v) } else { None }, envelope.remaining_tokens);
+            let budget_usd = min_opt(if let Allowance::Usd(v) = allowance { Some(v) } else { None }, envelope.remaining_usd.map(|r| r / ctx.wave as f64));
+            let budget_tokens = min_opt(if let Allowance::Tokens(v) = allowance { Some(v) } else { None }, envelope.remaining_tokens.map(|r| r / ctx.wave as i64));
             let attempt = self.update_step(index, |s| {
                 s.status = "running".into();
                 s.worker = Some(candidate.key());

@@ -162,3 +162,12 @@ fn headroom_compares_what_is_left_with_what_a_step_usually_takes() {
         Headroom::Fits => panic!("expected short"),
     }
 }
+
+#[test]
+fn a_pool_list_that_leaves_out_claude_code_keeps_its_default_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    let l = Ledger::open(&dir.path().join("state.db"), vec![Pool::new("agy", "antigravity").limit(1_000.0)]).unwrap();
+    let pool = l.pool_for("claude_code", Some("opus"));
+    assert_eq!((pool.pool_id.as_str(), pool.unit, pool.window_limit, pool.weekly_limit), ("claude_code", Unit::Usd, Some(20.0), Some(150.0)));
+    assert_eq!(l.pool_for("antigravity", None).window_limit, Some(1_000.0), "the configured pool still wins");
+}

@@ -248,6 +248,13 @@ pub async fn run(args: RunArgs) -> i32 {
         None => config::enabled_families(&settings),
     };
     let mut notes = Vec::new();
+    if config::setting(&settings, "orchestrator.pools").is_some() {
+        let pooled = config::pools(&settings);
+        let unpooled: Vec<&str> = requested.iter().map(String::as_str).filter(|f| !pooled.iter().any(|p| p.family == *f)).collect();
+        if !unpooled.is_empty() {
+            notes.push(format!("orchestrator.pools leaves out {}: they run under their default caps (pass --workers to leave them out)", unpooled.join(", ")));
+        }
+    }
     let skipped = config::unsupported(&requested);
     if !skipped.is_empty() {
         notes.push(format!("{} has no worker and is left out of this run", skipped.join(", ")));

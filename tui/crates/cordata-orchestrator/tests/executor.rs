@@ -333,7 +333,8 @@ async fn a_worker_that_gives_up_after_a_refusal_is_not_retried_and_is_benched_fo
     let cp2 = CopyCheckpoints::new(&e2.store);
     let cands = vec![runnable(&quitter, "m", "antigravity", "google"), runnable(&steady, "m", "claude_code", "anthropic")];
     let ex = exec(&e2, plan_of(1, "rollback_checkpoint", 2.0), cands, &cp2, Config { strongest_first: true, benched: vec!["quitter:m".into()], ..Default::default() });
-    assert_eq!(ex.run().await.status, "completed");
+    let out = ex.run().await;
+    assert_eq!(out.status, "completed", "{}", out.reason);
     assert_eq!(quitter.calls.lock().unwrap().len(), 1, "still benched");
 }
 
@@ -394,6 +395,32 @@ async fn independent_steps_run_as_a_wave_and_dependents_wait() {
     for i in 1..=3 {
         assert_eq!(read(&e, &format!("calc/s{i}.txt")).unwrap(), format!("ok s{i}"));
     }
+}
+
+#[tokio::test]
+async fn parallel_steps_split_the_run_budget_so_together_they_cannot_pass_it() {
+    let e = env(two_pools(100_000.0));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let sink = seen.clone();
+    let a = ScriptedWorker::new("a", move |task, _| {
+        sink.lock().unwrap().push(task.budget_usd);
+        let step = step_of(task);
+        write(task, &step, "ok");
+        let mut r = WorkerResult::new("a", "completed");
+        r.files_changed = vec![format!("calc/{step}.txt")];
+        r
+    });
+    let cp = CopyCheckpoints::new(&e.store);
+    let mut d = draft(4, "rollback_checkpoint");
+    d["steps"][3]["depends_on"] = json!(["s1", "s2", "s3"]);
+    let plan = plan::from_draft(&d, "/x", Options { max_usd: 1.5, ..Default::default() }, None).unwrap();
+    let ex = exec(&e, plan, vec![runnable(&a, "m", "claude_code", "anthropic")], &cp, Config::default());
+    let out = ex.run().await;
+    assert_eq!(out.status, "completed", "{}", out.reason);
+    let budgets: Vec<f64> = seen.lock().unwrap().iter().map(|b| b.unwrap()).collect();
+    assert_eq!(budgets.len(), 4);
+    assert!(budgets[..3].iter().sum::<f64>() <= 1.5 + 1e-9, "the wave of three shares the run's $1.50: {budgets:?}");
+    assert!((budgets[3] - 1.5).abs() < 1e-9, "a step alone gets all that is left: {budgets:?}");
 }
 
 #[tokio::test]
