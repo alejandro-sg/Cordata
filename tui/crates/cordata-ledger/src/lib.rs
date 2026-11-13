@@ -688,6 +688,18 @@ impl Ledger {
         }
     }
 
+    /// `budget` less what one more request may cost, so the request that crosses the line still lands inside it. A CLI
+    /// checks its dollar budget only after a request, and cost is known only then: holding back the costliest
+    /// request this run has made (never more than half the budget) is what makes the cap hold. Unknown: half.
+    pub fn hold_back(&self, session_id: &str, budget: Option<f64>) -> Option<f64> {
+        let largest = self.conn.query_row(
+            "SELECT COALESCE(MAX(cost_usd / MAX(requests, 1)), 0) FROM quota_usage WHERE session_id = ?",
+            params![session_id],
+            |r| r.get::<_, f64>(0),
+        );
+        budget.map(|b| b - largest.unwrap_or(b / 2.0).min(b / 2.0))
+    }
+
     pub fn envelope(&self, session_id: &str, max_usd: Option<f64>, max_tokens: Option<i64>) -> EnvelopeState {
         let sums = self.conn.query_row(
             "SELECT COALESCE(SUM(cost_usd),0), COALESCE(SUM(tokens_in+tokens_out),0) FROM quota_usage WHERE session_id = ?",

@@ -611,7 +611,7 @@ impl<'a> StepExecutor<'a> {
                 Allowance::Unbounded => (None, None),
             };
             let (run_usd, run_tokens) = if ctx.wave > 1 { ctx.share } else { (envelope.remaining_usd, envelope.remaining_tokens) };
-            let budget_usd = min_opt(pool_usd, run_usd);
+            let budget_usd = self.ledger.hold_back(&self.run_id, min_opt(pool_usd, run_usd));
             let budget_tokens = min_opt(pool_tokens, run_tokens);
             let attempt = self.update_step(index, |s| {
                 s.status = "running".into();

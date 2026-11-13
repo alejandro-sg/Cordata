@@ -176,3 +176,16 @@ fn a_pool_list_that_leaves_out_claude_code_keeps_its_default_cap() {
     let l = Ledger::open(&dir.path().join("b.db"), vec![Pool::new("mine", "ollama").model(r".*:local").unit(Unit::Requests)]).unwrap();
     assert_eq!((l.pool_for("ollama", Some("kimi-k3")).pool_id.as_str(), l.pool_for("ollama", Some("x:local")).pool_id.as_str()), ("ollama_cloud", "mine"));
 }
+
+#[test]
+fn hold_back_keeps_room_for_the_costliest_request_seen() {
+    let dir = tempfile::tempdir().unwrap();
+    let l = Ledger::open(&dir.path().join("state.db"), Vec::new()).unwrap();
+    assert_eq!(l.hold_back("r", Some(1.0)), Some(1.0), "nothing spent yet: nothing to hold back");
+    let mut row = spend(0.3);
+    row.requests = Some(3);
+    l.record_result("r", Some("a"), "claude_code", None, &row, Some("execute"), None);
+    assert!((l.hold_back("r", Some(1.0)).unwrap() - 0.9).abs() < 1e-9);
+    assert!((l.hold_back("r", Some(0.1)).unwrap() - 0.05).abs() < 1e-9, "never more than half");
+    assert_eq!(l.hold_back("r", None), None);
+}

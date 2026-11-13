@@ -449,9 +449,10 @@ async fn a_retry_in_a_wave_spends_its_own_share_not_a_siblings() {
     ex.run().await;
     let seen = seen.lock().unwrap().clone();
     let retry = seen.iter().find(|(s, n, _)| s == "s1" && *n == 2).expect("s1 retried").2;
-    assert!((retry - 0.1).abs() < 1e-9, "the retry gets what is left of s1's $0.50, not the run's $1.10: {seen:?}");
+    // What is left of s1's $0.50 ($0.10), less half of it held back for one more $0.40 request; not the run's $1.10.
+    assert!((retry - 0.05).abs() < 1e-9, "{seen:?}");
     for sib in ["s2", "s3"] {
-        assert!(seen.iter().any(|(s, _, b)| s == sib && (*b - 0.5).abs() < 1e-9), "{sib}: {seen:?}");
+        assert!(seen.iter().any(|(s, _, b)| s == sib && (*b - 0.25).abs() < 1e-9), "{sib}: {seen:?}");
     }
 }
 
@@ -497,7 +498,7 @@ async fn a_step_that_spends_its_share_waits_for_the_next_wave_instead_of_ending_
     assert_eq!(out.status, "completed", "{} {seen:?}", out.reason);
     let s1: Vec<f64> = seen.iter().filter(|(s, ..)| s == "s1").map(|(.., u, _)| u.unwrap()).collect();
     assert_eq!(s1.len(), 2, "{seen:?}");
-    assert!((s1[1] - 1.0).abs() < 1e-9, "alone in the next wave it gets what is left: {seen:?}");
+    assert!((s1[1] - 0.5).abs() < 1e-9, "alone in the next wave: the $1.00 left, less one $0.50 request held back: {seen:?}");
 }
 
 #[tokio::test]

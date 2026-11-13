@@ -783,7 +783,7 @@ impl<'a> Machine<'a> {
         }
         let mut task = TaskPacket::new(&format!("{}:{label}:{}", self.record.run_id, self.record.history.len()), role, &full_prompt, &self.project);
         task.file_scope = scope;
-        task.budget_usd = json_min(usd, if let cordata_ledger::Allowance::Usd(v) = allowance { Some(v) } else { None });
+        task.budget_usd = self.ledger.hold_back(&self.record.run_id, json_min(usd, if let cordata_ledger::Allowance::Usd(v) = allowance { Some(v) } else { None }));
         task.budget_tokens = json_min(tokens, if let cordata_ledger::Allowance::Tokens(v) = allowance { Some(v) } else { None });
         task.timeout_s = timeout;
         task.model = candidate.candidate.model.clone();
