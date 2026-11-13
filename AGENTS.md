@@ -46,11 +46,11 @@ Do not rely on ALL CAPS or prompt pleadings. Invariants are enforced physically:
 - The chat engine's built-in guard (`tui/crates/cordata-guard`) refuses `.env` and `.git/` writes, recursive deletes and `.env` redirects before any approval prompt.
 - Every edit and command asks first; the sandbox scopes what an approved command can touch.
 
-### Sub-Agent Orchestration & The Goldfish Review
-- Main chat context must remain clean. Heavy research, external fetch, and binary analysis should run in sub-agents.
-- Sub-agents are capped at depth 1 with no recursive egress (`orchestrate` disallowed for child pods).
-- Parallel wave syntheses run in isolated APFS clonefile sandboxes (`tui/crates/cordata-orchestrator/src/synthesizer.rs`).
-- **The Goldfish Pattern**: The primary agent accumulates conversational bias ("Elephant"). For post-implementation review, dispatch a fresh, stateless sub-agent ("Goldfish") with zero conversation history to audit the diff against invariants and surface unhandled edge cases. Run via `/goldfish` or on-demand subagent.
+### Sub-Agents & Fresh-Context Review
+- Keep the main chat context clean: run heavy research, external fetch and binary analysis in your own harness's sub-agents.
+- Cordata's chat engine has no sub-agent: its `delegate` tool is not implemented and returns an error. There is no built-in `/goldfish`.
+- Parallel orchestrator waves run in isolated APFS clonefile sandboxes (`tui/crates/cordata-orchestrator/src/synthesizer.rs`).
+- For post-implementation review, use a fresh sub-agent with no conversation history (from your own harness) to audit the diff against these invariants. `.cordata/commands/goldfish.md` is only a review prompt run in the current conversation.
 
 ---
 

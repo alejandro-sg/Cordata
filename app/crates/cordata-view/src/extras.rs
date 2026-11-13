@@ -101,12 +101,6 @@ impl App {
         })
     }
 
-    /// `/goldfish`: dispatch stateless sub-agent to audit git diff against invariants (`G6`).
-    pub fn run_goldfish(&mut self) -> Option<Effect> {
-        self.messages.push(Message::Info("Dispatching stateless Goldfish sub-agent review on working tree diff...".into()));
-        self.run_line_as_prompt("Please invoke the `delegate` tool to audit the current git diff against project invariants and surface unhandled edge cases.")
-    }
-
     /// `/floorplan`: visual architectural map & active-work visualizer.
     pub fn run_floorplan(&mut self, arg: Option<String>) -> Option<Effect> {
         let flag = match arg.as_deref() {

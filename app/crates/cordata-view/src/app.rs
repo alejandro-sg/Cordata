@@ -1138,7 +1138,6 @@ impl App {
             Command::Copy => return self.run_copy(),
             Command::Context => self.run_context(),
             Command::Run(arg) => return self.run_multiagent_run(arg),
-            Command::Goldfish => return self.run_goldfish(),
             Command::Export(arg) => self.run_export(arg),
             Command::Palette => return self.open_overlay(crate::overlay::Kind::Palette),
             Command::Review => return self.open_overlay(crate::overlay::Kind::Review),
