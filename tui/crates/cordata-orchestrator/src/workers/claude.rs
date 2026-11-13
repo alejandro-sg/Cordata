@@ -110,10 +110,11 @@ impl LiveCost {
     }
 }
 
-/// Dollars per million tokens. From Anthropic's published list prices (cached 2026-11-03), taking the dearest version
-/// in each family so the estimate errs high: Fable/Mythos 10/50, Opus 4.0-4.1 15/75, other Opus 5/25, Sonnet 3/15
-/// (6/22.5 past 200K input, Sonnet 4.x's long-context tier), Haiku 1/5. An unknown or missing model is priced as the
-/// dearest (15/75). Cache reads cost a tenth of input; cache writes 1.25x for five minutes, 2x for an hour.
+/// Dollars per million tokens, from Anthropic's published list prices (cached 2026-11-03), by exact model: Fable and
+/// Mythos 5.2 8/40, earlier 10/50; Opus 5.5 4/20, Opus 4.0-4.1 15/75, other Opus 5/25; Sonnet 5 and 5.5 2/10, Sonnet 4.x
+/// 3/15 (6/22.5 past 200K input); Haiku 5.5 0.10/0.50 (0.50/2.50 past 100K input), other Haiku 1/5. A version the list
+/// does not name takes its family's dearest price, and an unknown family the dearest of all (15/75), so the estimate
+/// errs high. Cache reads cost a tenth of input; cache writes 1.25x for five minutes, 2x for an hour.
 #[derive(Clone, Copy)]
 struct Prices {
     input: f64,
@@ -123,17 +124,20 @@ struct Prices {
 impl Prices {
     fn of(model: &str, input_tokens: i64) -> Self {
         let m = model.to_ascii_lowercase();
-        let old_opus = m.ends_with("opus-4") || ["opus-4-0", "opus-4-1", "opus-4-2025", "opus-4@", "claude-3-opus"].iter().any(|o| m.contains(o));
-        let (input, output) = if m.contains("fable") || m.contains("mythos") {
-            (10.0, 50.0)
-        } else if m.contains("opus") {
-            if old_opus { (15.0, 75.0) } else { (5.0, 25.0) }
-        } else if m.contains("sonnet") {
-            if m.contains("sonnet-4") && input_tokens > 200_000 { (6.0, 22.5) } else { (3.0, 15.0) }
-        } else if m.contains("haiku") {
-            (1.0, 5.0)
-        } else {
-            (15.0, 75.0)
+        let has = |v: &str| m.contains(v);
+        let old_opus = m.ends_with("opus-4") || ["opus-4-0", "opus-4-1", "opus-4-2025", "opus-4@", "claude-3-opus"].iter().any(|o| has(o));
+        let (input, output) = match () {
+            _ if has("fable-5-2") || has("mythos-5-2") => (8.0, 40.0),
+            _ if has("fable") || has("mythos") => (10.0, 50.0),
+            _ if has("opus-5-5") => (4.0, 20.0),
+            _ if has("opus") && !old_opus => (5.0, 25.0),
+            _ if has("sonnet-5") => (2.0, 10.0),
+            _ if has("sonnet") && input_tokens > 200_000 => (6.0, 22.5),
+            _ if has("sonnet") => (3.0, 15.0),
+            _ if has("haiku-5-5") && input_tokens > 100_000 => (0.5, 2.5),
+            _ if has("haiku-5-5") => (0.1, 0.5),
+            _ if has("haiku") => (1.0, 5.0),
+            _ => (15.0, 75.0),
         };
         Self { input, output }
     }

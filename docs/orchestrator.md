@@ -50,11 +50,12 @@ request's cost only after it, so every worker is given its budget less a hold fo
 request this run has made (before its first, the costliest in the ledger), at least a tenth of the budget and at most
 half. Each request re-sends a longer conversation, hence the doubling. Claude Code steps also stream their token counts
 (`--include-partial-messages`): Cordata prices every request as it streams, sub-agents' included, from Anthropic's list
-prices (taking the dearest version in each model family, the long-context tier, hour-long cache writes at 2x, and an
-unknown model at the dearest rate), and stops the CLI at the first update past the budget. What a request can still add
-after the line is its input (known when it starts) and the output of one update. The prices are a table in
-`workers/claude.rs` (from 2026-11-03); a price rise Anthropic makes later would make the estimate low until it is
-updated. Antigravity and Ollama Cloud steps are metered by the hold alone.
+prices per model (a version the table does not name takes its family's dearest price, an unknown family the dearest of
+all; hour-long cache writes at 2x, the long-context tiers), and stops the CLI at the first update past the budget. Checked
+against a real Claude Code 2.1.317 call (`tests/fixtures/claude_haiku_5_5_partial_stream.jsonl`): the estimate came
+within 1% of the reported cost. What a request can still add after the line is its input (known when it starts) and the
+output of one update. The prices are a table in `workers/claude.rs` (from 2026-11-03); a price rise Anthropic makes later
+would make the estimate low until it is updated. Antigravity and Ollama Cloud steps are metered by the hold alone.
 
 Other `orchestrator.*` settings are in [`settings.md`](settings.md).
 

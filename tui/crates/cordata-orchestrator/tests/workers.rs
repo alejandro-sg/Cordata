@@ -119,8 +119,8 @@ async fn a_claude_run_completes_and_is_accounted() {
 
 /// One request that would run long: output tokens stream in, the result never comes in time.
 const CLAUDE_RUNAWAY: &str = r##"echo "$@" > "$OUT/argv.txt"
-echo '{"type":"system","subtype":"init","session_id":"sess-2","model":"claude-opus-5-5"}'
-echo '{"type":"stream_event","event":{"type":"message_start","message":{"model":"claude-opus-5-5","usage":{"input_tokens":1000,"output_tokens":1}}}}'
+echo '{"type":"system","subtype":"init","session_id":"sess-2","model":"claude-opus-5"}'
+echo '{"type":"stream_event","event":{"type":"message_start","message":{"model":"claude-opus-5","usage":{"input_tokens":1000,"output_tokens":1}}}}'
 for n in 1000 2000 3000 4000 5000 6000 7000 8000; do
   echo "{\"type\":\"stream_event\",\"event\":{\"type\":\"message_delta\",\"usage\":{\"output_tokens\":$n}}}"
   sleep 0.2
@@ -136,7 +136,7 @@ async fn a_request_is_stopped_while_it_streams_once_its_estimate_passes_the_budg
     task.budget_usd = Some(0.10);
     let started = std::time::Instant::now();
     let (r, _) = run(&w, task).await;
-    // Opus is estimated at $5 in / $25 out per million: 1,000 in is $0.005, so $0.10 passes at the 4,000th output token.
+    // Opus 5 is priced at $5 in / $25 out per million: 1,000 in is $0.005, so $0.10 passes at the 4,000th output token.
     assert!(started.elapsed() < std::time::Duration::from_secs(5), "stopped mid-request, not at the result");
     assert_ne!(r.status, "completed");
     assert!(r.cost_usd > 0.10 && r.cost_usd <= 0.105 + 1e-9, "stopped at the first delta past the line: {}", r.cost_usd);
@@ -145,8 +145,8 @@ async fn a_request_is_stopped_while_it_streams_once_its_estimate_passes_the_budg
 
 /// The main request and a sub-agent's stream at once; the main one writes an hour-long cache, the sub-agent's model is
 /// one the price list does not know.
-const CLAUDE_INTERLEAVED: &str = r##"echo '{"type":"system","subtype":"init","session_id":"sess-3","model":"claude-opus-5-5"}'
-echo '{"type":"stream_event","event":{"type":"message_start","message":{"id":"main-1","model":"claude-opus-5-5","usage":{"input_tokens":0,"cache_creation_input_tokens":4000,"cache_creation":{"ephemeral_1h_input_tokens":4000}}}}}'
+const CLAUDE_INTERLEAVED: &str = r##"echo '{"type":"system","subtype":"init","session_id":"sess-3","model":"claude-opus-5"}'
+echo '{"type":"stream_event","event":{"type":"message_start","message":{"id":"main-1","model":"claude-opus-5","usage":{"input_tokens":0,"cache_creation_input_tokens":4000,"cache_creation":{"ephemeral_1h_input_tokens":4000}}}}}'
 echo '{"type":"stream_event","parent_tool_use_id":"t1","event":{"type":"message_start","message":{"id":"sub-1","model":"some-new-model","usage":{"input_tokens":1000}}}}'
 echo '{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":1000}}}'
 sleep 0.2
@@ -162,11 +162,31 @@ async fn interleaved_requests_are_each_priced_and_summed() {
     task.budget_usd = Some(0.15);
     let started = std::time::Instant::now();
     let (r, _) = run(&w, task).await;
-    // Main: 4,000 hour-cache tokens at 2 x $5 = $0.04, 1,000 out at $25 = $0.025. Sub-agent, unknown model priced as the
+    // Main (Opus 5): 4,000 hour-cache tokens at 2 x $5 = $0.04, 1,000 out at $25 = $0.025. Sub-agent, unknown model priced as the
     // dearest ($15/$75): $0.015 in, $0.075 out. Only together ($0.155) do they pass $0.15.
     assert!(started.elapsed() < std::time::Duration::from_secs(5), "stopped mid-request");
     assert!((r.cost_usd - 0.155).abs() < 1e-6, "{}", r.cost_usd);
     assert_eq!(r.requests, 2, "the stopped requests are counted with their cost");
+}
+
+/// A real Claude Code 2.1.317 call (Haiku 5.5: one Read, two requests, $0.00641835), reduced to its cost lines.
+const REAL_STREAM: &str = include_str!("fixtures/claude_haiku_5_5_partial_stream.jsonl");
+
+#[tokio::test]
+async fn the_live_estimate_matches_a_real_call_closely_enough_to_stop_it_only_past_its_budget() {
+    let f = fixture();
+    std::fs::write(f.dir.path().join("stream.jsonl"), REAL_STREAM).unwrap();
+    // Every line but the result, then a pause before it: a stop must land before the result can.
+    let body = "head -n -1 \"$OUT/stream.jsonl\"; sleep 3; tail -n 1 \"$OUT/stream.jsonl\"";
+    let body = body.replace("head -n -1", "sed '$d'");
+    let w = claude_worker(&f.script("claude", &body), Arc::new(Direct));
+    for (budget, stopped) in [(0.0065, false), (0.0063, true)] {
+        let mut task = f.task("plan", &[]);
+        task.budget_usd = Some(budget);
+        let (r, _) = run(&w, task).await;
+        assert_eq!(r.status != "completed", stopped, "budget ${budget}: {:?} at ${} {:?}", r.status, r.cost_usd, r.error_message);
+        assert!((r.cost_usd - 0.00641835).abs() < 0.00641835 * 0.01, "within 1% of the real cost: {}", r.cost_usd);
+    }
 }
 
 #[tokio::test]
