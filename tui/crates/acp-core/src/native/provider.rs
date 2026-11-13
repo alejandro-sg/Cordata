@@ -57,6 +57,8 @@ pub(crate) trait Provider: Send + Sync {
 }
 
 pub(crate) struct GenaiProvider {
+    /// Local Ollama models go straight to Ollama, with an explicit context window (`super::ollama`).
+    ollama: Option<super::ollama::OllamaChat>,
     client: Client,
     model: String,
 }
@@ -69,7 +71,8 @@ impl GenaiProvider {
             Ok(keys::resolve(provider).map(AuthData::from_single))
         });
         let client = Client::builder().with_auth_resolver(resolver).build().map_err(|e| e.to_string())?;
-        Ok(Self { client, model: model.into() })
+        let model = model.into();
+        Ok(Self { ollama: super::ollama::OllamaChat::for_model(&model), client, model })
     }
 }
 
@@ -117,6 +120,9 @@ impl Provider for GenaiProvider {
         tools: &'a [ToolSpec],
     ) -> BoxFuture<'a, Result<BoxStream<'a, Result<Delta, String>>, String>> {
         Box::pin(async move {
+            if let Some(ollama) = &self.ollama {
+                return ollama.stream(ollama.body(&self.model, system, &history, tools)).await;
+            }
             let genai_tools: Vec<Tool> =
                 tools.iter().map(|t| Tool::new(t.name.as_ref()).with_description(t.description.as_ref()).with_schema(t.schema.clone())).collect();
             let request = ChatRequest::new(cached_messages(system, &history)).with_tools(genai_tools);

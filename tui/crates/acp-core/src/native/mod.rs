@@ -5,6 +5,7 @@ mod approval;
 mod engine;
 mod keys;
 pub mod mcp;
+mod ollama;
 mod provider;
 mod sandbox;
 mod tools;

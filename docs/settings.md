@@ -47,6 +47,7 @@ MCP servers: `~/.cordata/mcp.json` (`{"mcpServers": {name: {command, args, env}}
 `code_map` (the repo map tool) ranks definitions by the reference graph and the question's words; with a Model2Vec model
 in `~/.cordata/models/potion-code-16M` (or `CORDATA_EMBED_MODEL=<folder>`) it adds meaning. Nothing is downloaded for you:
 `config.json`, `tokenizer.json` and `model.safetensors` from huggingface.co/minishlab/potion-code-16M (64 MB).
+| `chat.ollamaNumCtx` | integer ≥ 2048 | `65536` | the context window asked of a local Ollama model on every request (`options.num_ctx`); without it Ollama uses its small server default and drops the start of long chats. **User file only**. Ollama Cloud is unaffected |
 | `chat.history` | `on`, `off` | `on` | save sessions to `~/.cordata/sessions` for `/resume`. A project may set `off` |
 
 A rule is `tool` or `tool(pattern)`, for `read_file`, `edit_file`, `run_command`, `code_search`, `code_outline`. For
