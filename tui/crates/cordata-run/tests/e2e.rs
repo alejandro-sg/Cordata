@@ -284,6 +284,13 @@ fn bin_cordata_launches_the_built_binary_and_a_real_failure_keeps_its_status() {
     assert!(text(&native).contains(": done"), "{}", text(&native));
     let failing = go(&["resume", "run-nope"]);
     assert_eq!(failing.status.code(), Some(2), "{}", String::from_utf8_lossy(&failing.stderr));
+    // A CORDATA_HOME the repository could have set (inside the repository you run from) is ignored.
+    let planted = e.project.join(".cordata-home");
+    let mut cmd = Command::new(fake_repo.join("bin/cordata"));
+    cmd.env_clear().env("PATH", std::env::var("PATH").unwrap()).env("HOME", e.dir.path()).env("CORDATA_HOME", &planted).current_dir(&e.project);
+    let refused = cmd.args(["status", "--json"]).output().unwrap();
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("ignoring CORDATA_HOME"), "{}", String::from_utf8_lossy(&refused.stderr));
+    assert!(!planted.exists(), "nothing was written there");
     let unbuilt = Command::new(repo.join("bin/cordata")).arg("--help").output().unwrap();
     assert!(text(&unbuilt).contains("cordata run"), "--help works without a build");
 }

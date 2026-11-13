@@ -25,6 +25,18 @@ done
 BIN_DIR="$( cd -P "$( dirname "$SOURCE" )" >/dev/null 2>&1 && pwd )"
 REPO_ROOT="$( cd -P "$BIN_DIR/.." >/dev/null 2>&1 && pwd )"
 
+# CORDATA_HOME holds Cordata's state, settings and your own (unconfined) hooks. A value that is relative, or that lies
+# inside the repository you are in, is one the repository could have chosen (a direnv .envrc, say), so it is ignored.
+if [[ -n "${CORDATA_HOME:-}" ]]; then
+  repo="$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)"
+  # Resolved like the repository path (symlinks such as /var -> /private/var); a folder not made yet by its parent.
+  wanted="$( (cd "$CORDATA_HOME" 2>/dev/null && pwd -P) || echo "$( (cd "$(dirname "$CORDATA_HOME")" 2>/dev/null && pwd -P) || dirname "$CORDATA_HOME")/$(basename "$CORDATA_HOME")")"
+  if [[ "$CORDATA_HOME" != /* ]] || { [[ "$repo" != "${HOME:-}" ]] && [[ "$wanted/" == "$repo/"* ]]; }; then
+    echo "cordata: ignoring CORDATA_HOME=$CORDATA_HOME (relative, or inside this repository); using ~/.cordata" >&2
+    unset CORDATA_HOME
+  fi
+fi
+
 # The newest built binary of this name: release, else debug.
 built() {
   for kind in release debug; do
