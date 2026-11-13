@@ -1093,7 +1093,7 @@ mod tests {
         let id = info.session_id.clone();
 
         // Another window is writing it now.
-        let elsewhere = history::claim_in(&home, dir.path(), &id).expect("free once the first engine ended");
+        let elsewhere = history::claim_soon(&home, dir.path(), &id).expect("free once the first engine ended");
         let events = script(&Fake::new(vec![]), dir.path(), saving(dir.path()), vec![Command::Resume(id.clone())]).await;
         assert!(events.iter().any(|e| matches!(e, AppEvent::ResumeRefused { session_id, why } if session_id == &id && why.contains("open in another window"))), "refused, with the reason");
         assert!(!events.iter().any(|e| matches!(e, AppEvent::SessionRestored { .. })), "nothing was restored");
