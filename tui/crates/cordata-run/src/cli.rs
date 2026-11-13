@@ -231,7 +231,9 @@ fn finish(record: &RunRecord, as_json: bool, receipt: &str) -> i32 {
         for w in &record.warnings {
             println!("  warning: {w}");
         }
-        println!("{receipt}");
+        if !receipt.is_empty() {
+            println!("{receipt}");
+        }
     }
     i32::from(record.state != "done")
 }
@@ -252,9 +254,9 @@ pub async fn run(args: RunArgs) -> i32 {
     let mut notes = Vec::new();
     if config::setting(&settings, "orchestrator.pools").is_some() {
         let pooled = config::pools(&settings);
-        let unpooled: Vec<&str> = requested.iter().map(String::as_str).filter(|f| !pooled.iter().any(|p| p.family == *f)).collect();
-        if !unpooled.is_empty() {
-            notes.push(format!("orchestrator.pools leaves out {}: they run under their default caps (pass --workers to leave them out)", unpooled.join(", ")));
+        let added: Vec<String> = cordata_ledger::default_pools().into_iter().filter(|d| requested.contains(&d.family) && !pooled.iter().any(|p| p.pool_id == d.pool_id)).map(|d| d.pool_id).collect();
+        if !added.is_empty() {
+            notes.push(format!("orchestrator.pools does not name {}: what it leaves out runs under those default caps (pass --workers to leave a family out)", added.join(", ")));
         }
     }
     let skipped = config::unsupported(&requested);
@@ -420,11 +422,13 @@ pub async fn resume(run_id: &str, workers: Option<String>, allow_direct: bool, m
         controls: Some(controls),
         home: home.clone(),
     };
+    let finished = machine::TERMINAL.contains(&record.state.as_str());
     let record = {
         let machine = Machine::with_record(record, run_config, world);
-        if machine::TERMINAL.contains(&machine.record.state.as_str()) { machine.record.clone() } else { drive(machine).await }
+        if finished { machine.record.clone() } else { drive(machine).await }
     };
-    let summary = crate::receipt::write(&home, &crate::receipt::build(&record, &ledger, &checkpoints, started.elapsed()));
+    // An already finished run keeps the receipt it wrote when it finished.
+    let summary = if finished { String::new() } else { crate::receipt::write(&home, &crate::receipt::build(&record, &ledger, &checkpoints, started.elapsed())) };
     finish(&record, as_json, &summary)
 }
 

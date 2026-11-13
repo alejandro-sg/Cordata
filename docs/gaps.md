@@ -12,7 +12,7 @@ otherwise for several. Read the sections below as the original analysis, not as 
 | G3 blocked worker asks person | Open: `blocked_reason` exists in `plan.rs` but nothing sets it |
 | G4 full context window | Partial: heuristic `compact_history_if_needed` in `engine.rs`, no model summary |
 | G5 context visibility | Done: context breakdown event and `/context` |
-| G6 chat vs orchestrator | Partial: `/run` from chat; `delegate` is not implemented and `/goldfish` was removed |
+| G6 chat vs orchestrator | Partial: `/run` from chat; `delegate` is not implemented; the built-in `/goldfish` was removed (`.cordata/commands/goldfish.md` is a plain prompt) |
 | G7 hung worker | Open: `Tape::is_stalled` was never called and has been deleted |
 | G8 single trace | Partial: tape trace ids, `show --otlp` (unverified) |
 | G9 terminal agent state | Partial: OSC 7501 parsing plus screen rules |

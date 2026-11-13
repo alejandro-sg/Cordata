@@ -120,7 +120,7 @@ missing or invalid, `~/.cordata/hooks.json` (the two are not merged). Code: `tui
 
 - `matcher` is a tool name or `*`.
 - `command` gets `{event, tool, args, cwd}` (plus `output` and `success` after the call) as JSON on stdin. Stdout of
-  `{"decision":"block","reason":"…"}` or `{"decision":"feedback","reason":"…"}` decides; otherwise a non-zero exit
+  `{"decision":"block","reason":"…"}` (or, after the call only, `{"decision":"feedback","reason":"…"}`) decides; otherwise a non-zero exit
   blocks with stderr as the reason, and exit 0 allows. `timeout_secs` is accepted but not enforced yet.
 - `checksyntax` (JSON, TOML, Rust) and `checkassertions` (refuses edits that strip test assertions) run after edits only.
 - Hook commands run through `/bin/sh` outside the sandbox and without an approval prompt. A project `hooks.json` is

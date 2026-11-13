@@ -29,8 +29,10 @@ pub fn write(home: &Path, receipt: &Value) -> String {
     use std::os::unix::fs::PermissionsExt as _;
     let dir = artifacts_dir(home, receipt["run_id"].as_str().unwrap_or_default());
     let path = dir.join("receipt.json");
-    if std::fs::create_dir_all(&dir).is_ok() && std::fs::write(&path, format!("{receipt:#}\n")).is_ok() {
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    let saved = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, format!("{receipt:#}\n")))
+        .and_then(|()| std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)));
+    if let Err(e) = saved {
+        return format!("receipt: could not write {}: {e}", path.display());
     }
     let list = |k: &str| receipt[k].as_array().map_or(0, Vec::len);
     let passed = receipt["criteria"].as_array().map_or(0, |c| c.iter().filter(|c| c["ok"] == true).count());

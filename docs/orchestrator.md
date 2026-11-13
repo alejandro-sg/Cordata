@@ -42,9 +42,10 @@ Set `orchestrator.pools` to your real plans so handoffs happen at the right mome
 ]
 ```
 
-A family your list leaves out keeps its default pool (the run prints a warning); it is not uncapped. To keep a family
-out of a run, pass `--workers`. The run's `--max-usd` is split between the steps of a parallel wave, so together they
-cannot pass it. A single worker call can still overshoot its share by the cost of its last turn, since cost is known
+Default pools your list does not name are added after it (the run prints a warning, and `cordata status` lists them),
+so what your list leaves out runs under the default caps, not uncapped. To keep a family out of a run, pass
+`--workers`. The run's `--max-usd` is split between the steps of a parallel wave. Pool headroom is not split, and a
+retry inside a wave sees only spend already recorded, so this bounds the common case, not every one. A single worker call can still overshoot its share by the cost of its last turn, since cost is known
 only after the provider reports it.
 
 Other `orchestrator.*` settings are in [`settings.md`](settings.md).

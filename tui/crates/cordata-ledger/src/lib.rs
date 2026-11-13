@@ -394,9 +394,9 @@ impl Ledger {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.execute_batch(SCHEMA)?;
         add_columns(&conn)?;
-        // A family the configured pools leave out keeps its conservative default caps: a partial list never uncaps it.
+        // Default pools the list does not name go after it: first match wins, so they cap only what the list leaves out.
         let mut pools = pools;
-        let missing: Vec<Pool> = default_pools().into_iter().filter(|d| !pools.iter().any(|p| p.family == d.family)).collect();
+        let missing: Vec<Pool> = default_pools().into_iter().filter(|d| !pools.iter().any(|p| p.pool_id == d.pool_id)).collect();
         pools.extend(missing);
         let ledger = Self { conn, pools, clock: Box::new(now) };
         ledger.sync_pools()?;

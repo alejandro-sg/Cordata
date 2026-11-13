@@ -6,7 +6,7 @@ pub enum ProviderKind {
     Ollama,
     Anthropic,
     Gemini,
-    /// Any other hosted provider (OpenAI and friends): the standard limits.
+    /// Everything else (hosted providers, and local models whose name does not say they are small): the standard limits.
     Other,
 }
 
