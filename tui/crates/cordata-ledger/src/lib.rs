@@ -716,9 +716,10 @@ impl Ledger {
     }
 
     /// `budget` less what one more request may cost, so the request that crosses the line still lands inside it. A CLI
-    /// checks its dollar budget only after a request, and cost is known only then: holding back the costliest
-    /// request this run has made (before its first, the costliest the ledger has seen; never more than half the
-    /// budget) is what makes the cap hold. A ledger that cannot be read holds back half.
+    /// checks its dollar budget only after a request, and cost is known only then. Each request re-sends a longer
+    /// conversation, so the next can cost more than any so far: the hold is twice the costliest request this run has
+    /// made (before its first, the costliest the ledger has seen), at least a tenth of the budget and at most half.
+    /// A ledger that cannot be read holds back half.
     pub fn hold_back(&self, session_id: &str, budget: Option<f64>) -> Option<f64> {
         let costliest = |sql: &str, args: &[&dyn rusqlite::ToSql]| self.conn.query_row(sql, args, |r| r.get::<_, Option<f64>>(0));
         let per_request = "MAX(cost_usd / MAX(requests, 1))";
@@ -729,7 +730,7 @@ impl Ledger {
             Err(e) => Err(e),
         };
         let unrecorded = self.unrecorded.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|r| r.cost_usd / r.requests.max(1) as f64).fold(0.0, f64::max);
-        budget.map(|b| b - largest.map_or(b / 2.0, |l| l.max(unrecorded)).min(b / 2.0))
+        budget.map(|b| b - largest.map_or(b / 2.0, |l| (2.0 * l.max(unrecorded)).max(b / 10.0)).min(b / 2.0))
     }
 
     pub fn envelope(&self, session_id: &str, max_usd: Option<f64>, max_tokens: Option<i64>) -> EnvelopeState {

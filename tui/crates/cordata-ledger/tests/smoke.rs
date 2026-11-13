@@ -183,12 +183,12 @@ fn a_pool_list_that_leaves_out_claude_code_keeps_its_default_cap() {
 fn hold_back_keeps_room_for_the_costliest_request_seen() {
     let dir = tempfile::tempdir().unwrap();
     let l = Ledger::open(&dir.path().join("state.db"), Vec::new()).unwrap();
-    assert_eq!(l.hold_back("r", Some(1.0)), Some(1.0), "nothing spent yet: nothing to hold back");
+    assert!((l.hold_back("r", Some(1.0)).unwrap() - 0.9).abs() < 1e-9, "nothing seen yet: a tenth");
     let mut row = spend(0.3);
     row.requests = Some(3);
     l.record_result("r", Some("a"), "claude_code", None, &row, Some("execute"), None);
-    assert!((l.hold_back("r", Some(1.0)).unwrap() - 0.9).abs() < 1e-9);
-    assert!((l.hold_back("a-new-run", Some(1.0)).unwrap() - 0.9).abs() < 1e-9, "a run's first request uses the ledger's history");
+    assert!((l.hold_back("r", Some(1.0)).unwrap() - 0.8).abs() < 1e-9, "twice the $0.10 request");
+    assert!((l.hold_back("a-new-run", Some(1.0)).unwrap() - 0.8).abs() < 1e-9, "a run's first request uses the ledger's history");
     assert!((l.hold_back("r", Some(0.1)).unwrap() - 0.05).abs() < 1e-9, "never more than half");
     assert_eq!(l.hold_back("r", None), None);
 }

@@ -46,9 +46,10 @@ Default pools your list does not name are added after it (the run prints a warni
 so what your list leaves out runs under the default caps, not uncapped. To keep a family out of a run, pass
 `--workers`. Each step of a parallel wave reserves its share of the run's `--max-usd` and of each pool's headroom when
 it starts; its retries spend from that share, and a step that spends it waits for the next wave. A CLI learns a
-request's cost only after it, so every worker is given its budget less the costliest single request this run has made
-(at most half the budget): the request that crosses the line still lands inside it. A request dearer than any before
-it can still pass the line by the difference.
+request's cost only after it, so every worker is given its budget less a hold for one more request: twice the costliest
+request this run has made (before its first, the costliest in the ledger), at least a tenth of the budget and at most
+half. Each request re-sends a longer conversation, hence the doubling. A single request dearer than that hold can still
+pass the line by the difference; after it the run stops at its next check.
 
 Other `orchestrator.*` settings are in [`settings.md`](settings.md).
 

@@ -209,7 +209,7 @@ async fn the_hard_line_bounds_a_step_by_what_the_pool_has_left() {
     let cp = CopyCheckpoints::new(&e.store);
     let ex = exec(&e, plan_of(1, "rollback_checkpoint", 2.0), vec![runnable(&a, "m", "claude_code", "anthropic")], &cp, Config::default());
     ex.run().await;
-    assert_eq!(seen.lock().unwrap()[0], (Some(95), Some(2.0)), "95% of the pool's cap; the envelope's dollars");
+    assert_eq!(seen.lock().unwrap()[0], (Some(95), Some(1.8)), "95% of the pool's cap; the envelope's dollars less a tenth held back");
 }
 
 #[tokio::test]
@@ -420,7 +420,7 @@ async fn parallel_steps_split_the_run_budget_so_together_they_cannot_pass_it() {
     let budgets: Vec<f64> = seen.lock().unwrap().iter().map(|b| b.unwrap()).collect();
     assert_eq!(budgets.len(), 4);
     assert!(budgets[..3].iter().sum::<f64>() <= 1.5 + 1e-9, "the wave of three shares the run's $1.50: {budgets:?}");
-    assert!((budgets[3] - 1.5).abs() < 1e-9, "a step alone gets all that is left: {budgets:?}");
+    assert!((budgets[3] - 1.35).abs() < 1e-9, "a step alone gets all that is left, less a tenth held back: {budgets:?}");
 }
 
 #[tokio::test]
