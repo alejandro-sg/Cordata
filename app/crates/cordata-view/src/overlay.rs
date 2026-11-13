@@ -31,10 +31,6 @@ impl Outcome {
         Self::default()
     }
 
-    pub fn stay_with(effect: Option<Effect>) -> Self {
-        Self { close: false, effect, open: None }
-    }
-
     pub fn close(effect: Option<Effect>) -> Self {
         Self { close: true, effect, open: None }
     }

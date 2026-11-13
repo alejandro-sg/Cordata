@@ -249,11 +249,6 @@ pub struct Field {
 }
 
 impl Field {
-    /// Attach pinned tactical notes to the board.
-    pub fn with_notes(mut self, notes: Vec<Note>) -> Field {
-        self.notes = notes;
-        self
-    }
     /// Stand the runs to the right of the threads. A step's place comes from the plan alone ([`rows`]), so it does
     /// not move when its worker or its status does.
     pub fn with_runs(mut self, runs: &[Run]) -> Field {

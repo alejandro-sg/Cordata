@@ -264,21 +264,6 @@ pub fn request_hold(home: &Path, run_id: &str, by: &str) -> std::io::Result<()> 
     writeln!(out, "{}", serde_json::json!({"cmd": "pause", "now": false, "restore": false, "by": by, "at": at}))
 }
 
-/// Deliver an answer to a blocked step waiting on a question (G3).
-pub fn request_answer(home: &Path, run_id: &str, step_id: &str, text: &str) -> std::io::Result<()> {
-    use std::os::unix::fs::OpenOptionsExt as _;
-    if run_id.is_empty() || !run_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a run id"));
-    }
-    let path = control_file(home, run_id);
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let mut out = std::fs::OpenOptions::new().append(true).create(true).mode(0o600).open(path)?;
-    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
-    writeln!(out, "{}", serde_json::json!({"cmd": "answer", "step": step_id, "text": text, "at": at}))
-}
-
 /// Grant or deny permission to a blocked step (G3).
 pub fn request_permission(home: &Path, run_id: &str, step_id: &str, allow: bool) -> std::io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt as _;
@@ -292,36 +277,6 @@ pub fn request_permission(home: &Path, run_id: &str, step_id: &str, allow: bool)
     let mut out = std::fs::OpenOptions::new().append(true).create(true).mode(0o600).open(path)?;
     let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
     writeln!(out, "{}", serde_json::json!({"cmd": "permission", "step": step_id, "allow": allow, "at": at}))
-}
-
-/// Steer a running step with a live message (G2).
-pub fn request_say(home: &Path, run_id: &str, step_id: &str, text: &str) -> std::io::Result<()> {
-    use std::os::unix::fs::OpenOptionsExt as _;
-    if run_id.is_empty() || !run_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a run id"));
-    }
-    let path = control_file(home, run_id);
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let mut out = std::fs::OpenOptions::new().append(true).create(true).mode(0o600).open(path)?;
-    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
-    writeln!(out, "{}", serde_json::json!({"cmd": "say", "step": step_id, "text": text, "at": at}))
-}
-
-/// Interrupt a running step mid-call (G2).
-pub fn request_interrupt(home: &Path, run_id: &str, step_id: &str) -> std::io::Result<()> {
-    use std::os::unix::fs::OpenOptionsExt as _;
-    if run_id.is_empty() || !run_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a run id"));
-    }
-    let path = control_file(home, run_id);
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let mut out = std::fs::OpenOptions::new().append(true).create(true).mode(0o600).open(path)?;
-    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
-    writeln!(out, "{}", serde_json::json!({"cmd": "interrupt", "step": step_id, "at": at}))
 }
 
 #[cfg(test)]

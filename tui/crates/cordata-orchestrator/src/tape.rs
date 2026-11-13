@@ -161,18 +161,6 @@ impl StepTape {
         self.record("result", &r);
     }
 
-    pub fn last_event_at_secs(&self) -> f64 {
-        (self.last_event_at.load(Ordering::Relaxed) as f64) / 1000.0
-    }
-
-    pub fn quiet_duration_secs(&self) -> f64 {
-        (now() - self.last_event_at_secs()).max(0.0)
-    }
-
-    pub fn is_stalled(&self, quiet_threshold_s: f64) -> bool {
-        self.quiet_duration_secs() > quiet_threshold_s
-    }
-
     /// Head/tail compaction keeping first `COMPACT_HEAD_LINES` and last `COMPACT_TAIL_LINES`.
     pub fn compact(&self) {
         let file = match File::open(&self.path) {

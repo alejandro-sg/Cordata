@@ -113,10 +113,6 @@ impl StopReason {
         }
     }
 
-    /// `end_turn` is the only reason a scripted run treats as healthy.
-    pub fn is_normal(&self) -> bool {
-        matches!(self, StopReason::EndTurn)
-    }
 }
 
 /// One file an edit tool call changes. `old_text` is read from disk before the call runs (None: a new file).

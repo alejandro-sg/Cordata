@@ -2,7 +2,7 @@
 
 use serde_json::Value;
 
-use crate::app::{App, Effect, Message, sanitize};
+use crate::app::{App, Effect, Message};
 
 impl App {
     pub fn run_copy(&mut self) -> Option<Effect> {
@@ -122,14 +122,6 @@ impl App {
         })
     }
 
-    pub fn run_line_as_prompt(&mut self, line: &str) -> Option<Effect> {
-        if self.turn_active {
-            self.queue.push_back(line.to_owned());
-            return None;
-        }
-        self.messages.push(Message::User(sanitize(line)));
-        Some(self.begin_turn(line.to_owned()))
-    }
 }
 
 /// The branch the project is on (`None` outside a repository or on a detached HEAD).

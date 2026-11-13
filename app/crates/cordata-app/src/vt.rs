@@ -239,11 +239,6 @@ impl Session {
         self.0.declared.lock().clone()
     }
 
-    #[allow(dead_code)]
-    pub fn clear_declared_state(&self) {
-        *self.0.declared.lock() = None;
-    }
-
     pub fn write(&self, bytes: impl Into<Cow<'static, [u8]>>) {
         let bytes = bytes.into();
         if !bytes.is_empty() {

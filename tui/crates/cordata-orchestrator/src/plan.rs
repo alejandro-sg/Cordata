@@ -15,7 +15,6 @@ pub const CRITERION_TYPES: [&str; 6] = ["command", "test", "file_exists", "file_
 pub const RISKS: [&str; 3] = ["read_only", "edits_files", "destructive"];
 pub const ROLLBACK: [&str; 2] = ["rollback_checkpoint", "keep_partial"];
 pub const COMPLEXITIES: [&str; 3] = ["low", "medium", "high"];
-pub const STEP_STATUSES: [&str; 7] = ["pending", "running", "completed", "failed", "partial", "skipped", "blocked"];
 pub const MAX_STEPS: usize = 12;
 pub const MAX_CRITERIA: usize = 20;
 
@@ -116,14 +115,6 @@ pub struct SpecAmendmentRequest {
     pub proposed_scope_additions: Vec<String>,
     #[serde(default)]
     pub proposed_criteria: Vec<Criterion>,
-}
-
-/// Outcome of evaluating an amendment request.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SpecAmendmentOutcome {
-    pub accepted: bool,
-    pub rationale: String,
-    pub updated_plan: Option<Plan>,
 }
 
 impl Plan {

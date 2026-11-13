@@ -39,13 +39,6 @@ impl ComponentStatus {
         matches!(self, Self::Modified { .. })
     }
 
-    pub fn changed_count(&self) -> usize {
-        match self {
-            Self::Clean => 0,
-            Self::Modified { changed_files } => changed_files.len(),
-            Self::Active { active_files, .. } => active_files.len(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

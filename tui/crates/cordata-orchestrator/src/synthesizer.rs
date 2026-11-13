@@ -75,10 +75,6 @@ pub struct Sandbox {
 }
 
 impl Sandbox {
-    /// Every file was cloned copy-on-write.
-    pub fn cow(&self) -> bool {
-        self.cloned > 0 && self.copied == 0
-    }
 
     pub fn discard(&self) {
         let _ = std::fs::remove_dir_all(&self.root);
@@ -288,9 +284,6 @@ impl Default for CowIsolation {
 }
 
 impl CowIsolation {
-    pub fn in_dir(parent: &Path) -> Self {
-        Self { parent: Some(parent.to_path_buf()), ..Self::default() }
-    }
 
     pub fn max_files(mut self, n: usize) -> Self {
         self.max_files = n;

@@ -269,21 +269,6 @@ pub fn taste_review_schema() -> Value {
     })
 }
 
-/// Formats the Tier 2 Taste Review prompt for a diff.
-pub fn taste_review_prompt(diff: &str, goal: &str) -> String {
-    format!(
-        "You are the DESIGN & TASTE AUDITOR of a high-craft engineering system.\n\
-        Review this code change through the lens of Design Engineering: aesthetic balance, visual hierarchy,\n\
-        delightful CLI/UI ergonomics, thoughtful empty states, and clarity of intent.\n\n\
-        Goal: {goal}\n\n\
-        Diff to critique:\n\
-        ```\n\
-        {diff}\n\
-        ```\n\n\
-        Answer ONLY with a single JSON object matching the required schema."
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

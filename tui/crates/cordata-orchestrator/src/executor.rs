@@ -334,15 +334,6 @@ impl<'a> StepExecutor<'a> {
 
     // ------------------------------------------------------------------ the person's controls
 
-    /// Stops every worker call in flight (a request to pause or cancel *now*): each worker kills its process group and
-    /// reports `cancelled`; the step is rolled back and the request is honoured where that result lands.
-    pub async fn stop_inflight(&self) {
-        let workers: Vec<(String, Arc<dyn Worker>)> = self.inflight.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-        for (task_id, worker) in workers {
-            worker.cancel(&task_id).await;
-        }
-    }
-
     fn requested(&self) -> Option<String> {
         self.cfg.controls.as_ref().and_then(|c| c.pending())
     }

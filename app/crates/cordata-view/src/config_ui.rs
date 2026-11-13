@@ -48,12 +48,6 @@ impl App {
         self.apply_prefs(prefs);
     }
 
-    pub fn reload_settings(&mut self) {
-        if let Some(store) = &self.store {
-            self.settings = store.load();
-        }
-    }
-
     fn apply_prefs(&mut self, prefs: Prefs) {
         self.thoughts_expanded = prefs.thinking_expanded;
         self.expand_tools = prefs.tools_expanded;
