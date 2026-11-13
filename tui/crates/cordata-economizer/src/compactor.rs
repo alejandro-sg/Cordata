@@ -123,7 +123,7 @@ mod tests {
     #[test]
     fn aging_follows_the_provider_profile() {
         let big = "line\n".repeat(100);
-        let ollama = Profile::for_model("llama3");
+        let ollama = Profile::for_model("llama3:8b");
         let claude = Profile::for_model("claude-x");
         let gemini = Profile::for_model("gemini-x");
         assert!(age("run_command", &big, 2, &ollama).is_some());
