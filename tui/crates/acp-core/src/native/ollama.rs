@@ -305,4 +305,35 @@ mod tests {
         let err = chat.stream(chat.body("cordata-no-such-model", "s", &[Msg::User { text: "hi".into() }], &[])).await.err().unwrap();
         assert!(err.contains("HTTP 404") && err.contains("not found"), "{err}");
     }
+
+    fn live_model() -> String {
+        std::env::var("CORDATA_LIVE_OLLAMA_MODEL").unwrap_or_else(|_| "qwen2.5:0.5b".into())
+    }
+
+    /// A real model end to end: `cargo test -p acp-core live_ollama -- --ignored` (needs `ollama pull qwen2.5:0.5b`).
+    #[tokio::test]
+    #[ignore]
+    async fn live_ollama_streams_a_whole_reply() {
+        let chat = OllamaChat::at("127.0.0.1:11434", 8_192);
+        let history = [Msg::User { text: "Reply with the single word: pong".into() }];
+        let got: Vec<_> = chat.stream(chat.body(&live_model(), "You answer in one word.", &history, &[])).await.unwrap().collect().await;
+        assert!(got.iter().all(Result::is_ok), "{got:?}");
+        assert!(!text_of(&got).trim().is_empty(), "{got:?}");
+        assert!(matches!(got.last(), Some(Ok(Delta::Usage(u))) if u.input > 0 && u.output > 0), "{got:?}");
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn live_ollama_calls_a_tool() {
+        let chat = OllamaChat::at("127.0.0.1:11434", 8_192);
+        let tools: Vec<ToolSpec> = super::super::tools::specs().into_iter().filter(|t| t.name == "read_file").collect();
+        let history = [Msg::User { text: "Use the read_file tool to read the file named Cargo.toml.".into() }];
+        let got: Vec<_> = chat.stream(chat.body(&live_model(), "You are a coding agent. Use tools.", &history, &tools)).await.unwrap().collect().await;
+        assert!(got.iter().all(Result::is_ok), "{got:?}");
+        let call = got.iter().find_map(|d| if let Ok(Delta::Call(c)) = d { Some(c.clone()) } else { None });
+        let call = call.unwrap_or_else(|| panic!("no tool call: {got:?}"));
+        assert_eq!(call.name, "read_file");
+        // Which argument name a tiny model picks is the model's business; the client's is to carry the call whole.
+        assert!(call.args.to_string().contains("Cargo.toml"), "{call:?}");
+    }
 }
