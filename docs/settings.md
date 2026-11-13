@@ -154,7 +154,7 @@ replace it.
 
 | variable | meaning |
 |---|---|
-| `CORDATA_HOME` | state folder (default `~/.cordata`). `cordata` ignores a relative value or one inside the repository you run it from (a direnv `.envrc` could set it), with a warning |
+| `CORDATA_HOME` | state folder (default `~/.cordata`). Every Cordata program ignores, with a warning, a value that is relative, contains `.` or `..`, or lies inside the repository you run it from (a direnv `.envrc` could set it); `$HOME` and `/` never count as that repository. Keep your state outside your projects |
 | `CORDATA_STATE_DB` | the ledger database (default `$CORDATA_HOME/state.db`) |
 | `CORDATA_ROOT` | the checkout, for `cordata doctor` |
 | `CORDATA_SANDBOX_SEATBELT` | how workers are confined; unset means on |

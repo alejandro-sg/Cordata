@@ -2,5 +2,6 @@
 //! that would write one or wreck the checkout (`guard`, the pre-tool hook); `redact` masks credential-shaped text.
 
 pub mod guard;
+pub mod home;
 pub mod redact;
 pub mod secrets;

@@ -16,6 +16,7 @@ struct Args {
 }
 
 fn main() -> ExitCode {
+    cordata_guard::home::enforce();
     let args = Args::parse();
     let cwd = args.cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let checks = cordata_doctor::run_checks(&cwd);

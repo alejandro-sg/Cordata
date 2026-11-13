@@ -88,6 +88,9 @@ impl Default for Policy {
 }
 
 /// `$CORDATA_HOME`, or `~/.cordata`.
+/// Drops a `CORDATA_HOME` the current repository could have chosen (`cordata_guard::home`). First thing in `main`.
+pub use cordata_guard::home::enforce as enforce_cordata_home;
+
 pub fn cordata_home() -> Option<PathBuf> {
     std::env::var_os("CORDATA_HOME")
         .map(PathBuf::from)

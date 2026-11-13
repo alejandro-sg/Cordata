@@ -147,6 +147,7 @@ enum Command {
 // The machine's futures borrow the SQLite-backed ledger, so they are not `Send`: a current-thread runtime.
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
+    acp_core::policy::enforce_cordata_home();
     let code = match Cli::parse().command {
         Command::Run { goal, cwd, workers, dispatch, allow_direct, max_usd, max_rounds, max_parallel, no_harden, no_research, research, no_conformance, no_tier2, no_step_check, no_screen, json, run_id, session_id, land, detach } => {
             if detach {
