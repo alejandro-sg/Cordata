@@ -52,7 +52,7 @@ enum Command {
         no_screen: bool,
         #[arg(long)]
         json: bool,
-        #[arg(long)]
+        #[arg(long, value_parser = run_id_arg)]
         run_id: Option<String>,
         #[arg(long)]
         session_id: Option<String>,
@@ -70,6 +70,7 @@ enum Command {
     },
     /// show one run's plan, history, audit, or a step's live tape
     Show {
+        #[arg(value_parser = run_id_arg)]
         run_id: String,
         #[arg(long)]
         json: bool,
@@ -88,6 +89,7 @@ enum Command {
     },
     /// continue a paused or interrupted run
     Resume {
+        #[arg(value_parser = run_id_arg)]
         run_id: String,
         /// worker families to use (comma-separated; defaults to orchestrator.workers)
         #[arg(long, value_name = "FAMILIES")]
@@ -107,6 +109,7 @@ enum Command {
     },
     /// export a run as OpenTelemetry GenAI spans
     Export {
+        #[arg(value_parser = run_id_arg)]
         run_id: String,
         #[arg(long)]
         otlp: bool,
@@ -188,4 +191,11 @@ async fn main() -> ExitCode {
         Command::Evolve { target, threshold, dry_run, mutate, propose, propose_usd, propose_workers, cwd, json } => cli::evolve_cmd(&target, threshold, dry_run, json, cwd, mutate, propose, propose_usd, propose_workers),
     };
     ExitCode::from(u8::try_from(code).unwrap_or(1))
+}
+
+/// A run id names a directory under `~/.cordata/orchestrator`: letters, digits, `-` and `_` only, so it cannot
+/// point anywhere else.
+fn run_id_arg(id: &str) -> Result<String, String> {
+    let ok = !id.is_empty() && id.len() <= 128 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if ok { Ok(id.to_owned()) } else { Err("a run id uses only letters, digits, '-' and '_'".into()) }
 }

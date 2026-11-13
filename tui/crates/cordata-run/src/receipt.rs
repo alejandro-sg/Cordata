@@ -14,11 +14,18 @@ pub fn build(record: &RunRecord, ledger: &Ledger, checkpoints: &dyn Checkpoints,
     let audit = record.audit.clone().unwrap_or(Value::Null);
     let criteria: Vec<Value> = audit.get("checks").and_then(Value::as_array).into_iter().flatten()
         .map(|c| json!({"id": c.get("id"), "kind": c.get("kind"), "ok": c.get("ok")})).collect();
-    let diffstat = record.start_checkpoint.as_deref().map_or_else(String::new, |id| checkpoints.diff_since(Path::new(&record.cwd), id, None).1);
+    // An empty stat is "no changes" only when the store can say nothing changed; otherwise it is unknown (null).
+    let project = Path::new(&record.cwd);
+    let diffstat = record.start_checkpoint.as_deref().and_then(|id| match checkpoints.diff_since(project, id, None).1.trim() {
+        "" => checkpoints.changes_since(project, id).filter(Vec::is_empty).map(|_| String::new()),
+        stat => Some(stat.to_owned()),
+    });
+    // The ledger reports a failed query as an exhausted envelope; with no limits asked for, that can mean nothing else.
+    let spent = ledger.envelope(&record.run_id, None, None);
     json!({
         "run_id": record.run_id, "goal": record.goal, "state": record.state, "reason": record.reason,
         "criteria": criteria, "criteria_ok": audit.get("tier1_ok").and_then(Value::as_bool),
-        "diffstat": diffstat.trim(), "cost_usd": ledger.envelope(&record.run_id, None, None).spent_usd,
+        "diffstat": diffstat, "cost_usd": (!spent.exhausted).then_some(spent.spent_usd),
         "wall_seconds": wall.as_secs(), "audit_verdict": audit.get("verdict"), "audit_findings": audit.get("failures").cloned().unwrap_or(json!([])),
         "warnings": record.warnings,
     })
@@ -36,9 +43,14 @@ pub fn write(home: &Path, receipt: &Value) -> String {
     }
     let list = |k: &str| receipt[k].as_array().map_or(0, Vec::len);
     let passed = receipt["criteria"].as_array().map_or(0, |c| c.iter().filter(|c| c["ok"] == true).count());
-    let files = receipt["diffstat"].as_str().and_then(|s| s.lines().last()).filter(|l| !l.is_empty()).unwrap_or("no changes");
-    format!("receipt: criteria {passed}/{} · {files} · ${:.4} · {}s · {} audit finding(s) — {}",
-        list("criteria"), receipt["cost_usd"].as_f64().unwrap_or(0.0), receipt["wall_seconds"], list("audit_findings"), path.display())
+    let files = match receipt["diffstat"].as_str() {
+        Some("") => "no changes",
+        Some(stat) => stat,
+        None => "changes unknown",
+    };
+    let cost = receipt["cost_usd"].as_f64().map_or_else(|| "cost unknown".to_owned(), |c| format!("${c:.4}"));
+    format!("receipt: criteria {passed}/{} · {files} · {cost} · {}s · {} audit finding(s) — {}",
+        list("criteria"), receipt["wall_seconds"], list("audit_findings"), path.display())
 }
 
 #[cfg(test)]
@@ -57,7 +69,7 @@ mod tests {
         let cp = CopyCheckpoints::new(&dir.path().join("cp"));
         let receipt = build(&record, &ledger, &cp, Duration::from_secs(42));
         let summary = write(dir.path(), &receipt);
-        assert!(summary.starts_with("receipt: criteria 1/2 · no changes · $0.0000 · 42s · 1 audit finding(s)"), "{summary}");
+        assert!(summary.starts_with("receipt: criteria 1/2 · changes unknown · $0.0000 · 42s · 1 audit finding(s)"), "{summary}");
         let saved: Value = serde_json::from_str(&std::fs::read_to_string(artifacts_dir(dir.path(), "run-r").join("receipt.json")).unwrap()).unwrap();
         assert_eq!((saved["criteria_ok"].clone(), saved["audit_findings"].clone()), (json!(false), json!(["c2 (test): exit 1"])));
     }

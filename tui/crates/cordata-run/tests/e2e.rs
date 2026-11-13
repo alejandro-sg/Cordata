@@ -139,6 +139,12 @@ fn a_native_run_plans_executes_audits_and_can_be_read_back() {
     let missing = e.run(&["show", "run-nope"]);
     assert_eq!(missing.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&missing.stderr).contains("no run run-nope"));
+    for bad in [vec!["show", "../../etc"], vec!["run", "goal", "--run-id", "../escape"]] {
+        let out = e.run(&bad);
+        assert_eq!(out.status.code(), Some(2), "{bad:?}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("a run id uses only letters"), "{bad:?}");
+    }
+    assert!(!e.home.join("escape").exists());
 }
 
 #[test]
