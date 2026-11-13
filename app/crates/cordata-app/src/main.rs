@@ -98,6 +98,24 @@ fn default_cwd() -> PathBuf {
     }
 }
 
+/// The rule `bin/cordata` applies too: a `CORDATA_HOME` that is relative, or inside the repository `cwd` belongs to
+/// (a direnv `.envrc` could set it), is one the repository chose, and Cordata's state and the person's own hooks must
+/// not live there. A repository at `$HOME` itself (a dotfiles checkout) does not count.
+fn untrusted_home(home: &std::path::Path, cwd: &std::path::Path) -> bool {
+    if home.is_relative() {
+        return true;
+    }
+    let real = |p: &std::path::Path| std::fs::canonicalize(p).ok();
+    let repo = cwd.ancestors().find(|d| d.join(".git").exists()).unwrap_or(cwd);
+    let Some(repo) = real(repo) else { return false };
+    if std::env::var_os("HOME").and_then(|h| real(std::path::Path::new(&h))).as_deref() == Some(repo.as_path()) {
+        return false;
+    }
+    // A folder not made yet resolves through its parent.
+    let wanted = real(home).or_else(|| Some(real(home.parent()?)?.join(home.file_name()?))).unwrap_or_else(|| home.to_path_buf());
+    wanted.starts_with(&repo)
+}
+
 fn bootstrap_path() {
     let home = std::env::var("HOME").unwrap_or_default();
     let common = [
@@ -128,6 +146,14 @@ fn main() {
         std::process::exit(control::client(&raw));
     }
     bootstrap_path();
+    if let Some(home) = std::env::var_os("CORDATA_HOME") {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        if untrusted_home(std::path::Path::new(&home), &cwd) {
+            eprintln!("cordata: ignoring CORDATA_HOME={} (relative, or inside this repository); using ~/.cordata", home.to_string_lossy());
+            // SAFETY: first thing in main, before the runtime or any other thread starts.
+            unsafe { std::env::remove_var("CORDATA_HOME") };
+        }
+    }
     let mut args = parse_args();
     let runtime = match Runtime::new() {
         Ok(runtime) => runtime,
@@ -267,4 +293,20 @@ pub(crate) fn test_dir(name: &str) -> std::path::PathBuf {
     let parent = tmp.join(format!("cordata-app-tests-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&parent);
     parent.join(name)
+}
+
+#[cfg(test)]
+mod home_tests {
+    use super::untrusted_home;
+
+    #[test]
+    fn a_home_the_repository_could_choose_is_not_trusted() {
+        let dir = crate::test_dir("home-check");
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        assert!(untrusted_home(std::path::Path::new(".cordata"), &repo), "relative");
+        assert!(untrusted_home(&repo.join(".cordata-home"), &repo.join("src")), "inside the repository, not made yet");
+        assert!(!untrusted_home(&dir.join("elsewhere"), &repo.join("src")), "outside it");
+    }
 }
