@@ -161,7 +161,8 @@ pub fn pools_from_settings(raw: Option<&Value>) -> Vec<Pool> {
     };
     let pools: Vec<Pool> = list
         .as_array()
-        .map(|items| items.iter().filter_map(|item| serde_json::from_value::<Pool>(item.clone()).ok()).collect())
+        // A pool whose model regex does not compile would match nothing: drop it, so its models keep a default cap.
+        .map(|items| items.iter().filter_map(|item| serde_json::from_value::<Pool>(item.clone()).ok()).filter(|p| Regex::new(&p.model_regex).is_ok()).collect())
         .unwrap_or_default();
     if pools.is_empty() { default_pools() } else { pools }
 }

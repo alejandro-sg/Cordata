@@ -44,9 +44,12 @@ impl Profile {
     }
 }
 
-/// The parameter count a model tag states, like `8b` in `llama3.1:8b` or `1.5b` in `qwen2.5-coder-1.5b`.
+/// The parameter count a model tag states, like `8b` in `llama3.1:8b`, `1.5b` in `qwen2.5-coder-1.5b` or `360m`.
 fn size_in_billions(name: &str) -> Option<f64> {
-    name.split([':', '-', '_']).find_map(|part| part.strip_suffix('b')?.parse::<f64>().ok())
+    name.split([':', '-', '_']).find_map(|part| match part.strip_suffix('m') {
+        Some(millions) => millions.parse::<f64>().ok().map(|m| m / 1000.0),
+        None => part.strip_suffix('b')?.parse::<f64>().ok(),
+    })
 }
 
 #[cfg(test)]
@@ -63,6 +66,7 @@ mod tests {
         assert_eq!(Profile::for_model("llama3.1:8b").kind, ProviderKind::Ollama);
         assert_eq!(Profile::for_model("llama3.1:8b").max_tools, 4);
         assert_eq!(Profile::for_model("qwen2.5-coder-1.5b").kind, ProviderKind::Ollama);
+        assert_eq!(Profile::for_model("smollm2:360m").kind, ProviderKind::Ollama);
     }
 
     #[test]

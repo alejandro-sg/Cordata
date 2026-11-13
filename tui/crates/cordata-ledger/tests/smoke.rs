@@ -170,6 +170,9 @@ fn a_pool_list_that_leaves_out_claude_code_keeps_its_default_cap() {
     let pool = l.pool_for("claude_code", Some("opus"));
     assert_eq!((pool.pool_id.as_str(), pool.unit, pool.window_limit, pool.weekly_limit), ("claude_code", Unit::Usd, Some(20.0), Some(150.0)));
     assert_eq!(l.pool_for("antigravity", None).window_limit, Some(1_000.0), "the configured pool still wins");
+    let bad = pools_from_settings(Some(&json!([{"pool_id": "typo", "family": "claude_code", "model_regex": "(", "unit": "usd", "window_limit": 1.0}])));
+    let l = Ledger::open(&dir.path().join("c.db"), bad).unwrap();
+    assert_eq!(l.pool_for("claude_code", Some("opus")).window_limit, Some(20.0), "a pool whose regex does not compile is dropped");
     let l = Ledger::open(&dir.path().join("b.db"), vec![Pool::new("mine", "ollama").model(r".*:local").unit(Unit::Requests)]).unwrap();
     assert_eq!((l.pool_for("ollama", Some("kimi-k3")).pool_id.as_str(), l.pool_for("ollama", Some("x:local")).pool_id.as_str()), ("ollama_cloud", "mine"));
 }
