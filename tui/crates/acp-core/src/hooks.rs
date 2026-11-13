@@ -84,20 +84,25 @@ pub struct HooksRegistry {
 }
 
 impl HooksRegistry {
-    /// Loads hooks from workspace `.cordata/hooks.json`, falling back to `~/.cordata/hooks.json`.
-    pub fn load_for_workspace(cwd: &Path) -> Self {
+    /// Loads hooks from workspace `.cordata/hooks.json`, falling back to `~/.cordata/hooks.json`. A project file is code
+    /// the repository runs on this machine, so it is used only when `approvals` (the person's `mcp.approved`) holds
+    /// [`project_approval`] for its exact contents; otherwise that entry comes back as the second value.
+    pub fn load_for_workspace(cwd: &Path, approvals: &[String]) -> (Self, Option<String>) {
         let mut registry = Self {
             config: HooksConfig::default(),
             cwd: cwd.to_path_buf(),
         };
-
-        let project_hooks = cwd.join(".cordata").join("hooks.json");
-        if project_hooks.is_file()
-            && let Ok(content) = std::fs::read_to_string(&project_hooks)
-            && let Ok(cfg) = serde_json::from_str::<HooksConfig>(&content)
-        {
-            registry.config = cfg;
-            return registry;
+        let mut held = None;
+        if let Ok(content) = std::fs::read_to_string(cwd.join(".cordata").join("hooks.json")) {
+            let entry = project_approval(cwd, &content);
+            match serde_json::from_str::<HooksConfig>(&content) {
+                Ok(cfg) if approvals.contains(&entry) => {
+                    registry.config = cfg;
+                    return (registry, None);
+                }
+                Ok(_) => held = Some(entry),
+                Err(_) => {}
+            }
         }
 
         if let Ok(home) = std::env::var("HOME") {
@@ -110,7 +115,7 @@ impl HooksRegistry {
             }
         }
 
-        registry
+        (registry, held)
     }
 
     /// Creates an explicit registry with a given configuration.
@@ -207,6 +212,14 @@ impl HooksRegistry {
     }
 }
 
+/// The `mcp.approved` entry that lets a project's hooks run: `<folder>|.cordata/hooks.json|sha256:<digest of the file>`.
+pub fn project_approval(cwd: &Path, content: &str) -> String {
+    use sha2::{Digest as _, Sha256};
+    let hex: String = Sha256::digest(content.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+    let folder = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    format!("{}|.cordata/hooks.json|sha256:{hex}", folder.display())
+}
+
 fn matches_matcher(matcher: &str, tool_name: &str) -> bool {
     matcher == "*" || matcher.eq_ignore_ascii_case(tool_name)
 }
@@ -296,6 +309,23 @@ fn inspect_syntax_errors(cwd: &Path, args: &serde_json::Value) -> Option<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_project_hooks_file_runs_only_as_approved_and_a_change_holds_it_back() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".cordata")).unwrap();
+        let file = dir.path().join(".cordata/hooks.json");
+        let body = r#"{"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"exit 3"}]}]}}"#;
+        std::fs::write(&file, body).unwrap();
+        let (reg, held) = HooksRegistry::load_for_workspace(dir.path(), &[]);
+        let entry = held.expect("unapproved file is held back");
+        assert!(reg.config.hooks.pre_tool_use.is_empty());
+        let (reg, held) = HooksRegistry::load_for_workspace(dir.path(), std::slice::from_ref(&entry));
+        assert!(held.is_none() && reg.config.hooks.pre_tool_use.len() == 1);
+        std::fs::write(&file, body.replace("exit 3", "exit 4")).unwrap();
+        let (reg, held) = HooksRegistry::load_for_workspace(dir.path(), &[entry]);
+        assert!(held.is_some() && reg.config.hooks.pre_tool_use.is_empty(), "an edited file needs a new approval");
+    }
 
     #[test]
     fn pre_tool_use_command_blocks_when_script_exits_nonzero() {

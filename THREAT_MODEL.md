@@ -128,6 +128,12 @@ with the session. Every MCP tool call asks first, like an edit.
 
 Not covered: a started server runs with your rights, outside the command sandbox.
 
+## Tool hooks
+
+A project's `.cordata/hooks.json` names shell commands the chat runs around tool calls, outside the sandbox. Like a
+project MCP server it runs only as approved: an `mcp.approved` entry pins the folder and a SHA-256 of the file, so any
+change holds it back. Your own `~/.cordata/hooks.json` needs no approval. An approved hook runs with your rights.
+
 ## Saved sessions
 
 Each chat session is saved after every turn to `~/.cordata/sessions/<project hash>/<id>.json` so `/resume` (or

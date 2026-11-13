@@ -108,8 +108,8 @@ The coding CLIs' traffic goes through the Agent Vault proxy, or the run is refus
 
 ## Tool hooks (`hooks.json`)
 
-The chat engine runs hooks around each tool call. It reads `.cordata/hooks.json` in the project, or, if that file is
-missing or invalid, `~/.cordata/hooks.json` (the two are not merged). Code: `tui/crates/acp-core/src/hooks.rs`.
+The chat engine runs hooks around each tool call. It reads `.cordata/hooks.json` in the project when you have approved
+that exact file, otherwise `~/.cordata/hooks.json` (the two are not merged). Code: `tui/crates/acp-core/src/hooks.rs`.
 
 ```json
 { "hooks": {
@@ -123,8 +123,10 @@ missing or invalid, `~/.cordata/hooks.json` (the two are not merged). Code: `tui
   `{"decision":"block","reason":"…"}` (or, after the call only, `{"decision":"feedback","reason":"…"}`) decides; otherwise a non-zero exit
   blocks with stderr as the reason, and exit 0 allows. `timeout_secs` is accepted but not enforced yet.
 - `checksyntax` (JSON, TOML, Rust) and `checkassertions` (refuses edits that strip test assertions) run after edits only.
-- Hook commands run through `/bin/sh` outside the sandbox and without an approval prompt. A project `hooks.json` is
-  therefore code the repository can run on your machine: read it before you open an untrusted project.
+- Hook commands run through `/bin/sh` outside the sandbox and without a per-call prompt. A project `hooks.json` is code
+  the repository would run on your machine, so it runs only once approved: the chat's notice gives the entry
+  (`<folder>|.cordata/hooks.json|sha256:<digest of the file>`) to add to `mcp.approved` in `~/.cordata/settings.json`.
+  Any edit to the file holds it back again.
 
 ## Built-in guard
 

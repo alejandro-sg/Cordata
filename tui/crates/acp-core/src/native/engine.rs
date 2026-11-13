@@ -329,7 +329,10 @@ pub(crate) async fn drive(
         let _ = events.send(AppEvent::Notice(notice));
     }
     let mode = ModeSwitch::new(policy.mode);
-    let hooks = HooksRegistry::load_for_workspace(&options.cwd);
+    let (hooks, held_hooks) = HooksRegistry::load_for_workspace(&options.cwd, &approvals);
+    if let Some(entry) = held_hooks {
+        let _ = events.send(AppEvent::Notice(format!("hooks: this project's .cordata/hooks.json is not approved (or changed), so it does not run. To run it, add \"{entry}\" to mcp.approved in ~/.cordata/settings.json.")));
+    }
     let mut agent = Agent { provider, switched: None, cwd: options.cwd.clone(), offload, always: HashSet::new(), economizer, policy, mode, mcp, hooks };
     let mut history: Vec<Msg> = Vec::new();
     while let Some(command) = commands.recv().await {
@@ -1247,7 +1250,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lifecycle_hook_blocks_tool_call_inside_tool_loop() {
+    async fn an_unapproved_project_hook_does_not_run() {
         let dir = tempfile::tempdir().unwrap();
         let cordata_dir = dir.path().join(".cordata");
         std::fs::create_dir_all(&cordata_dir).unwrap();
@@ -1270,9 +1273,10 @@ mod tests {
             vec![text("done")],
         ]);
         let events = session(&fake, dir.path(), &["go"], |_| ApprovalDecision::Allow).await;
-        assert!(asked(&events).is_empty(), "lifecycle hook blocks before user prompt or execution");
+        assert!(!asked(&events).is_empty(), "the call reaches the normal approval prompt");
+        assert!(events.iter().any(|e| matches!(e, AppEvent::Notice(n) if n.contains("hooks.json is not approved"))));
         let seen = fake.seen.lock().unwrap();
-        assert!(matches!(&seen[1][2], Msg::ToolResult { output, .. } if output.contains("blocked by c8 lifecycle hook")));
+        assert!(!matches!(&seen[1][2], Msg::ToolResult { output, .. } if output.contains("blocked by c8 lifecycle hook")));
     }
 
     #[tokio::test]
