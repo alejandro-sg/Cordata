@@ -162,3 +162,46 @@ fn headroom_compares_what_is_left_with_what_a_step_usually_takes() {
         Headroom::Fits => panic!("expected short"),
     }
 }
+
+#[test]
+fn a_pool_list_that_leaves_out_claude_code_keeps_its_default_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    let l = Ledger::open(&dir.path().join("state.db"), vec![Pool::new("agy", "antigravity").limit(1_000.0)]).unwrap();
+    let pool = l.pool_for("claude_code", Some("opus"));
+    assert_eq!((pool.pool_id.as_str(), pool.unit, pool.window_limit, pool.weekly_limit), ("claude_code", Unit::Usd, Some(20.0), Some(150.0)));
+    assert_eq!(l.pool_for("antigravity", None).window_limit, Some(1_000.0), "the configured pool still wins");
+    let bad = pools_from_settings(Some(&json!([{"pool_id": "typo", "family": "claude_code", "model_regex": "(", "unit": "usd", "window_limit": 1.0}])));
+    let l = Ledger::open(&dir.path().join("c.db"), bad).unwrap();
+    assert_eq!(l.pool_for("claude_code", Some("opus")).window_limit, Some(20.0), "a pool whose regex does not compile is dropped");
+    let raw = json!([{"pool_id": "typo", "family": "claude_code", "model_regex": "(", "unit": "usd"}]);
+    assert_eq!(cordata_ledger::bad_pool_regexes(Some(&raw)), ["typo (model_regex `(`)"]);
+    let l = Ledger::open(&dir.path().join("b.db"), vec![Pool::new("mine", "ollama").model(r".*:local").unit(Unit::Requests)]).unwrap();
+    assert_eq!((l.pool_for("ollama", Some("kimi-k3")).pool_id.as_str(), l.pool_for("ollama", Some("x:local")).pool_id.as_str()), ("ollama_cloud", "mine"));
+}
+
+#[test]
+fn hold_back_keeps_room_for_the_costliest_request_seen() {
+    let dir = tempfile::tempdir().unwrap();
+    let l = Ledger::open(&dir.path().join("state.db"), Vec::new()).unwrap();
+    assert!((l.hold_back("r", Some(1.0)).unwrap() - 0.9).abs() < 1e-9, "nothing seen yet: a tenth");
+    let mut row = spend(0.3);
+    row.requests = Some(3);
+    l.record_result("r", Some("a"), "claude_code", None, &row, Some("execute"), None);
+    assert!((l.hold_back("r", Some(1.0)).unwrap() - 0.8).abs() < 1e-9, "twice the $0.10 request");
+    assert!((l.hold_back("a-new-run", Some(1.0)).unwrap() - 0.8).abs() < 1e-9, "a run's first request uses the ledger's history");
+    assert!((l.hold_back("r", Some(0.1)).unwrap() - 0.05).abs() < 1e-9, "never more than half");
+    assert_eq!(l.hold_back("r", None), None);
+}
+
+#[test]
+fn spend_the_database_refuses_still_counts() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("state.db");
+    let l = Ledger::open(&db, vec![Pool::new("cc", "claude_code").unit(Unit::Usd).limit(10.0)]).unwrap();
+    let other = rusqlite::Connection::open(&db).unwrap();
+    other.execute_batch("CREATE TRIGGER refuse BEFORE INSERT ON quota_usage BEGIN SELECT RAISE(ABORT, 'disk says no'); END;").unwrap();
+    l.record_result("run-x", Some("a"), "claude_code", None, &spend(4.0), Some("execute"), None);
+    let env = l.envelope("run-x", Some(5.0), None);
+    assert!((env.spent_usd - 4.0).abs() < 1e-9 && !env.exhausted, "{env:?}");
+    assert!((l.state_of("cc").used - 4.0).abs() < 1e-9);
+}

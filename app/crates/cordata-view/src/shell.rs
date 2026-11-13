@@ -33,11 +33,6 @@ pub fn run_keeping(command: &str, cwd: &Path, timeout: Duration, keep: usize) ->
     run_inner(command, cwd, timeout, keep, None)
 }
 
-/// `run`, stopped early (killed, `code: None`) once `cancel` is set — a Stop button that really stops.
-pub fn run_cancellable(command: &str, cwd: &Path, timeout: Duration, cancel: &AtomicBool) -> Outcome {
-    run_inner(command, cwd, timeout, KEEP_BYTES, Some(cancel))
-}
-
 fn augmented_path() -> String {
     let home = std::env::var("HOME").unwrap_or_default();
     let common = [
@@ -143,20 +138,6 @@ mod tests {
         std::fs::write(dir.path().join("marker.txt"), "x").unwrap();
         let out = run("ls", dir.path(), Duration::from_secs(5));
         assert!(out.output.contains("marker.txt"), "{out:?}");
-    }
-
-    #[test]
-    fn a_cancelled_command_is_killed() {
-        let dir = tempfile::tempdir().unwrap();
-        let cancel = std::sync::Arc::new(AtomicBool::new(false));
-        let flag = cancel.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(150));
-            flag.store(true, Ordering::Relaxed);
-        });
-        let started = Instant::now();
-        let out = run_cancellable("sleep 30", dir.path(), Duration::from_secs(60), &cancel);
-        assert!(started.elapsed() < Duration::from_secs(5) && out.code.is_none() && !out.timed_out, "{out:?}");
     }
 
     #[test]

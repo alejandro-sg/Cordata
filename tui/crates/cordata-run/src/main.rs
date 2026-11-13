@@ -44,12 +44,15 @@ enum Command {
         no_conformance: bool,
         #[arg(long)]
         no_tier2: bool,
+        /// skip the build check after each step
+        #[arg(long)]
+        no_step_check: bool,
         /// skip the model screen of the audit's commands (the pattern guard still runs)
         #[arg(long)]
         no_screen: bool,
         #[arg(long)]
         json: bool,
-        #[arg(long)]
+        #[arg(long, value_parser = run_id_arg)]
         run_id: Option<String>,
         #[arg(long)]
         session_id: Option<String>,
@@ -67,6 +70,7 @@ enum Command {
     },
     /// show one run's plan, history, audit, or a step's live tape
     Show {
+        #[arg(value_parser = run_id_arg)]
         run_id: String,
         #[arg(long)]
         json: bool,
@@ -85,6 +89,7 @@ enum Command {
     },
     /// continue a paused or interrupted run
     Resume {
+        #[arg(value_parser = run_id_arg)]
         run_id: String,
         /// worker families to use (comma-separated; defaults to orchestrator.workers)
         #[arg(long, value_name = "FAMILIES")]
@@ -104,6 +109,7 @@ enum Command {
     },
     /// export a run as OpenTelemetry GenAI spans
     Export {
+        #[arg(value_parser = run_id_arg)]
         run_id: String,
         #[arg(long)]
         otlp: bool,
@@ -114,11 +120,23 @@ enum Command {
         #[arg(default_value = "repomap")]
         target: String,
         /// minimum fitness improvement threshold to promote
-        #[arg(long, default_value_t = 0.001)]
+        #[arg(long, default_value_t = 0.001, allow_hyphen_values = true)]
         threshold: f64,
         /// run gates without harvesting changes
         #[arg(long)]
         dry_run: bool,
+        /// shell command that proposes a change by editing files in its cwd (the CoW sandbox, never the project)
+        #[arg(long)]
+        mutate: Option<String>,
+        /// let a model propose the change (runs the orchestrator on the sandbox); optional direction text
+        #[arg(long, num_args = 0..=1, default_missing_value = "")]
+        propose: Option<String>,
+        /// dollar cap for the model proposal
+        #[arg(long, default_value_t = 1.0)]
+        propose_usd: f64,
+        /// worker families the model proposal may use, comma-separated (default: those enabled in settings)
+        #[arg(long, value_name = "FAMILIES")]
+        propose_workers: Option<String>,
         #[arg(long)]
         cwd: Option<PathBuf>,
         #[arg(long)]
@@ -129,8 +147,9 @@ enum Command {
 // The machine's futures borrow the SQLite-backed ledger, so they are not `Send`: a current-thread runtime.
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
+    acp_core::policy::enforce_cordata_home();
     let code = match Cli::parse().command {
-        Command::Run { goal, cwd, workers, dispatch, allow_direct, max_usd, max_rounds, max_parallel, no_harden, no_research, research, no_conformance, no_tier2, no_screen, json, run_id, session_id, land, detach } => {
+        Command::Run { goal, cwd, workers, dispatch, allow_direct, max_usd, max_rounds, max_parallel, no_harden, no_research, research, no_conformance, no_tier2, no_step_check, no_screen, json, run_id, session_id, land, detach } => {
             if detach {
                 #[cfg(unix)]
                 {
@@ -164,13 +183,20 @@ async fn main() -> ExitCode {
                 }
             }
             let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-            cli::run(RunArgs { goal, cwd, workers, dispatch, allow_direct, max_usd, max_rounds, max_parallel, no_harden, no_research, research, no_conformance, no_tier2, no_screen, json, run_id, session_id, land, detach }).await
+            cli::run(RunArgs { goal, cwd, workers, dispatch, allow_direct, max_usd, max_rounds, max_parallel, no_harden, no_research, research, no_conformance, no_tier2, no_step_check, no_screen, json, run_id, session_id, land, detach }).await
         }
         Command::Status { json } => cli::status_cmd(json),
         Command::Show { run_id, json, step, attempt, follow, timeline } => cli::show_cmd(&run_id, json, step.as_deref(), attempt, follow, timeline),
         Command::Export { run_id, otlp } => cli::export_cmd(&run_id, otlp),
         Command::Resume { run_id, workers, allow_direct, max_usd, allow_weaker_guards, direction, json } => cli::resume(&run_id, workers, allow_direct, max_usd, allow_weaker_guards, direction, json).await,
-        Command::Evolve { target, threshold, dry_run, cwd, json } => cli::evolve_cmd(&target, threshold, dry_run, json, cwd),
+        Command::Evolve { target, threshold, dry_run, mutate, propose, propose_usd, propose_workers, cwd, json } => cli::evolve_cmd(&target, threshold, dry_run, json, cwd, mutate, propose, propose_usd, propose_workers),
     };
     ExitCode::from(u8::try_from(code).unwrap_or(1))
+}
+
+/// A run id names a directory under `~/.cordata/orchestrator`: letters, digits, `-` and `_` only, so it cannot
+/// point anywhere else.
+fn run_id_arg(id: &str) -> Result<String, String> {
+    let ok = !id.is_empty() && id.len() <= 128 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if ok { Ok(id.to_owned()) } else { Err("a run id uses only letters, digits, '-' and '_'".into()) }
 }

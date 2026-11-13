@@ -11,11 +11,10 @@ use serde_json::{Value, json};
 
 use crate::scope;
 
-pub const CRITERION_TYPES: [&str; 5] = ["command", "test", "file_exists", "file_not_changed", "regex_match"];
+pub const CRITERION_TYPES: [&str; 6] = ["command", "test", "file_exists", "file_not_changed", "regex_match", "regex_absent"];
 pub const RISKS: [&str; 3] = ["read_only", "edits_files", "destructive"];
 pub const ROLLBACK: [&str; 2] = ["rollback_checkpoint", "keep_partial"];
 pub const COMPLEXITIES: [&str; 3] = ["low", "medium", "high"];
-pub const STEP_STATUSES: [&str; 7] = ["pending", "running", "completed", "failed", "partial", "skipped", "blocked"];
 pub const MAX_STEPS: usize = 12;
 pub const MAX_CRITERIA: usize = 20;
 
@@ -107,25 +106,6 @@ pub struct Plan {
     pub version: i64,
 }
 
-/// A proposal to evolve the living spec when an executor encounters ambiguity or missing scope.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SpecAmendmentRequest {
-    pub step_id: String,
-    pub ambiguity_reason: String,
-    #[serde(default)]
-    pub proposed_scope_additions: Vec<String>,
-    #[serde(default)]
-    pub proposed_criteria: Vec<Criterion>,
-}
-
-/// Outcome of evaluating an amendment request.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SpecAmendmentOutcome {
-    pub accepted: bool,
-    pub rationale: String,
-    pub updated_plan: Option<Plan>,
-}
-
 impl Plan {
     pub fn scope_union(&self) -> Vec<&str> {
         let mut seen: Vec<&str> = Vec::new();
@@ -143,34 +123,6 @@ impl Plan {
 
     pub fn from_json(data: &Value) -> Result<Self, serde_json::Error> {
         serde_json::from_value(data.clone())
-    }
-
-    /// Evaluates and applies an amendment to evolve the living specification.
-    ///
-    /// Ensures proposed scope additions are normalized project-relative paths,
-    /// increments the plan version, and updates criteria without discarding completed steps.
-    pub fn apply_amendment(&mut self, req: &SpecAmendmentRequest) -> Result<(), String> {
-        let Some(step) = self.steps.iter_mut().find(|s| s.step_id == req.step_id) else {
-            return Err(format!("step {} not found in plan", req.step_id));
-        };
-
-        for path in &req.proposed_scope_additions {
-            let norm = path.trim().replace('\\', "/");
-            let clean = norm.trim_start_matches("./").to_string();
-            if !step.file_scope.contains(&clean) {
-                step.file_scope.push(clean);
-            }
-        }
-
-        for crit in &req.proposed_criteria {
-            if !self.acceptance_criteria.iter().any(|c| c.id == crit.id) {
-                self.acceptance_criteria.push(crit.clone());
-            }
-        }
-
-        self.assumptions.push(format!("Living spec amendment on {}: {}", req.step_id, req.ambiguity_reason));
-        self.version += 1;
-        Ok(())
     }
 
     /// The plan as a person reads it: Mermaid workflow, budget note, steps, criteria, verifiers, assumptions.
@@ -473,6 +425,9 @@ pub fn problems(draft: &Value, root: &str, findings: Option<&HashSet<String>>) -
             "command" | "test" => {
                 if target.trim().is_empty() {
                     out.push(format!("criterion {cid} ({ctype}) has no command in target"));
+                } else if target.split_whitespace().next().is_some_and(|word| word.contains("::")) {
+                    // A test's name is not a command: the shell answers 127 and no edit can ever make it pass.
+                    out.push(format!("criterion {cid} ({ctype}) needs a shell command in target (for example `cargo test -p <crate> <test name>`), not the name of a test"));
                 } else {
                     checkable += 1;
                 }
@@ -483,13 +438,13 @@ pub fn problems(draft: &Value, root: &str, findings: Option<&HashSet<String>>) -
                     Some(reason) => out.push(format!("criterion {cid}: {reason}")),
                     None => {
                         checkable += 1;
-                        if ctype == "file_not_changed" && scope::matches(&target, &writable, root) {
+                        if ctype == "file_not_changed" && scope::names(&target, &writable, root) {
                             out.push(format!("criterion {cid} says {} must not change, but a step's scope allows changing it", scope::py_repr(&target)));
                         }
                     }
                 }
             }
-            "regex_match" => match target.split_once("::") {
+            "regex_match" | "regex_absent" => match target.split_once("::") {
                 Some((path, pattern)) if !path.is_empty() && !pattern.is_empty() => match Regex::new(pattern) {
                     Err(error) => out.push(format!("criterion {cid}: bad regex ({error})")),
                     Ok(_) => match scope::valid(path) {
@@ -497,7 +452,7 @@ pub fn problems(draft: &Value, root: &str, findings: Option<&HashSet<String>>) -
                         None => checkable += 1,
                     },
                 },
-                _ => out.push(format!("criterion {cid} (regex_match) needs target 'path::pattern'")),
+                _ => out.push(format!("criterion {cid} ({ctype}) needs target 'path::pattern'")),
             },
             _ => {}
         }
@@ -653,6 +608,22 @@ mod tests {
         let mut d = draft();
         d["acceptance_criteria"] = json!([{"id":"a","type":"file_not_changed","description":"x","target":"calc/add.py"}]);
         assert!(problems_of(&d).iter().any(|m| m.contains("must not change, but a step's scope allows changing it")));
+
+        let mut d = draft();
+        d["acceptance_criteria"] = json!([{"id":"a","type":"regex_absent","description":"gone","target":"calc::Concierge"}]);
+        assert!(problems_of(&d).is_empty(), "absence is checkable without a model: {:?}", problems_of(&d));
+        d["acceptance_criteria"][0]["target"] = json!("calc");
+        assert!(problems_of(&d).iter().any(|m| m.contains("(regex_absent) needs target 'path::pattern'")));
+
+        let mut d = draft();
+        d["acceptance_criteria"] = json!([{"id":"a","type":"test","description":"x","target":"retry::tests::it_retries"}]);
+        assert!(problems_of(&d).iter().any(|m| m.contains("needs a shell command in target")));
+
+        // A Rust step tolerates cargo rewriting the lockfile; promising it stays unchanged is not a contradiction.
+        let mut d = draft();
+        d["steps"][0]["file_scope"] = json!(["crates/x/src/lib.rs"]);
+        d["acceptance_criteria"] = json!([{"id":"a","type":"file_not_changed","description":"x","target":"Cargo.lock"}]);
+        assert!(!problems_of(&d).iter().any(|m| m.contains("must not change")), "{:?}", problems_of(&d));
         d["acceptance_criteria"] = json!([{"id":"a","type":"regex_match","description":"x","target":"f.py::("}]);
         let p = problems_of(&d);
         assert!(p[0].starts_with("criterion 'a': bad regex"), "{p:?}");
@@ -700,30 +671,4 @@ mod tests {
         assert!(text.ends_with("## Assumptions\n- py3.12\n"));
     }
 
-    #[test]
-    fn living_spec_amendment_evolves_plan_without_discarding_steps() {
-        let mut plan = from_draft(&draft(), "/x", Options { plan_id: Some("p1".into()), ..Default::default() }, None).unwrap();
-        assert_eq!(plan.version, 1);
-        assert_eq!(plan.steps[0].file_scope, vec!["calc/add.py"]);
-
-        let req = SpecAmendmentRequest {
-            step_id: "s1".into(),
-            ambiguity_reason: "add requires helper constants in calc/const.py".into(),
-            proposed_scope_additions: vec!["./calc/const.py".into()],
-            proposed_criteria: vec![Criterion {
-                id: "c2".into(),
-                kind: "file_exists".into(),
-                description: "const file exists".into(),
-                target: "calc/const.py".into(),
-                expected_exit_code: 0,
-                timeout_s: 10.0,
-            }],
-        };
-
-        assert!(plan.apply_amendment(&req).is_ok());
-        assert_eq!(plan.version, 2);
-        assert_eq!(plan.steps[0].file_scope, vec!["calc/add.py", "calc/const.py"]);
-        assert!(plan.acceptance_criteria.iter().any(|c| c.id == "c2"));
-        assert!(plan.assumptions.iter().any(|a| a.contains("calc/const.py")));
-    }
 }

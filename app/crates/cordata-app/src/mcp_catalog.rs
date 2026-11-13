@@ -379,7 +379,7 @@ mod tests {
 
     /// A fresh, empty folder under the system temp dir (the app links no `tempfile`).
     fn scratch(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("cordata-{tag}-{}", std::process::id()));
+        let dir = crate::test_dir(tag);
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::canonicalize(dir).unwrap()

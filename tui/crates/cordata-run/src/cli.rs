@@ -40,6 +40,7 @@ pub struct RunArgs {
     pub research: bool,
     pub no_conformance: bool,
     pub no_tier2: bool,
+    pub no_step_check: bool,
     pub no_screen: bool,
     pub json: bool,
     pub run_id: Option<String>,
@@ -162,6 +163,7 @@ pub fn run_args_to_config(args: &RunArgs, base: RunConfig) -> RunConfig {
     }
     c.harden &= !args.no_harden;
     c.tier2 &= !args.no_tier2;
+    c.step_check &= !args.no_step_check;
     c.screen &= !args.no_screen;
     if let Some(v) = args.max_rounds {
         c.max_rounds = v.max(0);
@@ -223,17 +225,23 @@ async fn drive(mut machine: Machine<'_>) -> RunRecord {
     machine.record.clone()
 }
 
-fn finish(record: &RunRecord, as_json: bool) -> i32 {
+fn finish(record: &RunRecord, as_json: bool, receipt: &str) -> i32 {
     if !as_json {
         println!("\n{}: {}{}", record.run_id, record.state, if record.reason.is_empty() { String::new() } else { format!(" — {}", record.reason) });
         for w in &record.warnings {
             println!("  warning: {w}");
+        }
+        if !receipt.is_empty() {
+            println!("{receipt}");
         }
     }
     i32::from(record.state != "done")
 }
 
 pub async fn run(args: RunArgs) -> i32 {
+    let started = std::time::Instant::now();
+    // Sandboxes a crashed run left behind; a day untouched is long past any live step.
+    cordata_orchestrator::synthesizer::sweep(std::time::Duration::from_secs(24 * 3600), None);
     let environ: HashMap<String, String> = std::env::vars().collect();
     let cwd = std::fs::canonicalize(&args.cwd).unwrap_or_else(|_| args.cwd.clone());
     let settings = settings_for(&cwd);
@@ -246,6 +254,17 @@ pub async fn run(args: RunArgs) -> i32 {
         None => config::enabled_families(&settings),
     };
     let mut notes = Vec::new();
+    if config::setting(&settings, "orchestrator.pools").is_some() {
+        let bad = cordata_ledger::bad_pool_regexes(config::setting(&settings, "orchestrator.pools"));
+        if !bad.is_empty() {
+            notes.push(format!("orchestrator.pools: {} dropped, the regex does not compile; its models run under the default cap", bad.join(", ")));
+        }
+        let pooled = config::pools(&settings);
+        let added: Vec<String> = cordata_ledger::default_pools().into_iter().filter(|d| requested.contains(&d.family) && !pooled.iter().any(|p| p.pool_id == d.pool_id)).map(|d| d.pool_id).collect();
+        if !added.is_empty() {
+            notes.push(format!("orchestrator.pools does not name {}: what it leaves out runs under those default caps (pass --workers to leave a family out)", added.join(", ")));
+        }
+    }
     let skipped = config::unsupported(&requested);
     if !skipped.is_empty() {
         notes.push(format!("{} has no worker and is left out of this run", skipped.join(", ")));
@@ -267,7 +286,7 @@ pub async fn run(args: RunArgs) -> i32 {
         }
     };
     let home = cordata_home(&environ);
-    let (specs, dropped) = config::live_specs(config::specs(&requested), &environ);
+    let (specs, dropped) = config::live_specs(config::only_models(config::specs(&requested), &settings), &environ);
     notes.extend(dropped);
     let wanted = args.dispatch.clone().unwrap_or_else(|| config::setting(&settings, "orchestrator.dispatch").and_then(Value::as_str).unwrap_or("auto").to_owned());
     let mode = if wanted == "auto" {
@@ -309,10 +328,12 @@ pub async fn run(args: RunArgs) -> i32 {
     let mut machine = Machine::new(&args.goal, &cwd.to_string_lossy(), config, world, Some(run_id.as_str()), None, args.session_id.as_deref());
     machine.record.warnings.extend(notes);
     let record = drive(machine).await;
-    finish(&record, args.json)
+    let summary = crate::receipt::write(&home, &crate::receipt::build(&record, &ledger, &checkpoints, started.elapsed()));
+    finish(&record, args.json, &summary)
 }
 
 pub async fn resume(run_id: &str, workers: Option<String>, allow_direct: bool, max_usd: Option<f64>, allow_weaker: bool, direction: Option<String>, as_json: bool) -> i32 {
+    let started = std::time::Instant::now();
     let mut environ: HashMap<String, String> = std::env::vars().collect();
     if allow_direct {
         environ.insert("CORDATA_VAULT_DIRECT".into(), "1".into());
@@ -330,12 +351,20 @@ pub async fn resume(run_id: &str, workers: Option<String>, allow_direct: bool, m
     };
     drop(probe);
     if let Some(text) = direction.as_deref() && !apply_direction(&mut record, text) {
-        eprintln!("cordata-run: the direction was empty, or {run_id} has no step left to give it to");
+        if direction.as_deref().is_some_and(|d| d.trim().is_empty()) {
+            eprintln!("cordata-run: the direction is empty");
+        } else {
+            eprintln!("cordata-run: {run_id} has no planned step to give the direction to yet (it stopped before planning finished); resume without --direction and it plans first");
+        }
         return 2;
     }
     let cwd = PathBuf::from(&record.cwd);
     let settings = settings_for(&cwd);
     let mut run_config = config::run_config(&settings);
+    // The limits a run was started with are its own: resuming must not quietly swap them for the settings' defaults.
+    if let Some(then) = &record.config {
+        (run_config.max_usd, run_config.max_rounds) = (then.max_usd, then.max_rounds);
+    }
     if let Some(v) = max_usd {
         run_config.max_usd = v;
     }
@@ -367,7 +396,7 @@ pub async fn resume(run_id: &str, workers: Option<String>, allow_direct: bool, m
         eprintln!("cordata-run: {reason}");
         return NO_EGRESS;
     }
-    let (specs, _) = config::live_specs(config::specs(&families), &environ);
+    let (specs, _) = config::live_specs(config::only_models(config::specs(&families), &settings), &environ);
     let env_for_avail = environ.clone();
     let mut roster = LearnedRoster::new(
         specs,
@@ -380,7 +409,13 @@ pub async fn resume(run_id: &str, workers: Option<String>, allow_direct: bool, m
         move |spec| config::family_available(&spec.candidate.family, &env_for_avail),
     );
     let checkpoints = GitCheckpoints::new(Store::new(&home));
-    let controls = Arc::new(FileControls::new(Some(machine::artifacts_dir(&home, run_id).join("control.ndjson")))) as Arc<dyn machine::RunControls>;
+    // Nothing is running, so every request already in the control file was answered by the pause or stop that ended the
+    // last process. Replaying a stale `pause` would stop the resumed run at its first safe point.
+    let control_file = machine::artifacts_dir(&home, run_id).join("control.ndjson");
+    if control_file.exists() {
+        let _ = std::fs::write(&control_file, "");
+    }
+    let controls = Arc::new(FileControls::new(Some(control_file))) as Arc<dyn machine::RunControls>;
     let world = World {
         roster: &mut roster,
         ledger: &ledger,
@@ -391,14 +426,16 @@ pub async fn resume(run_id: &str, workers: Option<String>, allow_direct: bool, m
         isolation: Some(Arc::new(CowIsolation::default())),
         on_event: Some(printer(as_json)),
         controls: Some(controls),
-        home,
+        home: home.clone(),
     };
+    let finished = machine::TERMINAL.contains(&record.state.as_str());
     let record = {
         let machine = Machine::with_record(record, run_config, world);
-        if machine::TERMINAL.contains(&machine.record.state.as_str()) { machine.record.clone() } else { drive(machine).await }
+        if finished { machine.record.clone() } else { drive(machine).await }
     };
-    println!("{}: {}{}", record.run_id, record.state, if record.reason.is_empty() { String::new() } else { format!(" — {}", record.reason) });
-    i32::from(record.state != "done")
+    // An already finished run keeps the receipt it wrote when it finished.
+    let summary = if finished { String::new() } else { crate::receipt::write(&home, &crate::receipt::build(&record, &ledger, &checkpoints, started.elapsed())) };
+    finish(&record, as_json, &summary)
 }
 
 pub fn status_cmd(as_json: bool) -> i32 {
@@ -512,8 +549,10 @@ pub fn show_step_tape(run_id: &str, step_id: &str, attempt: Option<usize>, follo
         let mut finished = false;
         println!("== Tailing step {step_id} (run {run_id}) ==");
         while !finished {
-            if path.exists() {
-                if let Ok(mut file) = std::fs::File::open(&path) {
+            if path.exists()
+                && let Ok(mut file) = std::fs::File::open(&path)
+            {
+                {
                     let _ = file.seek(SeekFrom::Start(pos));
                     let mut reader = BufReader::new(file);
                     let mut line = String::new();
@@ -608,9 +647,12 @@ pub fn show_timeline(run_id: &str, as_json: bool) -> i32 {
         sorted_entries.sort_by_key(|e| e.file_name());
         for entry in sorted_entries {
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("ndjson") {
-                if let Ok(events) = cordata_orchestrator::tape::read_tape(&path) {
-                    if let Some(first) = events.first() {
+            if path.extension().and_then(|e| e.to_str()) == Some("ndjson")
+                && let Ok(events) = cordata_orchestrator::tape::read_tape(&path)
+                && let Some(first) = events.first()
+            {
+                {
+                    {
                         let step_id = first.get("step_id").and_then(Value::as_str).unwrap_or("step");
                         let attempt = first.get("attempt").and_then(Value::as_i64).unwrap_or(1);
                         let span_id = first.get("span_id").and_then(Value::as_str).unwrap_or("").to_string();
@@ -674,8 +716,10 @@ pub fn export_cmd(run_id: &str, _otlp: bool) -> i32 {
     if let Ok(entries) = std::fs::read_dir(&steps_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("ndjson") {
-                if let Ok(events) = cordata_orchestrator::tape::read_tape(&path) {
+            if path.extension().and_then(|e| e.to_str()) == Some("ndjson")
+                && let Ok(events) = cordata_orchestrator::tape::read_tape(&path)
+            {
+                {
                     for ev in events {
                         let kind = ev.get("kind").and_then(Value::as_str).unwrap_or("");
                         let span_id = ev.get("span_id").and_then(Value::as_str).unwrap_or(&root_span_id);
@@ -715,7 +759,7 @@ pub fn export_cmd(run_id: &str, _otlp: bool) -> i32 {
     0
 }
 
-pub fn evolve_cmd(target: &str, threshold: f64, dry_run: bool, as_json: bool, cwd: Option<PathBuf>) -> i32 {
+pub fn evolve_cmd(target: &str, threshold: f64, dry_run: bool, as_json: bool, cwd: Option<PathBuf>, mutate_cmd: Option<String>, propose: Option<String>, propose_usd: f64, propose_workers: Option<String>) -> i32 {
     let target: EvolutionTarget = target.parse().unwrap_or(EvolutionTarget::Repomap);
     let project_root = cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let config = EvolutionConfig {
@@ -723,6 +767,11 @@ pub fn evolve_cmd(target: &str, threshold: f64, dry_run: bool, as_json: bool, cw
         threshold,
         dry_run,
         project_root,
+        mutate_cmd,
+        propose: propose.and_then(|d| {
+            let exe = std::env::current_exe().ok()?;
+            Some(cordata_orchestrator::evolution::ModelProposal { exe, direction: (!d.trim().is_empty()).then_some(d), max_usd: propose_usd, workers: propose_workers.clone() })
+        }),
     };
     if !as_json {
         println!("Cordata Recursive Self-Improvement Engine (RSI)");

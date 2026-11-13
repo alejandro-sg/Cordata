@@ -34,7 +34,6 @@ pub const SCHEMA: i64 = 1;
 pub const DEFAULT_MAX_FILE_MB: f64 = 8.0;
 pub const MAX_PROJECT_FILES: usize = 50_000;
 pub const MAX_LIST: usize = 200;
-pub const KEEP_COMMITS: usize = 400;
 const FIRST_TIMEOUT: Duration = Duration::from_secs(90);
 const TIMEOUT: Duration = Duration::from_secs(25);
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";

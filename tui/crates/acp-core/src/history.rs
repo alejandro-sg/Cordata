@@ -171,6 +171,19 @@ pub(crate) fn claim_in(home: &Path, cwd: &Path, id: &str) -> Result<Claim, Claim
     }
 }
 
+/// [`claim_in`], retried for up to a second: a process forked elsewhere in the test binary holds a just-dropped
+/// lock until it execs, so a claim released a moment ago can still read as busy.
+#[cfg(test)]
+pub(crate) fn claim_soon(home: &Path, cwd: &Path, id: &str) -> Result<Claim, ClaimError> {
+    for _ in 0..50 {
+        match claim_in(home, cwd, id) {
+            Err(ClaimError::Busy) => std::thread::sleep(std::time::Duration::from_millis(20)),
+            other => return other,
+        }
+    }
+    claim_in(home, cwd, id)
+}
+
 fn private_dir(dir: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
     std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;

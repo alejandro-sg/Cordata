@@ -123,8 +123,25 @@ fn fnmatch(name: &str, pattern: &str) -> bool {
     Regex::new(&re).is_ok_and(|r| r.is_match(name))
 }
 
+/// A step that writes Rust source runs `cargo`, which rewrites the root `Cargo.lock` as a side effect. Treating that as
+/// an out-of-scope write failed every worker on the step (a `worker_failed` handoff with no one left to hand to). The
+/// lockfile is in scope when the scope holds a `.rs` file, a `Cargo.toml` or a directory (which may hold either).
+fn lockfile_follows_scope<S: AsRef<str>>(rel: &str, scope: &[S]) -> bool {
+    rel == "Cargo.lock"
+        && scope.iter().any(|raw| {
+            let e = normalize(raw.as_ref());
+            e.ends_with(".rs") || e.ends_with("Cargo.toml") || e.ends_with('/')
+        })
+}
+
 /// Is project-relative `path` inside `scope`?
 pub fn matches<S: AsRef<str>>(path: &str, scope: &[S], root: &str) -> bool {
+    lockfile_follows_scope(normalize(path).trim_end_matches('/'), scope) || names(path, scope, root)
+}
+
+/// Does `scope` itself name `path`? Unlike [`matches`] this leaves out the lockfile a Rust step is merely tolerated to
+/// rewrite, so a plan may still promise that `Cargo.lock` does not change.
+pub fn names<S: AsRef<str>>(path: &str, scope: &[S], root: &str) -> bool {
     let normalized = normalize(path);
     let rel = normalized.trim_end_matches('/');
     for raw in scope {
@@ -209,6 +226,10 @@ pub fn seatbelt_rules<S: AsRef<str>>(root: &str, scope: &[S]) -> Vec<String> {
         }
     }
     allows.extend(ancestors.iter().map(|a| format!("(literal {})", sb_string(a))));
+    if lockfile_follows_scope("Cargo.lock", scope) {
+        allows.push(format!("(literal {})", sb_string(&format!("{real}/Cargo.lock"))));
+        allows.push(format!("(regex #\"^{}\\.[^/]*$\")", ere(&format!("{real}/Cargo.lock"))));
+    }
     if !allows.is_empty() {
         lines.push(format!("(allow file-write* {})", allows.join(" ")));
     }
@@ -259,12 +280,6 @@ pub fn agy_home_rules(home: &str) -> Vec<String> {
     let files = ["settings.json"].iter().map(|f| format!("(literal {})", sb_string(&format!("{cli}/{f}"))));
     lines.push(format!("(deny file-write* {})", shut.chain(files).collect::<Vec<_>>().join(" ")));
     lines
-}
-
-/// The base profile with the scope rules spliced in after `(allow default)` and before the secret denials, so the
-/// denials still win (Seatbelt takes the last matching rule).
-pub fn scoped_profile<S: AsRef<str>>(root: &str, scope: &[S], home: &str) -> String {
-    scoped_profile_with_bus(root, scope, home, None)
 }
 
 /// The scoped profile, plus a connect allowance for this run's bus socket. It lives under `~/.cordata`, which stays
@@ -367,6 +382,9 @@ mod tests {
         assert!(matches("a1.py", &["a[0-9].py"], root));
         assert!(!matches("ab.py", &["a[!a-z].py"], root));
         assert_eq!(out_of_scope(&["b.py", "a.py", "src/z"], &["src/"], root), ["a.py", "b.py"]);
+        // cargo rewrites the lockfile for a Rust step; a Python step has no business with it.
+        assert!(out_of_scope(&["Cargo.lock"], &["crates/x/src/lib.rs"], root).is_empty());
+        assert_eq!(out_of_scope(&["Cargo.lock"], &["calc/add.py"], root), ["Cargo.lock"]);
     }
 
     #[test]
@@ -407,7 +425,7 @@ mod tests {
         let _a = std::os::unix::net::UnixListener::bind(&inside_sock).unwrap();
         let _b = std::os::unix::net::UnixListener::bind(&outside_sock).unwrap();
         let root = project.path().to_str().unwrap();
-        let profile = scoped_profile(root, &["a.txt"], "/Users/nobody");
+        let profile = scoped_profile_with_bus(root, &["a.txt"], "/Users/nobody", None);
         let reach = |path: &std::path::Path| {
             std::process::Command::new("/usr/bin/sandbox-exec")
                 .args(["-p", &profile, "/usr/bin/nc", "-U", "-w", "1", &path.to_string_lossy()])
@@ -428,7 +446,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_str().unwrap();
         let real = std::fs::canonicalize(root).unwrap().to_string_lossy().into_owned();
-        let profile = scoped_profile(root, &["src/"], "/Users/x");
+        let profile = scoped_profile_with_bus(root, &["src/"], "/Users/x", None);
         let deny = profile.find("(deny network-outbound (remote unix-socket))").expect("sockets are refused first");
         let allow = profile.find(&format!("(allow network-outbound (remote unix-socket (subpath \"{real}\")))")).unwrap();
         assert!(profile.contains("(allow network-outbound (remote unix-socket (path-literal \"/private/var/run/mDNSResponder\")))"), "DNS has its own rule");

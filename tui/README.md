@@ -89,7 +89,8 @@ deletes and `.env` redirects before any prompt.
 
 ### What the chat does not have
 
-No undo, goal loop or context compaction, and no settings panel: the model comes from `CORDATA_NATIVE_MODEL`. The one mode is `chat.mode` (`ask` or `auto`, `docs/auto-mode.md`).
+No undo or goal loop, and no settings panel. Context compaction is a heuristic summary of older turns, not a model
+summary: the model comes from `CORDATA_NATIVE_MODEL`. The one mode is `chat.mode` (`ask` or `auto`, `docs/auto-mode.md`).
 `cordata run` has its own checkpoints and rollback.
 
 **Instructions.** The agent reads `CORDATA.md` (or `.cordata/CORDATA.md`, `AGENTS.md`, `CLAUDE.md`) from the project, plus

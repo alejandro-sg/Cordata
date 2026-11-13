@@ -94,6 +94,8 @@ pub trait Isolation: Send + Sync {
 
 type Rerank = Box<dyn Fn(&Step, &[Runnable]) -> Vec<Runnable> + Send + Sync>;
 type Listener = Arc<dyn Fn(Value) + Send + Sync>;
+/// Checks that the tree at a path still builds: `None` when it does, else the compiler's words.
+pub type StepCheck = Arc<dyn Fn(PathBuf) -> futures::future::BoxFuture<'static, Option<String>> + Send + Sync>;
 
 pub struct Config {
     pub timeout_s: f64,
@@ -117,6 +119,9 @@ pub struct Config {
     /// Workers benched by an earlier pass of this run (`ExecResult::benched`).
     pub benched: Vec<String>,
     pub artifacts_dir: Option<PathBuf>,
+    /// Run after every step that changed build inputs, where the step's work is, before the work is taken. A step
+    /// whose change does not build has failed: caught here it costs one retry, caught at the audit it costs the run.
+    pub step_check: Option<StepCheck>,
 }
 
 impl Default for Config {
@@ -138,6 +143,7 @@ impl Default for Config {
             bus: None,
             benched: Vec::new(),
             artifacts_dir: None,
+            step_check: None,
         }
     }
 }
@@ -154,11 +160,17 @@ struct StepCtx {
     last_packet: Option<HandoffPacket>,
     isolated: bool,
     sandbox: Option<SandboxHandle>,
+    /// Steps running at once in this wave, and this step's reserved share of what the run had left when the wave
+    /// formed, less what its own attempts spent: a retry spends from its share, never from a sibling's.
+    wave: usize,
+    share: (Option<f64>, Option<i64>),
+    /// Per pool, this step's share of the headroom it saw first, less its own spend in that pool's unit.
+    pool_share: HashMap<String, f64>,
 }
 
 impl StepCtx {
     fn new(candidates: Vec<Runnable>, current: Option<Runnable>, packet: Option<HandoffPacket>) -> Self {
-        Self { candidates, current, packet, scoped: false, sibling_scope: Vec::new(), reason: String::new(), last_packet: None, isolated: false, sandbox: None }
+        Self { candidates, current, packet, scoped: false, sibling_scope: Vec::new(), reason: String::new(), last_packet: None, isolated: false, sandbox: None, wave: 1, share: (None, None), pool_share: HashMap::new() }
     }
 }
 
@@ -195,6 +207,9 @@ pub struct StepExecutor<'a> {
     pub current: Mutex<Option<Runnable>>,
     pub packet: Mutex<Option<HandoffPacket>>,
     out: Mutex<ExecResult>,
+    /// The steps of a wave each built alone but not together. Until the synthesis pass repairs that, no later step
+    /// can be judged by a build: it would fail for what it did not break.
+    tree_broken: std::sync::atomic::AtomicBool,
     /// task id → the worker running it, while it runs.
     inflight: Mutex<HashMap<String, Arc<dyn Worker>>>,
     /// The bus messages already reported as events.
@@ -225,6 +240,7 @@ impl<'a> StepExecutor<'a> {
             current: Mutex::new(None),
             packet: Mutex::new(packet),
             out: Mutex::new(ExecResult { status: "completed".into(), benched, ..Default::default() }),
+            tree_broken: std::sync::atomic::AtomicBool::new(false),
             inflight: Mutex::new(HashMap::new()),
             bus_reported: Mutex::new(0),
         }
@@ -322,15 +338,6 @@ impl<'a> StepExecutor<'a> {
 
     // ------------------------------------------------------------------ the person's controls
 
-    /// Stops every worker call in flight (a request to pause or cancel *now*): each worker kills its process group and
-    /// reports `cancelled`; the step is rolled back and the request is honoured where that result lands.
-    pub async fn stop_inflight(&self) {
-        let workers: Vec<(String, Arc<dyn Worker>)> = self.inflight.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-        for (task_id, worker) in workers {
-            worker.cancel(&task_id).await;
-        }
-    }
-
     fn requested(&self) -> Option<String> {
         self.cfg.controls.as_ref().and_then(|c| c.pending())
     }
@@ -396,7 +403,14 @@ impl<'a> StepExecutor<'a> {
                 self.out(|o| (o.status, o.reason) = (status.into(), reason.into()));
                 return;
             }
-            let wave = form_wave(&pending, &done, self.cfg.max_parallel);
+            let mut wave = form_wave(&pending, &done, self.cfg.max_parallel);
+            // Each step of a wave gets a share of the run's budget reserved now. A step that spends its share goes back
+            // to pending, and the next wave shares out what is left again. Fewer tokens left than steps would make
+            // zero-token shares that can do nothing: then one step runs alone, on the whole remainder.
+            let left = self.envelope();
+            if left.remaining_tokens.is_some_and(|t| t < wave.len() as i64) {
+                wave.truncate(1);
+            }
             if wave.is_empty() {
                 let ids: Vec<&str> = pending.iter().map(|s| s.step_id.as_str()).collect();
                 self.out(|o| {
@@ -413,6 +427,10 @@ impl<'a> StepExecutor<'a> {
                 let siblings: Vec<String> = wave.iter().filter(|o| o.step_id != step.step_id).flat_map(|o| o.file_scope.clone()).collect();
                 let mut ctx = StepCtx::new(self.candidates.lock().unwrap().clone(), self.current.lock().unwrap().clone(), start_packet.take());
                 ctx.scoped = wave.len() > 1;
+                ctx.wave = wave.len();
+                if wave.len() > 1 {
+                    ctx.share = (left.remaining_usd.map(|r| r / wave.len() as f64), left.remaining_tokens.map(|r| r / wave.len() as i64));
+                }
                 ctx.sibling_scope = siblings;
                 ctx.isolated = self.cfg.isolate && wave.len() > 1 && self.cfg.isolation.is_some();
                 contexts.push(ctx);
@@ -421,13 +439,20 @@ impl<'a> StepExecutor<'a> {
                 let runs = wave.iter().zip(contexts.iter_mut()).map(|(s, c)| self.run_step(index_of[&s.step_id], c));
                 futures::future::join_all(runs).await
             };
+            if wave.len() > 1 && verdicts.iter().all(|v| *v == "completed") && !self.tree_broken.load(std::sync::atomic::Ordering::Relaxed)
+                && let Some(check) = &self.cfg.step_check
+                && let Some(problem) = check(self.project.clone()).await
+            {
+                self.tree_broken.store(true, std::sync::atomic::Ordering::Relaxed);
+                self.emit("wave_check", json!({"steps": wave.iter().map(|s| s.step_id.clone()).collect::<Vec<_>>(), "ok": false, "problem": problem.chars().take(600).collect::<String>()}));
+            }
             self.report_bus();
             if let Some(last) = contexts.iter().rev().find_map(|c| c.current.clone()) {
                 *self.current.lock().unwrap() = Some(last);
             }
             *self.packet.lock().unwrap() = None;
             for (ctx, verdict) in contexts.iter().zip(&verdicts) {
-                if *verdict != "completed" {
+                if !matches!(*verdict, "completed" | "deferred") {
                     self.out(|o| {
                         o.status = (*verdict).into();
                         if !ctx.reason.is_empty() {
@@ -532,6 +557,12 @@ impl<'a> StepExecutor<'a> {
             }
             let envelope = self.envelope();
             let step = self.step(index);
+            let share_spent = ctx.share.0.is_some_and(|u| u <= 0.0) || ctx.share.1.is_some_and(|t| t <= 0);
+            if share_spent && !envelope.exhausted {
+                self.update_step(index, |s| if s.status == "running" { s.status = "pending".into() });
+                self.emit("share_spent", json!({"step_id": step.step_id}));
+                return "deferred";
+            }
             if envelope.exhausted {
                 self.update_step(index, |s| if s.status == "running" { s.status = "failed".into() });
                 self.fail_with(ctx, format!("the plan's budget envelope is spent (${:.4}, {} tokens)", envelope.spent_usd, envelope.spent_tokens));
@@ -574,8 +605,25 @@ impl<'a> StepExecutor<'a> {
                 }
             });
             let allowance = self.ledger.step_allowance(&candidate.candidate.family, candidate.candidate.model.as_deref());
-            let budget_usd = min_opt(if let Allowance::Usd(v) = allowance { Some(v) } else { None }, envelope.remaining_usd);
-            let budget_tokens = min_opt(if let Allowance::Tokens(v) = allowance { Some(v) } else { None }, envelope.remaining_tokens);
+            // In a wave, the pool's headroom is split too, and the run's money comes from this step's reserved share.
+            let pool = self.pool_id(&candidate);
+            let wave = ctx.wave as f64;
+            let spent_here = ctx.pool_share.contains_key(&pool);
+            let mut reserve = |v: f64| if ctx.wave > 1 { ctx.pool_share.entry(pool.clone()).or_insert(v / wave).min(v).max(0.0) } else { v };
+            let (pool_usd, pool_tokens) = match allowance {
+                Allowance::Usd(v) => (Some(reserve(v)), None),
+                Allowance::Tokens(v) => (None, Some(reserve(v as f64) as i64)),
+                Allowance::Unbounded => (None, None),
+            };
+            // A step whose share of this pool is spent waits for the next wave too, as for its share of the run.
+            if ctx.wave > 1 && spent_here && (pool_usd.is_some_and(|u| u <= 0.0) || pool_tokens.is_some_and(|t| t <= 0)) {
+                self.update_step(index, |s| if s.status == "running" { s.status = "pending".into() });
+                self.emit("share_spent", json!({"step_id": step.step_id, "pool_id": pool}));
+                return "deferred";
+            }
+            let (run_usd, run_tokens) = if ctx.wave > 1 { ctx.share } else { (envelope.remaining_usd, envelope.remaining_tokens) };
+            let budget_usd = self.ledger.hold_back(&self.run_id, min_opt(pool_usd, run_usd));
+            let budget_tokens = min_opt(pool_tokens, run_tokens);
             let attempt = self.update_step(index, |s| {
                 s.status = "running".into();
                 s.worker = Some(candidate.key());
@@ -687,9 +735,11 @@ impl<'a> StepExecutor<'a> {
                         break;
                     }
                     _ = poll_interval.tick() => {
-                        if let Some(ctrl) = &controls_ref {
-                            if let Some(req) = ctrl.pending_request() {
-                                let match_step = req.step.as_deref().map_or(true, |s| s == step_id_ref);
+                        if let Some(ctrl) = &controls_ref
+                            && let Some(req) = ctrl.pending_request()
+                        {
+                            {
+                                let match_step = req.step.as_deref().is_none_or(|s| s == step_id_ref);
                                 if match_step {
                                     if req.kind == "say" {
                                         if let Some(text) = &req.text {
@@ -740,6 +790,11 @@ impl<'a> StepExecutor<'a> {
                 bus.post_system(&step.step_id, &candidate.key(), "run", "finding", summary);
             }
             self.record(&step.step_id, &candidate, &result);
+            ctx.share = (ctx.share.0.map(|u| u - result.cost_usd), ctx.share.1.map(|t| t - result.tokens_in - result.tokens_out));
+            let spent_in_unit = if matches!(allowance, Allowance::Usd(_)) { result.cost_usd } else { (result.tokens_in + result.tokens_out) as f64 };
+            if let Some(left) = ctx.pool_share.get_mut(&pool) {
+                *left -= spent_in_unit;
+            }
             if !ctx.sibling_scope.is_empty() {
                 result.out_of_scope.retain(|p| !scope::matches(p, &ctx.sibling_scope, &root));
                 result.files_changed.retain(|p| !scope::matches(p, &ctx.sibling_scope, &root));
@@ -758,6 +813,23 @@ impl<'a> StepExecutor<'a> {
                        "error": result.error_message, "files": result.files_changed.iter().take(50).collect::<Vec<_>>()}),
             );
 
+            // A step that was to edit files and edited none has not been done, whatever its worker reports: it read
+            // until its turns ran out. (A step resumed on kept partial work may rightly find nothing left to do.)
+            if result.status == "completed" && result.out_of_scope.is_empty() && step.risk == "edits_files" && !step.file_scope.is_empty() && result.files_changed.is_empty() && step.rollback_policy != "keep_partial" {
+                result.status = "failed".into();
+                result.error_message = Some("the step changed no file: it explored without editing. Make the edits early; read only what the edit needs".into());
+            }
+            if result.status == "completed" && result.out_of_scope.is_empty() && step.risk != "read_only" && crate::audit::touches_build(&result.files_changed)
+                && !self.tree_broken.load(std::sync::atomic::Ordering::Relaxed)
+                && let Some(check) = &self.cfg.step_check {
+                    let at = ctx.sandbox.as_ref().filter(|_| ctx.isolated).map_or_else(|| self.project.clone(), |sb| sb.root.clone());
+                    let problem = check(at).await;
+                    self.emit("step_check", json!({"step_id": step.step_id, "worker": candidate.key(), "ok": problem.is_none(), "problem": problem.as_deref().map(|p| p.chars().take(600).collect::<String>())}));
+                    if let Some(problem) = problem {
+                        result.status = "failed".into();
+                        result.error_message = Some(format!("the change does not build; fix these errors, do not start over blindly:\n{problem}"));
+                    }
+                }
             if result.status == "completed" && result.out_of_scope.is_empty() && ctx.isolated
                 && let (Some(sandbox), Some(isolation)) = (&ctx.sandbox, &self.cfg.isolation) {
                     let taken = isolation.harvest(sandbox, &result.files_changed, &step.file_scope);

@@ -146,7 +146,7 @@ mod tests {
     #[test]
     fn a_small_model_gets_only_the_core_and_pays_for_fewer_tools() {
         let all = catalog();
-        let selected = ToolPruner::default().select_tools(Path::new("/r"), "explain this function", &all, &Profile::for_model("llama3"));
+        let selected = ToolPruner::default().select_tools(Path::new("/r"), "explain this function", &all, &Profile::for_model("llama3:8b"));
         assert_eq!(names(&selected), CORE_TOOLS);
         let full: usize = all.iter().map(ToolDefinition::tokens).sum();
         let pruned: usize = selected.iter().map(|t| t.tokens()).sum();
@@ -170,7 +170,7 @@ mod tests {
         let mut pruner = ToolPruner::default();
         pruner.record_tool_invoked(repo, "code_outline");
         assert!(names(&pruner.select_tools(repo, "hello", &all, &Profile::for_model("claude-x"))).contains(&"code_outline".into()));
-        assert!(!names(&pruner.select_tools(repo, "hello", &all, &Profile::for_model("llama3"))).contains(&"code_outline".into()));
+        assert!(!names(&pruner.select_tools(repo, "hello", &all, &Profile::for_model("llama3:8b"))).contains(&"code_outline".into()));
         assert!(!names(&pruner.select_tools(Path::new("/other"), "hello", &all, &Profile::for_model("claude-x"))).contains(&"code_outline".into()));
     }
 

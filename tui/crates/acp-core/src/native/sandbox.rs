@@ -146,6 +146,19 @@ pub(crate) fn scrubbed_env() -> Vec<(String, String)> {
     ENV_ALLOW.iter().filter_map(|name| std::env::var(name).ok().map(|v| ((*name).to_owned(), v))).collect()
 }
 
+/// A project hook's shell, confined like `run_command`: offline, writing only the project and temp folders, with the
+/// scrubbed environment. `None` when the sandbox cannot be applied here (the caller then refuses to run it).
+pub(crate) fn hook_command(cmd: &str, project: &Path) -> Option<std::process::Command> {
+    if !available() {
+        return None;
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    let confinement = Confinement { project, network: false, writable: &[] };
+    let mut command = std::process::Command::new(SANDBOX_EXEC);
+    command.args(["-p", &profile(&home, &confinement), "/bin/sh", "-c", cmd]).env_clear().envs(scrubbed_env());
+    Some(command)
+}
+
 /// Can `sandbox-exec` apply a profile here? It fails (exit 71) when already inside a sandbox.
 fn available() -> bool {
     static PROBE: OnceLock<bool> = OnceLock::new();

@@ -197,6 +197,7 @@ impl Workspace {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    acp_core::policy::enforce_cordata_home();
     let args = Args::parse();
 
     let cwd = match args.cwd {

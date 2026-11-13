@@ -135,14 +135,12 @@ struct State {
     leases: BTreeMap<String, (String, f64)>,
 }
 
-type Sink = Box<dyn Fn(&Message) + Send + Sync>;
 
 struct Inner {
     run_id: String,
     socket: PathBuf,
     state: Mutex<State>,
     posted: Notify,
-    sink: Mutex<Option<Sink>>,
 }
 
 /// A running bus. Dropping it stops the listener and removes the socket's folder.
@@ -228,7 +226,7 @@ impl Bus {
         let socket = dir.join("bus.sock");
         let listener = UnixListener::bind(&socket)?;
         std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
-        let inner = Arc::new(Inner { run_id: run_id.into(), socket, state: Mutex::new(State::default()), posted: Notify::new(), sink: Mutex::new(None) });
+        let inner = Arc::new(Inner { run_id: run_id.into(), socket, state: Mutex::new(State::default()), posted: Notify::new() });
         let serving = inner.clone();
         let accept = tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
@@ -245,11 +243,6 @@ impl Bus {
 
     pub fn run_id(&self) -> &str {
         &self.inner.run_id
-    }
-
-    /// Every posted message goes here too (the orchestrator writes them to the ledger).
-    pub fn on_message(&self, sink: impl Fn(&Message) + Send + Sync + 'static) {
-        *self.inner.sink.lock().unwrap() = Some(Box::new(sink));
     }
 
     /// A token for one worker on one step.
@@ -313,9 +306,6 @@ impl Bus {
         st.bytes += message.body.len();
         st.messages.push(message.clone());
         drop(st);
-        if let Some(sink) = self.inner.sink.lock().unwrap().as_ref() {
-            sink(&message);
-        }
         self.inner.posted.notify_waiters();
         Some(message.seq)
     }
@@ -461,9 +451,6 @@ async fn handle(inner: &Arc<Inner>, caller: Option<u32>, request: &Value) -> Val
                 st.messages.push(message.clone());
                 message
             };
-            if let Some(sink) = inner.sink.lock().unwrap().as_ref() {
-                sink(&message);
-            }
             inner.posted.notify_waiters();
             json!({"ok": true, "seq": message.seq})
         }

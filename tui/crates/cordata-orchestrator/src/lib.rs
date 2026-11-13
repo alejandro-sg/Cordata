@@ -20,7 +20,6 @@ pub mod handoff;
 pub mod knowledge;
 pub mod machine;
 pub mod plan;
-pub mod recursion;
 pub mod research;
 pub mod scope;
 pub mod secrets;

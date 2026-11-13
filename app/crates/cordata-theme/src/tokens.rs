@@ -247,16 +247,10 @@ pub const HOVER: f32 = 0.045;
 pub const HOVER_STRONG: f32 = 0.07;
 
 pub const AMBER_FILL_FAINT: f32 = 0.04;
-pub const AMBER_FILL: f32 = 0.05;
 pub const AMBER_FILL_MID: f32 = 0.08;
-pub const AMBER_FILL_STRONG: f32 = 0.12;
 pub const AMBER_FILL_HOVER: f32 = 0.16;
-pub const AMBER_BORDER_FAINT: f32 = 0.14;
 pub const AMBER_BORDER: f32 = 0.25;
 pub const AMBER_BORDER_STRONG: f32 = 0.35;
-pub const AMBER_GLOW: f32 = 0.7;
-pub const TEAL_FILL: f32 = 0.08;
-pub const TEAL_BORDER: f32 = 0.25;
 pub const DANGER_FILL: f32 = 0.08;
 pub const DANGER_BORDER: f32 = 0.35;
 /// Diff lines: an added line is the signal at this alpha, a removed one the danger colour — faint tints, never floods.
@@ -275,7 +269,6 @@ pub const MODAL_SHADOW_BLUR: f32 = 24.;
 // ------------------------------------------------------------------------------------------------ metrics (px)
 
 pub const HEADER_H: f32 = 52.;
-pub const STATUS_H: f32 = 28.;
 pub const SIDEBAR_W: f32 = 232.;
 pub const ROPE_MARGIN: f32 = 120.;
 pub const PAGE_WIDTH: f32 = 680.;
@@ -296,17 +289,11 @@ pub const SETTINGS_W: f32 = 960.;
 pub const SETTINGS_H: f32 = 680.;
 pub const SETTINGS_NAV_W: f32 = 220.;
 pub const SETTINGS_HEADER_H: f32 = 56.;
-pub const SEND_BUTTON: f32 = 32.;
 pub const SWITCH_W: f32 = 34.;
 pub const SWITCH_H: f32 = 20.;
 pub const SELECT_MIN_W: f32 = 150.;
-pub const CONTEXT_BAR_W: f32 = 80.;
-pub const CONTEXT_BAR_H: f32 = 3.;
 pub const DOT: f32 = 6.;
 pub const DOT_SMALL: f32 = 5.;
-pub const DIAMOND: f32 = 6.;
-pub const GLOW_BLUR: f32 = 8.;
-pub const COMPOSER_RING: f32 = 4.;
 pub const GUTTER: f32 = 16.;
 /// How far a mark (`›`, `→`) hangs left of the text edge: its 12px column and a 10px gap.
 pub const HANG: f32 = 22.;
@@ -315,13 +302,6 @@ pub const ROW_PAD_Y: f32 = 14.;
 /// Window size rules.
 pub const MIN_WINDOW_W: f32 = 900.;
 pub const MIN_WINDOW_H: f32 = 640.;
-/// Under this width the side panel starts collapsed (until the person chooses).
-pub const PANEL_AUTO_COLLAPSE_W: f32 = 1100.;
-/// Under this width the terminal tab moves into the overflow menu.
-pub const TERMINAL_OVERFLOW_W: f32 = 1240.;
-/// Conversation column widths under which the header drops the branch chip, then shortens the model chip.
-pub const HEADER_HIDE_BRANCH_W: f32 = 560.;
-pub const HEADER_SHORT_MODEL_W: f32 = 480.;
 
 pub const RADIUS_BADGE: f32 = 2.;
 pub const RADIUS_ROW: f32 = 4.;
@@ -329,7 +309,6 @@ pub const RADIUS_CONTROL: f32 = 4.;
 pub const RADIUS_CARD: f32 = 4.;
 pub const RADIUS_POPOVER: f32 = 6.;
 pub const RADIUS_MODAL: f32 = 8.;
-pub const RADIUS_CAP: f32 = 4.;
 
 // ------------------------------------------------------------------------------------------------ type (px)
 
@@ -345,7 +324,6 @@ pub const TEXT_LABEL: f32 = 11.;
 pub const TEXT_TAG: f32 = 11.;
 pub const TEXT_SETTINGS_TITLE: f32 = 16.;
 pub const TEXT_EMPTY: f32 = 40.;
-pub const TEXT_HERO: f32 = 40.;
 pub const TEXT_GATE: f32 = 22.;
 pub const TEXT_LOGO: f32 = 13.;
 
@@ -399,8 +377,6 @@ pub const TEXT_MIN: f32 = 11.;
 pub mod fonts {
     pub const SANS: &str = ".SystemUIFont";
     pub const MONO: [&str; 2] = ["SF Mono", "Menlo"];
-    pub const SANS_FALLBACK: &str = ".SystemUIFont";
-    pub const MONO_FALLBACKS: [&str; 2] = ["SF Mono", "Menlo"];
     /// The agent's voice: a reading serif, so who is speaking shows before a word is read. Your words and the chrome
     /// stay in the sans; machine facts in the mono. All three ship with macOS.
     pub const VOICE: [&str; 3] = ["Charter", "Iowan Old Style", "Georgia"];

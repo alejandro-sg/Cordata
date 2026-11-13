@@ -108,6 +108,9 @@ fn a_native_run_plans_executes_audits_and_can_be_read_back() {
     assert_eq!(states(&events), ["plan", "execute", "harden", "audit", "done"]);
     assert_eq!(e.read("calc/a.txt").unwrap(), "ok a");
     assert_eq!(e.read("calc/b.txt").unwrap(), "ok b");
+    let receipt: Value = serde_json::from_str(&std::fs::read_to_string(e.home.join("orchestrator/run-e2e/receipt.json")).unwrap()).unwrap();
+    assert_eq!((receipt["state"].clone(), receipt["criteria_ok"].clone()), (json!("done"), json!(true)), "{receipt}");
+    assert!(receipt["diffstat"].as_str().unwrap().contains("2 files changed") && receipt["wall_seconds"].is_u64(), "{receipt}");
     let kinds: Vec<&str> = events.iter().map(|ev| ev["kind"].as_str().unwrap()).collect();
     for k in ["dispatch", "usage", "step_dispatch", "step_result"] {
         assert!(kinds.contains(&k), "{k} missing in {kinds:?}");
@@ -136,6 +139,12 @@ fn a_native_run_plans_executes_audits_and_can_be_read_back() {
     let missing = e.run(&["show", "run-nope"]);
     assert_eq!(missing.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&missing.stderr).contains("no run run-nope"));
+    for bad in [vec!["show", "../../etc"], vec!["run", "goal", "--run-id", "../escape"]] {
+        let out = e.run(&bad);
+        assert_eq!(out.status.code(), Some(2), "{bad:?}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("a run id uses only letters"), "{bad:?}");
+    }
+    assert!(!e.home.join("escape").exists());
 }
 
 #[test]
@@ -154,8 +163,7 @@ fn a_pause_request_stops_the_run_and_resume_finishes_it() {
     let record: Value = serde_json::from_slice(&e.run(&["show", "run-pause", "--json"]).stdout).unwrap();
     assert_eq!((record["state"].as_str(), record["resume_state"].as_str()), (Some("paused"), Some("plan")));
 
-    // The request is answered; clear the file, then resume.
-    std::fs::write(control_dir.join("control.ndjson"), "").unwrap();
+    // The pause request is still in the file: resume must not replay it.
     let resumed = e.run(&["resume", "run-pause", "--allow-direct", "--workers", "claude_code"]);
     assert_eq!(resumed.status.code(), Some(0), "{} {}", text(&resumed), String::from_utf8_lossy(&resumed.stderr));
     assert!(text(&resumed).contains("run-pause: done"));
@@ -276,6 +284,13 @@ fn bin_cordata_launches_the_built_binary_and_a_real_failure_keeps_its_status() {
     assert!(text(&native).contains(": done"), "{}", text(&native));
     let failing = go(&["resume", "run-nope"]);
     assert_eq!(failing.status.code(), Some(2), "{}", String::from_utf8_lossy(&failing.stderr));
+    // A CORDATA_HOME the repository could have set (inside the repository you run from) is ignored.
+    let planted = e.project.join(".cordata-home");
+    let mut cmd = Command::new(fake_repo.join("bin/cordata"));
+    cmd.env_clear().env("PATH", std::env::var("PATH").unwrap()).env("HOME", e.dir.path()).env("CORDATA_HOME", &planted).current_dir(&e.project);
+    let refused = cmd.args(["status", "--json"]).output().unwrap();
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("ignoring CORDATA_HOME"), "{}", String::from_utf8_lossy(&refused.stderr));
+    assert!(!planted.exists(), "nothing was written there");
     let unbuilt = Command::new(repo.join("bin/cordata")).arg("--help").output().unwrap();
     assert!(text(&unbuilt).contains("cordata run"), "--help works without a build");
 }

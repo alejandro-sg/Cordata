@@ -2679,7 +2679,7 @@ mod window_tests {
 
     fn workspace_with(cx: &mut TestAppContext, launch: super::Launch) -> (gpui::Entity<Workspace>, &mut VisualTestContext) {
         // Never the person's own preferences file.
-        let prefs_dir = std::env::temp_dir().join(format!("cordata-prefs-test-{}", std::process::id()));
+        let prefs_dir = crate::test_dir("prefs-test");
         // SAFETY: set before any thread of this test reads it; every test sets the same value.
         unsafe { std::env::set_var("CORDATA_APP_PREFS_DIR", &prefs_dir) };
         cx.update(|cx| {
@@ -2697,7 +2697,7 @@ mod window_tests {
     fn panes_follow_the_thread_and_a_folder_reuses_its_open_thread(cx: &mut TestAppContext) {
         let (view, cx) = workspace(cx);
         let a = view.read_with(cx, |this, cx| this.session.read(cx).cwd.clone());
-        let b = std::env::temp_dir().join(format!("cordata-proj-b-{}", std::process::id()));
+        let b = crate::test_dir("proj-b");
         std::fs::create_dir_all(&b).unwrap();
         let b = std::fs::canonicalize(b).unwrap();
         view.update_in(cx, |this, window, cx| this.switch_project(b.clone(), window, cx));
@@ -2728,7 +2728,7 @@ mod window_tests {
     }
 
     fn project(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("cordata-restore-{name}-{}", std::process::id()));
+        let dir = crate::test_dir(&format!("restore-{name}"));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::canonicalize(dir).unwrap()
     }
@@ -3634,7 +3634,7 @@ mod window_tests {
     fn tempfile_dir() -> std::path::PathBuf {
         static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("cordata-test-{}-{n}", std::process::id()));
+        let dir = crate::test_dir(&format!("test-{n}"));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.canonicalize().unwrap()

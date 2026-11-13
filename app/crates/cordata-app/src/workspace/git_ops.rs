@@ -685,7 +685,7 @@ mod tests {
 
     #[test]
     fn only_a_clean_merged_checkout_is_removed() {
-        let root = std::env::temp_dir().join(format!("cordata-rm-{}", std::process::id()));
+        let root = crate::test_dir("rm");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let root = std::fs::canonicalize(root).unwrap();
@@ -708,7 +708,7 @@ mod tests {
 
     #[test]
     fn the_current_worktree_is_the_deepest_holding_cwd() {
-        let root = std::env::temp_dir().join(format!("cordata-wt-{}", std::process::id()));
+        let root = crate::test_dir("wt");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let root = std::fs::canonicalize(root).unwrap();
@@ -729,7 +729,7 @@ mod tests {
 
     #[test]
     fn status_reads_a_real_repository() {
-        let dir = std::env::temp_dir().join(format!("cordata-git-{}", std::process::id()));
+        let dir = crate::test_dir("git");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let g = |args: &[&str]| run("git", &[&["-c", "user.email=t@t", "-c", "user.name=t"], args].concat(), &dir, None, GIT_TIMEOUT).unwrap();

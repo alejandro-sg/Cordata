@@ -54,7 +54,10 @@ impl<'a> Launch<'a> {
 /// Format: `\x1b]7501;state=<state>[;kind=<kind>]\x07` or `\x1b]7501;... \x1b\\`
 /// States: working, blocked, idle, done, error
 /// Kinds: permission, question, auth
-pub fn parse_osc_7501(bytes: &[u8]) -> Option<(crate::detect::State, Option<String>)> {
+/// What a program declared over OSC 7501: its state and an optional kind.
+pub type Declared = Option<(crate::detect::State, Option<String>)>;
+
+pub fn parse_osc_7501(bytes: &[u8]) -> Declared {
     let header = b"\x1b]7501;";
     let mut pos = 0;
     while let Some(start) = bytes[pos..].windows(header.len()).position(|w| w == header) {
@@ -104,7 +107,7 @@ pub fn parse_osc_7501(bytes: &[u8]) -> Option<(crate::detect::State, Option<Stri
     None
 }
 
-fn parse_osc_7501_stream(stream_buf: &mut Vec<u8>, incoming: &[u8], declared: &FairMutex<Option<(crate::detect::State, Option<String>)>>) {
+fn parse_osc_7501_stream(stream_buf: &mut Vec<u8>, incoming: &[u8], declared: &FairMutex<Declared>) {
     stream_buf.extend_from_slice(incoming);
     if let Some(found) = parse_osc_7501(stream_buf) {
         *declared.lock() = Some(found);
@@ -117,7 +120,7 @@ fn parse_osc_7501_stream(stream_buf: &mut Vec<u8>, incoming: &[u8], declared: &F
 
 pub struct MonitoredReader {
     file: std::fs::File,
-    declared: Arc<FairMutex<Option<(crate::detect::State, Option<String>)>>>,
+    declared: Arc<FairMutex<Declared>>,
     buf: Vec<u8>,
 }
 
@@ -137,7 +140,7 @@ pub struct MonitoredPty {
 }
 
 impl MonitoredPty {
-    pub fn new(pty: tty::Pty, declared: Arc<FairMutex<Option<(crate::detect::State, Option<String>)>>>) -> std::io::Result<Self> {
+    pub fn new(pty: tty::Pty, declared: Arc<FairMutex<Declared>>) -> std::io::Result<Self> {
         let file = pty.file().try_clone()?;
         Ok(Self {
             pty,
@@ -189,7 +192,7 @@ struct Inner {
     size: FairMutex<(u16, u16)>,
     /// A second handle on the PTY's controlling side, only to ask which process group is in the foreground.
     controller: std::fs::File,
-    declared: Arc<FairMutex<Option<(crate::detect::State, Option<String>)>>>,
+    declared: Arc<FairMutex<Declared>>,
 }
 
 /// One running terminal. Cloning shares it; `shutdown` ends the shell.
@@ -232,13 +235,8 @@ impl Session {
         Ok((Self(Arc::new(inner)), rx))
     }
 
-    pub fn declared_state(&self) -> Option<(crate::detect::State, Option<String>)> {
+    pub fn declared_state(&self) -> Declared {
         self.0.declared.lock().clone()
-    }
-
-    #[allow(dead_code)]
-    pub fn clear_declared_state(&self) {
-        *self.0.declared.lock() = None;
     }
 
     pub fn write(&self, bytes: impl Into<Cow<'static, [u8]>>) {

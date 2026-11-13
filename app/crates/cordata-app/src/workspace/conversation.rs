@@ -158,6 +158,7 @@ impl Workspace {
                         .role(gpui::Role::Button)
                         .cursor_pointer()
                         .flex()
+                        .min_w_0()
                         .items_center()
                         .gap(px(6.))
                         .px(px(6.))
@@ -170,6 +171,7 @@ impl Workspace {
                         .child(div().size(px(t::DOT)).rounded_full().bg(c(tk.amber)))
                         .child(
                             div()
+                                .min_w_0()
                                 .max_w(px(220.))
                                 .truncate()
                                 .font_family(crate::theme::voice(cx))
@@ -260,6 +262,8 @@ impl Workspace {
             .child(
                 div()
                     .id("workspace-mode-selector")
+                    .flex_shrink_0()
+                    .mr(px(10.))
                     .flex()
                     .items_center()
                     .gap(px(2.))
@@ -473,7 +477,10 @@ impl Workspace {
                                 .bg(line(cx, t::FILL_FAINT))
                                 .hover(move |s| s.bg(ca(tk.amber, 0.08)).border_color(ca(tk.amber, 0.4)))
                                 .child(
+                                    // Wraps inside the card; a long suggestion never runs past it on a narrow window.
                                     div()
+                                        .flex_1()
+                                        .min_w_0()
                                         .text_size(px(t::TEXT_BODY))
                                         .text_color(c(tk.text_secondary))
                                         .group_hover(id, move |s| s.text_color(c(tk.text_primary)))
@@ -481,6 +488,8 @@ impl Workspace {
                                 )
                                 .child(
                                     div()
+                                        .flex_shrink_0()
+                                        .pl(px(8.))
                                         .font_family(mono(cx))
                                         .text_size(px(t::TEXT_META))
                                         .text_color(c(tk.text_faint))

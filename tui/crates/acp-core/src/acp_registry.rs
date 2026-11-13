@@ -189,21 +189,6 @@ impl AcpRegistryCatalog {
         scored.into_iter().take(cap).map(|(_, agent)| agent).collect()
     }
 
-    /// Finds an agent by its unique identifier.
-    pub fn find_by_id(&self, id: &str) -> Option<&AcpRegistryAgent> {
-        self.agents.iter().find(|a| a.id == id)
-    }
-
-    /// Loads agent entries from raw JSON string (such as cached registry payload).
-    pub fn load_from_json(&mut self, json_str: &str) -> Result<usize, String> {
-        let list: Vec<AcpRegistryAgent> =
-            serde_json::from_str(json_str).map_err(|e| format!("invalid registry json: {e}"))?;
-        let count = list.len();
-        for agent in list {
-            self.register(agent);
-        }
-        Ok(count)
-    }
 }
 
 #[cfg(test)]
@@ -242,33 +227,7 @@ mod tests {
         assert!(!partial.is_empty());
         assert!(partial.iter().any(|a| a.id == "codex-cli"));
 
-        let found = catalog.find_by_id("claude-code").unwrap();
-        assert_eq!(found.distribution, AcpDistribution::Npx);
-    }
-
-    #[test]
-    fn json_load_round_trip() {
-        let mut catalog = AcpRegistryCatalog::new();
-        let payload = r#"[
-            {
-                "id": "test-agent",
-                "name": "Test Agent",
-                "version": "1.0.0",
-                "description": "Hermetic test agent",
-                "authors": ["Test Author"],
-                "license": "MIT",
-                "website": null,
-                "repository": null,
-                "icon": null,
-                "distribution": "binary",
-                "integrity": "sha256",
-                "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-            }
-        ]"#;
-
-        assert_eq!(catalog.load_from_json(payload).unwrap(), 1);
-        let found = catalog.find_by_id("test-agent").unwrap();
-        assert_eq!(found.name, "Test Agent");
-        assert_eq!(found.distribution, AcpDistribution::Binary);
+        let found = catalog.search("claude-code", 1);
+        assert_eq!(found[0].distribution, AcpDistribution::Npx);
     }
 }

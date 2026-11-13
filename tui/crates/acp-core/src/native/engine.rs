@@ -325,11 +325,11 @@ pub(crate) async fn drive(
     let (servers, held) = super::mcp::configured(mcp_home.as_deref(), &options.cwd, &approvals);
     let (mcp, mut startup) = super::mcp::McpManager::start(servers, &options.cwd).await;
     startup.held = held;
-    for notice in startup.notices() {
+    let (hooks, held_hooks) = HooksRegistry::load_for_workspace(&options.cwd, &approvals);
+    for notice in startup.notices().into_iter().chain(held_hooks) {
         let _ = events.send(AppEvent::Notice(notice));
     }
     let mode = ModeSwitch::new(policy.mode);
-    let hooks = HooksRegistry::load_for_workspace(&options.cwd);
     let mut agent = Agent { provider, switched: None, cwd: options.cwd.clone(), offload, always: HashSet::new(), economizer, policy, mode, mcp, hooks };
     let mut history: Vec<Msg> = Vec::new();
     while let Some(command) = commands.recv().await {
@@ -1093,7 +1093,7 @@ mod tests {
         let id = info.session_id.clone();
 
         // Another window is writing it now.
-        let elsewhere = history::claim_in(&home, dir.path(), &id).expect("free once the first engine ended");
+        let elsewhere = history::claim_soon(&home, dir.path(), &id).expect("free once the first engine ended");
         let events = script(&Fake::new(vec![]), dir.path(), saving(dir.path()), vec![Command::Resume(id.clone())]).await;
         assert!(events.iter().any(|e| matches!(e, AppEvent::ResumeRefused { session_id, why } if session_id == &id && why.contains("open in another window"))), "refused, with the reason");
         assert!(!events.iter().any(|e| matches!(e, AppEvent::SessionRestored { .. })), "nothing was restored");
@@ -1247,7 +1247,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lifecycle_hook_blocks_tool_call_inside_tool_loop() {
+    async fn an_unapproved_project_hook_does_not_run() {
         let dir = tempfile::tempdir().unwrap();
         let cordata_dir = dir.path().join(".cordata");
         std::fs::create_dir_all(&cordata_dir).unwrap();
@@ -1270,9 +1270,9 @@ mod tests {
             vec![text("done")],
         ]);
         let events = session(&fake, dir.path(), &["go"], |_| ApprovalDecision::Allow).await;
-        assert!(asked(&events).is_empty(), "lifecycle hook blocks before user prompt or execution");
+        assert!(!asked(&events).is_empty() && events.iter().any(|e| matches!(e, AppEvent::Notice(n) if n.contains("is not approved"))));
         let seen = fake.seen.lock().unwrap();
-        assert!(matches!(&seen[1][2], Msg::ToolResult { output, .. } if output.contains("blocked by c8 lifecycle hook")));
+        assert!(!matches!(&seen[1][2], Msg::ToolResult { output, .. } if output.contains("blocked by c8 lifecycle hook")));
     }
 
     #[tokio::test]

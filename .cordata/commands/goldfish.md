@@ -1,7 +1,7 @@
 ---
-description: Run a stateless Goldfish review on git diff with zero conversational bias
+description: Review the git diff against AGENTS.md invariants (runs in this conversation, not a fresh-context sub-agent)
 ---
-Perform a stateless "Goldfish" review of the changes ($ARGUMENTS, default: working tree diff `git diff HEAD`).
+Review of the changes ($ARGUMENTS, default: working tree diff `git diff HEAD`).
 
 Assume ZERO previous conversational context, explanations, or rationalizations. Inspect only the code diff and live files with fresh eyes.
 

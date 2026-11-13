@@ -58,13 +58,21 @@ impl Workspace {
             })
             .detach();
         }
+        // The quota is on by default: read it now, and again each time a turn ends (that is when it has moved).
+        self.load_agents(cx);
         cx.spawn_in(window, async move |this, cx| {
+            let mut was_active = false;
             loop {
                 cx.background_executor().timer(std::time::Duration::from_millis(250)).await;
                 let alive = this.update(cx, |this, cx| {
-                    if this.prefs.show_meter && this.session.read(cx).view.turn_active {
+                    let active = this.session.read(cx).view.turn_active;
+                    if this.prefs.show_meter && active {
                         cx.notify();
                     }
+                    if was_active && !active {
+                        this.load_agents(cx);
+                    }
+                    was_active = active;
                 });
                 if alive.is_err() {
                     break;
@@ -144,6 +152,12 @@ impl Workspace {
             }
             parts.push(context_gauge(tm, &model, 36., cx));
         }
+        if let Some((text, attention)) = self.quota_chip() {
+            if !parts.is_empty() {
+                parts.push(sep());
+            }
+            parts.push(div().text_color(c(if attention { tk.attention } else { tk.text_muted })).child(SharedString::from(text)).into_any_element());
+        }
         if parts.is_empty() {
             return None;
         }
@@ -161,9 +175,9 @@ impl Workspace {
                     div()
                         .id("meter")
                         .role(gpui::Role::Button)
-                        .aria_label("Turn timing and context — open the readout")
+                        .aria_label("Turn timing, context and quota — open the readout")
                         .aria_expanded(open)
-                        .tooltip(ui::tip("Timing, tokens and context"))
+                        .tooltip(ui::tip("Timing, tokens, context and quota"))
                         .flex()
                         .items_center()
                         .gap(px(6.))

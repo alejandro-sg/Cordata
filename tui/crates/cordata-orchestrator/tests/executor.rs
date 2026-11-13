@@ -209,7 +209,7 @@ async fn the_hard_line_bounds_a_step_by_what_the_pool_has_left() {
     let cp = CopyCheckpoints::new(&e.store);
     let ex = exec(&e, plan_of(1, "rollback_checkpoint", 2.0), vec![runnable(&a, "m", "claude_code", "anthropic")], &cp, Config::default());
     ex.run().await;
-    assert_eq!(seen.lock().unwrap()[0], (Some(95), Some(2.0)), "95% of the pool's cap; the envelope's dollars");
+    assert_eq!(seen.lock().unwrap()[0], (Some(95), Some(1.8)), "95% of the pool's cap; the envelope's dollars less a tenth held back");
 }
 
 #[tokio::test]
@@ -265,7 +265,9 @@ async fn writes_outside_the_scope_fail_the_step_and_are_rolled_back() {
             return r;
         }
         write(task, &step, "ok");
-        WorkerResult::new("bad", "completed")
+        let mut r = WorkerResult::new("bad", "completed");
+        r.files_changed = vec![format!("calc/{step}.txt")];
+        r
     });
     let cp = CopyCheckpoints::new(&e.store);
     let ex = exec(&e, plan_of(1, "rollback_checkpoint", 2.0), vec![runnable(&bad, "m", "claude_code", "anthropic")], &cp, Config::default());
@@ -331,7 +333,8 @@ async fn a_worker_that_gives_up_after_a_refusal_is_not_retried_and_is_benched_fo
     let cp2 = CopyCheckpoints::new(&e2.store);
     let cands = vec![runnable(&quitter, "m", "antigravity", "google"), runnable(&steady, "m", "claude_code", "anthropic")];
     let ex = exec(&e2, plan_of(1, "rollback_checkpoint", 2.0), cands, &cp2, Config { strongest_first: true, benched: vec!["quitter:m".into()], ..Default::default() });
-    assert_eq!(ex.run().await.status, "completed");
+    let out = ex.run().await;
+    assert_eq!(out.status, "completed", "{}", out.reason);
     assert_eq!(quitter.calls.lock().unwrap().len(), 1, "still benched");
 }
 
@@ -392,6 +395,124 @@ async fn independent_steps_run_as_a_wave_and_dependents_wait() {
     for i in 1..=3 {
         assert_eq!(read(&e, &format!("calc/s{i}.txt")).unwrap(), format!("ok s{i}"));
     }
+}
+
+#[tokio::test]
+async fn parallel_steps_split_the_run_budget_so_together_they_cannot_pass_it() {
+    let e = env(two_pools(100_000.0));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let sink = seen.clone();
+    let a = ScriptedWorker::new("a", move |task, _| {
+        sink.lock().unwrap().push(task.budget_usd);
+        let step = step_of(task);
+        write(task, &step, "ok");
+        let mut r = WorkerResult::new("a", "completed");
+        r.files_changed = vec![format!("calc/{step}.txt")];
+        r
+    });
+    let cp = CopyCheckpoints::new(&e.store);
+    let mut d = draft(4, "rollback_checkpoint");
+    d["steps"][3]["depends_on"] = json!(["s1", "s2", "s3"]);
+    let plan = plan::from_draft(&d, "/x", Options { max_usd: 1.5, ..Default::default() }, None).unwrap();
+    let ex = exec(&e, plan, vec![runnable(&a, "m", "claude_code", "anthropic")], &cp, Config::default());
+    let out = ex.run().await;
+    assert_eq!(out.status, "completed", "{}", out.reason);
+    let budgets: Vec<f64> = seen.lock().unwrap().iter().map(|b| b.unwrap()).collect();
+    assert_eq!(budgets.len(), 4);
+    assert!(budgets[..3].iter().sum::<f64>() <= 1.5 + 1e-9, "the wave of three shares the run's $1.50: {budgets:?}");
+    assert!((budgets[3] - 1.35).abs() < 1e-9, "a step alone gets all that is left, less a tenth held back: {budgets:?}");
+}
+
+#[tokio::test]
+async fn a_retry_in_a_wave_spends_its_own_share_not_a_siblings() {
+    let e = env(two_pools(100_000.0));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let sink = seen.clone();
+    let a = ScriptedWorker::new("a", move |task, n| {
+        let step = step_of(task);
+        sink.lock().unwrap().push((step.clone(), n, task.budget_usd.unwrap()));
+        if step == "s1" && n == 1 {
+            let mut r = WorkerResult::new("a", "failed");
+            (r.cost_usd, r.error_message) = (0.4, Some("broke".into()));
+            return r;
+        }
+        write(task, &step, "ok");
+        let mut r = WorkerResult::new("a", "completed");
+        r.files_changed = vec![format!("calc/{step}.txt")];
+        r
+    });
+    let cp = CopyCheckpoints::new(&e.store);
+    let mut d = draft(4, "rollback_checkpoint");
+    d["steps"][3]["depends_on"] = json!(["s1", "s2", "s3"]);
+    let plan = plan::from_draft(&d, "/x", Options { max_usd: 1.5, ..Default::default() }, None).unwrap();
+    let ex = exec(&e, plan, vec![runnable(&a, "m", "claude_code", "anthropic")], &cp, Config::default());
+    ex.run().await;
+    let seen = seen.lock().unwrap().clone();
+    let retry = seen.iter().find(|(s, n, _)| s == "s1" && *n == 2).expect("s1 retried").2;
+    // What is left of s1's $0.50 ($0.10), less half of it held back for one more $0.40 request; not the run's $1.10.
+    assert!((retry - 0.05).abs() < 1e-9, "{seen:?}");
+    for sib in ["s2", "s3"] {
+        assert!(seen.iter().any(|(s, _, b)| s == sib && (*b - 0.25).abs() < 1e-9), "{sib}: {seen:?}");
+    }
+}
+
+/// s1's first attempt fails after spending `cost` dollars and `tokens`; every attempt's budgets are recorded.
+async fn wave_of_three(e: &Env, cost: f64, tokens: i64, max_usd: f64) -> (ExecResult, Vec<(String, usize, Option<f64>, Option<i64>)>) {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let sink = seen.clone();
+    let a = ScriptedWorker::new("a", move |task, n| {
+        let step = step_of(task);
+        sink.lock().unwrap().push((step.clone(), n, task.budget_usd, task.budget_tokens));
+        if step == "s1" && n == 1 {
+            let mut r = WorkerResult::new("a", "failed");
+            (r.cost_usd, r.tokens_in, r.error_message) = (cost, tokens, Some("broke".into()));
+            return r;
+        }
+        write(task, &step, "ok");
+        let mut r = WorkerResult::new("a", "completed");
+        r.files_changed = vec![format!("calc/{step}.txt")];
+        r
+    });
+    let cp = CopyCheckpoints::new(&e.store);
+    let mut d = draft(4, "rollback_checkpoint");
+    d["steps"][3]["depends_on"] = json!(["s1", "s2", "s3"]);
+    let plan = plan::from_draft(&d, "/x", Options { max_usd, ..Default::default() }, None).unwrap();
+    let ex = exec(e, plan, vec![runnable(&a, "m", "claude_code", "anthropic")], &cp, Config::default());
+    let out = ex.run().await;
+    let seen = seen.lock().unwrap().clone();
+    (out, seen)
+}
+
+#[tokio::test]
+async fn a_retry_in_a_wave_spends_its_own_share_of_the_pool_too() {
+    let e = env(two_pools(300.0)); // tokens: 95% hard line = 285 → 95 per step of three
+    let (_, seen) = wave_of_three(&e, 0.0, 30, 100.0).await;
+    let retry = seen.iter().find(|(s, n, ..)| s == "s1" && *n == 2).expect("s1 retried").3.unwrap();
+    assert_eq!(retry, 65, "95 reserved less the 30 its first attempt used: {seen:?}");
+}
+
+#[tokio::test]
+async fn a_step_that_spends_its_share_waits_for_the_next_wave_instead_of_ending_the_run() {
+    let e = env(two_pools(100_000.0));
+    let (out, seen) = wave_of_three(&e, 0.5, 0, 1.5).await;
+    assert_eq!(out.status, "completed", "{} {seen:?}", out.reason);
+    let s1: Vec<f64> = seen.iter().filter(|(s, ..)| s == "s1").map(|(.., u, _)| u.unwrap()).collect();
+    assert_eq!(s1.len(), 2, "{seen:?}");
+    assert!((s1[1] - 0.5).abs() < 1e-9, "alone in the next wave: the $1.00 left, less one $0.50 request held back: {seen:?}");
+}
+
+#[tokio::test]
+async fn fewer_tokens_left_than_steps_runs_them_one_at_a_time_instead_of_spinning() {
+    let e = env(two_pools(100_000.0));
+    let a = worker("a", 1, 0.0, |_, _| None);
+    let cp = CopyCheckpoints::new(&e.store);
+    let mut d = draft(4, "rollback_checkpoint");
+    d["steps"][3]["depends_on"] = json!(["s1", "s2", "s3"]);
+    let plan = plan::from_draft(&d, "/x", Options { max_usd: 100.0, max_tokens: Some(2), ..Default::default() }, None).unwrap();
+    let ex = exec(&e, plan, vec![runnable(&a, "m", "claude_code", "anthropic")], &cp, Config::default());
+    let out = tokio::time::timeout(std::time::Duration::from_secs(10), ex.run()).await.expect("no livelock");
+    assert_eq!(out.status, "budget_exhausted", "{}", out.reason);
+    assert!(kinds(&e, "share_spent").is_empty());
 }
 
 #[tokio::test]
@@ -518,4 +639,87 @@ async fn the_fault_injection_scenario_also_holds_on_the_real_shadow_git_store() 
     assert_eq!(packet.step_status, "partial");
     assert!(packet.diff_patch.contains("+++ b/calc/s1.txt") && packet.diff_patch.contains("+half done"), "{}", packet.diff_patch);
     assert!(packet.diff_stat.contains("1 file changed"), "{}", packet.diff_stat);
+}
+
+#[tokio::test]
+async fn a_step_whose_change_does_not_build_is_retried_with_the_compiler_errors() {
+    let e = env(two_pools(100_000.0));
+    let mut d = draft(1, "rollback_checkpoint");
+    d["steps"][0]["file_scope"] = json!(["calc/s1.rs"]);
+    d["acceptance_criteria"][0]["target"] = json!("calc/s1.rs");
+    let plan = plan::from_draft(&d, "/nonexistent", Options { max_usd: 2.0, plan_id: Some("plan-t".into()), ..Default::default() }, None).unwrap();
+    let writes = |id: &'static str, text: &'static str| {
+        ScriptedWorker::new(id, move |task, _| {
+            std::fs::write(Path::new(&task.cwd).join("calc/s1.rs"), text).unwrap();
+            let mut r = WorkerResult::new(id, "completed");
+            r.files_changed = vec!["calc/s1.rs".into()];
+            r
+        })
+    };
+    let (a, b) = (writes("a", "broken"), writes("b", "fine"));
+    let cp = CopyCheckpoints::new(&e.store);
+    let cands = vec![runnable(&a, "m", "claude_code", "anthropic"), runnable(&b, "m", "antigravity", "google")];
+    let check: cordata_orchestrator::executor::StepCheck = Arc::new(|root: std::path::PathBuf| {
+        Box::pin(async move { (std::fs::read_to_string(root.join("calc/s1.rs")).unwrap_or_default() == "broken").then(|| "error[E0425]: cannot find value `x`".to_owned()) })
+    });
+    let ex = exec(&e, plan, cands, &cp, Config { step_check: Some(check), ..Config::default() });
+    let out = ex.run().await;
+    assert_eq!(out.status, "completed", "{}", out.reason);
+    assert_eq!((a.calls.lock().unwrap().len(), b.calls.lock().unwrap().len()), (1, 1), "the broken change costs one retry, on the other worker");
+    let retry = b.calls.lock().unwrap()[0].clone();
+    assert!(retry.prompt.contains("the change does not build") && retry.prompt.contains("E0425"), "{}", retry.prompt);
+    assert_eq!(read(&e, "calc/s1.rs").as_deref(), Some("fine"));
+    let verdicts: Vec<bool> = kinds(&e, "step_check").iter().map(|v| v["ok"].as_bool().unwrap()).collect();
+    assert_eq!(verdicts, [false, true]);
+}
+
+#[tokio::test]
+async fn steps_that_build_alone_but_not_together_do_not_fail_the_step_that_follows() {
+    let e = env(two_pools(100_000.0));
+    let mut d = draft(3, "rollback_checkpoint");
+    for i in 0..3 {
+        d["steps"][i]["file_scope"] = json!([format!("calc/s{}.rs", i + 1)]);
+    }
+    d["steps"][2]["depends_on"] = json!(["s1", "s2"]);
+    d["acceptance_criteria"][0]["target"] = json!("calc/s1.rs");
+    let plan = plan::from_draft(&d, "/nonexistent", Options { max_usd: 2.0, plan_id: Some("plan-t".into()), ..Default::default() }, None).unwrap();
+    let w = ScriptedWorker::new("a", |task, _| {
+        let file = task.file_scope[0].clone();
+        std::fs::write(Path::new(&task.cwd).join(&file), "x").unwrap();
+        let mut r = WorkerResult::new("a", "completed");
+        r.files_changed = vec![file];
+        r
+    });
+    let cp = CopyCheckpoints::new(&e.store);
+    // The two parallel steps pass their own checks; the tree with both of them in it does not build.
+    let asked = Arc::new(Mutex::new(0));
+    let n = asked.clone();
+    let check: cordata_orchestrator::executor::StepCheck = Arc::new(move |_| {
+        let mut c = n.lock().unwrap();
+        *c += 1;
+        let broken = *c > 2;
+        Box::pin(async move { broken.then(|| "error[E0599]: no method named `owner_text`".to_owned()) })
+    });
+    let ex = exec(&e, plan, vec![runnable(&w, "m", "claude_code", "anthropic")], &cp, Config { step_check: Some(check), ..Config::default() });
+    let out = ex.run().await;
+    assert_eq!(out.status, "completed", "{}", out.reason);
+    assert_eq!(w.calls.lock().unwrap().len(), 3, "the third step ran once: it is not retried for a break it did not cause");
+    assert_eq!(*asked.lock().unwrap(), 3, "two step checks and one check of the merged wave; none after the tree is known broken");
+    assert_eq!(kinds(&e, "wave_check").len(), 1);
+}
+
+#[tokio::test]
+async fn an_edit_step_that_changed_nothing_is_not_done() {
+    let e = env(two_pools(100_000.0));
+    // `a` reads until its turns run out and reports success with nothing written; `b` does the work.
+    let a = ScriptedWorker::new("a", |_, _| WorkerResult::new("a", "completed"));
+    let b = worker("b", 1, 0.0, |_, _| None);
+    let cp = CopyCheckpoints::new(&e.store);
+    let cands = vec![runnable(&a, "m", "claude_code", "anthropic"), runnable(&b, "m", "antigravity", "google")];
+    let ex = exec(&e, plan_of(1, "rollback_checkpoint", 2.0), cands, &cp, Config::default());
+    let out = ex.run().await;
+    assert_eq!(out.status, "completed", "{}", out.reason);
+    assert_eq!((a.calls.lock().unwrap().len(), b.calls.lock().unwrap().len()), (1, 1));
+    assert!(b.calls.lock().unwrap()[0].prompt.contains("the step changed no file"));
+    assert_eq!(read(&e, "calc/s1.txt").as_deref(), Some("ok s1"));
 }

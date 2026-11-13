@@ -40,10 +40,9 @@ use crate::plan::{self, Options, Plan, PlanError, Step};
 use crate::secrets;
 use crate::worker::{EventSink, TaskPacket, WorkerEvent, WorkerResult};
 
-pub const STATES: [&str; 12] = ["research", "plan", "execute", "synthesize", "harden", "audit", "conformance", "done", "failed", "paused", "budget_exhausted", "cancelled"];
 pub const TERMINAL: [&str; 4] = ["done", "failed", "budget_exhausted", "cancelled"];
 
-pub const PLAN_BRIEF: &str = "Plan the work below for this project. Steps must be small and ordered; each lists exactly the files it may create or change (file_scope, project-relative). Acceptance criteria must be checkable without judgement: a command or test with its expected exit code, a file that must exist or must not change, or 'path::regex'. Prefer the project's own test command as a criterion.";
+pub const PLAN_BRIEF: &str = "Plan the work below for this project. Steps must be small and ordered; each lists exactly the files it may create or change (file_scope, project-relative). Acceptance criteria must be checkable without judgement: a command or test with its expected exit code, a file that must exist or must not change, or 'path::regex'. To require that something is gone, use the regex_absent type ('path::regex', where path is a file or a directory): it passes when nothing there matches or the path no longer exists; never use regex_match on a file the plan deletes. Every verifier command must exit 0 exactly when the work is right: a bare grep for text that should be absent exits 1 on success, so write `! grep ...` or use regex_absent, and never end a command with `; echo ...` or `|| true`. Prefer the project's own test command as a criterion.";
 
 /// The draft schema a planner answers against.
 pub fn draft_schema() -> Value {
@@ -118,6 +117,11 @@ pub struct RunConfig {
     pub max_synth_fixes: i64,
     #[serde(default = "d_land")]
     pub land: String,
+    /// Build-check every step that changed build inputs (`audit::build_check_command`).
+    #[serde(default = "d_true")]
+    pub step_check: bool,    /// End in `to_review` with the work kept, rather than restore, when a sound change fails only a few checks.
+    #[serde(default = "d_true")]
+    pub keep_for_review: bool,
 }
 
 impl Default for RunConfig {
@@ -140,6 +144,8 @@ impl Default for RunConfig {
             isolate_waves: true,
             max_synth_fixes: 1,
             land: "all".into(),
+            step_check: true,
+            keep_for_review: true,
         }
     }
 }
@@ -532,6 +538,8 @@ pub struct Machine<'a> {
     recovery_note: String,
     /// Workers that gave up after a refusal in an earlier pass: later passes go to the others first.
     benched: Vec<String>,
+    /// `None` until decided; then the build-check command, or `None` inside when the run has none.
+    step_check_command: Option<Option<String>>,
     /// What earlier runs on this project learned; this run adds to it when it ends.
     knowledge: crate::knowledge::Knowledge,
     /// Every command screened this run, so a re-audit after a fix pass only sends the new ones.
@@ -602,6 +610,7 @@ impl<'a> Machine<'a> {
             last_report: None,
             recovery_note: String::new(),
             benched: Vec::new(),
+            step_check_command: None,
             screened: audit::Screen::default(),
             bus: None,
         }
@@ -774,7 +783,7 @@ impl<'a> Machine<'a> {
         }
         let mut task = TaskPacket::new(&format!("{}:{label}:{}", self.record.run_id, self.record.history.len()), role, &full_prompt, &self.project);
         task.file_scope = scope;
-        task.budget_usd = json_min(usd, if let cordata_ledger::Allowance::Usd(v) = allowance { Some(v) } else { None });
+        task.budget_usd = self.ledger.hold_back(&self.record.run_id, json_min(usd, if let cordata_ledger::Allowance::Usd(v) = allowance { Some(v) } else { None }));
         task.budget_tokens = json_min(tokens, if let cordata_ledger::Allowance::Tokens(v) = allowance { Some(v) } else { None });
         task.timeout_s = timeout;
         task.model = candidate.candidate.model.clone();
@@ -876,7 +885,11 @@ impl<'a> Machine<'a> {
         if let Some(preferred) = self.record.planner.clone() {
             planners.sort_by_key(|c| c.key() != preferred); // the worker that researched the project plans it, when it still can
         }
-        for candidate in across_families(planners).into_iter().take(3) {
+        // A refused plan goes back once to the planner that wrote it, with the refusals: it has the context to fix a
+        // malformed criterion, where the next planner would start over.
+        let mut queue: Vec<(Runnable, bool)> = across_families(planners).into_iter().take(3).map(|c| (c, false)).collect();
+        queue.reverse();
+        while let Some((candidate, retried)) = queue.pop() {
             let timeout = self.config.plan_timeout_s;
             let result = self.one_shot("plan", &candidate, &prompt, Some(draft_schema()), Vec::new(), timeout, "plan").await;
             if result.status != "completed" {
@@ -886,7 +899,11 @@ impl<'a> Machine<'a> {
             }
             let draft = result.structured.clone().unwrap_or(Value::Null);
             let options = Options { max_usd: self.config.max_usd, max_tokens: self.config.max_tokens, plan_id: None, version: self.record.replans + 1 };
-            match plan::from_draft(&draft, &self.project, options, findings.as_ref()) {
+            let drafted = match plan::from_draft(&draft, &self.project, options, findings.as_ref()) {
+                Ok(plan) => self.screened_plan(plan).await,
+                Err(refused) => Err(refused),
+            };
+            match drafted {
                 Ok(plan) => {
                     let (id, steps) = (plan.plan_id.clone(), plan.steps.len());
                     self.plan = Some(plan);
@@ -897,6 +914,9 @@ impl<'a> Machine<'a> {
                     problems.push(format!("{}: the plan was refused: {}", candidate.key(), refusals.join("; ")));
                     self.observe("plan", &candidate.candidate, Outcome::default());
                     prompt.push_str(&format!("\n\nYour previous answer was refused:\n- {}", refusals.iter().take(20).cloned().collect::<Vec<_>>().join("\n- ")));
+                    if !retried {
+                        queue.push((candidate, true));
+                    }
                 }
             }
         }
@@ -915,6 +935,30 @@ impl<'a> Machine<'a> {
             }
         }
         self.bus.clone()
+    }
+
+    /// The per-step build check, decided once per run. A project that does not build before any step ran gets none:
+    /// every step would fail a check it did not break.
+    async fn step_check(&mut self) -> Option<executor::StepCheck> {
+        const TIMEOUT_S: f64 = 900.0;
+        if self.step_check_command.is_none() {
+            let mut command = self.config.step_check.then(|| audit::build_check_command(Path::new(&self.project))).flatten();
+            if let Some(cmd) = &command
+                && let Some(problem) = audit::build_check(&self.project, cmd, TIMEOUT_S, &self.audit_env.environ).await
+            {
+                let first = problem.lines().find(|l| !l.trim().is_empty()).unwrap_or("").chars().take(200).collect::<String>();
+                self.record.warnings.push(format!("per-step build check off: the project did not pass `{cmd}` before the first step ({first})"));
+                command = None;
+            }
+            self.emit("step_check", json!({"command": command}));
+            self.step_check_command = Some(command);
+        }
+        let command = self.step_check_command.clone().flatten()?;
+        let environ = self.audit_env.environ.clone();
+        Some(Arc::new(move |root: PathBuf| {
+            let (command, environ) = (command.clone(), environ.clone());
+            Box::pin(async move { audit::build_check(&root.to_string_lossy(), &command, TIMEOUT_S, &environ).await })
+        }))
     }
 
     async fn execute_phase(&mut self, extra_prompt: &str, steps: Option<Vec<Step>>) -> ExecResult {
@@ -949,6 +993,7 @@ impl<'a> Machine<'a> {
             bus: self.run_bus(),
             benched: self.benched.clone(),
             artifacts_dir: Some(artifacts_dir(&self.home, &self.record.run_id)),
+            step_check: self.step_check().await,
             ..ExecConfig::default()
         };
         let executor = StepExecutor::new(&self.record.run_id, Path::new(&self.project), plan, candidates, self.ledger, self.checkpoints, cfg);
@@ -1045,6 +1090,30 @@ impl<'a> Machine<'a> {
 
     /// Has a reviewer screen the commands of `plan` not screened yet this run. The result holds every score so far and
     /// the notes of this pass only; each note also becomes a run warning.
+    /// Screens a new plan's commands before any work is done on it. A command the screen refuses would be refused
+    /// again at the audit, where it counts as a failed check no edit can fix and the finished work is thrown away.
+    /// A refused verifier is dropped (the criteria still judge the work); a refused criterion sends the plan back.
+    async fn screened_plan(&mut self, mut plan: Plan) -> Result<Plan, PlanError> {
+        let screen = self.screen_commands(&plan).await;
+        let refused = |command: &str| screen.scores.get(command).filter(|(risk, _)| *risk >= audit::GUARD_REFUSE).map(|(_, why)| why.clone());
+        let problems: Vec<String> = plan
+            .acceptance_criteria
+            .iter()
+            .filter(|c| matches!(c.kind.as_str(), "command" | "test"))
+            .filter_map(|c| refused(&c.target).map(|why| format!("criterion {} runs `{}`, which the command screen refuses: {why}. Give it a command whose exit code depends on what it checks (no `; echo ...`, no `|| true`), or use another criterion type", crate::scope::py_repr(&c.id), c.target)))
+            .collect();
+        if !problems.is_empty() {
+            return Err(PlanError { problems });
+        }
+        let (kept, dropped): (Vec<String>, Vec<String>) = std::mem::take(&mut plan.verifier_commands).into_iter().partition(|c| refused(c).is_none());
+        plan.verifier_commands = kept;
+        for command in dropped {
+            let why = refused(&command).unwrap_or_default();
+            self.record.warnings.push(format!("verifier dropped from the plan, the command screen refuses it: `{command}` ({why})"));
+        }
+        Ok(plan)
+    }
+
     async fn screen_commands(&mut self, plan: &Plan) -> audit::Screen {
         let fresh: Vec<String> = audit::audit_commands(plan).into_iter().filter(|c| !self.screened.scores.contains_key(c)).collect();
         let mut notes = Vec::new();
@@ -1202,6 +1271,13 @@ impl<'a> Machine<'a> {
         }
     }
 
+    /// Steps that ran in parallel each built in their own sandbox; this is the first build of all of them together.
+    async fn combined_build_problem(&self) -> Option<String> {
+        let command = self.step_check_command.clone().flatten()?;
+        let problem = audit::build_check(&self.project, &command, 900.0, &self.audit_env.environ).await?;
+        Some(format!("the combined change does not build (`{command}`):\n{problem}"))
+    }
+
     async fn synthesize_phase(&mut self) {
         let plan = self.plan.clone().expect("a plan exists");
         let mut synthesis = self.record.synthesis.clone().unwrap_or_else(|| json!({"harvested": [], "conflicts": [], "problems": []}));
@@ -1214,6 +1290,7 @@ impl<'a> Machine<'a> {
         files.dedup();
         let check = |m: &Self| m.synthesis.map_or_else(Vec::new, |s| s.check(&m.project, &files));
         let mut problems = check(self);
+        problems.extend(self.combined_build_problem().await);
         while !problems.is_empty() && self.record.synth_fixes < self.config.max_synth_fixes {
             self.record.synth_fixes += 1;
             self.emit("synthesis", json!({"problems": problems.iter().take(30).collect::<Vec<_>>(), "fix": self.record.synth_fixes}));
@@ -1231,6 +1308,7 @@ impl<'a> Machine<'a> {
                 return;
             }
             problems = check(self);
+            problems.extend(self.combined_build_problem().await);
         }
         synthesis["problems"] = json!(problems);
         self.record.synthesis = Some(synthesis);
@@ -1495,6 +1573,25 @@ impl<'a> Machine<'a> {
         }
     }
 
+    /// The last resort before a run's work is thrown away. When the retries and the replan are spent, the change is in
+    /// scope, it builds, and at least two checks in three pass, what is left is more often a check the planner wrote
+    /// badly than a broken change. The work stays in the tree and the run ends in `to_review`, naming what failed, for
+    /// a person to judge. Anything less sound is restored as before.
+    async fn keep_for_review(&mut self, report: &AuditReport, items: &[String]) -> bool {
+        if !self.config.keep_for_review || !report.out_of_scope.is_empty() || report.changed.is_empty() {
+            return false;
+        }
+        let failed = report.checks.iter().filter(|c| !c.ok).count();
+        if failed == 0 || failed * 3 > report.checks.len() || self.combined_build_problem().await.is_some() {
+            return false;
+        }
+        let failing: Vec<String> = report.failures().into_iter().take(5).map(|f| f.lines().next().unwrap_or("").chars().take(200).collect()).collect();
+        self.record.reason = format!("kept for review: {failed} of {} checks still fail after the retries: {}", report.checks.len(), failing.join("; "));
+        self.record.warnings.push(format!("the change was kept in the project, not restored: it builds and {} of {} checks pass. Review it; failing: {}", report.checks.len() - failed, report.checks.len(), failing.join("; ")));
+        self.transition("to_review", json!({"kept": true, "failed_checks": failed, "checks": report.checks.len(), "items": items.iter().take(20).collect::<Vec<_>>()}));
+        true
+    }
+
     async fn audit_state(&mut self, feedback: &mut Vec<String>) {
         let report = self.audit_phase().await;
         if report.tier1_ok && self.conformance_loop() {
@@ -1526,6 +1623,9 @@ impl<'a> Machine<'a> {
                     self.record.drift_retries += 1;
                     self.transition("execute", json!({"drift_retry": self.record.drift_retries, "items": items.iter().take(20).collect::<Vec<_>>()}));
                     self.fix(&items, false).await;
+                    return;
+                }
+                if self.record.replans >= self.config.max_replans && self.keep_for_review(&report, &items).await {
                     return;
                 }
                 self.replan_or_fail(&items, "drift persisted after the retries");

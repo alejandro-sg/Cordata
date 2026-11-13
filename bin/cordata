@@ -25,6 +25,8 @@ done
 BIN_DIR="$( cd -P "$( dirname "$SOURCE" )" >/dev/null 2>&1 && pwd )"
 REPO_ROOT="$( cd -P "$BIN_DIR/.." >/dev/null 2>&1 && pwd )"
 
+# A CORDATA_HOME the current repository could have chosen is refused by each binary (cordata_guard::home).
+
 # The newest built binary of this name: release, else debug.
 built() {
   for kind in release debug; do

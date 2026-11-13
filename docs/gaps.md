@@ -2,6 +2,25 @@
 
 Date: 2026-11-10. Baseline: `main` at `0a290bb`.
 
+**Status 2026-11-13 (grep of the code, not live-verified).** Commit 6dac406 claimed to close G1–G13; the code says
+otherwise for several. Read the sections below as the original analysis, not as current state.
+
+| Gap | Now |
+|---|---|
+| G1 live activity | Partial: per-step tapes (`cordata-orchestrator/src/tape.rs`), `cordata show --step/--follow` |
+| G2 steering | Partial: `say`/`interrupt` in `control.ndjson`, forwarded to Claude steps; agy can only be cancelled |
+| G3 blocked worker asks person | Open: `blocked_reason` exists in `plan.rs` but nothing sets it |
+| G4 full context window | Partial: heuristic `compact_history_if_needed` in `engine.rs`, no model summary |
+| G5 context visibility | Done: context breakdown event and `/context` |
+| G6 chat vs orchestrator | Partial: `/run` from chat; `delegate` is not implemented; the built-in `/goldfish` was removed (`.cordata/commands/goldfish.md` is a plain prompt) |
+| G7 hung worker | Open: `Tape::is_stalled` was never called and has been deleted |
+| G8 single trace | Partial: tape trace ids, `show --otlp` (unverified) |
+| G9 terminal agent state | Partial: OSC 7501 parsing plus screen rules |
+| G10 work lands unseen | Partial: `--land review` |
+| G11 repo map for workers | Done: executor adds the repo map to step prompts |
+| G12 run tied to one process | Partial: `--detach` (setsid); no `attach`, no `caffeinate` |
+| G13 unwired modules | Done: `skills.rs`, `library.rs`, `recursion.rs` deleted |
+
 The question this answers: when a person hands Cordata a problem, can they see what every agent is doing, what it
 knows, what it cost, and step in at the right moment? Each gap below names the evidence, why it is a real problem
 (not a missing feature for its own sake), and a fix grounded in something that exists and works elsewhere.

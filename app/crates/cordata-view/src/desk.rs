@@ -744,8 +744,8 @@ mod tests {
 
     #[test]
     fn the_check_follows_the_project_convention() {
-        let dir = std::env::temp_dir().join(format!("cordata-desk-check-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let held = tempfile::tempdir().unwrap();
+        let dir = held.path().join("desk-check");
         std::fs::create_dir_all(&dir).unwrap();
         assert_eq!(check_command(&dir), None);
         std::fs::write(dir.join("Cargo.toml"), "[package]").unwrap();

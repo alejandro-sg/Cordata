@@ -554,15 +554,31 @@ async fn the_command_screen_refuses_a_planned_command_before_it_runs_and_is_aske
         m.run().await;
         m.record.clone()
     };
-    assert_ne!(record.state, "done");
-    let audit = record.audit.as_ref().unwrap();
-    assert_eq!(audit["tier1_ok"], false);
-    let failures = audit["failures"].to_string();
-    assert!(failures.contains("refused to run (0.95: command screen: reads credentials)"), "{failures}");
-    assert_eq!(audit["screened_out"][0], "cat ~/.netrc > /dev/null; echo ok — reads credentials");
+    // The refusal comes before any work: the plan goes back to its planner instead of failing a finished change.
+    assert_eq!(record.state, "failed");
+    assert!(record.audit.is_none(), "nothing was executed, so nothing was audited");
+    assert!(record.reason.contains("which the command screen refuses: reads credentials"), "{}", record.reason);
     assert_eq!(record.workers["screen"], ["goog:gemini"], "a worker other than the planner screens");
     let asked = r.script.lock().unwrap().prompts.iter().filter(|(label, _)| label == "screen").count();
-    assert_eq!(asked, 1, "a re-audit does not screen the same command again");
+    assert_eq!(asked, 1, "the same command is not screened twice");
+}
+
+#[tokio::test]
+async fn a_verifier_the_screen_refuses_is_dropped_from_the_plan_and_the_run_still_finishes() {
+    let mut plan = draft(&["a"]);
+    plan["verifier_commands"] = json!(["grep -n x a.py; echo exit=$?"]);
+    let screen = json!({"commands": [{"index": 0, "risk": 0.8, "reason": "always exits 0"}]});
+    let mut r = rig(Script { drafts: [plan].into(), screens: [screen].into(), audits: [accept()].into(), ..Default::default() });
+    let project = r.project.to_string_lossy().into_owned();
+    let record = {
+        let world = r.world(None, None, None);
+        let mut m = Machine::new("g", &project, config(), world, Some("run-dropverifier"), None, None);
+        m.run().await;
+        m.record.clone()
+    };
+    assert_eq!(record.state, "done", "{}", record.reason);
+    assert!(record.warnings.iter().any(|w| w.starts_with("verifier dropped from the plan") && w.contains("always exits 0")), "{:?}", record.warnings);
+    assert!(!record.audit.as_ref().unwrap()["failures"].to_string().contains("refused to run"));
 }
 
 #[tokio::test]
@@ -632,4 +648,32 @@ fn a_record_loads_with_or_without_the_settings_field_and_with_fields_it_does_not
     with.config = Some(config());
     let back: machine::RunRecord = serde_json::from_value(with.to_json()).unwrap();
     assert_eq!(back.config.map(|c| c.max_usd), Some(5.0), "the settings survive a save and a load");
+}
+
+#[tokio::test]
+async fn a_sound_change_that_fails_one_badly_written_check_is_kept_for_review_not_thrown_away() {
+    // Three files, each with a criterion that passes, and one criterion no edit can satisfy.
+    let plan = || {
+        let mut d = draft(&["a", "b", "c"]);
+        d["acceptance_criteria"].as_array_mut().unwrap().push(json!({"id": "c-bad", "type": "regex_match", "description": "cannot hold", "target": "calc/a.txt::never written by anyone"}));
+        d
+    };
+    let run = |keep: bool, id: &'static str| async move {
+        let mut r = rig(Script { drafts: [plan()].into(), audits: [accept()].into(), ..Default::default() });
+        let project = r.project.to_string_lossy().into_owned();
+        let world = r.world(None, None, None);
+        let mut m = Machine::new("g", &project, RunConfig { keep_for_review: keep, ..config() }, world, Some(id), None, None);
+        m.run().await;
+        (m.record.clone(), std::fs::read_to_string(r.project.join("calc/a.txt")).ok())
+    };
+
+    let (record, a) = run(true, "run-keep").await;
+    assert_eq!(record.state, "to_review", "{}", record.reason);
+    assert!(record.reason.starts_with("kept for review: 1 of 5 checks still fail after the retries: c-bad"), "{}", record.reason);
+    assert_eq!(record.replans, 1, "only after the replan was spent too");
+    assert_eq!(a.as_deref(), Some("ok a"), "the work is still in the project");
+
+    let (record, a) = run(false, "run-nokeep").await;
+    assert_eq!(record.state, "failed");
+    assert_ne!(a.as_deref(), Some("ok a"), "with the setting off the project is restored as before");
 }

@@ -95,6 +95,8 @@ pub fn run_config(settings: &Settings) -> RunConfig {
         max_tokens: (max_tokens > 0.0).then_some(max_tokens as i64),
         harden: setting_bool(settings, "orchestrator.harden", true),
         tier2: setting_bool(settings, "orchestrator.tier2", true),
+        step_check: setting_bool(settings, "orchestrator.stepCheck", true),
+        keep_for_review: setting_bool(settings, "orchestrator.keepForReview", true),
         screen: setting_bool(settings, "orchestrator.screen", true),
         research: true, // a code default, not a setting: `run --no-research` turns it off for one run
         ..RunConfig::default()
@@ -128,6 +130,20 @@ pub fn specs(families: &[String]) -> Vec<Spec> {
         .collect()
 }
 
+/// `orchestrator.models`: a list of model ids. A family with at least one model named there runs only the named
+/// ones; a family with none named keeps its whole roster. This is how a person keeps a run on the one model of a
+/// family that still has quota.
+pub fn only_models(specs: Vec<Spec>, settings: &Settings) -> Vec<Spec> {
+    let named: Vec<&str> = setting(settings, "orchestrator.models").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect();
+    narrow_models(specs, &named)
+}
+
+fn narrow_models(specs: Vec<Spec>, named: &[&str]) -> Vec<Spec> {
+    let is_named = |s: &Spec| s.candidate.model.as_deref().is_some_and(|m| named.contains(&m));
+    let narrowed: HashSet<String> = specs.iter().filter(|s| is_named(s)).map(|s| s.candidate.family.clone()).collect();
+    specs.into_iter().filter(|s| !narrowed.contains(&s.candidate.family) || is_named(s)).collect()
+}
+
 /// The ready workers by family id, sharing one egress policy built from the settings.
 pub fn workers(settings: &Settings, environ: &HashMap<String, String>) -> HashMap<String, Arc<dyn Worker>> {
     let egress: Arc<dyn Egress> = Arc::new(VaultEgress::new(JsonPrefs(settings.merged().clone()), environ.clone()));
@@ -159,4 +175,20 @@ pub fn live_specs(specs: Vec<Spec>, environ: &HashMap<String, String>) -> (Vec<S
 pub fn unsupported(families: &[String]) -> Vec<String> {
     let native: HashSet<&str> = NATIVE_FAMILIES.into_iter().collect();
     families.iter().filter(|f| !native.contains(f.as_str())).cloned().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn naming_a_model_narrows_only_its_own_family() {
+        let all = specs(&["antigravity".to_owned(), "ollama".to_owned()]);
+        let ollama = all.iter().filter(|s| s.candidate.family == "ollama").count();
+        let kept = narrow_models(all.clone(), &["gemini-3.8-flash-medium", "no-such-model"]);
+        let agy: Vec<_> = kept.iter().filter(|s| s.candidate.family == "antigravity").filter_map(|s| s.candidate.model.clone()).collect();
+        assert_eq!(agy, ["gemini-3.8-flash-medium"]);
+        assert_eq!(kept.iter().filter(|s| s.candidate.family == "ollama").count(), ollama, "a family with no model named keeps its roster");
+        assert_eq!(narrow_models(all.clone(), &[]).len(), all.len());
+    }
 }

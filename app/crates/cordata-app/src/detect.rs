@@ -307,7 +307,7 @@ mod tests {
 
     #[test]
     fn your_file_replaces_an_agent_or_is_reported() {
-        let dir = std::env::temp_dir().join(format!("cordata-detect-{}", std::process::id()));
+        let dir = crate::test_dir("detect");
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("detect.toml");
         std::fs::write(&file, "[[agent]]\nid = \"claude\"\nname = \"Mine\"\nprocess = [\"claude\"]\n[[agent.rule]]\nstate = \"blocked\"\nregion = \"bottom\"\nall = [\"halt\"]\n").unwrap();

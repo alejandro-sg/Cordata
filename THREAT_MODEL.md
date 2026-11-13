@@ -128,6 +128,15 @@ with the session. Every MCP tool call asks first, like an edit.
 
 Not covered: a started server runs with your rights, outside the command sandbox.
 
+## Tool hooks
+
+A project's `.cordata/hooks.json` names shell commands the chat runs around tool calls, inside the same Seatbelt
+sandbox as `run_command` (if the sandbox cannot be applied, they do not run). Like a
+project MCP server it runs only as approved: an `mcp.approved` entry pins the folder and a SHA-256 of the file and of
+every file a hook command names by path, so a change to any of them holds it back. Code those scripts reach indirectly
+(a sourced file, a program on `PATH`) is not pinned, but stays confined by the sandbox. The approval is checked again before every hook call, so an edit mid-session blocks the next call. A hook runs in its own process group, and the whole group is killed after its timeout (default 30 s). Your own `~/.cordata/hooks.json` needs no approval and runs unconfined,
+with your rights.
+
 ## Saved sessions
 
 Each chat session is saved after every turn to `~/.cordata/sessions/<project hash>/<id>.json` so `/resume` (or

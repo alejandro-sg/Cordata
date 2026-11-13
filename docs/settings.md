@@ -39,6 +39,8 @@ in effect.
 | `chat.deny` | list of rules | none | calls refused without asking; any file may add them |
 | `chat.network` | `ask`, `off` | `ask` | commands run offline; `ask` lets a command request the network (you are asked), `off` refuses it. A project may set `off` |
 | `chat.writable` | list of absolute paths (`~/` allowed) | none | folders commands may write besides the project, temporary folders and package caches. **User file only** |
+| `chat.history` | `on`, `off` | `on` | save sessions to `~/.cordata/sessions` for `/resume`. A project may set `off` |
+| `chat.ollamaNumCtx` | integer ≥ 2048 | `65536` | the context window asked of a local Ollama model on every request (`options.num_ctx`); without it Ollama uses its small server default and drops the start of long chats. **User file only**. Ollama Cloud is unaffected. A bigger window needs more memory for the model's cache (at 65536, several GB for a 7-8B model); lower it on a small Mac. A model name no provider prefix claims (not `claude…`, `gemini…`, `gpt…`, `ollama_cloud::…`) is treated as a local Ollama model |
 | `mcp.approved` | list of `<folder>\|<name>\|sha256:<digest>` | none | project MCP servers you approved, each pinned to its exact command, arguments and environment; written by Settings → MCP → Approve. **User file only** |
 
 MCP servers: `~/.cordata/mcp.json` (`{"mcpServers": {name: {command, args, env}}}`) applies everywhere; a project's
@@ -47,7 +49,6 @@ MCP servers: `~/.cordata/mcp.json` (`{"mcpServers": {name: {command, args, env}}
 `code_map` (the repo map tool) ranks definitions by the reference graph and the question's words; with a Model2Vec model
 in `~/.cordata/models/potion-code-16M` (or `CORDATA_EMBED_MODEL=<folder>`) it adds meaning. Nothing is downloaded for you:
 `config.json`, `tokenizer.json` and `model.safetensors` from huggingface.co/minishlab/potion-code-16M (64 MB).
-| `chat.history` | `on`, `off` | `on` | save sessions to `~/.cordata/sessions` for `/resume`. A project may set `off` |
 
 A rule is `tool` or `tool(pattern)`, for `read_file`, `edit_file`, `run_command`, `code_search`, `code_outline`. For
 `run_command` the pattern is a glob over the whole command (`*` matches anything); for the file tools a glob over the
@@ -83,11 +84,14 @@ Each is capped at 20,000 characters. `/memory` lists what was found and `/init` 
 | key | values | default | what |
 |---|---|---|---|
 | `orchestrator.workers` | comma list of `claude_code`, `antigravity`, `ollama` | all three | which worker families may work; `ollama` runs Ollama Cloud models through Cordata's own engine and needs an Ollama key |
+| `orchestrator.models` | list of model ids | unset | a family with a model named here runs only the named models (for example `["gemini-3.8-flash-medium"]` keeps antigravity on that one model); other families keep their roster |
 | `orchestrator.pools` | list of pools | conservative caps | your real plans, so handoffs happen at the right moment (`docs/orchestrator.md`) |
 | `orchestrator.maxUsd` | number | 2 | spend cap for one run |
 | `orchestrator.maxTokens` | number | 0 (none) | token cap for one run |
 | `orchestrator.harden` | bool | true | a second model family reviews each step |
 | `orchestrator.tier2` | bool | true | the planner audits the result against its plan |
+| `orchestrator.stepCheck` | bool | true | after each step that changed Rust sources, `cargo check` runs where the step worked; a change that does not build fails the step and the next attempt gets the compiler errors. Off for a run whose project did not build before its first step |
+| `orchestrator.keepForReview` | bool | true | when retries and the replan are spent but the change is in scope, builds, and at least two checks in three pass, the run ends in `to_review` with the work left in the project and the failing checks named, instead of restoring the project |
 | `orchestrator.screen` | bool | true | a reviewer model screens the audit's commands before any runs (`--no-screen` for one run); the pattern guard runs either way |
 | `orchestrator.dispatch`, `.lambda`, `.mu` | | | the learned dispatch policy and its cost and risk weights |
 
@@ -102,6 +106,33 @@ The coding CLIs' traffic goes through the Agent Vault proxy, or the run is refus
 | `vault.enabled` | route worker traffic through an Agent Vault proxy you run (Cordata does not ship one; default off, so `cordata run` needs `--allow-direct`) |
 | `vault.addr` | the proxy address (default `http://127.0.0.1:14322`) |
 | `CORDATA_VAULT_DIRECT` | environment; allow direct egress for orchestrator runs |
+
+## Tool hooks (`hooks.json`)
+
+The chat engine runs hooks around each tool call. It reads `.cordata/hooks.json` in the project when you have approved
+that exact file, otherwise `~/.cordata/hooks.json` (`$CORDATA_HOME/hooks.json`; the two are not merged). Code: `tui/crates/acp-core/src/hooks.rs`.
+
+```json
+{ "hooks": {
+    "PreToolUse":  [{ "matcher": "run_command", "hooks": [{ "type": "command", "command": "./scripts/check.sh" }] }],
+    "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "checksyntax" }, { "type": "checkassertions" }] }]
+} }
+```
+
+- `matcher` is a tool name or `*`.
+- `command` gets `{event, tool, args, cwd}` (plus `output` and `success` after the call) as JSON on stdin. Stdout of
+  `{"decision":"block","reason":"…"}` (or, after the call only, `{"decision":"feedback","reason":"…"}`) decides; otherwise a non-zero exit
+  blocks with stderr as the reason, and exit 0 allows. A hook that runs past `timeout_secs` (default 30) is killed and blocks the call.
+- `checksyntax` (JSON, TOML, Rust) and `checkassertions` (refuses edits that strip test assertions) run after edits only.
+- Hook commands run through `/bin/sh` without a per-call prompt; your own hooks run unconfined, a project's run inside
+  the same Seatbelt sandbox as `run_command` (offline, writing only the project and temp folders, no `.env` or
+  credential files). A project `hooks.json` is code
+  the repository would run on your machine, so it runs only once approved: the chat's notice gives the entry
+  (`<folder>|.cordata/hooks.json|sha256:<digest>`) to add to `mcp.approved` in `~/.cordata/settings.json`. The digest
+  covers the file and every file in the project that a hook command names (`./scripts/check.sh`), so editing either
+  holds it back again. A script reached some other way (sourced by a named script, found on `PATH`) is not pinned, but
+  runs inside the sandbox all the same. A
+  malformed project file does not run, and the chat says so.
 
 ## Built-in guard
 
@@ -123,7 +154,7 @@ replace it.
 
 | variable | meaning |
 |---|---|
-| `CORDATA_HOME` | state folder (default `~/.cordata`) |
+| `CORDATA_HOME` | state folder (default `~/.cordata`). Every Cordata program ignores, with a warning, a value that is relative, contains `.` or `..`, or lies inside the repository you run it from (a direnv `.envrc` could set it); `$HOME` and `/` never count as that repository. Keep your state outside your projects |
 | `CORDATA_STATE_DB` | the ledger database (default `$CORDATA_HOME/state.db`) |
 | `CORDATA_ROOT` | the checkout, for `cordata doctor` |
 | `CORDATA_SANDBOX_SEATBELT` | how workers are confined; unset means on |

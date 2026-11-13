@@ -75,23 +75,22 @@ pub struct Sandbox {
 }
 
 impl Sandbox {
-    /// Every file was cloned copy-on-write.
-    pub fn cow(&self) -> bool {
-        self.cloned > 0 && self.copied == 0
-    }
 
     pub fn discard(&self) {
         let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 
-/// Removes sandboxes a crashed run left behind (`cordata-*` under the temp dir, untouched for `older_than`).
+/// What every step sandbox's folder name starts with, so [`sweep`] touches nothing else in the temp dir.
+pub const SANDBOX_PREFIX: &str = "cordata-sandbox-";
+
+/// Removes sandboxes a crashed run left behind (`cordata-sandbox-*` under the temp dir, untouched for `older_than`).
 pub fn sweep(older_than: Duration, parent: Option<&Path>) -> usize {
     let base = parent.map_or_else(std::env::temp_dir, Path::to_path_buf);
     let mut removed = 0;
     for entry in std::fs::read_dir(base).into_iter().flatten().flatten() {
         let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
-        if is_dir && entry.file_name().to_string_lossy().starts_with("cordata-") {
+        if is_dir && entry.file_name().to_string_lossy().starts_with(SANDBOX_PREFIX) {
             let old = entry.metadata().and_then(|m| m.modified()).ok().and_then(|m| SystemTime::now().duration_since(m).ok()).is_some_and(|age| age > older_than);
             if old && std::fs::remove_dir_all(entry.path()).is_ok() {
                 removed += 1;
@@ -121,7 +120,7 @@ fn temp_dir(parent: &Path, prefix: &str) -> std::io::Result<PathBuf> {
 pub fn create(project: &Path, parent: Option<&Path>, label: &str, scope: &[String], max_files: usize) -> Result<Sandbox, String> {
     let source = std::fs::canonicalize(project).map_err(|e| e.to_string())?;
     let parent = parent.map_or_else(std::env::temp_dir, Path::to_path_buf);
-    let root = temp_dir(&parent, &format!("cordata-{label}-")).map_err(|e| e.to_string())?;
+    let root = temp_dir(&parent, &format!("{SANDBOX_PREFIX}{label}-")).map_err(|e| e.to_string())?;
     let mut sandbox = Sandbox { root: root.clone(), source: source.clone(), cloned: 0, copied: 0, linked: Vec::new(), base: HashMap::new() };
     let mut count = 0usize;
     let mut stack = vec![PathBuf::new()]; // relative directories still to copy
@@ -288,9 +287,6 @@ impl Default for CowIsolation {
 }
 
 impl CowIsolation {
-    pub fn in_dir(parent: &Path) -> Self {
-        Self { parent: Some(parent.to_path_buf()), ..Self::default() }
-    }
 
     pub fn max_files(mut self, n: usize) -> Self {
         self.max_files = n;

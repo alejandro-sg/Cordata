@@ -91,6 +91,74 @@ pub struct ClaudeStream {
     st: ParserState,
     usage_seen: Vec<(String, (i64, i64))>,
     pending: HashMap<String, String>,
+    /// The live estimate (`--include-partial-messages`): every request of the call, sub-agents' included, priced as it
+    /// streams. It lets the meter stop a call mid-request, before it passes its budget.
+    estimate: LiveCost,
+}
+
+/// Per request (by message id): its model's prices and the most usage seen so far; and which request each stream
+/// (the main conversation, or a sub-agent's `parent_tool_use_id`) is in now, since `message_delta` names no id.
+#[derive(Default)]
+struct LiveCost {
+    requests: HashMap<String, (Prices, Value)>,
+    current: HashMap<String, String>,
+}
+
+impl LiveCost {
+    fn total(&self) -> f64 {
+        self.requests.values().map(|(p, usage)| p.cost(usage)).sum()
+    }
+}
+
+/// Dollars per million tokens, from Anthropic's published list prices (cached 2026-11-03), by exact model: Fable and
+/// Mythos 5.2 8/40, earlier 10/50; Opus 5.5 4/20, Opus 4.0-4.1 15/75, other Opus 5/25; Sonnet 5 and 5.5 2/10, Sonnet 4.x
+/// 3/15 (6/22.5 past 200K input); Haiku 5.5 0.10/0.50 (0.50/2.50 past 100K input), other Haiku 1/5. A version the list
+/// does not name takes its family's dearest price, and an unknown family the dearest of all (15/75), so the estimate
+/// errs high. Cache reads cost a tenth of input; cache writes 1.25x for five minutes, 2x for an hour.
+#[derive(Clone, Copy)]
+struct Prices {
+    input: f64,
+    output: f64,
+}
+
+impl Prices {
+    fn of(model: &str, input_tokens: i64) -> Self {
+        let m = model.to_ascii_lowercase();
+        let has = |v: &str| m.contains(v);
+        let old_opus = m.ends_with("opus-4") || ["opus-4-0", "opus-4-1", "opus-4-2025", "opus-4@", "claude-3-opus"].iter().any(|o| has(o));
+        let (input, output) = match () {
+            _ if has("fable-5-2") || has("mythos-5-2") => (8.0, 40.0),
+            _ if has("fable") || has("mythos") => (10.0, 50.0),
+            _ if has("opus-5-5") => (4.0, 20.0),
+            _ if has("opus") && !old_opus => (5.0, 25.0),
+            _ if has("sonnet-5") => (2.0, 10.0),
+            _ if has("sonnet") && input_tokens > 200_000 => (6.0, 22.5),
+            _ if has("sonnet") => (3.0, 15.0),
+            _ if has("haiku-5-5") && input_tokens > 100_000 => (0.5, 2.5),
+            _ if has("haiku-5-5") => (0.1, 0.5),
+            _ if has("haiku") => (1.0, 5.0),
+            _ => (15.0, 75.0),
+        };
+        Self { input, output }
+    }
+
+    fn cost(&self, usage: &Value) -> f64 {
+        let n = |path: &str| int(usage.pointer(path)) as f64;
+        let hour = n("/cache_creation/ephemeral_1h_input_tokens");
+        let writes = n("/cache_creation_input_tokens");
+        (n("/input_tokens") * self.input + (writes - hour).max(0.0) * self.input * 1.25 + hour * self.input * 2.0
+            + n("/cache_read_input_tokens") * self.input * 0.1 + n("/output_tokens") * self.output) / 1e6
+    }
+}
+
+/// `usage` with every count raised to the most seen (`message_delta` counts are cumulative).
+fn raise(usage: &mut Value, seen: &Value) {
+    for key in ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"] {
+        let most = int(usage.get(key)).max(int(seen.get(key)));
+        usage[key] = json!(most);
+    }
+    let hour = int(usage.pointer("/cache_creation/ephemeral_1h_input_tokens")).max(int(seen.pointer("/cache_creation/ephemeral_1h_input_tokens")));
+    usage["cache_creation"] = json!({"ephemeral_1h_input_tokens": hour});
 }
 
 impl ClaudeStream {
@@ -181,6 +249,32 @@ impl LineParser for ClaudeStream {
                     self.st.model = Some(model.to_owned());
                 }
             }
+            Some("stream_event") => {
+                let raw = event.get("event").unwrap_or(&Value::Null);
+                let stream = event.get("parent_tool_use_id").and_then(Value::as_str).unwrap_or("").to_owned();
+                match raw.get("type").and_then(Value::as_str) {
+                    Some("message_start") => {
+                        let message = raw.get("message").unwrap_or(&Value::Null);
+                        let id = message.get("id").and_then(Value::as_str).map_or_else(|| format!("live-{}", self.estimate.requests.len()), str::to_owned);
+                        let usage = message.get("usage").cloned().unwrap_or(json!({}));
+                        let model = message.get("model").and_then(Value::as_str).map(str::to_owned).or_else(|| self.st.model.clone()).unwrap_or_default();
+                        let input = int(usage.get("input_tokens")) + int(usage.get("cache_creation_input_tokens")) + int(usage.get("cache_read_input_tokens"));
+                        let mut counted = json!({});
+                        raise(&mut counted, &usage);
+                        self.estimate.requests.insert(id.clone(), (Prices::of(&model, input), counted));
+                        self.estimate.current.insert(stream, id.clone());
+                        // Counted now, so a call stopped mid-request reports it with its cost (meter() dedupes by id).
+                        self.meter(&json!({"id": id, "usage": usage}));
+                    }
+                    Some("message_delta") => {
+                        if let Some((_, counted)) = self.estimate.current.get(&stream).and_then(|id| self.estimate.requests.get_mut(id)) {
+                            raise(counted, raw.get("usage").unwrap_or(&Value::Null));
+                        }
+                    }
+                    _ => {}
+                }
+                self.st.cost_usd = self.st.cost_usd.max(self.estimate.total());
+            }
             Some("assistant") => {
                 let message = event.get("message").cloned().unwrap_or(Value::Null);
                 self.meter(&message);
@@ -267,7 +361,7 @@ impl Dialect for ClaudeDialect {
         let mut argv: Vec<String> = [
             binary, "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", if read_only { "plan" } else { "acceptEdits" }, "--permission-prompts", "none",
             "--strict-mcp-config", "--setting-sources", "project", "--disable-slash-commands", "--allowedTools", &allowed.join(","), "--disallowedTools", &denied.join(","),
-            "--append-system-prompt", SYSTEM_NOTE,
+            "--append-system-prompt", SYSTEM_NOTE, "--include-partial-messages",
         ]
         .iter()
         .map(|s| (*s).to_owned())

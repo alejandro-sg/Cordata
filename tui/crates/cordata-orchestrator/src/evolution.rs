@@ -196,6 +196,25 @@ pub struct EvolutionConfig {
     pub threshold: f64,
     pub dry_run: bool,
     pub project_root: PathBuf,
+    /// Shell command that proposes a change by editing files in its working directory, which is the CoW sandbox
+    /// (never the project). `CORDATA_EVOLVE_TARGET` and `CORDATA_EVOLVE_BASELINE` are set. Without one, a cycle has
+    /// nothing to judge and is refused.
+    pub mutate_cmd: Option<String>,
+    /// Ask a model to propose the change by running the orchestrator on the sandbox. Used when `mutate_cmd` is unset.
+    pub propose: Option<ModelProposal>,
+}
+
+/// A model-driven mutator: `exe run <goal> --cwd <sandbox>`. The orchestrator confines its own workers to the sandbox,
+/// so this is not wrapped in a second Seatbelt (sandbox-exec cannot nest).
+#[derive(Debug, Clone)]
+pub struct ModelProposal {
+    /// The `cordata-run` binary.
+    pub exe: PathBuf,
+    /// Extra direction appended to the generated goal.
+    pub direction: Option<String>,
+    pub max_usd: f64,
+    /// Comma-separated worker families passed as `--workers`; unset uses the families enabled in settings.
+    pub workers: Option<String>,
 }
 
 impl Default for EvolutionConfig {
@@ -205,6 +224,8 @@ impl Default for EvolutionConfig {
             threshold: 0.005,
             dry_run: false,
             project_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            mutate_cmd: None,
+            propose: None,
         }
     }
 }
@@ -316,20 +337,34 @@ pub fn evaluate_fitness(target: &EvolutionTarget, root: &Path) -> Result<Fitness
             ]);
             cmd.current_dir(root);
 
-            let output = cmd.output().map_err(|e| format!("failed to run guard bench: {e}"))?;
-            let stdout = String::from_utf8_lossy(&output.stdout);
+            // One sample moves tens of percent on an idle laptop; the best of three is the least noisy reading.
+            let mut stdout = String::new();
+            for _ in 0..3 {
+                let output = cmd.output().map_err(|e| format!("failed to run guard bench: {e}"))?;
+                stdout.push_str(&String::from_utf8_lossy(&output.stdout));
+                stdout.push('\n');
+            }
             let lat = start.elapsed().as_millis() as f64;
+            // `BENCH scrub code 100KB     123.4us | prose ...`: only the 100KB size counts; bytes per microsecond is MB/s.
             let mut throughput = 0.0;
             for line in stdout.lines() {
-                if line.contains("BENCH")
-                    && let Some(pos) = line.find("MB/s")
-                    && let Some(num_str) = line[..pos].split_whitespace().last()
-                {
-                    throughput = num_str.parse::<f64>().unwrap_or(0.0);
+                if let Some(rest) = line.split("BENCH scrub code").nth(1) {
+                    let mut it = rest.split_whitespace();
+                    let kb = it.next().and_then(|k| k.strip_suffix("KB")).and_then(|k| k.parse::<f64>().ok());
+                    let us = it.next().and_then(|u| u.strip_suffix("us")).and_then(|u| u.parse::<f64>().ok());
+                    if let (Some(kb), Some(us)) = (kb, us)
+                        && us > 0.0
+                        && kb >= 100.0
+                    {
+                        throughput = f64::max(throughput, kb * 1024.0 / us);
+                    }
                 }
             }
+            if throughput <= 0.0 {
+                return Err(format!("could not read throughput from the guard benchmark:\n{stdout}"));
+            }
             Ok(FitnessScore {
-                primary: throughput.max(1.0),
+                primary: throughput,
                 latency_ms: lat,
                 details: format!("guard bench throughput: {throughput:.1} MB/s"),
             })
@@ -489,6 +524,85 @@ fn changed_between(sandbox: &Path, root: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// The Seatbelt profile a mutator runs under: the worker base profile (secret and `.env` denials), then every write
+/// refused except inside `sandbox` and the null/tty devices. The project, `~/.cordata` and the rest of the disk are
+/// read-only to it, so a mutator that names the project by absolute path still cannot change it.
+pub fn mutator_profile(sandbox: &Path, home: &str) -> String {
+    let real = std::fs::canonicalize(sandbox).map_or_else(|_| sandbox.to_string_lossy().into_owned(), |p| p.to_string_lossy().into_owned());
+    let base = crate::scope::base_profile(home);
+    let (head, tail) = base.split_at(2);
+    let rules = [
+        "(deny file-write* (subpath \"/\"))".to_owned(),
+        format!("(allow file-write* (subpath {}))", crate::scope::sb_string(&real)),
+        "(allow file-write* (literal \"/dev/null\") (literal \"/dev/tty\") (literal \"/dev/dtracehelper\"))".to_owned(),
+    ];
+    head.iter().chain(rules.iter()).chain(tail.iter()).cloned().collect::<Vec<_>>().join("\n") + "\n"
+}
+
+/// Runs the mutator in `sandbox`, confined by [`mutator_profile`], and returns the files it changed relative to `root`.
+/// The mutator's own exit status is not a verdict: a failing mutator that left edits behind is still judged by the gates.
+pub fn propose_changes(sandbox: &Path, root: &Path, cmd: &str, target: &EvolutionTarget, baseline: &FitnessScore) -> Result<Vec<PathBuf>, String> {
+    if !crate::workers::cli::seatbelt_works() {
+        return Err("cannot run the mutator confined: the Seatbelt sandbox (sandbox-exec) cannot be applied here, so it would run unconfined".into());
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    let tmp = sandbox.join(".cordata/tmp");
+    std::fs::create_dir_all(&tmp).map_err(|e| format!("cannot prepare the mutator's temp dir: {e}"))?;
+    let out = Command::new("/usr/bin/sandbox-exec")
+        .args(["-p", &mutator_profile(sandbox, &home), "/bin/sh", "-c", cmd])
+        .current_dir(sandbox)
+        .env("TMPDIR", &tmp)
+        .env("CORDATA_EVOLVE_TARGET", target.to_string())
+        .env("CORDATA_EVOLVE_BASELINE", format!("{:.6}", baseline.primary))
+        .output()
+        .map_err(|e| format!("failed to run mutator: {e}"))?;
+    if !out.status.success() {
+        let tail: String = String::from_utf8_lossy(&out.stderr).chars().rev().take(400).collect::<Vec<_>>().into_iter().rev().collect();
+        eprintln!("mutator exited {}: {tail}", out.status);
+    }
+    Ok(changed_between(sandbox, root))
+}
+
+/// The goal handed to the model: improve the target's measured fitness without touching what judges it.
+pub fn proposal_goal(target: &EvolutionTarget, baseline: &FitnessScore, direction: Option<&str>) -> String {
+    let krate = match target {
+        EvolutionTarget::Repomap => "cordata-repomap",
+        EvolutionTarget::Economizer => "cordata-economizer",
+        EvolutionTarget::Guard => "cordata-guard",
+        EvolutionTarget::Custom(c) => c.as_str(),
+    };
+    // Say what the number is computed from: a change outside the measured path cannot move it.
+    let measured = match target {
+        EvolutionTarget::Repomap => " The fitness is the ranking benchmark's MRR on code-word and paraphrased queries, with a latency penalty.",
+        EvolutionTarget::Economizer => " The fitness is how fast the crate's hermetic test suite passes.",
+        EvolutionTarget::Guard => " The fitness is the throughput of `scrub()` on 100KB of code, timed by the ignored `bench_scrub` test in src/redact.rs; nothing else is measured.",
+        EvolutionTarget::Custom(_) => "",
+    };
+    format!(
+        "Improve the measured fitness of the `{krate}` crate under tui/crates/{krate}/src (current: {}).{measured} Make one small, safe change to non-test source files in that crate only. Do not edit tests, benchmarks, scripts/, AGENTS.md or Cargo.lock, and add no dependencies. Definition of done: cargo test --offline -p {krate} exits 0.{}",
+        baseline.details,
+        direction.map(|d| format!(" Direction: {d}")).unwrap_or_default()
+    )
+}
+
+/// Runs the orchestrator on `sandbox` to propose a change, then returns the files that differ from `root`.
+pub fn propose_with_model(sandbox: &Path, root: &Path, p: &ModelProposal, target: &EvolutionTarget, baseline: &FitnessScore) -> Result<Vec<PathBuf>, String> {
+    let goal = proposal_goal(target, baseline, p.direction.as_deref());
+    let mut cmd = Command::new(&p.exe);
+    cmd.args(["run", &goal, "--allow-direct", "--no-research", "--max-rounds", "1", "--max-usd", &p.max_usd.to_string()]);
+    if let Some(workers) = &p.workers {
+        cmd.args(["--workers", workers]);
+    }
+    let out = cmd.arg("--cwd").arg(sandbox).current_dir(sandbox).output().map_err(|e| format!("failed to start the orchestrator ({}): {e}", p.exe.display()))?;
+    if !out.status.success() {
+        // `cordata-run run` reports why it stopped on stdout; stderr is usually empty.
+        let said = if out.stderr.iter().all(u8::is_ascii_whitespace) { &out.stdout } else { &out.stderr };
+        let tail: String = String::from_utf8_lossy(said).trim_end().chars().rev().take(600).collect::<Vec<_>>().into_iter().rev().collect();
+        eprintln!("proposal run exited {}: {tail}", out.status);
+    }
+    Ok(changed_between(sandbox, root))
+}
+
 /// Whether `root`'s git working tree has uncommitted changes (or is not a git checkout at all).
 fn tree_is_dirty(root: &Path) -> bool {
     Command::new("git")
@@ -501,8 +615,8 @@ fn tree_is_dirty(root: &Path) -> bool {
 
 /// Executes a full, sandboxed evolution cycle for `config.target`.
 ///
-/// Refuses, rather than reporting gates, when there is nothing to judge: nothing in this crate proposes a change yet,
-/// so a fresh sandbox is identical to the tree and a "cycle" would only re-measure the baseline. A promotion is copied
+/// Refuses, rather than reporting gates, when there is nothing to judge: with no `mutate_cmd`, or one that changes
+/// nothing, a fresh sandbox is identical to the tree and a "cycle" would only re-measure the baseline. A promotion is copied
 /// over the working tree only when that tree is clean, so `git checkout .` always undoes it.
 pub fn run_evolution_cycle(config: EvolutionConfig) -> Result<EvolutionReport, String> {
     let start_time = Instant::now();
@@ -518,10 +632,21 @@ pub fn run_evolution_cycle(config: EvolutionConfig) -> Result<EvolutionReport, S
     let sandbox = synthesizer::create(&root, None, &label, &[], synthesizer::MAX_FILES)
         .map_err(|e| format!("failed to provision APFS CoW sandbox: {e}"))?;
 
-    let candidates = changed_between(&sandbox.root, &root);
+    let proposed = match (&config.mutate_cmd, &config.propose) {
+        (Some(cmd), _) => propose_changes(&sandbox.root, &root, cmd, &config.target, &baseline),
+        (None, Some(p)) => propose_with_model(&sandbox.root, &root, p, &config.target, &baseline),
+        (None, None) => Ok(changed_between(&sandbox.root, &root)),
+    };
+    let candidates = match proposed {
+        Ok(c) => c,
+        Err(e) => {
+            sandbox.discard();
+            return Err(e);
+        }
+    };
     if candidates.is_empty() {
         sandbox.discard();
-        return Err("nothing to evaluate: no change was proposed in the sandbox (no mutator is wired up yet)".into());
+        return Err("nothing to evaluate: the mutator proposed no change (pass --mutate \"<command>\" or --propose)".into());
     }
 
     let (promoted_all_gates, candidate_opt, gates) = evaluate_candidate(&sandbox.root, &config.target, &baseline, &guard, config.threshold);
@@ -611,6 +736,36 @@ mod tests {
     }
 
     #[test]
+    fn mutator_edits_land_in_sandbox_only_and_tampering_is_caught() {
+        let (root, sb) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        for dir in [root.path(), sb.path()] {
+            std::fs::create_dir_all(dir.join("tests")).unwrap();
+            std::fs::write(dir.join("tests/eval.rs"), "eval").unwrap();
+            std::fs::write(dir.join("lib.rs"), "v1").unwrap();
+        }
+        if !crate::workers::cli::seatbelt_works() {
+            return;
+        }
+        let guard = ImmutableGuard::snapshot(root.path());
+        let base = FitnessScore { primary: 1.0, latency_ms: 0.0, details: String::new() };
+        let t = EvolutionTarget::Guard;
+
+        let changed = propose_changes(sb.path(), root.path(), "echo v2 > lib.rs", &t, &base).unwrap();
+        assert_eq!(changed, vec![PathBuf::from("lib.rs")]);
+        assert_eq!(std::fs::read_to_string(root.path().join("lib.rs")).unwrap(), "v1", "project untouched");
+        assert!(guard.verify(sb.path()).is_ok(), "benign edit passes gate 1");
+
+        let escape = format!("echo pwn > {}/lib.rs", std::fs::canonicalize(root.path()).unwrap().display());
+        propose_changes(sb.path(), root.path(), &escape, &t, &base).unwrap();
+        assert_eq!(std::fs::read_to_string(root.path().join("lib.rs")).unwrap(), "v1", "a write to the project by absolute path is denied");
+
+        propose_changes(sb.path(), root.path(), "echo cheat > tests/eval.rs", &t, &base).unwrap();
+        assert!(matches!(guard.verify(sb.path()), Err(TamperingViolation::Modified { .. })), "editing the evaluator is caught");
+        let (ok, _, gates) = evaluate_candidate(sb.path(), &t, &base, &guard, 0.0);
+        assert!(!ok && gates.len() == 1 && gates[0].gate_number == 1, "gate 1 stops it before any build or test runs");
+    }
+
+    #[test]
     fn only_differing_files_are_candidates() {
         let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         for dir in [a.path(), b.path()] {
@@ -622,5 +777,29 @@ mod tests {
         std::fs::write(a.path().join("src/new.rs"), "new").unwrap();
         std::fs::write(a.path().join("target/out"), "build output").unwrap();
         assert_eq!(changed_between(a.path(), b.path()), vec![PathBuf::from("src/new.rs")]);
+    }
+}
+
+#[cfg(test)]
+mod proposal_tests {
+    use super::*;
+
+    #[test]
+    fn the_goal_protects_the_evaluator_and_names_the_crate() {
+        let base = FitnessScore { primary: 100.0, latency_ms: 0.0, details: "guard bench throughput: 100.0 MB/s".into() };
+        let g = proposal_goal(&EvolutionTarget::Guard, &base, Some("avoid allocation"));
+        for needle in ["cordata-guard", "100.0 MB/s", "Do not edit tests", "AGENTS.md", "avoid allocation", "cargo test --offline -p cordata-guard"] {
+            assert!(g.contains(needle), "{needle}: {g}");
+        }
+    }
+
+    #[test]
+    fn a_proposal_that_changes_nothing_is_empty_and_a_missing_exe_is_an_error() {
+        let (root, sb) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let base = FitnessScore { primary: 1.0, latency_ms: 0.0, details: String::new() };
+        let p = ModelProposal { exe: PathBuf::from("/usr/bin/true"), direction: None, max_usd: 1.0, workers: None };
+        assert!(propose_with_model(sb.path(), root.path(), &p, &EvolutionTarget::Guard, &base).unwrap().is_empty());
+        let bad = ModelProposal { exe: PathBuf::from("/nonexistent/cordata-run"), ..p };
+        assert!(propose_with_model(sb.path(), root.path(), &bad, &EvolutionTarget::Guard, &base).is_err());
     }
 }

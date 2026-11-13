@@ -28,9 +28,10 @@ still inside the Seatbelt sandbox described in [`THREAT_MODEL.md`](../THREAT_MOD
 environment form of the flag.
 
 `run` also takes `--workers claude_code,antigravity,ollama` (`ollama` is Ollama Cloud through Cordata's own engine and needs a key rather than a CLI), `--run-id ID`, `--max-usd N`, `--max-rounds N`, `--max-parallel N` (default 3),
-`--no-research`, `--no-harden`, `--no-tier2`, `--no-screen`, `--no-conformance` and `--json`. With no installed worker, `run` and
+`--no-research`, `--no-harden`, `--no-tier2`, `--no-step-check`, `--no-screen`, `--no-conformance` and `--json`. With no installed worker, `run` and
 `resume` exit 78 before doing anything. Ctrl+C stops the run where it is and records it `cancelled`. Every run has a control file, `~/.cordata/orchestrator/<run_id>/control.ndjson`: a line `{"cmd":"pause"}` pauses the run at its next safe point (never mid-call), and the window's Hold button writes exactly that. `cordata resume <run_id> --direction "…"` adds your words to the next unfinished step's task and notes it on the run; `--workers` picks who continues. Every run writes
-`~/.cordata/orchestrator/<run_id>/plan.md` and `walkthrough.md`.
+`~/.cordata/orchestrator/<run_id>/plan.md` and `walkthrough.md`. Every run (and resume) also writes `receipt.json` there:
+criteria results, diffstat, cost, wall time and audit findings, and prints a one-line summary (not with `--json`).
 
 Set `orchestrator.pools` to your real plans so handoffs happen at the right moment. The defaults are conservative caps:
 
@@ -41,6 +42,21 @@ Set `orchestrator.pools` to your real plans so handoffs happen at the right mome
 ]
 ```
 
+Default pools your list does not name are added after it (the run prints a warning, and `cordata status` lists them),
+so what your list leaves out runs under the default caps, not uncapped. To keep a family out of a run, pass
+`--workers`. Each step of a parallel wave reserves its share of the run's `--max-usd` and of each pool's headroom when
+it starts; its retries spend from that share, and a step that spends it waits for the next wave. A CLI learns a
+request's cost only after it, so every worker is given its budget less a hold for one more request: twice the costliest
+request this run has made (before its first, the costliest in the ledger), at least a tenth of the budget and at most
+half. Each request re-sends a longer conversation, hence the doubling. Claude Code steps also stream their token counts
+(`--include-partial-messages`): Cordata prices every request as it streams, sub-agents' included, from Anthropic's list
+prices per model (a version the table does not name takes its family's dearest price, an unknown family the dearest of
+all; hour-long cache writes at 2x, the long-context tiers), and stops the CLI at the first update past the budget. Checked
+against a real Claude Code 2.1.317 call (`tests/fixtures/claude_haiku_5_5_partial_stream.jsonl`): the estimate came
+within 1% of the reported cost. What a request can still add after the line is its input (known when it starts) and the
+output of one update. The prices are a table in `workers/claude.rs` (from 2026-11-03); a price rise Anthropic makes later
+would make the estimate low until it is updated. Antigravity and Ollama Cloud steps are metered by the hold alone.
+
 Other `orchestrator.*` settings are in [`settings.md`](settings.md).
 
 ## How a run goes
@@ -49,7 +65,8 @@ Other `orchestrator.*` settings are in [`settings.md`](settings.md).
    quote). A deterministic check, no model, verifies each file reference; unverifiable findings are dropped, and the
    brief is refused if fewer than half survive.
 2. **Plan.** Steps name the files they may write, carry acceptance criteria that need no judgement (`command`, `test`,
-   `file_exists`, `file_not_changed`, `regex_match`), a `complexity` and `depends_on`. A plan with an unknown dependency,
+   `file_exists`, `file_not_changed`, `regex_match`, and `regex_absent` for text that must be gone from a file or a whole
+   directory), a `complexity` and `depends_on`. A plan with an unknown dependency,
    a cycle, or no step grounded in a finding is refused.
 3. **Execute.** Steps whose dependencies are done and whose write scopes are disjoint run together in copy-on-write
    sandboxes; a rollback restores only that step's scope. A step that defeats every attempt is retried with the strongest

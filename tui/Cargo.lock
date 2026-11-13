@@ -540,6 +540,7 @@ name = "cordata-doctor"
 version = "0.5.0"
 dependencies = [
  "clap",
+ "cordata-guard",
  "serde",
  "serde_json",
  "tempfile",
@@ -568,7 +569,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "toml",
- "unicode-width",
 ]
 
 [[package]]
@@ -577,6 +577,7 @@ version = "0.5.0"
 dependencies = [
  "regex",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

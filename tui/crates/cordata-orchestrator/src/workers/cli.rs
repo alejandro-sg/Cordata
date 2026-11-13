@@ -224,10 +224,6 @@ impl CliWorker {
         self.default_model = Some(model.into());
         self
     }
-    pub fn worker_id_override(mut self, id: &str) -> Self {
-        self.worker_id = id.into();
-        self
-    }
 
     /// `quota` events seen so far (the provider's own window readings).
     pub fn last_quota(&self) -> Value {

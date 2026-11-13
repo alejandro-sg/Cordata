@@ -7,12 +7,10 @@ pub mod error;
 pub mod events;
 pub mod history;
 pub mod hooks;
-pub mod library;
 pub mod native;
 pub mod permission;
 pub mod policy;
 pub mod session;
-pub mod skills;
 pub mod transport;
 
 pub use error::{Error, Result};

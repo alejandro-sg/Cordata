@@ -96,22 +96,6 @@ impl FileDiff {
         out
     }
 
-    /// The patch as it may be drawn: every line's text through [`crate::shown`] (a key the agent wrote into a file is
-    /// masked on screen like anywhere else), the line structure kept so a diff view can parse it.
-    pub fn display_patch(&self) -> String {
-        self.patch()
-            .lines()
-            .map(|line| {
-                let (prefix, rest) = line.split_at(line.chars().next().map_or(0, char::len_utf8));
-                match prefix {
-                    "+" | "-" | " " => format!("{prefix}{}", crate::shown(rest).replace('\n', " ")),
-                    _ => crate::shown(line).replace('\n', " "),
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-            + "\n"
-    }
 }
 
 /// Visual classification of a contiguous diff run inside a hunk.
@@ -466,15 +450,6 @@ Binary files a/logo.png and b/logo.png differ
         assert!(second.starts_with("diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -10,2 +10,3 @@"));
         assert!(!second.contains("todo!()"), "the other hunk is not in it");
         assert!(files[0].hunk_patch(2).is_none());
-    }
-
-    #[test]
-    fn a_key_in_a_diff_is_masked_on_screen_but_not_in_the_patch() {
-        let files = parse("diff --git a/.envrc b/.envrc\n--- a/.envrc\n+++ b/.envrc\n@@ -0,0 +1 @@\n+export KEY=sk-ant-abcdefghijklmnopqrstuvwxyz0123\n");
-        assert!(files[0].patch().contains("sk-ant-abcdefghijklmnopqrstuvwxyz0123"));
-        let shown = files[0].display_patch();
-        assert!(!shown.contains("sk-ant-abcdefghijklmnopqrstuvwxyz0123"), "{shown}");
-        assert_eq!(shown.lines().count(), files[0].patch().lines().count());
     }
 
     #[test]
