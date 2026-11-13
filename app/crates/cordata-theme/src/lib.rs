@@ -200,17 +200,6 @@ impl Palette {
     }
 }
 
-/// The colour of a session mode (`plan` · `build` · `edit` · `auto`), as a role. Never shown without the mode's name.
-pub fn mode_role(mode: &str) -> Role {
-    match mode {
-        "plan" => Role::Ok,
-        "build" => Role::Accent,
-        "edit" => Role::Attention,
-        "auto" => Role::Danger,
-        _ => Role::TextSecondary,
-    }
-}
-
 /// The type the app ships, by name (bundled, OFL; docs/app.md §4b). Front ends without them fall back to their own.
 pub mod fonts {
     /// Monospace: code, the HUD, tracked caps.
@@ -229,12 +218,6 @@ pub fn tracked(text: &str) -> String {
         out.extend(ch.to_uppercase());
     }
     out
-}
-
-/// A segmented bar for a fraction (`▰▰▰▱▱`), the HUD's gauge.
-pub fn segbar(fraction: f64, cells: usize) -> String {
-    let lit = ((fraction.clamp(0.0, 1.0) * cells as f64).round() as usize).min(cells);
-    "▰".repeat(lit) + &"▱".repeat(cells - lit)
 }
 
 #[cfg(test)]
@@ -304,11 +287,7 @@ mod tests {
     }
 
     #[test]
-    fn modes_map_to_roles() {
-        assert_eq!(mode_role("plan"), Role::Ok);
-        assert_eq!(mode_role("build"), Role::Accent);
-        assert_eq!(mode_role("edit"), Role::Attention);
-        assert_eq!(mode_role("auto"), Role::Danger);
+    fn colours_round_trip() {
         assert_eq!(NIGHT.get(Role::Accent).css(), "#3DC9A4");
         assert_eq!(Rgb::hex(0xFF9E3D).to_u32(), 0xFF9E3D);
     }
@@ -316,7 +295,5 @@ mod tests {
     #[test]
     fn hud_vocabulary() {
         assert_eq!(tracked("Cordata"), "C O R D A T A");
-        assert_eq!(segbar(0.5, 4), "▰▰▱▱");
-        assert_eq!(segbar(2.0, 3), "▰▰▰");
     }
 }

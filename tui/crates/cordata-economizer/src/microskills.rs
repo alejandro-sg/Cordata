@@ -183,14 +183,6 @@ impl MicroSkills {
         true
     }
 
-    /// A fact turned out wrong: halve its confidence and drop it once it is weak.
-    pub fn contradict(&mut self, id: &str) {
-        for skill in self.skills.iter_mut().filter(|s| s.id == id) {
-            skill.confidence *= 0.5;
-        }
-        self.skills.retain(|s| s.confidence >= RETIRE_BELOW);
-    }
-
     fn cap(&mut self, repo: &str) {
         let mut mine: Vec<(usize, f32, u64)> =
             self.skills.iter().enumerate().filter(|(_, s)| s.repo_id == repo).map(|(i, s)| (i, s.confidence, s.updated_at)).collect();
@@ -306,17 +298,6 @@ mod tests {
         skills.record(repo(), SkillCategory::Env, "package manager", "use bun", 5);
         let advices: Vec<&str> = skills.for_repo(repo()).iter().map(|s| s.advice.as_str()).collect();
         assert!(advices.contains(&"use bun") && !advices.contains(&"use yarn"), "{advices:?}");
-    }
-
-    #[test]
-    fn contradict_drops_weak_facts() {
-        let mut skills = MicroSkills::default();
-        skills.record(repo(), SkillCategory::Env, "db", "test db is on port 5433", 1);
-        let id = skills.for_repo(repo())[0].id.clone();
-        skills.contradict(&id); // 0.5 -> 0.25: weak but kept
-        assert_eq!(skills.len(), 1);
-        skills.contradict(&id);
-        assert_eq!(skills.len(), 0);
     }
 
     #[test]

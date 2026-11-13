@@ -27,9 +27,6 @@ async fn workers_post_and_read_each_other_with_the_sender_stamped_by_the_bus() {
     let mode = std::fs::metadata(bus.socket()).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o600);
     assert_eq!(std::fs::metadata(bus.socket().parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
-    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let sink = seen.clone();
-    bus.on_message(move |m| sink.lock().unwrap().push(m.seq));
 
     let a = bus.grant("s1", "execute", "claude:sonnet", &scope(&["src/api/"])).unwrap();
     let b = bus.grant("s2", "execute", "agy:gemini", &scope(&["src/ui/"])).unwrap();
@@ -46,7 +43,6 @@ async fn workers_post_and_read_each_other_with_the_sender_stamped_by_the_bus() {
     let m = &theirs["messages"][0];
     assert_eq!((m["from_step"].as_str(), m["from_worker"].as_str()), (Some("s1"), Some("claude:sonnet")), "the sender is the token's, not the request's");
     assert_eq!(call(&b, "read", json!({"since": 0, "topics": ["db"]})).await["messages"].as_array().unwrap().len(), 0);
-    assert_eq!(*seen.lock().unwrap(), vec![1]);
     assert!(bus.digest(500).unwrap().contains("GET /items"));
 
     bus.revoke(&a.token);

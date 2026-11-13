@@ -6,10 +6,8 @@
 //! 3. conversation history (append only; owned by the caller)
 //! 4. ephemeral tail (clock, uncommitted changes, running tasks)
 
-use std::sync::LazyLock;
 
 use ahash::RandomState;
-use regex::Regex;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Layout {
@@ -17,16 +15,6 @@ pub struct Layout {
     pub system: String,
     /// Slot 4, to append to the final message of a request and never keep in history. Empty when there is none.
     pub tail: String,
-}
-
-static VOLATILE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}|\b\d{1,2}:\d{2}:\d{2}\b|\b[0-9a-f]{40}\b|\b[0-9a-f]{7,12}\b.*\bHEAD\b|\bpid[ =:]+\d+")
-        .expect("static regex")
-});
-
-/// Parts of `text` that would change between requests and so break the cached prefix.
-pub fn volatile_findings(text: &str) -> Vec<String> {
-    VOLATILE.find_iter(text).map(|m| m.as_str().to_owned()).collect()
 }
 
 /// Builds the layout. `volatile` lines (clock, git status, running tasks) go to the tail.
@@ -68,10 +56,6 @@ impl PrefixTracker {
         stable
     }
 
-    /// Share of requests after the first that reused the prefix.
-    pub fn hit_rate(&self) -> f64 {
-        if self.requests <= 1 { 1.0 } else { 1.0 - self.breaks as f64 / (self.requests - 1) as f64 }
-    }
 }
 
 #[cfg(test)]
@@ -85,17 +69,9 @@ mod tests {
         let b = layout("You are Cordata.", &skills, &["time: 10:05:44".into(), "git: 3 files changed".into()]);
         assert_eq!(a.system, b.system);
         assert_ne!(a.tail, b.tail);
-        assert!(a.system.contains("use make test") && volatile_findings(&a.system).is_empty());
+        assert!(a.system.contains("use make test"));
         assert!(a.tail.starts_with("<context>"));
         assert_eq!(layout("p", &[], &[]).tail, "");
-    }
-
-    #[test]
-    fn findings_flag_prefix_jitter() {
-        assert!(!volatile_findings("now it is 2026-11-01 10:00 sharp").is_empty());
-        assert!(!volatile_findings("at 10:00:01 we started").is_empty());
-        assert!(!volatile_findings("commit 0123456789abcdef0123456789abcdef01234567").is_empty());
-        assert!(volatile_findings("You are Cordata, a coding agent.").is_empty());
     }
 
     #[test]
@@ -106,8 +82,7 @@ mod tests {
             stable.observe("sys", "tools");
             jittery.observe(&format!("sys {round}"), "tools");
         }
-        assert!(stable.hit_rate() > 0.9 && stable.breaks == 0);
-        assert!(jittery.hit_rate() < 0.1);
+        assert!(stable.breaks == 0 && jittery.breaks >= 19);
     }
 
     #[test]

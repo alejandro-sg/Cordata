@@ -282,12 +282,6 @@ pub fn agy_home_rules(home: &str) -> Vec<String> {
     lines
 }
 
-/// The base profile with the scope rules spliced in after `(allow default)` and before the secret denials, so the
-/// denials still win (Seatbelt takes the last matching rule).
-pub fn scoped_profile<S: AsRef<str>>(root: &str, scope: &[S], home: &str) -> String {
-    scoped_profile_with_bus(root, scope, home, None)
-}
-
 /// The scoped profile, plus a connect allowance for this run's bus socket. It lives under `~/.cordata`, which stays
 /// unreadable and unwritable: the worker can talk to its own bus but not replace it or reach another run's.
 pub fn scoped_profile_with_bus<S: AsRef<str>>(root: &str, scope: &[S], home: &str, bus_socket: Option<&str>) -> String {
@@ -431,7 +425,7 @@ mod tests {
         let _a = std::os::unix::net::UnixListener::bind(&inside_sock).unwrap();
         let _b = std::os::unix::net::UnixListener::bind(&outside_sock).unwrap();
         let root = project.path().to_str().unwrap();
-        let profile = scoped_profile(root, &["a.txt"], "/Users/nobody");
+        let profile = scoped_profile_with_bus(root, &["a.txt"], "/Users/nobody", None);
         let reach = |path: &std::path::Path| {
             std::process::Command::new("/usr/bin/sandbox-exec")
                 .args(["-p", &profile, "/usr/bin/nc", "-U", "-w", "1", &path.to_string_lossy()])
@@ -452,7 +446,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_str().unwrap();
         let real = std::fs::canonicalize(root).unwrap().to_string_lossy().into_owned();
-        let profile = scoped_profile(root, &["src/"], "/Users/x");
+        let profile = scoped_profile_with_bus(root, &["src/"], "/Users/x", None);
         let deny = profile.find("(deny network-outbound (remote unix-socket))").expect("sockets are refused first");
         let allow = profile.find(&format!("(allow network-outbound (remote unix-socket (subpath \"{real}\")))")).unwrap();
         assert!(profile.contains("(allow network-outbound (remote unix-socket (path-literal \"/private/var/run/mDNSResponder\")))"), "DNS has its own rule");

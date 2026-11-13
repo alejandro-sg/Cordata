@@ -53,11 +53,6 @@ pub(crate) fn request(id: &str, name: &str, args: &Value) -> PermissionInfo {
     }
 }
 
-#[allow(dead_code)]
-pub(crate) fn interpret(decision: ApprovalDecision) -> Verdict {
-    interpret_call("", decision)
-}
-
 pub(crate) fn interpret_call(name: &str, decision: ApprovalDecision) -> Verdict {
     match decision {
         ApprovalDecision::Allow => {
@@ -111,10 +106,10 @@ mod tests {
 
     #[test]
     fn decisions_map_to_verdicts() {
-        assert_eq!(interpret(ApprovalDecision::Allow), Verdict::Allow { always: false });
-        assert_eq!(interpret(ApprovalDecision::AllowAlways), Verdict::Allow { always: true });
-        assert!(matches!(interpret(ApprovalDecision::Reject), Verdict::Deny(_)));
-        assert!(matches!(interpret(ApprovalDecision::Say("no".into())), Verdict::Deny(m) if m.ends_with(": no")));
+        assert_eq!(interpret_call("", ApprovalDecision::Allow), Verdict::Allow { always: false });
+        assert_eq!(interpret_call("", ApprovalDecision::AllowAlways), Verdict::Allow { always: true });
+        assert!(matches!(interpret_call("", ApprovalDecision::Reject), Verdict::Deny(_)));
+        assert!(matches!(interpret_call("", ApprovalDecision::Say("no".into())), Verdict::Deny(m) if m.ends_with(": no")));
     }
 
     #[test]

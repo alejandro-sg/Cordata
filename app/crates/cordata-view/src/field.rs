@@ -109,16 +109,6 @@ impl Camera {
     }
 }
 
-/// Does this thread belong on the field right now? Only what asks for attention, or is the thing you picked.
-/// Everything else is history: it is counted, one click from showing, and never competes with what is moving.
-pub fn matters(item: &TriageIn, picked: Option<usize>) -> bool {
-    item.gate_title.is_some()
-        || item.state == crate::app::TabState::Working
-        || !item.overlaps.is_empty()
-        || crate::flight::ready(item)
-        || picked == Some(item.slot)
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Chip {
     pub name: String,
@@ -425,24 +415,6 @@ mod tests {
         assert!(l.y1 > l.y0 && l.x < f.nodes[0].x);
         let chip = |slot: usize| f.nodes.iter().find(|n| n.slot == slot).unwrap().chips[0].contested;
         assert!(chip(1) && chip(3) && !chip(2), "the reader's chip is not marked contested");
-    }
-
-    #[test]
-    fn only_what_asks_for_attention_is_on_the_field() {
-        let idle = thread(1, "/p/app");
-        assert!(!matters(&idle, None), "an idle thread with no changes is history");
-        assert!(matters(&idle, Some(1)), "unless you picked it");
-        let mut working = thread(2, "/p/app");
-        working.state = TabState::Working;
-        let mut gated = thread(3, "/p/app");
-        gated.gate_title = Some("edit".into());
-        let mut ready = thread(4, "/p/app");
-        ready.files = 2;
-        let mut clashing = thread(5, "/p/app");
-        clashing.overlaps = vec![6];
-        for t in [&working, &gated, &ready, &clashing] {
-            assert!(matters(t, None), "{}", t.title);
-        }
     }
 
     #[test]
