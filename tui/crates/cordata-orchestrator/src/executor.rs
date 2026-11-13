@@ -403,10 +403,14 @@ impl<'a> StepExecutor<'a> {
                 self.out(|o| (o.status, o.reason) = (status.into(), reason.into()));
                 return;
             }
-            let wave = form_wave(&pending, &done, self.cfg.max_parallel);
+            let mut wave = form_wave(&pending, &done, self.cfg.max_parallel);
             // Each step of a wave gets a share of the run's budget reserved now. A step that spends its share goes back
-            // to pending, and the next wave shares out what is left again.
+            // to pending, and the next wave shares out what is left again. Fewer tokens left than steps would make
+            // zero-token shares that can do nothing: then one step runs alone, on the whole remainder.
             let left = self.envelope();
+            if left.remaining_tokens.is_some_and(|t| t < wave.len() as i64) {
+                wave.truncate(1);
+            }
             if wave.is_empty() {
                 let ids: Vec<&str> = pending.iter().map(|s| s.step_id.as_str()).collect();
                 self.out(|o| {
@@ -604,12 +608,19 @@ impl<'a> StepExecutor<'a> {
             // In a wave, the pool's headroom is split too, and the run's money comes from this step's reserved share.
             let pool = self.pool_id(&candidate);
             let wave = ctx.wave as f64;
-            let mut reserve = |v: f64| if ctx.wave > 1 { ctx.pool_share.entry(pool.clone()).or_insert(v / wave).min(v) } else { v };
+            let spent_here = ctx.pool_share.contains_key(&pool);
+            let mut reserve = |v: f64| if ctx.wave > 1 { ctx.pool_share.entry(pool.clone()).or_insert(v / wave).min(v).max(0.0) } else { v };
             let (pool_usd, pool_tokens) = match allowance {
                 Allowance::Usd(v) => (Some(reserve(v)), None),
                 Allowance::Tokens(v) => (None, Some(reserve(v as f64) as i64)),
                 Allowance::Unbounded => (None, None),
             };
+            // A step whose share of this pool is spent waits for the next wave too, as for its share of the run.
+            if ctx.wave > 1 && spent_here && (pool_usd.is_some_and(|u| u <= 0.0) || pool_tokens.is_some_and(|t| t <= 0)) {
+                self.update_step(index, |s| if s.status == "running" { s.status = "pending".into() });
+                self.emit("share_spent", json!({"step_id": step.step_id, "pool_id": pool}));
+                return "deferred";
+            }
             let (run_usd, run_tokens) = if ctx.wave > 1 { ctx.share } else { (envelope.remaining_usd, envelope.remaining_tokens) };
             let budget_usd = self.ledger.hold_back(&self.run_id, min_opt(pool_usd, run_usd));
             let budget_tokens = min_opt(pool_tokens, run_tokens);

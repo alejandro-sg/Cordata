@@ -502,6 +502,20 @@ async fn a_step_that_spends_its_share_waits_for_the_next_wave_instead_of_ending_
 }
 
 #[tokio::test]
+async fn fewer_tokens_left_than_steps_runs_them_one_at_a_time_instead_of_spinning() {
+    let e = env(two_pools(100_000.0));
+    let a = worker("a", 1, 0.0, |_, _| None);
+    let cp = CopyCheckpoints::new(&e.store);
+    let mut d = draft(4, "rollback_checkpoint");
+    d["steps"][3]["depends_on"] = json!(["s1", "s2", "s3"]);
+    let plan = plan::from_draft(&d, "/x", Options { max_usd: 100.0, max_tokens: Some(2), ..Default::default() }, None).unwrap();
+    let ex = exec(&e, plan, vec![runnable(&a, "m", "claude_code", "anthropic")], &cp, Config::default());
+    let out = tokio::time::timeout(std::time::Duration::from_secs(10), ex.run()).await.expect("no livelock");
+    assert_eq!(out.status, "budget_exhausted", "{}", out.reason);
+    assert!(kinds(&e, "share_spent").is_empty());
+}
+
+#[tokio::test]
 async fn a_failed_step_in_a_wave_rolls_back_only_its_own_scope() {
     let e = env(two_pools(100_000.0));
     let a = worker("a", 1, 0.0, |step, _| {
