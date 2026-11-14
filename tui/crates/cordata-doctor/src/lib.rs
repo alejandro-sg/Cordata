@@ -1,6 +1,8 @@
 //! Is everything this tool leans on actually there, and what is the
 //! one command that fixes each gap? Every check is local; a key is only ever asked about ("is there one?").
 
+pub mod docs;
+
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};

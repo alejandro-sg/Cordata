@@ -13,6 +13,7 @@ Index and operational invariants for coding agents working on Cordata. Keep this
 | `make tui-test` | Runs the Rust tests for the terminal workspace (`tui/`) |
 | `make app-test` | Runs Rust tests for native GPUI macOS application (`cordata-app`) |
 | `cordata doctor` | Inspects environment, CLIs, model providers, and Seatbelt sandbox |
+| `cordata doctor --docs` | Lists `ARCHITECTURE.md` / `docs/*.md` sections whose `<!-- covers: paths @ rev -->` files changed since review; `--stamp` marks them reviewed at HEAD |
 | `make secrets` | Scans workspace for exposed API keys, tokens, or credentials (`cordata-secrets`) |
 
 ---

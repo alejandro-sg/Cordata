@@ -42,7 +42,7 @@ use crate::worker::{EventSink, TaskPacket, WorkerEvent, WorkerResult};
 
 pub const TERMINAL: [&str; 4] = ["done", "failed", "budget_exhausted", "cancelled"];
 
-pub const PLAN_BRIEF: &str = "Plan the work below for this project. Steps must be small and ordered; each lists exactly the files it may create or change (file_scope, project-relative). Acceptance criteria must be checkable without judgement: a command or test with its expected exit code, a file that must exist or must not change, or 'path::regex'. To require that something is gone, use the regex_absent type ('path::regex', where path is a file or a directory): it passes when nothing there matches or the path no longer exists; never use regex_match on a file the plan deletes. Every verifier command must exit 0 exactly when the work is right: a bare grep for text that should be absent exits 1 on success, so write `! grep ...` or use regex_absent, and never end a command with `; echo ...` or `|| true`. Prefer the project's own test command as a criterion.";
+pub const PLAN_BRIEF: &str = "Plan the work below for this project. Steps must be small and ordered; each lists exactly the files it may create or change (file_scope, project-relative). Acceptance criteria must be checkable without judgement: a command or test with its expected exit code, a file that must exist or must not change, or 'path::regex'. To require that something is gone, use the regex_absent type ('path::regex', where path is a file or a directory): it passes when nothing there matches or the path no longer exists; never use regex_match on a file the plan deletes. Every verifier command must exit 0 exactly when the work is right: a bare grep for text that should be absent exits 1 on success, so write `! grep ...` or use regex_absent, and never end a command with `; echo ...` or `|| true`. Prefer the project's own test command as a criterion. For every step also give `behavior` (what a person can observe once the step is done, in plain words, no file names) and `because` (the problem it removes).";
 
 /// The draft schema a planner answers against.
 pub fn draft_schema() -> Value {
@@ -54,7 +54,8 @@ pub fn draft_schema() -> Value {
         "steps": {"type": "array", "minItems": 1, "maxItems": plan::MAX_STEPS, "items": {"type": "object", "required": ["step_id", "name", "description", "file_scope"], "properties": {
             "step_id": {"type": "string"}, "name": {"type": "string"}, "description": {"type": "string"}, "file_scope": {"type": "array", "items": {"type": "string"}},
             "risk": {"enum": plan::RISKS}, "rollback_policy": {"enum": plan::ROLLBACK}, "grounded_in": {"type": "array", "items": {"type": "string"}},
-            "complexity": {"enum": plan::COMPLEXITIES}, "depends_on": {"type": "array", "items": {"type": "string"}}}}},
+            "complexity": {"enum": plan::COMPLEXITIES}, "depends_on": {"type": "array", "items": {"type": "string"}},
+            "behavior": {"type": "string"}, "because": {"type": "string"}}}},
         "verifier_commands": {"type": "array", "items": {"type": "string"}}, "assumptions": {"type": "array", "items": {"type": "string"}}}})
 }
 
@@ -122,6 +123,10 @@ pub struct RunConfig {
     pub step_check: bool,    /// End in `to_review` with the work kept, rather than restore, when a sound change fails only a few checks.
     #[serde(default = "d_true")]
     pub keep_for_review: bool,
+    /// Stop after the first plan is written, so a person reads its expected behavior before any worker spawns; a resume
+    /// then executes it. Replans after a failed audit are not held again.
+    #[serde(default)]
+    pub review_plan: bool,
 }
 
 impl Default for RunConfig {
@@ -146,6 +151,7 @@ impl Default for RunConfig {
             land: "all".into(),
             step_check: true,
             keep_for_review: true,
+            review_plan: false,
         }
     }
 }
@@ -907,6 +913,12 @@ impl<'a> Machine<'a> {
                 Ok(plan) => {
                     let (id, steps) = (plan.plan_id.clone(), plan.steps.len());
                     self.plan = Some(plan);
+                    if self.config.review_plan && self.record.replans == 0 {
+                        self.record.resume_state = Some("execute".into());
+                        self.record.reason = "the plan awaits approval: read plan.md, then resume the run to build it".into();
+                        self.transition("paused", json!({"reason": "plan_review", "plan_id": id, "steps": steps, "planner": candidate.key(), "resume": "execute"}));
+                        return true;
+                    }
                     self.transition("execute", json!({"plan_id": id, "steps": steps, "planner": candidate.key()}));
                     return true;
                 }
@@ -1480,7 +1492,8 @@ impl<'a> Machine<'a> {
     /// Adds what this run taught to the project's knowledge (`knowledge::lessons`). A run that only paused for the
     /// person teaches nothing new.
     fn remember(&mut self) {
-        if self.record.state == "paused" && self.record.reason.is_empty() {
+        let held_for_review = self.record.history.last().and_then(|h| h.get("reason")).and_then(Value::as_str) == Some("plan_review");
+        if self.record.state == "paused" && (self.record.reason.is_empty() || held_for_review) {
             return;
         }
         let now = cordata_checkpoints::now();
@@ -1655,6 +1668,8 @@ fn synthetic_step() -> Step {
         depends_on: Vec::new(),
         last_event_at: None,
         blocked_reason: None,
+        behavior: String::new(),
+        because: String::new(),
     }
 }
 

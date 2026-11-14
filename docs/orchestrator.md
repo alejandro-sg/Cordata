@@ -31,7 +31,15 @@ environment form of the flag.
 `--no-research`, `--no-harden`, `--no-tier2`, `--no-step-check`, `--no-screen`, `--no-conformance` and `--json`. With no installed worker, `run` and
 `resume` exit 78 before doing anything. Ctrl+C stops the run where it is and records it `cancelled`. Every run has a control file, `~/.cordata/orchestrator/<run_id>/control.ndjson`: a line `{"cmd":"pause"}` pauses the run at its next safe point (never mid-call), and the window's Hold button writes exactly that. `cordata resume <run_id> --direction "…"` adds your words to the next unfinished step's task and notes it on the run; `--workers` picks who continues. Every run writes
 `~/.cordata/orchestrator/<run_id>/plan.md` and `walkthrough.md`. Every run (and resume) also writes `receipt.json` there:
-criteria results, diffstat, cost, wall time and audit findings, and prints a one-line summary (not with `--json`).
+criteria results, diffstat, cost, wall time and audit findings, and prints a one-line summary (not with `--json`). Its
+`logic` list is the run read as a logic diff: for each plan step, the behavior it was to bring and why (`behavior`,
+`because`, which the planner writes in plain words; a step without them falls back to its description), how the step
+ended, and the changed files inside its scope. It comes from the plan and the checkpoint store, never from a model.
+
+`run --review-plan` (or `orchestrator.reviewPlan`) stops after the first plan is written: the run is `paused`, no worker
+has built anything, and the plan with each step's expected behavior is printed and saved as `plan.md`. Read it, then
+`cordata resume <run_id>` builds it; to change course, cancel and run again with a better goal. A replan after a failed
+audit is not held again.
 
 Set `orchestrator.pools` to your real plans so handoffs happen at the right moment. The defaults are conservative caps:
 
@@ -143,6 +151,7 @@ but built for untrusted workers:
   Each wave's messages are emitted as a `bus_messages` event. `CORDATA_BUS=off` disables the bus.
 
 ## Code
+<!-- covers: tui/crates/cordata-orchestrator, tui/crates/cordata-run -->
 
 `tui/crates/cordata-orchestrator`: `machine.rs` (the durable state machine in `state.db`), `research.rs`, `plan.rs`,
 `executor.rs`, `audit.rs`, `handoff.rs`, `dispatch.rs` and `bandit.rs`, `synthesizer.rs`, `scope.rs`, `checkpoints.rs`,

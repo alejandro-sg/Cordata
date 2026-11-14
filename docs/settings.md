@@ -92,6 +92,7 @@ Each is capped at 20,000 characters. `/memory` lists what was found and `/init` 
 | `orchestrator.tier2` | bool | true | the planner audits the result against its plan |
 | `orchestrator.stepCheck` | bool | true | after each step that changed Rust sources, `cargo check` runs where the step worked; a change that does not build fails the step and the next attempt gets the compiler errors. Off for a run whose project did not build before its first step |
 | `orchestrator.keepForReview` | bool | true | when retries and the replan are spent but the change is in scope, builds, and at least two checks in three pass, the run ends in `to_review` with the work left in the project and the failing checks named, instead of restoring the project |
+| `orchestrator.reviewPlan` | bool | false | pause after the first plan so you read its expected behavior before any worker builds (`--review-plan` for one run); `cordata resume <run_id>` then builds it |
 | `orchestrator.screen` | bool | true | a reviewer model screens the audit's commands before any runs (`--no-screen` for one run); the pattern guard runs either way |
 | `orchestrator.dispatch`, `.lambda`, `.mu` | | | the learned dispatch policy and its cost and risk weights |
 

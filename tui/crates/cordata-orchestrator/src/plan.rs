@@ -86,6 +86,13 @@ pub struct Step {
     pub last_event_at: Option<f64>,
     #[serde(default)]
     pub blocked_reason: Option<String>,
+    /// What a person can observe once this step is done, in plain words — the preview a plan is approved on, and the
+    /// "expected" half of the receipt's logic diff. Empty for a plan that did not say.
+    #[serde(default)]
+    pub behavior: String,
+    /// Why the step is wanted: the problem it removes. Empty for a plan that did not say.
+    #[serde(default)]
+    pub because: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -152,6 +159,12 @@ impl Plan {
             lines.push(format!("{}. [{}] **{}** (`{}`, {}, {}) — {}", i + 1, step.status, step.name, step.step_id, step.risk, step.complexity, step.description));
             let scope = if step.file_scope.is_empty() { "(read only)".to_owned() } else { step.file_scope.join(", ") };
             lines.push(format!("   scope: {scope}"));
+            if !step.behavior.is_empty() {
+                lines.push(format!("   expected: {}", step.behavior));
+            }
+            if !step.because.is_empty() {
+                lines.push(format!("   because: {}", step.because));
+            }
             if !step.depends_on.is_empty() {
                 lines.push(format!("   depends on: {}", step.depends_on.join(", ")));
             }
@@ -314,6 +327,11 @@ fn schema_problems(draft: &Value) -> Vec<String> {
                 }
                 for key in ["step_id", "name", "description"] {
                     want_string(s, key, &path, &mut out);
+                }
+                for key in ["behavior", "because"] {
+                    if let Some(v) = s.get(key).filter(|v| !v.is_string()) {
+                        out.push(format!("{path}/{key}: {v} is not of type 'string'"));
+                    }
                 }
                 match s.get("file_scope") {
                     None => out.push(format!("{path}: 'file_scope' is a required property")),
@@ -516,6 +534,8 @@ pub fn from_draft(draft: &Value, root: &str, options: Options, findings: Option<
                 depends_on: strings(s.get("depends_on")),
                 last_event_at: None,
                 blocked_reason: None,
+                behavior: text(s.get("behavior")),
+                because: text(s.get("because")),
             }
         })
         .collect();

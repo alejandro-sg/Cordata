@@ -36,6 +36,7 @@ pub struct RunArgs {
     pub max_rounds: Option<i64>,
     pub max_parallel: Option<usize>,
     pub no_harden: bool,
+    pub review_plan: bool,
     pub no_research: bool,
     pub research: bool,
     pub no_conformance: bool,
@@ -162,6 +163,7 @@ pub fn run_args_to_config(args: &RunArgs, base: RunConfig) -> RunConfig {
         c.max_usd = v;
     }
     c.harden &= !args.no_harden;
+    c.review_plan |= args.review_plan;
     c.tier2 &= !args.no_tier2;
     c.step_check &= !args.no_step_check;
     c.screen &= !args.no_screen;
@@ -227,6 +229,11 @@ async fn drive(mut machine: Machine<'_>) -> RunRecord {
 
 fn finish(record: &RunRecord, as_json: bool, receipt: &str) -> i32 {
     if !as_json {
+        // A run held for approval shows what it expects to build, so the decision is made on this screen.
+        let held = record.history.last().and_then(|h| h.get("reason")).and_then(Value::as_str) == Some("plan_review");
+        if let (true, Some(plan)) = (held && record.state == "paused", record.plan.as_ref().and_then(|p| Plan::from_json(p).ok())) {
+            println!("\n{}", plan.render());
+        }
         println!("\n{}: {}{}", record.run_id, record.state, if record.reason.is_empty() { String::new() } else { format!(" — {}", record.reason) });
         for w in &record.warnings {
             println!("  warning: {w}");
