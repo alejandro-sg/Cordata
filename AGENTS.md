@@ -77,5 +77,6 @@ Only read these documents when their specific domain is relevant:
 Cordata is positioned as a supervisor around Claude Code and Antigravity ([README.md](README.md)). While the trial runs:
 
 - **Frozen** unless a [trial-log](docs/trial-log.md) friction entry names the need: UI and brand work, `cordata evolve`, and chat-engine parity features (plan mode, rewind, images, sub-agents).
-- **In scope**: the wrap (dock terminal, `--detach`/`attach`, an API-key Claude worker), shorter review (diff annotations, base-divergence check, worker-to-person "blocked"), and the measurements in the trial log.
+- **In scope**: the wrap (dock terminal, `--detach`/`attach`), shorter review (diff annotations, base-divergence check, worker-to-person "blocked"), and the measurements in the trial log.
 - Every commit in scope says which friction entry or metric it serves.
+- **Decided against**: an API-key Claude worker. Claude runs only through the user's own `claude` binary and login; Cordata never stores or reads another tool's credentials.
