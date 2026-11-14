@@ -80,7 +80,7 @@ Each is capped at 20,000 characters. `/memory` lists what was found and `/init` 
 `expanded`); `/thinking` and `/tools` flip them for the session.
 
 ## Orchestrator (`cordata run`)
-<!-- covers: tui/crates/cordata-run/src/config.rs -->
+<!-- covers: tui/crates/cordata-run/src/config.rs @ f1d1057 -->
 
 | key | values | default | what |
 |---|---|---|---|
@@ -137,7 +137,7 @@ that exact file, otherwise `~/.cordata/hooks.json` (`$CORDATA_HOME/hooks.json`; 
   malformed project file does not run, and the chat says so.
 
 ## Built-in guard
-<!-- covers: tui/crates/cordata-guard -->
+<!-- covers: tui/crates/cordata-guard @ f1d1057 -->
 
 Before the approval prompt, the chat engine refuses (without asking) edits to `.env` files and inside `.git/`,
 recursive deletes of `/`, `~` or `..`, and shell redirects into `.env`. It is not configurable. The same rules live in

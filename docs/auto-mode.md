@@ -74,7 +74,7 @@ One helper in cordata-view, used by tool rows, groups and the approval card:
 - The engine gets a `Command::SetMode(Mode)` so the switch applies from the next tool call, mid-turn.
 
 ### 2.2 What auto lets through (deterministic, in `acp-core`)
-<!-- covers: tui/crates/acp-core/src/auto.rs -->
+<!-- covers: tui/crates/acp-core/src/auto.rs @ f1d1057 -->
 
 The order in `engine.rs` stays: guard, network-off, deny rules, allow rules. Auto mode only replaces the **ask** step,
 through a pure function `auto::judge(tool, args, cwd, policy) -> Judgement { Allow(reason) | Ask(reason) }`:

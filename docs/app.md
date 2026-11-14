@@ -58,7 +58,7 @@ you look, and ⌘J (Go → Thread That Needs You) goes to the next one waiting o
 notification says when a thread finishes or needs you while the window is in the back (Settings → General).
 
 ### The field (⌘0)
-<!-- covers: app/crates/cordata-view/src/field.rs, app/crates/cordata-view/src/runs.rs, app/crates/cordata-app/src/workspace/field.rs -->
+<!-- covers: app/crates/cordata-view/src/field.rs, app/crates/cordata-view/src/runs.rs, app/crates/cordata-app/src/workspace/field.rs @ f1d1057 -->
 
 The canvas opens on the **field**: the project's open threads as nodes, this project's newest orchestrated runs beside
 them, a goal bar on top (the composer), an attention rail on the right and a tape of the newest run along the bottom.
@@ -145,7 +145,7 @@ the connecting process's user, not just the file's mode). A prompt sent this way
 and the chat sandbox cannot reach the socket. `CORDATA_APP_CONTROL=off` keeps the window from listening.
 
 ## Crates (`app/crates`)
-<!-- covers: app/Cargo.toml -->
+<!-- covers: app/Cargo.toml @ f1d1057 -->
 
 - `cordata-view`: the state the terminal and the app share: the reducer (`App::on_event`), slash commands, input, menus,
   the settings schema and editor, run board, the field, run feed and menu bar models, and the secret-masking table (`redact.rs`, tested against
