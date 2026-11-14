@@ -94,6 +94,7 @@ impl Workspace {
                 can_hold: r.can_hold(),
                 can_resume: r.can_resume(),
                 awaits_approval: r.awaits_approval,
+                asks: r.asks(),
                 last_handoff: r.handoffs.last().map(|h| format!("{} → {} · {}", h.from, h.to.clone().unwrap_or_else(|| "…".into()), cordata_view::runs::reason_words(&h.reason))),
             })
             .collect();

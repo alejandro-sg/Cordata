@@ -26,6 +26,7 @@ pub fn status_data(ledger: &Ledger, limit: usize) -> Value {
                 "run_id": r.run_id, "state": r.state, "goal": r.goal.chars().take(120).collect::<String>(), "cwd": r.cwd, "updated": r.updated,
                 "handoffs": r.handoffs.len(), "drift_retries": r.drift_retries, "replans": r.replans, "reason": r.reason.chars().take(200).collect::<String>(),
                 "usage": usage_totals(&usage),
+                "needs_you": needs_you(r),
             })
         })
         .collect();
@@ -54,6 +55,21 @@ pub fn status_data(ledger: &Ledger, limit: usize) -> Value {
         })
         .collect();
     json!({"pools": pools, "runs": runs, "handoffs": handoffs, "ts": cordata_checkpoints::now()})
+}
+
+/// The steps of a run that wait on the person: a question a worker stopped on, and how to answer it.
+pub fn needs_you(run: &machine::RunRecord) -> Vec<Value> {
+    let steps = run.plan.as_ref().and_then(|p| p.get("steps")).and_then(Value::as_array).cloned().unwrap_or_default();
+    steps
+        .iter()
+        .filter(|s| s.get("status").and_then(Value::as_str) == Some("blocked"))
+        .map(|s| {
+            let step = s.get("step_id").and_then(Value::as_str).unwrap_or("");
+            let reason = s.get("blocked_reason").and_then(Value::as_str).unwrap_or("needs you");
+            let question = reason.strip_prefix(cordata_orchestrator::executor::ASKS).unwrap_or(reason);
+            json!({"step_id": step, "question": question.chars().take(300).collect::<String>(), "answer": format!("cordata resume {} --direction \"…\"", run.run_id)})
+        })
+        .collect()
 }
 
 pub fn gauge(pct: Option<f64>, width: usize) -> String {
@@ -137,6 +153,16 @@ pub fn render(data: &Value, marks: bool) -> String {
         lines.extend(runs.iter().map(|r| format!("│  {}", run_line(r))));
     }
     lines.push(bot.clone());
+    let waiting: Vec<(String, &Value)> = runs.iter().flat_map(|r| r.get("needs_you").and_then(Value::as_array).into_iter().flatten().map(move |n| (r.get("run_id").and_then(Value::as_str).unwrap_or("").to_owned(), n))).collect();
+    if !waiting.is_empty() {
+        lines.push(format!("╭── Needs You {}╮", "─".repeat(width - 14)));
+        for (run_id, n) in &waiting {
+            let text = |k: &str| n.get(k).and_then(Value::as_str).unwrap_or("");
+            lines.push(format!("│  {run_id} · step {} asks: {}", text("step_id"), text("question")));
+            lines.push(format!("│    answer: {}", text("answer")));
+        }
+        lines.push(bot.clone());
+    }
     let handoffs = list("handoffs");
     lines.push(format!("╭── Recent Handoffs {}╮", "─".repeat(width - 20)));
     if handoffs.is_empty() {
@@ -151,6 +177,21 @@ pub fn render(data: &Value, marks: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_parked_step_is_listed_under_needs_you_with_the_way_to_answer() {
+        let mut run = machine::RunRecord::new("run-9", "goal", "/p", "general", None);
+        run.plan = Some(json!({"steps": [
+            {"step_id": "s1", "status": "blocked", "blocked_reason": "asks: sqlite or postgres?"},
+            {"step_id": "s2", "status": "completed"},
+        ]}));
+        let rows = needs_you(&run);
+        assert_eq!(rows, vec![json!({"step_id": "s1", "question": "sqlite or postgres?", "answer": "cordata resume run-9 --direction \"…\""})]);
+        let text = render(&json!({"pools": [], "handoffs": [], "runs": [{"run_id": "run-9", "state": "execute", "goal": "goal", "needs_you": rows}]}), false);
+        assert!(text.contains("Needs You") && text.contains("run-9 · step s1 asks: sqlite or postgres?") && text.contains("answer: cordata resume run-9 --direction"), "{text}");
+        let quiet = render(&json!({"pools": [], "handoffs": [], "runs": []}), false);
+        assert!(!quiet.contains("Needs You"));
+    }
 
     #[test]
     fn compact_and_gauge_match_the_python_helpers() {

@@ -64,6 +64,8 @@ pub struct RunIn {
     /// Held after planning, before anything is built: the resume is an approval.
     pub awaits_approval: bool,
     pub last_handoff: Option<String>,
+    /// Steps parked on a question a worker stopped to ask: `(step id, question)`. They wait on the person.
+    pub asks: Vec<(String, String)>,
 }
 
 /// What a click means.
@@ -142,7 +144,7 @@ fn plural(n: usize, one: &str, many: &str) -> String {
 
 pub fn build(gates: &[GateIn], threads: &[ThreadIn], runs: &[RunIn]) -> Tray {
     let working = threads.iter().filter(|t| t.state == TabState::Working).count() + runs.iter().filter(|r| r.can_hold).count();
-    let waiting = gates.len();
+    let waiting = gates.len() + runs.iter().map(|r| r.asks.len()).sum::<usize>();
 
     // The mark as text: the node at the gate when you are needed, inside the loop while work runs, the bare loop when quiet.
     let (mark, said) = if waiting > 0 {
@@ -197,6 +199,14 @@ pub fn build(gates: &[GateIn], threads: &[ThreadIn], runs: &[RunIn]) -> Tray {
             Some(h) => format!("run · {state} · {h}"),
             None => format!("run · {state}"),
         }, LINE)));
+        for (step, question) in &r.asks {
+            items.push(Item::Note(clip(&format!("{step} asks: {question}"), LINE)));
+        }
+        if !r.asks.is_empty() {
+            // A question is answered with words, not a click: the window shows it, `resume --direction` answers it.
+            items.push(Item::Note(clip(&format!("answer: cordata resume {} --direction \"…\"", r.run_id), LINE)));
+            items.push(Item::Action { id: Action::ShowField.id(), title: "Show in Cordata…".into() });
+        }
         if r.can_hold {
             items.push(Item::Action { id: Action::Hold(r.run_id.clone()).id(), title: "Hold at next safe point".into() });
         }
@@ -258,12 +268,23 @@ mod tests {
 
     #[test]
     fn a_live_run_counts_as_working_and_a_held_one_does_not() {
-        let live = RunIn { run_id: "run-a".into(), goal: "g".into(), state: "execute".into(), can_hold: true, can_resume: false, awaits_approval: false, last_handoff: None };
-        let held = RunIn { run_id: "run-b".into(), goal: "g".into(), state: "paused".into(), can_hold: false, can_resume: true, awaits_approval: false, last_handoff: None };
+        let live = RunIn { run_id: "run-a".into(), goal: "g".into(), state: "execute".into(), can_hold: true, can_resume: false, awaits_approval: false, last_handoff: None, asks: Vec::new() };
+        let held = RunIn { run_id: "run-b".into(), goal: "g".into(), state: "paused".into(), can_hold: false, can_resume: true, awaits_approval: false, last_handoff: None, asks: Vec::new() };
         assert_eq!(build(&[], &[], std::slice::from_ref(&live)).title, "(•");
         assert_eq!(build(&[], &[], std::slice::from_ref(&held)).title, "C");
         let t = build(&[], &[], &[live, held]);
         assert_eq!(actions(&t)[..2], ["hold:run-a", "resume:run-b"]);
+    }
+
+    #[test]
+    fn a_step_parked_on_a_question_counts_as_waiting_on_you_and_says_how_to_answer() {
+        let run = RunIn { run_id: "run-a".into(), goal: "g".into(), state: "execute".into(), can_hold: true, can_resume: false, awaits_approval: false, last_handoff: None, asks: vec![("s1".into(), "sqlite or postgres?".into())] };
+        let t = build(&[], &[], &[run]);
+        assert_eq!(t.title, "C● 1");
+        assert_eq!(t.tooltip, "Cordata: 1 waiting on you, 1 working");
+        assert!(t.items.contains(&Item::Note("s1 asks: sqlite or postgres?".into())));
+        assert!(t.items.contains(&Item::Note("answer: cordata resume run-a --direction \"…\"".into())));
+        assert!(!actions(&t).iter().any(|i| i.starts_with("allow:")), "a question has no allow button: it grants nothing");
     }
 
     #[test]

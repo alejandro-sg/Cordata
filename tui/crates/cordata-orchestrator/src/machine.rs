@@ -127,6 +127,10 @@ pub struct RunConfig {
     /// behavior before any worker spawns; a resume then executes it.
     #[serde(default)]
     pub review_plan: bool,
+    /// How long a step that told the person it is blocked stays parked for an answer before it counts as a failed
+    /// attempt (today's behavior), so an unattended run still finishes. `0` does not wait.
+    #[serde(default = "d_blocked_wait")]
+    pub blocked_wait_s: f64,
 }
 
 impl Default for RunConfig {
@@ -152,8 +156,13 @@ impl Default for RunConfig {
             step_check: true,
             keep_for_review: true,
             review_plan: false,
+            blocked_wait_s: 600.0,
         }
     }
+}
+
+fn d_blocked_wait() -> f64 {
+    600.0
 }
 
 fn d_land() -> String {
@@ -1006,6 +1015,7 @@ impl<'a> Machine<'a> {
             benched: self.benched.clone(),
             artifacts_dir: Some(artifacts_dir(&self.home, &self.record.run_id)),
             step_check: self.step_check().await,
+            blocked_wait_s: self.config.blocked_wait_s,
             ..ExecConfig::default()
         };
         let executor = StepExecutor::new(&self.record.run_id, Path::new(&self.project), plan, candidates, self.ledger, self.checkpoints, cfg);
@@ -1668,6 +1678,7 @@ fn synthetic_step() -> Step {
         depends_on: Vec::new(),
         last_event_at: None,
         blocked_reason: None,
+        blocked_until: None,
         behavior: String::new(),
         because: String::new(),
     }

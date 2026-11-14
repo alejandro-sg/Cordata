@@ -76,6 +76,16 @@ pub fn request(run_dir: &std::path::Path, kind: &str, now: bool, restore: bool, 
     writeln!(out, "{}", serde_json::json!({"cmd": kind, "now": now, "restore": restore, "by": by, "at": at}))
 }
 
+/// Answers a parked step on a run that is still going: one `answer` line, which the run's executor picks up. The text is
+/// the person's own, so it rides the step's task as their direction.
+pub fn answer(run_dir: &std::path::Path, step: &str, text: &str, by: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::create_dir_all(run_dir)?;
+    let mut out = std::fs::OpenOptions::new().append(true).create(true).mode(0o600).open(run_dir.join("control.ndjson"))?;
+    writeln!(out, "{}", serde_json::json!({"cmd": "answer", "step": step, "text": text, "by": by, "at": cordata_checkpoints::now()}))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
