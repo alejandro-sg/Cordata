@@ -5,6 +5,7 @@
 //! hunks without disturbing other changes in the same file.
 
 use cordata_theme::tokens as t;
+use cordata_view::annotate::{self, Annotations, DIRECTION_LIMIT};
 use cordata_view::review::{Action, FileDiff, LineKind, Status, apply, apply_file, display_files, untracked, working_changes};
 use cordata_view::shown;
 use gpui::prelude::FluentBuilder as _;
@@ -84,6 +85,11 @@ pub struct Review {
     pub loading: bool,
     pub error: Option<String>,
     pub notice: Option<String>,
+    /// Line comments waiting to be sent to the run that wrote the diff (`cordata_view::annotate`).
+    pub annotations: Annotations,
+    /// The hunk (file, hunk) whose lines can be picked for a comment, and the picked body lines (anchor, head).
+    pub annotating: Option<(usize, usize)>,
+    pub picked: Option<(usize, usize)>,
 }
 
 impl Review {
@@ -137,6 +143,63 @@ impl Workspace {
             });
         })
         .detach();
+    }
+
+    /// Opens or closes line picking on one hunk.
+    pub(super) fn toggle_annotating(&mut self, file_idx: usize, hunk_idx: usize, cx: &mut Context<Self>) {
+        self.review.annotating = if self.review.annotating == Some((file_idx, hunk_idx)) { None } else { Some((file_idx, hunk_idx)) };
+        self.review.picked = None;
+        cx.notify();
+    }
+
+    /// A click on body line `line`: starts a selection, or with shift stretches the current one.
+    pub(super) fn pick_line(&mut self, line: usize, extend: bool, cx: &mut Context<Self>) {
+        self.review.picked = Some(match self.review.picked {
+            Some((anchor, _)) if extend => (anchor, line),
+            _ => (line, line),
+        });
+        cx.notify();
+    }
+
+    /// Stores the bar's text as a comment on the picked lines.
+    pub(super) fn add_annotation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some((file_idx, hunk_idx)), Some((a, b))) = (self.review.annotating, self.review.picked) else {
+            self.review.notice = Some("pick the lines first (click a line, shift-click to stretch)".into());
+            cx.notify();
+            return;
+        };
+        let Some((file, hunk)) = self.review.files.get(file_idx).and_then(|f| Some((f.path.clone(), f.hunks.get(hunk_idx)?))) else { return };
+        let Some((start, end)) = annotate::selection_range(hunk, a, b) else { return };
+        let words = self.composer.read(cx).value().to_string();
+        if self.review.annotations.add(&file, start, end, &words) {
+            self.composer.update(cx, |st, cx| st.set_value("", window, cx));
+            self.review.picked = None;
+            self.review.notice = Some(format!("comment saved on {file}:{start}-{end} · {} waiting", self.review.annotations.len()));
+        } else {
+            self.review.notice = Some("write the comment in the bar first".into());
+        }
+        cx.notify();
+    }
+
+    /// The run and step the waiting comments belong to: the newest run with a step whose scope names the commented files.
+    pub(super) fn annotation_target(&self) -> Option<(String, String)> {
+        let files: Vec<&str> = self.review.annotations.ordered().iter().map(|a| a.file.as_str()).collect();
+        self.field_runs.iter().find_map(|run| annotate::target_step(&run.steps, &files).map(|s| (run.run_id.clone(), s.id.clone())))
+    }
+
+    /// Sends the waiting comments as one direction and runs the step again; what did not fit goes in the next batch.
+    pub(super) fn send_annotations(&mut self, cx: &mut Context<Self>) {
+        let Some((run_id, step_id)) = self.annotation_target() else {
+            self.review.notice = Some("no run of this project has a step that wrote these files".into());
+            cx.notify();
+            return;
+        };
+        let Some(batch) = self.review.annotations.batch(DIRECTION_LIMIT) else { return };
+        self.resume_run_with(&run_id, None, Some(batch.text), Some(step_id.clone()), cx);
+        self.review.annotations.drop_sent(batch.sent);
+        let more = if batch.left > 0 { format!(" · {} more waiting, send again after it runs", batch.left) } else { String::new() };
+        self.review.notice = Some(format!("sent {} comment(s) to {run_id} step {step_id}{more}", batch.sent));
+        cx.notify();
     }
 
     pub(super) fn apply_hunk(
@@ -291,6 +354,10 @@ impl Workspace {
                                     .items_center()
                                     .gap(px(8.))
                                     .child(
+                                        ui::text_action(SharedString::from(format!("hunk-comment-{file_idx}-{hunk_idx}")), "comment", self.review.annotating == Some((file_idx, hunk_idx)), cx)
+                                            .on_click(cx.listener(move |this, _, _, cx| this.toggle_annotating(file_idx, hunk_idx, cx))),
+                                    )
+                                    .child(
                                         ui::text_action(SharedString::from(format!("hunk-keep-{file_idx}-{hunk_idx}")), "keep", false, cx)
                                             .on_click(cx.listener(move |this, _, window, cx| {
                                                 this.apply_hunk(file_idx, hunk_idx, Action::Keep, window, cx);
@@ -304,7 +371,44 @@ impl Workspace {
                                     ),
                             );
 
-                        let runs_rendered: Vec<AnyElement> = hunk
+                        let picking = self.review.annotating == Some((file_idx, hunk_idx));
+                        let numbers = self.review.files.get(file_idx).and_then(|f| f.hunks.get(hunk_idx)).map(annotate::line_numbers).unwrap_or_default();
+                        let lines_rendered: Vec<AnyElement> = if picking {
+                            let raw = self.review.files.get(file_idx).and_then(|f| f.hunks.get(hunk_idx)).map(|h| h.lines.clone()).unwrap_or_default();
+                            let (lo, hi) = self.review.picked.map_or((usize::MAX, 0), |(a, b)| (a.min(b), a.max(b)));
+                            let saved = self.review.annotations.for_file(&file_path);
+                            raw.iter()
+                                .enumerate()
+                                .map(|(li, text)| {
+                                    let (pfx, rest) = text.split_at(text.chars().next().map_or(0, char::len_utf8));
+                                    let cleaned = format!("{pfx}{}", cordata_view::redact::scrub(&cordata_view::app::sanitize(rest)).0.replace('\n', " "));
+                                    let ink = match pfx { "+" => tk.text_body, _ => tk.text_muted };
+                                    let number = numbers.get(li).copied().flatten();
+                                    let marked = number.is_some_and(|n| pfx != "-" && saved.iter().any(|a| a.start <= n && n <= a.end));
+                                    div()
+                                        .id(SharedString::from(format!("diff-line-{file_idx}-{hunk_idx}-{li}")))
+                                        .flex()
+                                        .gap(px(8.))
+                                        .px(px(8.))
+                                        .cursor_pointer()
+                                        .whitespace_nowrap()
+                                        .font_family(mono(cx))
+                                        .text_size(px(t::TEXT_SMALL))
+                                        .line_height(gpui::relative(1.5))
+                                        .text_color(c(ink))
+                                        .when(pfx == "+", |el| el.bg(amber(cx, t::DIFF_ADD_FILL)))
+                                        .when(pfx == "-", |el| el.bg(ca(tk.danger, t::DIFF_DEL_FILL)))
+                                        .when(li >= lo && li <= hi, |el| el.bg(amber(cx, t::AMBER_FILL_FAINT)).border_l_2().border_color(c(tk.amber)))
+                                        .child(div().w(px(28.)).flex_shrink_0().text_color(c(if marked { tk.amber } else { tk.text_faint })).child(SharedString::from(number.map_or(String::new(), |n| if marked { format!("●{n}") } else { n.to_string() }))))
+                                        .child(SharedString::from(cleaned))
+                                        .on_click(cx.listener(move |this, e: &ClickEvent, _, cx| this.pick_line(li, e.modifiers().shift, cx)))
+                                        .into_any_element()
+                                })
+                                .collect()
+                        } else {
+                            Vec::new()
+                        };
+                        let runs_rendered: Vec<AnyElement> = if picking { Vec::new() } else { hunk
                             .runs
                             .iter()
                             .map(|run| {
@@ -325,7 +429,7 @@ impl Workspace {
                                     .child(run.text.clone())
                                     .into_any_element()
                             })
-                            .collect();
+                            .collect() };
 
                         div()
                             .flex()
@@ -337,6 +441,7 @@ impl Workspace {
                             .overflow_hidden()
                             .child(hunk_header)
                             .children(runs_rendered)
+                            .children(lines_rendered)
                             .into_any_element()
                     })
                     .collect();
@@ -480,6 +585,58 @@ impl Workspace {
                 .children(items)
         });
 
+        let annotation_bar = (self.review.annotating.is_some() || !self.review.annotations.is_empty()).then(|| {
+            let waiting = self.review.annotations.ordered();
+            let target = self.annotation_target();
+            let rows: Vec<AnyElement> = waiting
+                .iter()
+                .enumerate()
+                .map(|(i, a)| {
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(div().flex_1().min_w_0().truncate().font_family(mono(cx)).text_size(px(t::TEXT_SMALL)).text_color(c(tk.text_secondary))
+                            .child(SharedString::from(shown(&format!("{}: {}", a.place(), a.comment)))))
+                        .child(ui::text_action(SharedString::from(format!("annotation-drop-{i}")), "drop", true, cx)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.review.annotations.remove(i);
+                                cx.notify();
+                            })))
+                        .into_any_element()
+                })
+                .collect();
+            let hint = match (&target, self.review.annotating, self.review.picked) {
+                (_, Some(_), None) => "click a line (shift-click to stretch), write the comment in the bar, then add".to_owned(),
+                (Some((run, step)), _, _) => format!("goes to {run} · step {step}, which runs again with its checks"),
+                (None, _, _) if self.review.annotations.is_empty() => String::new(),
+                (None, _, _) => "no run of this project has a step that wrote these files".to_owned(),
+            };
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .p(px(6.))
+                .rounded(px(t::RADIUS_CONTROL))
+                .border_1()
+                .border_color(line(cx, t::LINE_SUBTLE))
+                .child(ui::quiet_label(format!("comments ({})", waiting.len()), cx))
+                .children(rows)
+                .child(div().text_size(px(t::TEXT_META)).text_color(c(tk.text_muted)).child(SharedString::from(hint)))
+                .child(
+                    div()
+                        .flex()
+                        .gap(px(8.))
+                        .when(self.review.picked.is_some(), |el| {
+                            el.child(ui::text_action("annotation-add", "add comment from bar", false, cx).on_click(cx.listener(|this, _, window, cx| this.add_annotation(window, cx))))
+                        })
+                        .when(target.is_some() && !self.review.annotations.is_empty(), |el| {
+                            el.child(ui::text_action("annotation-send", "send all and run the step again", false, cx).on_click(cx.listener(|this, _, _, cx| this.send_annotations(cx))))
+                        }),
+                )
+                .into_any_element()
+        });
+
         let empty = if file_count == 0 && self.review.untracked.is_empty() && !self.review.loading && self.review.error.is_none() {
             Some(ui::empty("working tree clean", "No unstaged changes in this project.", cx))
         } else {
@@ -519,6 +676,7 @@ impl Workspace {
                 )
             })
             .when_some(empty, |el, msg| el.child(msg))
+            .when_some(annotation_bar, |el, bar| el.child(bar))
             .child(
                 div()
                     .id("review-files-scroll")

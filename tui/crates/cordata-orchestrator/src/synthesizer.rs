@@ -184,11 +184,22 @@ fn group(n: usize) -> String {
     out
 }
 
-/// Records the primary tree's content of `paths` as the sandbox's base, before the step runs.
+/// Records `paths` as the sandbox's base, before the step runs. The base is what was *cloned* (the sandbox's own copy),
+/// not a later read of the project: a file the project changed between the clone and this call is then a divergence
+/// instead of being taken for the starting point. A path the sandbox lacks has base `None` ("did not exist").
 pub fn remember(sandbox: &mut Sandbox, paths: &[String]) {
     for rel in paths {
-        sandbox.base.insert(rel.clone(), digest(&sandbox.source.join(rel)));
+        sandbox.base.insert(rel.clone(), digest(&sandbox.root.join(rel)));
     }
+}
+
+/// Which of `paths` the project changed since the sandbox was cloned (edited, created or deleted there): the files a
+/// harvest would overwrite someone else's work in. Only paths with a recorded base can be judged.
+pub fn diverged(sandbox: &Sandbox, paths: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = paths.iter().map(|p| normpath(p)).filter(|rel| digest(&sandbox.source.join(rel)) != sandbox.base.get(rel).cloned().flatten()).collect();
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// Files in the sandbox (and in the source) that a scope covers — the base a step's harvest is checked against.
@@ -231,7 +242,9 @@ fn normpath(rel: &str) -> String {
     if parts.is_empty() { ".".into() } else { parts.join("/") }
 }
 
-/// Copies a completed step's in-scope changes from its sandbox into the primary tree.
+/// Copies a completed step's in-scope changes from its sandbox into the primary tree. All or nothing on divergence: when
+/// the project changed any file the step touched since the sandbox was cloned, those files are reported as conflicts
+/// and **nothing** is written, so a retry starts from a project that is not half-updated.
 pub fn harvest(sandbox: &Sandbox, changed: &[String], scope: &[String]) -> Harvest {
     let mut out = Harvest::default();
     let mut paths: Vec<&String> = changed.iter().collect();
@@ -239,6 +252,8 @@ pub fn harvest(sandbox: &Sandbox, changed: &[String], scope: &[String]) -> Harve
     paths.dedup();
     let source = sandbox.source.to_string_lossy().into_owned();
     let real_root = std::fs::canonicalize(&sandbox.root).unwrap_or_else(|_| sandbox.root.clone());
+    let touched: Vec<String> = paths.iter().map(|p| normpath(p)).filter(|rel| !rel.starts_with("..") && !rel.starts_with('/') && scope::matches(rel, scope, &source)).collect();
+    let conflicts = diverged(sandbox, &touched);
     for raw in paths {
         let rel = normpath(raw);
         if rel.starts_with("..") || rel.starts_with('/') || !scope::matches(&rel, scope, &source) {
@@ -253,9 +268,11 @@ pub fn harvest(sandbox: &Sandbox, changed: &[String], scope: &[String]) -> Harve
             out.skipped.push(rel);
             continue;
         }
-        if digest(&dst) != sandbox.base.get(&rel).cloned().flatten() {
+        if !conflicts.is_empty() {
             // The primary tree's file is not what the sandbox started from (edited, created or deleted meanwhile).
-            out.conflicts.push(rel);
+            if conflicts.contains(&rel) {
+                out.conflicts.push(rel);
+            }
             continue;
         }
         if exists {

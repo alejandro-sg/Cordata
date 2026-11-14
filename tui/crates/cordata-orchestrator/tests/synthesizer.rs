@@ -79,38 +79,71 @@ fn a_project_over_the_file_limit_is_refused_and_leaves_nothing_behind() {
 }
 
 #[test]
-fn harvest_copies_in_scope_changes_back_and_never_overwrites_a_conflict() {
+fn harvest_copies_in_scope_changes_back_and_skips_strays() {
     let (dir, root) = project();
-    for f in ["src/a.py", "src/b.py", "src/gone.py", "src/c.py", "other/z.py"] {
+    for f in ["src/a.py", "src/b.py", "src/gone.py", "other/z.py"] {
         write(&root, f, "original\n");
     }
     let sb = create(&root, Some(dir.path()), "h", &scope(&["src/"]), 1000).unwrap();
-    // The step edits a, deletes gone, creates new, edits c — and strays outside its scope and through a link.
     write(&sb.root, "src/a.py", "edited by the step\n");
     std::fs::remove_file(sb.root.join("src/gone.py")).unwrap();
     write(&sb.root, "src/new.py", "created by the step\n");
-    write(&sb.root, "src/c.py", "step's c\n");
     write(&sb.root, "other/z.py", "stray\n");
     std::fs::remove_file(sb.root.join("src/b.py")).unwrap();
     std::os::unix::fs::symlink("/etc/hosts", sb.root.join("src/planted.py")).unwrap();
-    // Meanwhile somebody edits c in the primary tree, and another process creates new there.
-    write(&root, "src/c.py", "the person's edit\n");
-    write(&root, "src/new.py", "somebody else created it\n");
 
-    let changed = scope(&["src/a.py", "src/gone.py", "src/new.py", "src/c.py", "other/z.py", "src/b.py", "src/planted.py", "../escape.txt", "src/a.py"]);
+    let changed = scope(&["src/a.py", "src/gone.py", "src/new.py", "other/z.py", "src/b.py", "src/planted.py", "../escape.txt", "src/a.py"]);
     let h = harvest(&sb, &changed, &scope(&["src/"]));
-    assert_eq!(h.written, ["src/a.py"]);
+    assert_eq!(h.written, ["src/a.py", "src/new.py"]);
     assert_eq!(h.deleted, ["src/b.py", "src/gone.py"]);
-    assert_eq!(h.conflicts, ["src/c.py", "src/new.py"], "the primary tree's file is not what the sandbox started from");
+    assert!(h.conflicts.is_empty());
     assert_eq!(h.skipped, ["../escape.txt", "other/z.py", "src/planted.py"]);
     assert_eq!(read(&root, "src/a.py").unwrap(), "edited by the step\n");
     assert_eq!(read(&root, "src/gone.py"), None);
-    assert_eq!(read(&root, "src/b.py"), None);
-    assert_eq!(read(&root, "src/c.py").unwrap(), "the person's edit\n", "never overwritten");
-    assert_eq!(read(&root, "src/new.py").unwrap(), "somebody else created it\n");
     assert_eq!(read(&root, "other/z.py").unwrap(), "original\n", "out-of-scope changes are left behind");
     assert!(!root.join("src/planted.py").exists());
     assert!(!root.join("src/a.py.cordata-harvest").exists(), "the temp file was renamed into place");
+}
+
+#[test]
+fn a_diverged_project_refuses_the_whole_harvest_and_overwrites_nothing() {
+    let (dir, root) = project();
+    for f in ["src/a.py", "src/c.py", "src/d.py"] {
+        write(&root, f, "original\n");
+    }
+    let sb = create(&root, Some(dir.path()), "d", &scope(&["src/"]), 1000).unwrap();
+    write(&sb.root, "src/a.py", "step's a\n");
+    write(&sb.root, "src/c.py", "step's c\n");
+    write(&sb.root, "src/new.py", "step's new\n");
+    std::fs::remove_file(sb.root.join("src/d.py")).unwrap();
+    // The person edits c, someone creates new, d is edited, all in the primary tree while the step ran.
+    write(&root, "src/c.py", "the person's edit\n");
+    write(&root, "src/new.py", "somebody else created it\n");
+    write(&root, "src/d.py", "edited meanwhile\n");
+
+    let changed = scope(&["src/a.py", "src/c.py", "src/new.py", "src/d.py"]);
+    assert_eq!(synthesizer::diverged(&sb, &changed), ["src/c.py", "src/d.py", "src/new.py"]);
+    let h = harvest(&sb, &changed, &scope(&["src/"]));
+    assert_eq!(h.conflicts, ["src/c.py", "src/d.py", "src/new.py"]);
+    assert!(h.written.is_empty() && h.deleted.is_empty(), "all or nothing: the clean file a.py is not written either");
+    assert_eq!(read(&root, "src/a.py").unwrap(), "original\n");
+    assert_eq!(read(&root, "src/c.py").unwrap(), "the person's edit\n");
+    assert_eq!(read(&root, "src/new.py").unwrap(), "somebody else created it\n");
+    assert_eq!(read(&root, "src/d.py").unwrap(), "edited meanwhile\n");
+}
+
+#[test]
+fn a_project_edit_between_the_clone_and_the_base_is_a_divergence() {
+    let (dir, root) = project();
+    write(&root, "src/a.py", "original\n");
+    let mut sb = create(&root, Some(dir.path()), "r", &[], 1000).unwrap();
+    // The project changes after the clone but before the base is recorded: the base is the clone, not this edit.
+    write(&root, "src/a.py", "edited after the clone\n");
+    synthesizer::remember(&mut sb, &scope(&["src/a.py"]));
+    write(&sb.root, "src/a.py", "step's a\n");
+    let h = harvest(&sb, &scope(&["src/a.py"]), &scope(&["src/"]));
+    assert_eq!(h.conflicts, ["src/a.py"]);
+    assert_eq!(read(&root, "src/a.py").unwrap(), "edited after the clone\n");
 }
 
 #[test]
