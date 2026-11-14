@@ -151,7 +151,7 @@ but built for untrusted workers:
   Each wave's messages are emitted as a `bus_messages` event. `CORDATA_BUS=off` disables the bus.
 
 ## Code
-<!-- covers: tui/crates/cordata-orchestrator, tui/crates/cordata-run -->
+<!-- covers: tui/crates/cordata-orchestrator, tui/crates/cordata-run @ 064573d -->
 
 `tui/crates/cordata-orchestrator`: `machine.rs` (the durable state machine in `state.db`), `research.rs`, `plan.rs`,
 `executor.rs`, `audit.rs`, `handoff.rs`, `dispatch.rs` and `bandit.rs`, `synthesizer.rs`, `scope.rs`, `checkpoints.rs`,
