@@ -425,6 +425,11 @@ impl Workspace {
 
     /// Start `cordata-run resume`, optionally on one worker family and with the person's words for the next step.
     pub(super) fn resume_run(&mut self, run_id: &str, family: Option<&'static str>, direction: Option<String>, cx: &mut Context<Self>) {
+        self.resume_run_with(run_id, family, direction, None, cx);
+    }
+
+    /// [`Self::resume_run`], running `redo_step` again (a completed step too) with the direction on it.
+    pub(super) fn resume_run_with(&mut self, run_id: &str, family: Option<&'static str>, direction: Option<String>, redo_step: Option<String>, cx: &mut Context<Self>) {
         let Some(bin) = super::agents::cordata_run() else {
             self.field_runs_note = Some("resuming needs cordata-run: make tui-build".into());
             cx.notify();
@@ -437,6 +442,9 @@ impl Workspace {
         }
         if let Some(text) = direction.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
             cmd.args(["--direction", text]);
+        }
+        if let Some(step) = redo_step.as_deref() {
+            cmd.args(["--redo-step", step]);
         }
         cmd.current_dir(&self.cwd).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
         self.field_runs_note = Some(match cmd.spawn() {

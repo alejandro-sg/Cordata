@@ -107,6 +107,9 @@ enum Command {
         /// words for the next step, added to its task (what a person says when they hold a handoff)
         #[arg(long, value_name = "TEXT")]
         direction: Option<String>,
+        /// run this step again (even a completed one) with its worker and acceptance checks; --direction then goes on it
+        #[arg(long, value_name = "STEP_ID")]
+        redo_step: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -191,7 +194,7 @@ async fn main() -> ExitCode {
         Command::Status { json } => cli::status_cmd(json),
         Command::Show { run_id, json, step, attempt, follow, timeline } => cli::show_cmd(&run_id, json, step.as_deref(), attempt, follow, timeline),
         Command::Export { run_id, otlp } => cli::export_cmd(&run_id, otlp),
-        Command::Resume { run_id, workers, allow_direct, max_usd, allow_weaker_guards, direction, json } => cli::resume(&run_id, workers, allow_direct, max_usd, allow_weaker_guards, direction, json).await,
+        Command::Resume { run_id, workers, allow_direct, max_usd, allow_weaker_guards, direction, redo_step, json } => cli::resume(&run_id, workers, allow_direct, max_usd, allow_weaker_guards, direction, redo_step, json).await,
         Command::Evolve { target, threshold, dry_run, mutate, propose, propose_usd, propose_workers, cwd, json } => cli::evolve_cmd(&target, threshold, dry_run, json, cwd, mutate, propose, propose_usd, propose_workers),
     };
     ExitCode::from(u8::try_from(code).unwrap_or(1))

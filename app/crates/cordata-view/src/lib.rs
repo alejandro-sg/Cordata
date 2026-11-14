@@ -9,6 +9,7 @@
 //! Moved here from acp-tui unchanged in behaviour (docs/app.md §3 D3); acp-tui re-exports each module under its old
 //! path, so its renderers and tests did not change.
 
+pub mod annotate;
 pub mod app;
 pub mod assistants;
 pub mod commands;

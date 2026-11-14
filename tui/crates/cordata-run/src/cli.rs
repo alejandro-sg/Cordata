@@ -339,7 +339,7 @@ pub async fn run(args: RunArgs) -> i32 {
     finish(&record, args.json, &summary)
 }
 
-pub async fn resume(run_id: &str, workers: Option<String>, allow_direct: bool, max_usd: Option<f64>, allow_weaker: bool, direction: Option<String>, as_json: bool) -> i32 {
+pub async fn resume(run_id: &str, workers: Option<String>, allow_direct: bool, max_usd: Option<f64>, allow_weaker: bool, direction: Option<String>, redo_step: Option<String>, as_json: bool) -> i32 {
     let started = std::time::Instant::now();
     let mut environ: HashMap<String, String> = std::env::vars().collect();
     if allow_direct {
@@ -357,7 +357,11 @@ pub async fn resume(run_id: &str, workers: Option<String>, allow_direct: bool, m
         return 2;
     };
     drop(probe);
-    if let Some(text) = direction.as_deref() && !apply_direction(&mut record, text) {
+    if let Some(step_id) = redo_step.as_deref() && !reopen_step(&mut record, step_id) {
+        eprintln!("cordata-run: {run_id} has no step {step_id} to run again (or it was cancelled)");
+        return 2;
+    }
+    if let Some(text) = direction.as_deref() && !apply_direction_to(&mut record, redo_step.as_deref(), text) {
         if direction.as_deref().is_some_and(|d| d.trim().is_empty()) {
             eprintln!("cordata-run: the direction is empty");
         } else {
@@ -462,15 +466,44 @@ pub fn status_cmd(as_json: bool) -> i32 {
     0
 }
 
+/// The most a direction may carry; longer text is cut. (Annotation batches are sized to fit: `cordata-view`'s `annotate`.)
+pub const DIRECTION_MAX_CHARS: usize = 2000;
+
+/// Marks a step to run again with its worker and acceptance checks: it goes back to `pending`, and a run that had already
+/// ended is put back in `execute`, so the steps after it, hardening and the audit run again on the new result.
+/// `false` for an unknown step or a cancelled run.
+pub fn reopen_step(record: &mut machine::RunRecord, step_id: &str) -> bool {
+    if record.state == "cancelled" {
+        return false;
+    }
+    let Some(steps) = record.plan.as_mut().and_then(|p| p.get_mut("steps")).and_then(Value::as_array_mut) else { return false };
+    let Some(step) = steps.iter_mut().find(|s| s.get("step_id").and_then(Value::as_str) == Some(step_id)) else { return false };
+    step["status"] = Value::String("pending".into());
+    step["attempts"] = Value::from(0);
+    if machine::TERMINAL.contains(&record.state.as_str()) {
+        record.state = "execute".into();
+    }
+    record.warnings.push(format!("step {step_id} run again at the person's request"));
+    true
+}
+
 /// Puts the person's words on the step that runs next, in the plan the worker is given, and notes it on the run.
 /// The text is theirs, typed in the window, so it rides the plan (trusted) and not the fenced worker data.
 pub fn apply_direction(record: &mut machine::RunRecord, text: &str) -> bool {
-    let text: String = text.trim().chars().take(2000).collect();
+    apply_direction_to(record, None, text)
+}
+
+/// [`apply_direction`] on a named step (`step_id`) instead of the first one not yet completed.
+pub fn apply_direction_to(record: &mut machine::RunRecord, step_id: Option<&str>, text: &str) -> bool {
+    let text: String = text.trim().chars().take(DIRECTION_MAX_CHARS).collect();
     if text.is_empty() {
         return false;
     }
     let Some(steps) = record.plan.as_mut().and_then(|p| p.get_mut("steps")).and_then(Value::as_array_mut) else { return false };
-    let Some(step) = steps.iter_mut().find(|s| s.get("status").and_then(Value::as_str) != Some("completed")) else { return false };
+    let Some(step) = steps.iter_mut().find(|s| match step_id {
+        Some(id) => s.get("step_id").and_then(Value::as_str) == Some(id),
+        None => s.get("status").and_then(Value::as_str) != Some("completed"),
+    }) else { return false };
     let id = step.get("step_id").and_then(Value::as_str).unwrap_or("").to_owned();
     let before = step.get("description").and_then(Value::as_str).unwrap_or("").to_owned();
     step["description"] = Value::String(format!("{before}\n\nDirection from the person (follow it where it differs from the above): {text}"));
@@ -840,6 +873,25 @@ mod direction_tests {
         let d = steps[1]["description"].as_str().unwrap();
         assert!(d.starts_with("do b\n\nDirection from the person") && d.ends_with("keep it small"));
         assert_eq!(r.warnings, vec!["direction added by the person for step s2".to_owned()]);
+    }
+
+    #[test]
+    fn a_completed_step_can_be_reopened_and_given_a_direction() {
+        let mut r = record_with(json!([
+            {"step_id": "s1", "name": "a", "description": "do a", "status": "completed", "attempts": 2},
+            {"step_id": "s2", "name": "b", "description": "do b", "status": "completed"},
+        ]));
+        r.state = "done".into();
+        assert!(reopen_step(&mut r, "s1"));
+        assert!(apply_direction_to(&mut r, Some("s1"), "src/a.rs:3: rename"));
+        let steps = r.plan.as_ref().unwrap()["steps"].as_array().unwrap().clone();
+        assert_eq!((steps[0]["status"].as_str(), steps[0]["attempts"].as_i64()), (Some("pending"), Some(0)));
+        assert!(steps[0]["description"].as_str().unwrap().ends_with("src/a.rs:3: rename"));
+        assert_eq!(steps[1]["description"], "do b");
+        assert_eq!(r.state, "execute", "an ended run is put back to work");
+        assert!(!reopen_step(&mut r, "nope"));
+        r.state = "cancelled".into();
+        assert!(!reopen_step(&mut r, "s1"));
     }
 
     #[test]
