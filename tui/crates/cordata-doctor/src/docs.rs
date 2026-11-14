@@ -105,6 +105,11 @@ fn stale_one(repo: &Path, s: &Section) -> Option<Stale> {
     (!changed.is_empty()).then(|| Stale { why: format!("{} covered file(s) changed since {rev}", changed.len()), changed, ..stale("", Vec::new()).expect("built") })
 }
 
+/// How many sections of the repo's docs carry a marker.
+pub fn marked(repo: &Path) -> usize {
+    doc_files(repo).iter().filter_map(|f| std::fs::read_to_string(f).ok()).map(|t| parse("", &t).len()).sum()
+}
+
 /// Every marked section of the repo's docs that is out of date. `None` when `repo` is not a git work tree.
 pub fn check(repo: &Path) -> Option<Vec<Stale>> {
     git(repo, &["rev-parse", "--is-inside-work-tree"])?;

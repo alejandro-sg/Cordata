@@ -123,8 +123,8 @@ pub struct RunConfig {
     pub step_check: bool,    /// End in `to_review` with the work kept, rather than restore, when a sound change fails only a few checks.
     #[serde(default = "d_true")]
     pub keep_for_review: bool,
-    /// Stop after the first plan is written, so a person reads its expected behavior before any worker spawns; a resume
-    /// then executes it. Replans after a failed audit are not held again.
+    /// Stop after every plan is written (the first, and a replan after a failed audit), so a person reads its expected
+    /// behavior before any worker spawns; a resume then executes it.
     #[serde(default)]
     pub review_plan: bool,
 }
@@ -913,7 +913,7 @@ impl<'a> Machine<'a> {
                 Ok(plan) => {
                     let (id, steps) = (plan.plan_id.clone(), plan.steps.len());
                     self.plan = Some(plan);
-                    if self.config.review_plan && self.record.replans == 0 {
+                    if self.config.review_plan {
                         self.record.resume_state = Some("execute".into());
                         self.record.reason = "the plan awaits approval: read plan.md, then resume the run to build it".into();
                         self.transition("paused", json!({"reason": "plan_review", "plan_id": id, "steps": steps, "planner": candidate.key(), "resume": "execute"}));

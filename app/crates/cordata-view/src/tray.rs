@@ -61,6 +61,8 @@ pub struct RunIn {
     pub state: String,
     pub can_hold: bool,
     pub can_resume: bool,
+    /// Held after planning, before anything is built: the resume is an approval.
+    pub awaits_approval: bool,
     pub last_handoff: Option<String>,
 }
 
@@ -186,7 +188,11 @@ pub fn build(gates: &[GateIn], threads: &[ThreadIn], runs: &[RunIn]) -> Tray {
     for r in runs {
         items.push(Item::Sep);
         items.push(Item::Header(clip(&r.goal, LINE)));
-        let state = if r.state == "paused" { "held".to_owned() } else { r.state.clone() };
+        let state = match (r.state.as_str(), r.awaits_approval) {
+            ("paused", true) => "plan awaits you".to_owned(),
+            ("paused", false) => "held".to_owned(),
+            _ => r.state.clone(),
+        };
         items.push(Item::Note(clip(&match &r.last_handoff {
             Some(h) => format!("run · {state} · {h}"),
             None => format!("run · {state}"),
@@ -195,7 +201,7 @@ pub fn build(gates: &[GateIn], threads: &[ThreadIn], runs: &[RunIn]) -> Tray {
             items.push(Item::Action { id: Action::Hold(r.run_id.clone()).id(), title: "Hold at next safe point".into() });
         }
         if r.can_resume {
-            items.push(Item::Action { id: Action::Resume(r.run_id.clone()).id(), title: "Resume".into() });
+            items.push(Item::Action { id: Action::Resume(r.run_id.clone()).id(), title: if r.awaits_approval { "Approve and build" } else { "Resume" }.into() });
         }
     }
 
@@ -252,8 +258,8 @@ mod tests {
 
     #[test]
     fn a_live_run_counts_as_working_and_a_held_one_does_not() {
-        let live = RunIn { run_id: "run-a".into(), goal: "g".into(), state: "execute".into(), can_hold: true, can_resume: false, last_handoff: None };
-        let held = RunIn { run_id: "run-b".into(), goal: "g".into(), state: "paused".into(), can_hold: false, can_resume: true, last_handoff: None };
+        let live = RunIn { run_id: "run-a".into(), goal: "g".into(), state: "execute".into(), can_hold: true, can_resume: false, awaits_approval: false, last_handoff: None };
+        let held = RunIn { run_id: "run-b".into(), goal: "g".into(), state: "paused".into(), can_hold: false, can_resume: true, awaits_approval: false, last_handoff: None };
         assert_eq!(build(&[], &[], std::slice::from_ref(&live)).title, "(•");
         assert_eq!(build(&[], &[], std::slice::from_ref(&held)).title, "C");
         let t = build(&[], &[], &[live, held]);

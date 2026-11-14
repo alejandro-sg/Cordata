@@ -3413,8 +3413,8 @@ mod window_tests {
         // an event for the step that changed, and fitting never magnifies.
         let plan = |b: &str| {
             use cordata_view::runs::{Run, Step};
-            let step = |id: &str, status: &str, deps: &[&str]| Step { id: id.into(), name: id.into(), status: status.into(), worker: Some("w".into()), attempts: 1, scope: Vec::new(), deps: deps.iter().map(|d| (*d).to_owned()).collect(), last_event_at: None, blocked_reason: None };
-            vec![Run { run_id: "run-t".into(), goal: "g".into(), state: "execute".into(), reason: String::new(), steps: vec![step("a", "completed", &[]), step("b", b, &["a"]), step("c", "pending", &["a"]), step("d", "pending", &["b", "c"])], handoffs: Vec::new(), history: Vec::new() }]
+            let step = |id: &str, status: &str, deps: &[&str]| Step { id: id.into(), name: id.into(), status: status.into(), worker: Some("w".into()), attempts: 1, scope: Vec::new(), deps: deps.iter().map(|d| (*d).to_owned()).collect(), last_event_at: None, blocked_reason: None, behavior: String::new(), because: String::new() };
+            vec![Run { run_id: "run-t".into(), goal: "g".into(), state: "execute".into(), reason: String::new(), steps: vec![step("a", "completed", &[]), step("b", b, &["a"]), step("c", "pending", &["a"]), step("d", "pending", &["b", "c"])], handoffs: Vec::new(), history: Vec::new(), awaits_approval: false }]
         };
         for status in ["pending", "running"] {
             view.update(cx, |this, cx| {

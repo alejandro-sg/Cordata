@@ -19,6 +19,9 @@ struct Args {
     /// with --docs: mark every section as reviewed against the current HEAD
     #[arg(long, requires = "docs")]
     stamp: bool,
+    /// with --docs: for sections without a marker, suggest `covers:` paths from the repo map
+    #[arg(long, requires = "docs", conflicts_with = "stamp")]
+    suggest: bool,
 }
 
 fn main() -> ExitCode {
@@ -26,7 +29,7 @@ fn main() -> ExitCode {
     let args = Args::parse();
     let cwd = args.cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     if args.docs {
-        return docs(&cwd, args.stamp, args.json);
+        return docs(&cwd, args.stamp, args.suggest, args.json);
     }
     let checks = cordata_doctor::run_checks(&cwd);
     if args.json {
@@ -38,11 +41,20 @@ fn main() -> ExitCode {
     if checks.iter().any(|c| c.level == cordata_doctor::Level::Fail) { ExitCode::from(1) } else { ExitCode::SUCCESS }
 }
 
-fn docs(cwd: &std::path::Path, stamp: bool, json: bool) -> ExitCode {
+fn docs(cwd: &std::path::Path, stamp: bool, suggest: bool, json: bool) -> ExitCode {
     let Some(repo) = cordata_doctor::repo_root(cwd) else {
         eprintln!("docs: no Cordata checkout found from {}", cwd.display());
         return ExitCode::from(2);
     };
+    if suggest {
+        let found = cordata_doctor::suggest::suggest(&repo, 3);
+        if json {
+            println!("{}", serde_json::to_string_pretty(&found).expect("serializes"));
+        } else {
+            println!("{}", cordata_doctor::suggest::render(&found));
+        }
+        return ExitCode::SUCCESS;
+    }
     if stamp {
         match cordata_doctor::docs::stamp(&repo) {
             Ok(n) => println!("docs: {n} section(s) marked as reviewed against HEAD"),

@@ -12,6 +12,7 @@ family reviews, and the planner checks the result against its own plan.
 ```
 
 ## Using it
+<!-- covers: tui/crates/cordata-run/src/main.rs, tui/crates/cordata-run/src/cli.rs, tui/crates/cordata-run/src/receipt.rs -->
 
 ```bash
 cordata run "Add retries to the HTTP client and test them" --cwd ~/proj --allow-direct
@@ -39,7 +40,8 @@ ended, and the changed files inside its scope. It comes from the plan and the ch
 `run --review-plan` (or `orchestrator.reviewPlan`) stops after the first plan is written: the run is `paused`, no worker
 has built anything, and the plan with each step's expected behavior is printed and saved as `plan.md`. Read it, then
 `cordata resume <run_id>` builds it; to change course, cancel and run again with a better goal. A replan after a failed
-audit is not held again.
+audit is held the same way, so every plan is read before it is built. The window shows such a run as "plan awaits you",
+with each step's expected behavior under its name and an Approve and build button in place of Resume.
 
 Set `orchestrator.pools` to your real plans so handoffs happen at the right moment. The defaults are conservative caps:
 
@@ -68,6 +70,7 @@ would make the estimate low until it is updated. Antigravity and Ollama Cloud st
 Other `orchestrator.*` settings are in [`settings.md`](settings.md).
 
 ## How a run goes
+<!-- covers: tui/crates/cordata-orchestrator/src/machine.rs, tui/crates/cordata-orchestrator/src/plan.rs -->
 
 1. **Research** (on by default). The planner, read-only, writes a brief of findings with evidence (`path:line` plus a
    quote). A deterministic check, no model, verifies each file reference; unverifiable findings are dropped, and the
@@ -100,6 +103,7 @@ rolled back, a handoff packet (step, checkpoint, partial diff, failed attempts, 
 untrusted data) is saved, and the same step continues on another pool.
 
 ## Dispatch
+<!-- covers: tui/crates/cordata-orchestrator/src/dispatch.rs, tui/crates/cordata-orchestrator/src/bandit.rs -->
 
 Hard gates come first and are never learned: the role, the CLI being installed, the pool being under its hard line, and
 the reviewer coming from a family that wrote none of the change. Then the order: the cheapest competent worker per role.
@@ -132,6 +136,7 @@ left.
   criterion; prefer `command` or `file_exists` criteria for such suites.
 
 ## The run bus (workers talking to each other)
+<!-- covers: tui/crates/cordata-bus -->
 
 Parallel steps coordinate through one message bus per run (`tui/crates/cordata-bus`), modelled on herdr's socket API
 but built for untrusted workers:

@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 clap.workspace = true
 cordata-guard = { path = "../cordata-guard" }
+cordata-repomap = { path = "../cordata-repomap" }
 serde.workspace = true
 serde_json.workspace = true
 

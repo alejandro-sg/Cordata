@@ -58,6 +58,7 @@ you look, and ⌘J (Go → Thread That Needs You) goes to the next one waiting o
 notification says when a thread finishes or needs you while the window is in the back (Settings → General).
 
 ### The field (⌘0)
+<!-- covers: app/crates/cordata-view/src/field.rs, app/crates/cordata-view/src/runs.rs, app/crates/cordata-app/src/workspace/field.rs -->
 
 The canvas opens on the **field**: the project's open threads as nodes, this project's newest orchestrated runs beside
 them, a goal bar on top (the composer), an attention rail on the right and a tape of the newest run along the bottom.
@@ -68,6 +69,9 @@ There is no thread list or transcript here; `⌘1` goes back to them, and clicki
   picked. The rest is counted in one line ("N idle threads · show").
 - **Detail follows zoom** (`⌘`-scroll, or − and + in the corner): marks and names; then what each is doing and the
   components it stands on, with its approval and Allow or Reject; then its last actions. Scroll or drag pans.
+- **A plan waiting for you**: a run started with `--review-plan` shows as "plan awaits you" with each step's expected
+  behavior under its name (its tooltip too), and an Approve and build button where a held run has Resume. The menu bar
+  item offers the same. Nothing is built until you press it.
 - **The rail** holds what needs you (the exact command and Allow or Reject; a high-risk call says to open the thread),
   what is ready to review (files, +/−, check result; a click opens the change sheet) and the components two threads both
   write. Each fact is in one place.
@@ -141,6 +145,7 @@ the connecting process's user, not just the file's mode). A prompt sent this way
 and the chat sandbox cannot reach the socket. `CORDATA_APP_CONTROL=off` keeps the window from listening.
 
 ## Crates (`app/crates`)
+<!-- covers: app/Cargo.toml -->
 
 - `cordata-view`: the state the terminal and the app share: the reducer (`App::on_event`), slash commands, input, menus,
   the settings schema and editor, run board, the field, run feed and menu bar models, and the secret-masking table (`redact.rs`, tested against
