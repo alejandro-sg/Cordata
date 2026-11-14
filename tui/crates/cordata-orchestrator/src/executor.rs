@@ -59,6 +59,27 @@ pub struct ExecResult {
     pub benched: Vec<String>,
 }
 
+/// Starts the `blocked_reason` of a step that is waiting on a question (the window tells these from a permission gate).
+pub const ASKS: &str = "asks: ";
+
+/// Where a parked step ended up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Parked {
+    Answered,
+    Paused,
+    Cancelled,
+    TimedOut,
+}
+
+/// The person's words, as they ride on a step's task.
+pub fn direction_line(text: &str) -> String {
+    format!("Direction from the person, their answer to what you stopped to ask (follow it where it differs from the above): {text}")
+}
+
+fn unix_now() -> f64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
+}
+
 /// The person's pause/cancel (`control.Controls`): asked before each worker call and between waves.
 pub trait Controls: Send + Sync {
     /// `"pause"` or `"cancel"` when one was requested.
@@ -122,6 +143,9 @@ pub struct Config {
     /// Run after every step that changed build inputs, where the step's work is, before the work is taken. A step
     /// whose change does not build has failed: caught here it costs one retry, caught at the audit it costs the run.
     pub step_check: Option<StepCheck>,
+    /// How long a step that said it is blocked waits for the person's answer (`RunConfig::blocked_wait_s`). `0`: it
+    /// does not park, and what it asked is just why that attempt failed.
+    pub blocked_wait_s: f64,
 }
 
 impl Default for Config {
@@ -144,6 +168,7 @@ impl Default for Config {
             benched: Vec::new(),
             artifacts_dir: None,
             step_check: None,
+            blocked_wait_s: 0.0,
         }
     }
 }
@@ -256,6 +281,72 @@ impl<'a> StepExecutor<'a> {
             drop(reported);
             self.emit("bus_messages", json!({"messages": fresh}));
         }
+    }
+
+
+    /// Stores the plan as it stands in the run's record, so `status`, the window and the menu bar see a parked step
+    /// while the run is still going (the machine saves its record only when its state changes).
+    fn publish_plan(&self) {
+        let Some(mut record) = crate::machine::load(self.ledger, &self.run_id) else { return };
+        record.plan = Some(self.plan.lock().unwrap().to_json());
+        record.updated = unix_now();
+        let _ = self.ledger.save_run(&record.to_json());
+    }
+
+    /// Parks a step on a question for the person and waits for the answer, up to `blocked_wait_s`. Only the person
+    /// answers: a `answer` request in the control file (what `resume --direction` writes to a live run). What the
+    /// worker said is the question, shown as data; it never decides the answer.
+    async fn park(&self, index: usize, step: &Step, worker: &str, question: &str, why: &str) -> Parked {
+        let wait = self.cfg.blocked_wait_s.max(0.0);
+        let until = unix_now() + wait;
+        let shown = crate::secrets::scrub(question).0;
+        self.update_step(index, |s| {
+            s.status = "blocked".into();
+            s.blocked_reason = Some(format!("{ASKS}{shown}"));
+            s.blocked_until = Some(until);
+        });
+        self.publish_plan();
+        let event = json!({"step_id": step.step_id, "worker": worker, "why": why, "question": shown, "wait_s": wait, "until": until,
+                           "answer": format!("cordata resume {} --direction \"…\"", self.run_id)});
+        self.emit("needs_you", event.clone());
+        let mut durable = json!({"kind": "needs_you", "run_id": self.run_id});
+        durable.as_object_mut().expect("object").extend(event.as_object().cloned().unwrap_or_default());
+        let _ = self.ledger.append_event("orchestrator_event", &durable, Some(&self.run_id), Some("orchestrator"));
+        let started = std::time::Instant::now();
+        let outcome = loop {
+            if let Some(ctrl) = &self.cfg.controls
+                && let Some(req) = ctrl.pending_request()
+            {
+                match req.kind.as_str() {
+                    "answer" if req.step.as_deref().is_none_or(|s| s == step.step_id) => {
+                        ctrl.clear();
+                        let text: String = req.text.as_deref().unwrap_or("").trim().chars().filter(|c| !c.is_control() || *c == '\n').take(2000).collect();
+                        if !text.is_empty() {
+                            self.update_step(index, |s| s.description = format!("{}\n\n{}", s.description, direction_line(&text)));
+                            self.emit("answered", json!({"step_id": step.step_id, "by": req.by}));
+                            break Parked::Answered;
+                        }
+                    }
+                    "pause" => break Parked::Paused,
+                    "cancel" => break Parked::Cancelled,
+                    _ => {}
+                }
+            }
+            if started.elapsed().as_secs_f64() >= wait {
+                break Parked::TimedOut;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        };
+        self.update_step(index, |s| {
+            s.blocked_until = None;
+            // A pause keeps the question on the step: it stays in the person's Needs-you list until it is answered.
+            if outcome != Parked::Paused {
+                s.blocked_reason = None;
+                s.status = "running".into();
+            }
+        });
+        self.publish_plan();
+        outcome
     }
 
     // ------------------------------------------------------------------ plan access
@@ -626,6 +717,8 @@ impl<'a> StepExecutor<'a> {
             let budget_tokens = min_opt(pool_tokens, run_tokens);
             let attempt = self.update_step(index, |s| {
                 s.status = "running".into();
+                s.blocked_reason = None;
+                s.blocked_until = None;
                 s.worker = Some(candidate.key());
                 s.attempts += 1;
                 s.attempts
@@ -728,6 +821,8 @@ impl<'a> StepExecutor<'a> {
 
             let mut poll_interval = tokio::time::interval(std::time::Duration::from_millis(200));
             let mut result;
+            // What the worker told the person through the bus: it cannot go on without an answer. Its step stops here.
+            let mut asked: Option<String> = None;
             loop {
                 tokio::select! {
                     res = &mut worker_run => {
@@ -735,6 +830,13 @@ impl<'a> StepExecutor<'a> {
                         break;
                     }
                     _ = poll_interval.tick() => {
+                        if asked.is_none()
+                            && let Some(bus) = &self.cfg.bus
+                            && let Some(message) = bus.take_return(&step_id_ref, "blocked")
+                        {
+                            asked = Some(message.body);
+                            let _ = worker_ref.cancel(&task_id_ref).await;
+                        }
                         if let Some(ctrl) = &controls_ref
                             && let Some(req) = ctrl.pending_request()
                         {
@@ -813,6 +915,49 @@ impl<'a> StepExecutor<'a> {
                        "error": result.error_message, "files": result.files_changed.iter().take(50).collect::<Vec<_>>()}),
             );
 
+            if asked.is_none() && let Some(bus) = &self.cfg.bus {
+                // Posted and finished before the next poll.
+                asked = bus.take_return(&step.step_id, "blocked").map(|m| m.body);
+            }
+            if let Some(bus) = &self.cfg.bus
+                && let Some(done) = bus.take_return(&step.step_id, "worker_done")
+            {
+                // The worker's own account of why it is finished: kept for the person, never taken as proof.
+                self.out(|o| {
+                    o.results.entry(step.step_id.clone()).or_default().push(json!({"worker": candidate.key(), "worker_done": done.body}));
+                });
+                self.emit("worker_done", json!({"step_id": step.step_id, "worker": candidate.key(), "evidence": done.body, "verified": false}));
+            }
+            // A worker that said it is blocked, or that stopped on an action it was refused with no rule to grant it
+            // (it made no change), does not burn its attempts: the step parks, the rest of its wave goes on, and the
+            // person answers. No answer in time is an ordinary failed attempt.
+            let refused = result.status == "failed" && result.error_message.as_deref().is_some_and(|e| e.starts_with(crate::worker::GAVE_UP));
+            if (asked.is_some() || refused) && self.cfg.blocked_wait_s <= 0.0 {
+                if let Some(q) = &asked {
+                    result.status = "failed".into();
+                    result.error_message = Some(format!("asked the person, who is not waiting: {}", q.chars().take(300).collect::<String>()));
+                }
+            } else if asked.is_some() || refused {
+                let (question, why) = match &asked {
+                    Some(q) => (q.clone(), "asked"),
+                    None => (format!("it was refused and could not go on: {}", result.error_message.clone().unwrap_or_default().chars().take(300).collect::<String>()), "refused"),
+                };
+                let step_now = self.step(index);
+                self.undo(&step_now, ctx);
+                match self.park(index, &step_now, &candidate.key(), &question, why).await {
+                    Parked::Answered => continue,
+                    Parked::Paused => return self.user_pause(index, ctx, &failures),
+                    Parked::Cancelled => {
+                        self.update_step(index, |s| s.status = "pending".into());
+                        self.fail_with(ctx, "cancelled by the person");
+                        return "cancelled";
+                    }
+                    Parked::TimedOut => {
+                        result.status = "failed".into();
+                        result.error_message = Some(format!("asked the person and got no answer in {:.0}s: {}", self.cfg.blocked_wait_s, question.chars().take(300).collect::<String>()));
+                    }
+                }
+            }
             // A step that was to edit files and edited none has not been done, whatever its worker reports: it read
             // until its turns ran out. (A step resumed on kept partial work may rightly find nothing left to do.)
             if result.status == "completed" && result.out_of_scope.is_empty() && step.risk == "edits_files" && !step.file_scope.is_empty() && result.files_changed.is_empty() && step.rollback_policy != "keep_partial" {

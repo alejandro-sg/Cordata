@@ -723,3 +723,179 @@ async fn an_edit_step_that_changed_nothing_is_not_done() {
     assert!(b.calls.lock().unwrap()[0].prompt.contains("the step changed no file"));
     assert_eq!(read(&e, "calc/s1.txt").as_deref(), Some("ok s1"));
 }
+
+// ---------------------------------------------------------------------------------------- a worker that is blocked
+
+use cordata_orchestrator::machine::ControlRequest;
+
+/// The person's side of the control file: what a test puts in it is what the executor finds pending.
+#[derive(Default)]
+struct Slot(Mutex<Option<ControlRequest>>);
+impl Controls for Slot {
+    fn pending(&self) -> Option<String> {
+        self.0.lock().unwrap().as_ref().map(|r| r.kind.clone())
+    }
+    fn pending_request(&self) -> Option<ControlRequest> {
+        self.0.lock().unwrap().clone()
+    }
+    fn clear(&self) {
+        *self.0.lock().unwrap() = None;
+    }
+}
+
+fn start_bus(run: &str) -> (Arc<cordata_bus::Bus>, PathBuf) {
+    // A short path: a unix socket's name is capped at about a hundred bytes.
+    let root = PathBuf::from(format!("/tmp/cx{}", cordata_bus::random_hex(3).unwrap()));
+    (Arc::new(cordata_bus::Bus::start(&root, run, Path::new("/bin/true")).unwrap()), root)
+}
+
+/// Waits (up to 5s) until the executor has reported `kind`, then runs `then`.
+async fn after_event(e: &Env, kind: &str, then: impl FnOnce()) {
+    for _ in 0..250 {
+        if !kinds(e, kind).is_empty() {
+            then();
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("no {kind} event");
+}
+
+/// s1 asks which database to use (bus `blocked`) and stops; s2 is independent; s3 needs s1.
+fn blocked_plan() -> Plan {
+    let mut d = draft(3, "rollback_checkpoint");
+    d["steps"][2]["depends_on"] = json!(["s1"]);
+    plan::from_draft(&d, "/x", Options::default(), None).unwrap()
+}
+
+/// A worker that asks on s1's first call, reports evidence on s2, and otherwise does the step.
+fn asking_worker(bus: &Arc<cordata_bus::Bus>) -> Arc<ScriptedWorker> {
+    let bus = bus.clone();
+    ScriptedWorker::slow("asker", std::time::Duration::from_millis(250), move |task, _| {
+        let step = step_of(task);
+        let attempt: usize = task.task_id.rsplit(':').next().unwrap().parse().unwrap();
+        if step == "s1" && !task.prompt.contains("Direction from the person") {
+            bus.post_system("s1", "asker:m", "run", "blocked", "which database: sqlite or postgres?");
+            return WorkerResult::new("asker", "cancelled");
+        }
+        if step == "s2" {
+            bus.post_system("s2", "asker:m", "run", "worker_done", "ran cargo test: 4 passed");
+        }
+        write(task, &step, &format!("ok {step} try {attempt}"));
+        let mut r = WorkerResult::new("asker", "completed");
+        r.files_changed = vec![format!("calc/{step}.txt")];
+        r
+    })
+}
+
+#[tokio::test]
+async fn a_blocked_worker_parks_its_step_while_the_wave_goes_on_and_the_answer_resumes_it() {
+    let e = env(two_pools(100_000.0));
+    let (bus, root) = start_bus("run-t");
+    let asker = asking_worker(&bus);
+    let slot = Arc::new(Slot::default());
+    let cp = CopyCheckpoints::new(&e.store);
+    let cfg = Config { controls: Some(slot.clone()), bus: Some(bus.clone()), blocked_wait_s: 30.0, ..Default::default() };
+    let ex = exec(&e, blocked_plan(), vec![runnable(&asker, "m", "claude_code", "anthropic")], &cp, cfg);
+    let answer = async {
+        after_event(&e, "needs_you", || {
+            // Parked: the step says so, and its siblings have not been held up.
+            let plan = ex.plan.lock().unwrap();
+            assert_eq!(plan.steps[0].status, "blocked");
+            assert!(plan.steps[0].blocked_reason.as_deref().unwrap().starts_with(cordata_orchestrator::executor::ASKS));
+            assert!(plan.steps[0].blocked_until.is_some());
+        })
+        .await;
+        // s2 finishes while s1 is parked.
+        after_event(&e, "worker_done", || ()).await;
+        assert!(kinds(&e, "answered").is_empty(), "nobody has answered yet");
+        *slot.0.lock().unwrap() = Some(ControlRequest { kind: "answer".into(), by: "person".into(), step: Some("s1".into()), text: Some("use sqlite".into()), ..Default::default() });
+    };
+    let (out, ()) = tokio::join!(ex.run(), answer);
+    assert_eq!(out.status, "completed", "{}", out.reason);
+    // The record of it: one needs_you event, naming the step and the question and how to answer.
+    let asked = kinds(&e, "needs_you");
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0]["step_id"], "s1");
+    assert_eq!(asked[0]["question"], "which database: sqlite or postgres?");
+    assert_eq!(asked[0]["answer"], "cordata resume run-t --direction \"…\"");
+    // s2 was done before the answer arrived; s3 waited for s1.
+    let seen = e.events.lock().unwrap().clone();
+    let at = |kind: &str, step: &str| seen.iter().position(|x| x["kind"] == kind && x["step_id"] == step).unwrap();
+    assert!(at("step_result", "s2") < at("answered", "s1"));
+    assert!(at("answered", "s1") < at("step_result", "s3"));
+    // The retry carries the person's words, not the worker's question; the park cost no failed attempt.
+    let s1_prompts: Vec<String> = asker.calls.lock().unwrap().iter().filter(|t| t.task_id.contains(":s1:")).map(|t| t.prompt.clone()).collect();
+    assert_eq!(s1_prompts.len(), 2);
+    assert!(s1_prompts[1].contains("Direction from the person") && s1_prompts[1].contains("use sqlite"));
+    assert!(!s1_prompts[1].contains("Earlier attempts at this step failed"), "{}", s1_prompts[1]);
+    assert_eq!(read(&e, "calc/s1.txt").unwrap(), "ok s1 try 2");
+    // The worker's evidence is recorded as its claim, never as proof.
+    let done = kinds(&e, "worker_done");
+    assert_eq!((done[0]["step_id"].clone(), done[0]["evidence"].clone(), done[0]["verified"].clone()), (json!("s2"), json!("ran cargo test: 4 passed"), json!(false)));
+    drop(ex);
+    drop(bus);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn a_question_nobody_answers_falls_back_to_failed_attempts_so_a_run_still_finishes() {
+    let e = env(two_pools(100_000.0));
+    let (bus, root) = start_bus("run-t");
+    let bus2 = bus.clone();
+    // Asks on every call, whatever it is told.
+    let asker = ScriptedWorker::slow("asker", std::time::Duration::from_millis(50), move |task, _| {
+        bus2.post_system(&step_of(task), "asker:m", "run", "blocked", "which database?");
+        WorkerResult::new("asker", "cancelled")
+    });
+    let cp = CopyCheckpoints::new(&e.store);
+    let cfg = Config { controls: Some(Arc::new(Slot::default())), bus: Some(bus.clone()), blocked_wait_s: 0.3, ..Default::default() };
+    let ex = exec(&e, plan_of(1, "rollback_checkpoint", 2.0), vec![runnable(&asker, "m", "claude_code", "anthropic")], &cp, cfg);
+    let started = std::time::Instant::now();
+    let out = ex.run().await;
+    assert_eq!(out.status, "failed");
+    assert!(out.reason.contains("failed 3 times") && out.reason.contains("got no answer in 0s: which database?"), "{}", out.reason);
+    assert!(started.elapsed().as_secs_f64() < 10.0);
+    assert_eq!(asker.calls.lock().unwrap().len(), 3, "each unanswered question was an ordinary failed attempt");
+    assert_eq!(kinds(&e, "needs_you").len(), 3);
+    assert_ne!(ex.plan.lock().unwrap().steps[0].status, "blocked");
+    // With no one waiting at all (wait 0) it does not park: the question is just why the attempt failed.
+    let e2 = env(two_pools(100_000.0));
+    let cp2 = CopyCheckpoints::new(&e2.store);
+    let cfg = Config { bus: Some(bus.clone()), blocked_wait_s: 0.0, ..Default::default() };
+    let ex2 = exec(&e2, plan_of(1, "rollback_checkpoint", 2.0), vec![runnable(&asker, "m", "claude_code", "anthropic")], &cp2, cfg);
+    let out = ex2.run().await;
+    assert_eq!(out.status, "failed");
+    assert!(out.reason.contains("asked the person, who is not waiting: which database?"), "{}", out.reason);
+    assert!(kinds(&e2, "needs_you").is_empty());
+    drop((ex, ex2, bus));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn an_action_refused_with_no_rule_parks_the_step_and_a_pause_keeps_the_question_for_the_resume() {
+    let e = env(two_pools(100_000.0));
+    let quitter = ScriptedWorker::new("quitter", |_, _| {
+        let mut r = WorkerResult::new("quitter", "failed");
+        r.error_message = Some(format!("{} command:RunCommand: it stopped instead of finishing the step", cordata_orchestrator::worker::GAVE_UP));
+        r
+    });
+    let slot = Arc::new(Slot::default());
+    let cp = CopyCheckpoints::new(&e.store);
+    let cfg = Config { controls: Some(slot.clone()), blocked_wait_s: 30.0, ..Default::default() };
+    let ex = exec(&e, plan_of(1, "rollback_checkpoint", 2.0), vec![runnable(&quitter, "m", "antigravity", "google")], &cp, cfg);
+    let pause = async {
+        after_event(&e, "needs_you", || ()).await;
+        *slot.0.lock().unwrap() = Some(ControlRequest { kind: "pause".into(), by: "person".into(), ..Default::default() });
+    };
+    let (out, ()) = tokio::join!(ex.run(), pause);
+    assert_eq!(out.status, "paused");
+    assert_eq!(quitter.calls.lock().unwrap().len(), 1, "parked, not retried");
+    let asked = kinds(&e, "needs_you");
+    assert_eq!(asked[0]["why"], "refused");
+    // Paused while parked: the step keeps its question, so it stays in the person's list until it is answered.
+    let step = ex.plan.lock().unwrap().steps[0].clone();
+    assert_eq!(step.status, "blocked");
+    assert!(step.blocked_reason.unwrap().starts_with(cordata_orchestrator::executor::ASKS));
+    assert_eq!(step.blocked_until, None);
+}

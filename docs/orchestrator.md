@@ -166,13 +166,34 @@ but built for untrusted workers:
 - Each Claude Code step gets a 256-bit token in its environment (`CORDATA_BUS_TOKEN`, never argv) and
   `--mcp-config` naming `cordata-bus mcp`. `--strict-mcp-config` keeps every other MCP server out. The bus serves a
   token only to the worker process it was issued to, or one of that process's descendants. It stamps the sender itself.
-- Tools: `read` (long-poll up to 30 s), `post` (note/question/answer/finding, ≤4 KiB, scrubbed, 20/min), `status`,
+- Tools: `read` (long-poll up to 30 s), `post` (note/question/answer/finding/blocked/worker_done, ≤4 KiB, scrubbed, 20/min), `status`,
   `peers`, `claim`/`release`. Claims are advisory and only allowed inside the step's own scope.
   Plan and audit steps may only read and set status.
 - Read results are fenced as peer data. Peer messages cannot grant permission, widen a scope or approve anything.
   No tool can type into another worker; only the orchestrator starts workers.
 - Antigravity has no per-run MCP flag. Steps run there (and any retry) get a digest of the bus in their prompt instead.
   Each wave's messages are emitted as a `bus_messages` event. `CORDATA_BUS=off` disables the bus.
+
+### Telling the person it is blocked (one way)
+
+`blocked` and `worker_done` are the worker's return to the person, not to peers: no peer `read` or digest shows them,
+and only the orchestrator takes them (`Bus::take_return`, once each).
+
+- **`blocked{question}`**, or a step that stopped on an action it was refused with no rule to grant it (agy's
+  `denied_actions`, Claude's `permission_denials`, surfaced as `the worker made no change and was refused`), **parks the
+  step**: the worker is cancelled, its work undone, the step goes `blocked` with `blocked_reason = "asks: <question>"`
+  and the rest of its wave carries on. The run records a `needs_you` event (also in the ledger), the plan in the stored
+  run shows the step, `cordata status` lists it under *Needs You*, and the window's *Needs you* lane and the menu bar
+  show the question as text. They show no Allow button: nothing a worker says grants anything.
+- **Answer** with `cordata resume <run_id> --direction "…"`. On a run that is still going and inside its wait, that
+  writes an `answer` line to the run's control file and the parked step restarts with your words on its task (the park
+  costs no failed attempt). On a paused or stopped run the direction goes to the parked step first and resume runs it.
+  Pausing while parked keeps the question on the step.
+- **Timeout**: `blocked_wait_s` (default 600, `RunConfig`) is how long a run waits. After it the step counts as an
+  ordinary failed attempt ("asked the person and got no answer in Ns: …"), so an unattended run still finishes; `0` never
+  parks.
+- **`worker_done{evidence}`** is kept as a `worker_done` event and in the step's log with `verified: false`: the
+  worker's account, not proof. The step is still judged by its checks and the audit.
 
 ## Code
 <!-- covers: tui/crates/cordata-orchestrator, tui/crates/cordata-run @ b3a342a -->

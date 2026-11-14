@@ -38,7 +38,10 @@ use tokio::task::JoinHandle;
 pub const ENV_SOCKET: &str = "CORDATA_BUS_SOCKET";
 pub const ENV_TOKEN: &str = "CORDATA_BUS_TOKEN";
 /// What a message may be.
-pub const KINDS: [&str; 4] = ["note", "question", "answer", "finding"];
+pub const KINDS: [&str; 6] = ["note", "question", "answer", "finding", "blocked", "worker_done"];
+/// The two kinds that go one way, to the orchestrator and the person: no peer reads them (`collect`, `digest`), and
+/// only `Bus::take_return` hands them on, once each.
+pub const RETURN_KINDS: [&str; 2] = ["blocked", "worker_done"];
 pub const MAX_BODY: usize = 4096;
 /// A request line longer than this closes the connection.
 pub const MAX_LINE: usize = 16 * 1024;
@@ -133,6 +136,8 @@ struct State {
     statuses: BTreeMap<String, (String, f64)>,
     /// path → (step holding it, until)
     leases: BTreeMap<String, (String, f64)>,
+    /// Return messages (`RETURN_KINDS`) already handed to the orchestrator.
+    taken: std::collections::HashSet<u64>,
 }
 
 
@@ -310,12 +315,25 @@ impl Bus {
         Some(message.seq)
     }
 
+    /// The oldest `blocked` / `worker_done` message from `step` that the orchestrator has not taken yet. These are
+    /// the worker's one-way return to the person: only the orchestrator reads them, never a peer, and what they say
+    /// is data, not a grant.
+    pub fn take_return(&self, step: &str, kind: &str) -> Option<Message> {
+        if !RETURN_KINDS.contains(&kind) {
+            return None;
+        }
+        let mut st = self.inner.state.lock().unwrap();
+        let found = st.messages.iter().find(|m| m.kind == kind && m.from_step == step && !st.taken.contains(&m.seq)).cloned()?;
+        st.taken.insert(found.seq);
+        Some(found)
+    }
+
     /// The newest messages as a short digest for a prompt (a retried or resumed step), newest last.
     pub fn digest(&self, max_chars: usize) -> Option<String> {
         let st = self.inner.state.lock().unwrap();
         let mut lines: Vec<String> = Vec::new();
         let mut used = 0;
-        for m in st.messages.iter().rev() {
+        for m in st.messages.iter().rev().filter(|m| !RETURN_KINDS.contains(&m.kind.as_str())) {
             let line = format!("[{} from {} on {}] {}", m.kind, m.from_step, m.topic, m.body.replace('\n', " "));
             if used + line.len() > max_chars {
                 break;
@@ -413,7 +431,7 @@ async fn handle(inner: &Arc<Inner>, caller: Option<u32>, request: &Value) -> Val
                 return fail("topic: 1-64 of a-z 0-9 . _ / - (e.g. run, step/s2, api)");
             }
             if !KINDS.contains(&kind.as_str()) {
-                return fail("kind: note, question, answer or finding");
+                return fail("kind: note, question, answer, finding, blocked or worker_done");
             }
             let body = clean(&text("body"));
             if body.trim().is_empty() {
@@ -518,7 +536,7 @@ fn collect(inner: &Inner, step: &str, since: u64, topics: &[String]) -> (Vec<Mes
     let mut last = since;
     for m in st.messages.iter().filter(|m| m.seq > since) {
         last = last.max(m.seq);
-        if m.from_step == step || (!topics.is_empty() && !topics.iter().any(|t| m.topic == *t || m.topic.starts_with(&format!("{t}/")))) {
+        if RETURN_KINDS.contains(&m.kind.as_str()) || m.from_step == step || (!topics.is_empty() && !topics.iter().any(|t| m.topic == *t || m.topic.starts_with(&format!("{t}/")))) {
             continue;
         }
         if out.len() >= READ_LIMIT || chars + m.body.len() > READ_CHARS {
@@ -541,6 +559,32 @@ mod tests {
         assert_eq!(clean("key sk-ant-REDACTEDREDACTEDREDACTED0123 here"), "key [redacted] here");
         let long = "é".repeat(MAX_BODY);
         assert!(clean(&long).len() <= MAX_BODY + "…".len());
+    }
+
+    #[test]
+    fn return_messages_reach_only_the_orchestrator_and_only_once() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let root = PathBuf::from(format!("/tmp/cb{}", random_hex(3).unwrap()));
+            let bus = Bus::start(&root, "run-r", Path::new("/bin/true")).unwrap();
+            bus.post_system("s1", "w1", "run", "blocked", "which database do you want?");
+            bus.post_system("s1", "w1", "run", "worker_done", "tests pass: 12/12");
+            bus.post_system("s2", "w2", "run", "finding", "api is /v1");
+            // a peer reads the finding and nothing of the return
+            let (seen, _) = collect(&bus.inner, "s2", 0, &[]);
+            assert!(seen.is_empty(), "s2 never sees s1's return: {seen:?}");
+            let (seen, _) = collect(&bus.inner, "s1", 0, &[]);
+            assert_eq!(seen.iter().map(|m| m.kind.as_str()).collect::<Vec<_>>(), ["finding"]);
+            assert_eq!(bus.digest(4000).unwrap(), "[finding from s2 on run] api is /v1");
+            // the orchestrator takes each once, by step and kind
+            assert_eq!(bus.take_return("s2", "blocked"), None);
+            assert_eq!(bus.take_return("s1", "blocked").unwrap().body, "which database do you want?");
+            assert_eq!(bus.take_return("s1", "blocked"), None);
+            assert_eq!(bus.take_return("s1", "worker_done").unwrap().body, "tests pass: 12/12");
+            assert_eq!(bus.take_return("s1", "note"), None, "only return kinds are handed on");
+            drop(bus);
+            let _ = std::fs::remove_dir_all(root);
+        });
     }
 
     #[test]

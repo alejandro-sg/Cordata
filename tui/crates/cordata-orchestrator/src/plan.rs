@@ -86,6 +86,9 @@ pub struct Step {
     pub last_event_at: Option<f64>,
     #[serde(default)]
     pub blocked_reason: Option<String>,
+    /// While the run is parked on this step waiting for an answer: when it stops waiting and treats the step as failed.
+    #[serde(default)]
+    pub blocked_until: Option<f64>,
     /// What a person can observe once this step is done, in plain words — the preview a plan is approved on, and the
     /// "expected" half of the receipt's logic diff. Empty for a plan that did not say.
     #[serde(default)]
@@ -534,6 +537,7 @@ pub fn from_draft(draft: &Value, root: &str, options: Options, findings: Option<
                 depends_on: strings(s.get("depends_on")),
                 last_event_at: None,
                 blocked_reason: None,
+                blocked_until: None,
                 behavior: text(s.get("behavior")),
                 because: text(s.get("because")),
             }

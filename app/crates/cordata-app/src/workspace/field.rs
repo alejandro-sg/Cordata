@@ -835,6 +835,22 @@ impl Workspace {
                     .when(item.gate_high_risk, |d| d.child(ui::meta("high risk: open the thread to allow", cx))));
             }
             for (run, step) in blocked_steps {
+                if let Some(question) = step.question() {
+                    // A worker stopped to ask: the question is shown as text and answered in words. There is no Allow
+                    // here, because nothing a worker says can grant anything.
+                    rail = rail.child(
+                        div().flex().flex_col().gap(px(8.)).p(px(12.)).rounded(px(4.)).border_1().border_color(c(tk.attention))
+                            .bg(ca(tk.attention, 0.08))
+                            .child(div().font_family(mono(cx)).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(c(tk.attention))
+                                .child(SharedString::from(format!("run · {}", run.run_id))))
+                            .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(c(tk.text_primary))
+                                .child(SharedString::from(format!("{} {} asks", step.id, step.name))))
+                            .child(div().text_size(px(13.)).text_color(c(tk.text_primary)).child(SharedString::from(question.to_owned())))
+                            .child(div().font_family(mono(cx)).text_size(px(t::TEXT_META)).text_color(c(tk.text_secondary))
+                                .child(SharedString::from(run.answer_command())))
+                    );
+                    continue;
+                }
                 let run_id = run.run_id.clone();
                 let step_id = step.id.clone();
                 let step_name = step.name.clone();

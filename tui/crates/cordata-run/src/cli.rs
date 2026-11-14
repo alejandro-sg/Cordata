@@ -19,7 +19,7 @@ use cordata_orchestrator::synthesizer::{CowIsolation, FileSynthesis};
 use serde_json::{json, Value};
 
 use crate::config;
-use crate::controls::FileControls;
+use crate::controls::{self, FileControls};
 use crate::local_time;
 use crate::roster::{LearnedRoster, bandit_path};
 use crate::status;
@@ -362,6 +362,24 @@ pub async fn resume(run_id: &str, workers: Option<String>, allow_direct: bool, m
         eprintln!("cordata-run: {run_id} has no step {step_id} to run again (or it was cancelled)");
         return 2;
     }
+    // A run that is still going and has a step parked on a question takes the answer where it is: starting a second
+    // process on the same run would fight the first over its files.
+    if redo_step.is_none()
+        && let Some(text) = direction.as_deref()
+        && let Some(step) = live_parked_step(&record)
+    {
+        let home = cordata_home(&std::env::vars().collect());
+        return match controls::answer(&machine::artifacts_dir(&home, run_id), &step, text.trim(), "person") {
+            Ok(()) => {
+                eprintln!("cordata-run: {run_id} is still going and step {step} is waiting; your answer was sent to it");
+                0
+            }
+            Err(e) => {
+                eprintln!("cordata-run: cannot reach {run_id}: {e}");
+                2
+            }
+        };
+    }
     if let Some(text) = direction.as_deref() && !apply_direction_to(&mut record, redo_step.as_deref(), text) {
         if direction.as_deref().is_some_and(|d| d.trim().is_empty()) {
             eprintln!("cordata-run: the direction is empty");
@@ -488,6 +506,18 @@ pub fn reopen_step(record: &mut machine::RunRecord, step_id: &str) -> bool {
     true
 }
 
+/// The step of a live run that is parked on a question and still inside its wait: where an answer can go to the run.
+pub fn live_parked_step(record: &machine::RunRecord) -> Option<String> {
+    if machine::TERMINAL.contains(&record.state.as_str()) || record.state == "paused" {
+        return None;
+    }
+    let now = cordata_checkpoints::now();
+    record.plan.as_ref()?.get("steps")?.as_array()?.iter().find_map(|s| {
+        let waiting = s.get("status").and_then(Value::as_str) == Some("blocked") && s.get("blocked_until").and_then(Value::as_f64).is_some_and(|until| until > now);
+        waiting.then(|| s.get("step_id").and_then(Value::as_str).map(str::to_owned)).flatten()
+    })
+}
+
 /// Puts the person's words on the step that runs next, in the plan the worker is given, and notes it on the run.
 /// The text is theirs, typed in the window, so it rides the plan (trusted) and not the fenced worker data.
 pub fn apply_direction(record: &mut machine::RunRecord, text: &str) -> bool {
@@ -501,10 +531,20 @@ pub fn apply_direction_to(record: &mut machine::RunRecord, step_id: Option<&str>
         return false;
     }
     let Some(steps) = record.plan.as_mut().and_then(|p| p.get_mut("steps")).and_then(Value::as_array_mut) else { return false };
-    let Some(step) = steps.iter_mut().find(|s| match step_id {
-        Some(id) => s.get("step_id").and_then(Value::as_str) == Some(id),
-        None => s.get("status").and_then(Value::as_str) != Some("completed"),
-    }) else { return false };
+    // A step parked on a question is the one the person is answering; else the first not yet completed.
+    let parked = steps.iter().position(|s| s.get("status").and_then(Value::as_str) == Some("blocked") && s.get("blocked_reason").is_some_and(|r| !r.is_null()));
+    let at = match step_id {
+        Some(id) => steps.iter().position(|s| s.get("step_id").and_then(Value::as_str) == Some(id)),
+        None => parked.or_else(|| steps.iter().position(|s| s.get("status").and_then(Value::as_str) != Some("completed"))),
+    };
+    let Some(at) = at else { return false };
+    let was_parked = steps[at].get("status").and_then(Value::as_str) == Some("blocked") && steps[at].get("blocked_reason").is_some_and(|r| !r.is_null());
+    let step = &mut steps[at];
+    if was_parked {
+        step["status"] = Value::String("pending".into());
+        step["blocked_reason"] = Value::Null;
+        step["blocked_until"] = Value::Null;
+    }
     let id = step.get("step_id").and_then(Value::as_str).unwrap_or("").to_owned();
     let before = step.get("description").and_then(Value::as_str).unwrap_or("").to_owned();
     step["description"] = Value::String(format!("{before}\n\nDirection from the person (follow it where it differs from the above): {text}"));
@@ -893,6 +933,38 @@ mod direction_tests {
         assert!(!reopen_step(&mut r, "nope"));
         r.state = "cancelled".into();
         assert!(!reopen_step(&mut r, "s1"));
+    }
+
+    #[test]
+    fn a_direction_answers_the_step_parked_on_a_question_before_any_other() {
+        let mut r = record_with(json!([
+            {"step_id": "s1", "name": "a", "description": "do a", "status": "pending"},
+            {"step_id": "s2", "name": "b", "description": "do b", "status": "blocked", "blocked_reason": "asks: sqlite or postgres?", "blocked_until": 5.0},
+        ]));
+        assert!(apply_direction(&mut r, "use sqlite"));
+        let steps = r.plan.as_ref().unwrap()["steps"].as_array().unwrap().clone();
+        assert_eq!(steps[0]["description"], "do a", "the first unfinished step is not the one that asked");
+        assert!(steps[1]["description"].as_str().unwrap().ends_with("use sqlite"));
+        assert_eq!((steps[1]["status"].clone(), steps[1]["blocked_reason"].clone()), (json!("pending"), Value::Null));
+        assert_eq!(r.warnings, vec!["direction added by the person for step s2".to_owned()]);
+    }
+
+    #[test]
+    fn a_live_run_waiting_on_a_question_takes_the_answer_through_its_control_file() {
+        let in_future = cordata_checkpoints::now() + 300.0;
+        let mut r = record_with(json!([{"step_id": "s1", "name": "a", "description": "x", "status": "blocked", "blocked_reason": "asks: q?", "blocked_until": in_future}]));
+        r.state = "execute".into();
+        assert_eq!(live_parked_step(&r).as_deref(), Some("s1"));
+        r.state = "paused".into();
+        assert_eq!(live_parked_step(&r), None, "a paused run has no process to answer: resume it with the direction");
+        r.state = "execute".into();
+        r.plan.as_mut().unwrap()["steps"][0]["blocked_until"] = json!(1.0);
+        assert_eq!(live_parked_step(&r), None, "its wait is over: the run moved on");
+        let dir = tempfile::tempdir().unwrap();
+        controls::answer(dir.path(), "s1", "use sqlite", "person").unwrap();
+        let file = FileControls::new(Some(dir.path().join("control.ndjson")));
+        let req = machine::RunControls::pending(&file).unwrap();
+        assert_eq!((req.kind.as_str(), req.step.as_deref(), req.text.as_deref()), ("answer", Some("s1"), Some("use sqlite")));
     }
 
     #[test]

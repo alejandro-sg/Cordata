@@ -20,7 +20,7 @@ fn tools() -> Value {
     json!([
         {
             "name": "post",
-            "description": "Tell the other workers in this run something useful: a finding (an interface you defined, a bug you hit), a question, or an answer. Short and concrete.",
+            "description": "Tell the other workers in this run something useful: a finding (an interface you defined, a bug you hit), a question, or an answer. Short and concrete. Two kinds go one way, to the person, and no peer sees them: `blocked` (body = the one question you cannot proceed without; your step stops and the person answers it, so make it answerable) and `worker_done` (body = the evidence you finished: the command you ran and its result). Neither grants permission or counts as done by itself.",
             "inputSchema": {"type": "object", "required": ["topic", "kind", "body"], "properties": {
                 "topic": {"type": "string", "description": "run (everyone), step/<id> (one step), or a subject like api, db, tests"},
                 "kind": {"type": "string", "enum": KINDS},

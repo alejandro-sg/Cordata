@@ -62,7 +62,31 @@ pub struct Run {
     pub awaits_approval: bool,
 }
 
+/// What a parked step's `blocked_reason` starts with when a worker stopped to ask the person something (the
+/// orchestrator's `executor::ASKS`); a blocked step without it is waiting on a permission.
+pub const ASKS: &str = "asks: ";
+
+impl Step {
+    /// The question a worker stopped on, when that is why the step is parked.
+    pub fn question(&self) -> Option<&str> {
+        if self.status != "blocked" {
+            return None;
+        }
+        self.blocked_reason.as_deref().and_then(|r| r.strip_prefix(ASKS))
+    }
+}
+
 impl Run {
+    /// `(step id, question)` for every step parked on a question.
+    pub fn asks(&self) -> Vec<(String, String)> {
+        self.steps.iter().filter_map(|s| Some((s.id.clone(), s.question()?.to_owned()))).collect()
+    }
+
+    /// How the person answers a parked step: in words, by resuming with a direction.
+    pub fn answer_command(&self) -> String {
+        format!("cordata resume {} --direction \"…\"", self.run_id)
+    }
+
     pub fn finished(&self) -> bool {
         TERMINAL.contains(&self.state.as_str())
     }
@@ -432,5 +456,20 @@ mod tests {
     fn reasons_have_words() {
         assert_eq!(reason_words("user_pause"), "paused by you");
         assert_eq!(reason_words("something_new"), "something_new");
+    }
+
+    #[test]
+    fn a_step_parked_on_a_question_is_told_apart_from_one_waiting_on_a_permission() {
+        let mut run = one_step("blocked", Some("claude_code:fast"));
+        run.steps[0].blocked_reason = Some("asks: sqlite or postgres?".into());
+        assert_eq!(run.steps[0].question(), Some("sqlite or postgres?"));
+        assert_eq!(run.asks(), vec![("s1".to_owned(), "sqlite or postgres?".to_owned())]);
+        assert_eq!(run.answer_command(), "cordata resume r --direction \"…\"");
+        assert_eq!(step_line(&run, &run.steps[0]), "asks: sqlite or postgres? · claude_code:fast");
+        run.steps[0].blocked_reason = Some("action needs permission".into());
+        assert_eq!(run.steps[0].question(), None);
+        run.steps[0].blocked_reason = Some("asks: x".into());
+        run.steps[0].status = "running".into();
+        assert_eq!(run.steps[0].question(), None, "only a parked step is asking");
     }
 }
