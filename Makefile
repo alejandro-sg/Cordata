@@ -43,7 +43,7 @@ check-key:
 	@scripts/check-key.sh
 
 # Fails if a credential is in a tracked or not-ignored file (tui/crates/cordata-guard). `make secrets ARGS=--history`
-# also reads every commit. CI runs it on every push; `make hooks` runs the staged-change version before each commit.
+# also reads every commit. `make hooks` runs the staged-change version before each commit.
 secrets:
 	@cd tui && cargo run -q -p cordata-guard --bin cordata-secrets -- $(ARGS)
 

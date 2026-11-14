@@ -9,13 +9,16 @@
 
 ## What is Cordata?
 
-A coding agent for your Mac, in three pieces:
+A supervisor for coding agents on your Mac. It does not try to be a better Claude Code. It sits around the coding CLIs
+you already use (Claude Code, Antigravity) and gives you what no single vendor's tool does: one place to see what is
+running and what needs you, a check that the work meets criteria you can run, a ledger of quota and spend across
+vendors, and a sandbox under all of it.
 
-1. **`cordata`** is a chat agent that reads, edits and runs things in your project. It asks before every edit and every command, and runs commands in a macOS sandbox.
-2. **`cordata run "goal"`** is an orchestrator. It hands a bigger job to coding CLIs you already have (Claude Code and Antigravity): one model researches and plans, another implements, a model from a different family reviews, and the planner checks the result against its own plan.
-3. **Cordata.app** is an optional native window on the same engine: a field of what needs you and what is moving, and a menu bar item to answer safe approvals without opening it.
+1. **`cordata run "goal"`** is the supervisor. It hands a job to the coding CLIs: one model researches and plans, another implements, a model from a different family reviews, and the planner checks the result against its own plan. Every step carries acceptance criteria that need no judgement, and a failed run restores your tree to the checkpoint taken before it started.
+2. **Cordata.app** is the cockpit: a field of what needs you and what is moving, a dock terminal where you can run Claude Code or another agent by hand with its state (working, blocked, idle) shown, and a menu bar item to answer safe approvals without opening the window.
+3. **`cordata`** is a small chat agent of its own, for work where you want every edit and command to ask first inside a macOS sandbox. It is the least complete piece: no web access, plan mode, rewind or image input, and it uses API keys, not a subscription.
 
-Everything runs on your machine. The only network calls go to the model providers you configure. It is a single-developer project, macOS only (Apple Silicon for the app), and it changes often.
+Cordata launches each vendor's own binary and never reads or stores another tool's login. Everything runs on your machine; the only network calls go to the model providers you configure. It is a single-developer project, macOS only (Apple Silicon for the app), and it changes often.
 
 ## What stands out
 
