@@ -80,6 +80,7 @@ cordata "why does the build fail?"        # start with a prompt
 cordata run "Add retries to the HTTP client and test them" --allow-direct
 cordata run "…" --review-plan            # stop after the plan so you read it before anything is built
 cordata run "…" --land review --detach   # leave the result for review; keep running if the terminal closes
+cordata attach <run_id>                   # follow a detached run; a notification says when it stops
 cordata status                            # quota left in each pool, recent runs; spends nothing
 cordata show <run_id>                     # a run's plan, who did what, the audit (--step s3 --follow tails a step live)
 cordata resume <run_id>                   # continue a paused or interrupted run
@@ -98,6 +99,7 @@ shows every key, ⇧⇥ switches between ask and auto mode.
 - [Terminal client](tui/README.md): keys, prompt box, what the chat does not have
 - [Native app](docs/app.md): Cordata.app
 - [Settings](docs/settings.md): every setting, including tool hooks
+- [Trial log](docs/trial-log.md): the six-week daily-driver trial and its kill criteria
 - [Auto mode](docs/auto-mode.md): what auto mode allows without asking, and the folded transcript
 - [Claude Code hooks for the app's terminal](docs/hooks.md): declare agent state over OSC 7501
 - [Architecture](ARCHITECTURE.md) · [Threat model](THREAT_MODEL.md) · [Security](SECURITY.md)

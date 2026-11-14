@@ -228,6 +228,7 @@ async fn drive(mut machine: Machine<'_>) -> RunRecord {
 }
 
 fn finish(record: &RunRecord, as_json: bool, receipt: &str) -> i32 {
+    crate::detach::announce(&record.run_id, &record.state);
     if !as_json {
         // A run held for approval shows what it expects to build, so the decision is made on this screen.
         let held = record.history.last().and_then(|h| h.get("reason")).and_then(Value::as_str) == Some("plan_review");

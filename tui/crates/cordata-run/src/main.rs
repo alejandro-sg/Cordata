@@ -3,6 +3,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use cordata_run::cli::{self, RunArgs};
+use cordata_run::detach;
 
 #[derive(Parser)]
 #[command(name = "cordata-run", about = "run, inspect and resume orchestrated coding tasks (native)")]
@@ -110,6 +111,11 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// follow a detached run's output until it stops
+    Attach {
+        #[arg(value_parser = run_id_arg)]
+        run_id: String,
+    },
     /// export a run as OpenTelemetry GenAI spans
     Export {
         #[arg(value_parser = run_id_arg)]
@@ -164,18 +170,37 @@ async fn main() -> ExitCode {
                             cmd.arg(arg);
                         }
                     }
+                    // The run needs a known id before it starts, or the person cannot find it again.
+                    let id = run_id.clone().unwrap_or_else(|| format!("run-{}", cordata_orchestrator::machine::short_id()));
+                    if run_id.is_none() {
+                        cmd.args(["--run-id", &id]);
+                    }
+                    let home = cli::cordata_home(&std::env::vars().collect());
+                    let log = detach::log_path(&home, &id);
+                    let log_file = log.parent().and_then(|dir| std::fs::create_dir_all(dir).ok()).and_then(|()| std::fs::File::create(&log).ok());
                     unsafe {
                         cmd.pre_exec(|| {
                             libc::setsid();
                             Ok(())
                         });
                     }
+                    cmd.env(detach::DETACHED_ENV, "1");
                     cmd.stdin(std::process::Stdio::null());
-                    cmd.stdout(std::process::Stdio::null());
-                    cmd.stderr(std::process::Stdio::null());
+                    match log_file.and_then(|f| f.try_clone().ok().map(|g| (f, g))) {
+                        Some((out, err)) => {
+                            cmd.stdout(out);
+                            cmd.stderr(err);
+                        }
+                        None => {
+                            cmd.stdout(std::process::Stdio::null());
+                            cmd.stderr(std::process::Stdio::null());
+                        }
+                    }
                     match cmd.spawn() {
                         Ok(child) => {
-                            println!("Detached run started with PID {}", child.id());
+                            detach::keep_awake(child.id());
+                            println!("Detached run {id} started with PID {}", child.id());
+                            println!("  cordata attach {id}   watch it; a notification says when it finishes or needs you");
                             return ExitCode::from(0);
                         }
                         Err(e) => {
@@ -190,6 +215,7 @@ async fn main() -> ExitCode {
         }
         Command::Status { json } => cli::status_cmd(json),
         Command::Show { run_id, json, step, attempt, follow, timeline } => cli::show_cmd(&run_id, json, step.as_deref(), attempt, follow, timeline),
+        Command::Attach { run_id } => detach::attach(&run_id),
         Command::Export { run_id, otlp } => cli::export_cmd(&run_id, otlp),
         Command::Resume { run_id, workers, allow_direct, max_usd, allow_weaker_guards, direction, json } => cli::resume(&run_id, workers, allow_direct, max_usd, allow_weaker_guards, direction, json).await,
         Command::Evolve { target, threshold, dry_run, mutate, propose, propose_usd, propose_workers, cwd, json } => cli::evolve_cmd(&target, threshold, dry_run, json, cwd, mutate, propose, propose_usd, propose_workers),

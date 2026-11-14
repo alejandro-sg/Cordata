@@ -12,7 +12,7 @@ family reviews, and the planner checks the result against its own plan.
 ```
 
 ## Using it
-<!-- covers: tui/crates/cordata-run/src/main.rs, tui/crates/cordata-run/src/cli.rs, tui/crates/cordata-run/src/receipt.rs @ f1d1057 -->
+<!-- covers: tui/crates/cordata-run/src/main.rs, tui/crates/cordata-run/src/cli.rs, tui/crates/cordata-run/src/receipt.rs @ b3a342a -->
 
 ```bash
 cordata run "Add retries to the HTTP client and test them" --cwd ~/proj --allow-direct
@@ -34,8 +34,12 @@ to `~/.cordata/orchestrator/<run_id>/steps/<step>-<attempt>.ndjson`; add `--atte
 `cordata export <run_id> --otlp` writes the run as OpenTelemetry GenAI spans (a local file; Cordata sends nothing).
 
 `run --land review` finishes the run in `to_review` instead of `done`, with the work left in the project for you to read
-(the default, `--land all`, is the old behavior). `run --detach` starts the run in its own session (`setsid`) so it
-survives the terminal that launched it; `cordata resume` picks up a run whose process is gone. `--session-id` ties a run
+(the default, `--land all`, is the old behavior). `run --detach` prints the run id and starts the run in its own session (`setsid`), with console output in
+`~/.cordata/orchestrator/<run_id>/run.log`, so it survives the terminal that launched it. `caffeinate` keeps the Mac awake
+while it runs, `cordata attach <run_id>` follows the log until the run stops, and a macOS notification says when it
+finishes, needs you (`paused`, `usage_low`), is ready to review or stops. The notification names only the run id and
+state. `cordata resume` picks up a run whose process is gone. Keep Antigravity to attended runs: Google does not support
+unattended background use on consumer plans. `--session-id` ties a run
 to the chat thread that started it (`/run` in the chat passes it).
 
 `cordata evolve [repomap|economizer|guard|custom] [--threshold N] [--dry-run] [--mutate CMD | --propose [TEXT]]` is a
@@ -85,7 +89,7 @@ would make the estimate low until it is updated. Antigravity and Ollama Cloud st
 Other `orchestrator.*` settings are in [`settings.md`](settings.md).
 
 ## How a run goes
-<!-- covers: tui/crates/cordata-orchestrator/src/machine.rs, tui/crates/cordata-orchestrator/src/plan.rs @ f1d1057 -->
+<!-- covers: tui/crates/cordata-orchestrator/src/machine.rs, tui/crates/cordata-orchestrator/src/plan.rs @ b3a342a -->
 
 1. **Research** (on by default). The planner, read-only, writes a brief of findings with evidence (`path:line` plus a
    quote). A deterministic check, no model, verifies each file reference; unverifiable findings are dropped, and the
@@ -118,7 +122,7 @@ rolled back, a handoff packet (step, checkpoint, partial diff, failed attempts, 
 untrusted data) is saved, and the same step continues on another pool.
 
 ## Dispatch
-<!-- covers: tui/crates/cordata-orchestrator/src/dispatch.rs, tui/crates/cordata-orchestrator/src/bandit.rs @ f1d1057 -->
+<!-- covers: tui/crates/cordata-orchestrator/src/dispatch.rs, tui/crates/cordata-orchestrator/src/bandit.rs @ b3a342a -->
 
 Hard gates come first and are never learned: the role, the CLI being installed, the pool being under its hard line, and
 the reviewer coming from a family that wrote none of the change. Then the order: the cheapest competent worker per role.
@@ -151,7 +155,7 @@ left.
   criterion; prefer `command` or `file_exists` criteria for such suites.
 
 ## The run bus (workers talking to each other)
-<!-- covers: tui/crates/cordata-bus @ f1d1057 -->
+<!-- covers: tui/crates/cordata-bus @ b3a342a -->
 
 Parallel steps coordinate through one message bus per run (`tui/crates/cordata-bus`), modelled on herdr's socket API
 but built for untrusted workers:
@@ -171,12 +175,12 @@ but built for untrusted workers:
   Each wave's messages are emitted as a `bus_messages` event. `CORDATA_BUS=off` disables the bus.
 
 ## Code
-<!-- covers: tui/crates/cordata-orchestrator, tui/crates/cordata-run @ f1d1057 -->
+<!-- covers: tui/crates/cordata-orchestrator, tui/crates/cordata-run @ b3a342a -->
 
 `tui/crates/cordata-orchestrator`: `machine.rs` (the durable state machine in `state.db`), `research.rs`, `plan.rs`,
 `executor.rs`, `audit.rs`, `handoff.rs`, `dispatch.rs` and `bandit.rs`, `synthesizer.rs`, `scope.rs`, `checkpoints.rs`,
 and `workers/` (one streaming contract, adapters for `claude` and `agy`, the Seatbelt profile and the vault gate). The `ollama` worker is `tui/crates/cordata-run/src/native_worker.rs`: it drives `acp-core` and answers the engine's approvals for the step (edits inside the step's files, offline commands only for roles that change files, nothing else).
-`tui/crates/cordata-run` is the command; `cordata-ledger` holds the quota pools and run records.
+`tui/crates/cordata-run` is the command (`detach.rs`: the detached run's log, `caffeinate`, notification and `attach`); `cordata-ledger` holds the quota pools and run records.
 
 ## What a project teaches
 

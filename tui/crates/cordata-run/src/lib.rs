@@ -4,6 +4,7 @@
 pub mod cli;
 pub mod config;
 pub mod controls;
+pub mod detach;
 pub mod native_worker;
 pub mod receipt;
 pub mod roster;

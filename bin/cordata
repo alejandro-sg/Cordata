@@ -10,6 +10,7 @@
 #   cordata status                      # Worker pool headroom & recent runs
 #   cordata show <run_id>               # Inspect plan, history, and audit
 #   cordata resume <run_id>             # Continue paused batch run
+#   cordata attach <run_id>             # Follow a detached run until it stops
 #   cordata doctor                      # Is everything in place? One screen, fixes included
 #
 # Everything here is a Rust binary under tui/target/{release,debug}; build them with `make tui-build`.
@@ -46,6 +47,7 @@ Cordata — AI Coding Assistant & Autonomous Orchestrator
   cordata status                   Inspect worker headroom, recent runs and handoffs
   cordata show RUN_ID              Show one run's plan, history, and audit
   cordata resume RUN_ID            Continue a paused batch run
+  cordata attach RUN_ID            Follow a detached run (cordata run --detach) until it stops
   cordata evolve [TARGET] [OPTS]   Recursive self-improvement cycle across Iron Gates
   cordata floorplan [OPTIONS]      Architectural map & active-work visualizer (--html to open)
   cordata doctor                   Check the CLIs, providers and settings Cordata leans on
@@ -62,7 +64,7 @@ fi
 case "${1:-}" in
   doctor) bin="$(built cordata-doctor)"; shift; exec "$bin" "$@" ;;
   floorplan) bin="$(built cordata-floorplan)"; shift; exec "$bin" "$@" ;;
-  run|status|show|resume|evolve) exec "$(built cordata-run)" "$@" ;;
+  run|status|show|resume|attach|export|evolve) exec "$(built cordata-run)" "$@" ;;
   app|gui)
     shift || true
     if [[ -d "$HOME/Applications/Cordata.app" ]]; then
