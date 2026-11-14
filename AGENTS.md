@@ -8,7 +8,9 @@ Index and operational invariants for coding agents working on Cordata. Keep this
 
 | Command | Purpose |
 |---|---|
-| `make tui-build` | Builds the release binaries `cordata` runs (`acp-tui`, `cordata-run`, `cordata-doctor`) |
+| `make tui-build` | Builds the release binaries `cordata` runs (`acp-tui`, `cordata-run`, `cordata-doctor`, `cordata-floorplan`, `cordata-bus`) |
+| `make verify` | `scripts/verify.sh`: secrets scan + `make tui-test`; `ARGS=--all` adds `make app-test`. Exit 0 or fail |
+| `make app-check` | clippy `-D warnings`, cargo-deny, gpui snapshot proof (network once) |
 | `make cli` | Symlinks `cordata` binary to `~/.local/bin/cordata` |
 | `make tui-test` | Runs the Rust tests for the terminal workspace (`tui/`) |
 | `make app-test` | Runs Rust tests for native GPUI macOS application (`cordata-app`) |

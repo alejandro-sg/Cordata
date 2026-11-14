@@ -13,6 +13,8 @@ cordata                              # new session in the current directory
 cordata "what is this project"       # start with a prompt
 cordata --cwd ~/some/project         # work in another folder
 cordata run "<goal>"                 # orchestrated multi-worker run (docs/orchestrator.md)
+cordata doctor                       # what is installed, which key was found, the fix for what is missing
+cordata floorplan [--html]           # architectural map of the project and what is being worked on
 ```
 
 From a checkout without installing: `make tui ARGS="--cwd ~/some/project"`. `--debug-log FILE` appends the raw protocol
@@ -48,7 +50,10 @@ Shared visual identity with the native app ("The Rope"):
 | `!git status` | runs in the project on your authority; the next prompt carries the output to the agent |
 | anything, while the agent works | queues as the next turn; Esc stops the turn and puts the queue back in the box |
 
-`/diff`, `/copy` and `/export [file]` do what they say. `/history` lists this project's saved sessions,
+`/diff`, `/copy` and `/export [file]` do what they say. `/context` itemises what the prompt holds (instructions, skills,
+tools, history), `/model [name]` switches the model and keeps the conversation, `/status` shows the session, mode, model
+and quota pools, `/run [goal]` starts an orchestrated run from this thread, and `/floorplan [html]` maps the project.
+`/history` lists this project's saved sessions,
 `/resume [id]` continues one (`acp-tui --resume` at start-up), `/forget` deletes them, and `/permissions` shows the rules,
 network and write scope commands run under. Any `*.md` in `.cordata/commands/` (or `.claude/commands/`) becomes `/name`, with `$ARGUMENTS`.
 
@@ -89,9 +94,10 @@ deletes and `.env` redirects before any prompt.
 
 ### What the chat does not have
 
-No undo or goal loop, and no settings panel. Context compaction is a heuristic summary of older turns, not a model
-summary: the model comes from `CORDATA_NATIVE_MODEL`. The one mode is `chat.mode` (`ask` or `auto`, `docs/auto-mode.md`).
-`cordata run` has its own checkpoints and rollback.
+No undo, no goal loop and no settings panel (`/run` hands a goal to the orchestrator). When the context nears the window,
+older turns are compacted by a heuristic summary, not a model summary. The model comes from `CORDATA_NATIVE_MODEL` (or
+`/model`). The one mode is `chat.mode` (`ask` or `auto`, ⇧⇥ cycles it; `docs/auto-mode.md`). Tool hooks are in
+`docs/settings.md`. `cordata run` has its own checkpoints and rollback.
 
 **Instructions.** The agent reads `CORDATA.md` (or `.cordata/CORDATA.md`, `AGENTS.md`, `CLAUDE.md`) from the project, plus
 `~/.cordata/CORDATA.md` and `CORDATA.local.md`, at the first prompt. `/memory` lists them and `/init` drafts one.

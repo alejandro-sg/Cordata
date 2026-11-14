@@ -28,7 +28,7 @@ Conversation rail and transcript, approval cards with the exact command or diff,
 command palette (⌘K), project picker (⌘O), settings (⌘,: launch, appearance, shortcuts, your API key), and a side panel
 with Files, Editor, Review (per-hunk keep/revert, git and pull requests) and Terminal. Both clients share one
 conversation reducer. Like the terminal client, sessions are saved and resumable (`/history`, `/resume`, `/forget`),
-edits and commands ask first unless your `chat.allow` rules say otherwise, and there is no undo or goal loop in the chat. The
+edits and commands ask first unless your `chat.allow` rules say otherwise, and there is no undo or goal loop in the chat (`/run` hands a goal to the orchestrator). The
 window has three views of the same threads (`⌘0` canvas, `⌘1` transcript, `⌘D` change sheet); Settings → Default workspace
 chooses the one it opens in.
 

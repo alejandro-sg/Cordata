@@ -15,8 +15,8 @@ that runs on a Mac, with no server: the only network traffic is to the model pro
 
 ## Boundary 1: tool calls need a person
 
-In the chat agent, `edit_file` and `run_command` ask before they run; `read_file`, `code_search` and `code_outline` do
-not. "Always allow" lasts for one session and is per tool; for `run_command` it never covers a call that asks for the
+In the chat agent, `edit_file` and `run_command` ask before they run; `read_file`, `code_search`, `code_map` and
+`code_outline` do not. "Always allow" lasts for one session and is per tool; for `run_command` it never covers a call that asks for the
 network, which asks on its own. A pending approval that is never answered is denied when its sender drops. A built-in guard
 (`cordata-guard`) refuses, without asking, edits to `.env` files and inside `.git/`, recursive deletes of `/`, `~` or `..`,
 and shell redirects into `.env`.

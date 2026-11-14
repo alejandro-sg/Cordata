@@ -75,11 +75,17 @@ For the native window: `make app INSTALL=1` (see [docs/app.md](docs/app.md)).
 cordata                                   # chat in the current project; Ctrl+K opens the command deck
 cordata "why does the build fail?"        # start with a prompt
 cordata run "Add retries to the HTTP client and test them" --allow-direct
-cordata show <run_id>                     # a run's plan, who did what, the audit
+cordata run "…" --review-plan            # stop after the plan so you read it before anything is built
+cordata run "…" --land review --detach   # leave the result for review; keep running if the terminal closes
+cordata status                            # quota left in each pool, recent runs; spends nothing
+cordata show <run_id>                     # a run's plan, who did what, the audit (--step s3 --follow tails a step live)
 cordata resume <run_id>                   # continue a paused or interrupted run
+cordata floorplan --html                  # map of the project and the files being worked on
 ```
 
-In the chat prompt: `/` lists commands, `@` attaches a file, `!git status` runs a command and shows the agent its output, `?` shows every key.
+In the chat prompt: `/` lists commands (`/run` starts an orchestrated run from the thread, `/context` itemises the
+prompt, `/model` switches model), `@` attaches a file, `!git status` runs a command and shows the agent its output, `?`
+shows every key, ⇧⇥ switches between ask and auto mode.
 
 `cordata run` needs `--allow-direct` unless you run an Agent Vault proxy (Cordata does not ship one). Without it, the coding CLIs reach the network directly, still inside the Seatbelt sandbox. Set `orchestrator.pools` to your real plans so handoffs happen at the right moment. Details: [docs/orchestrator.md](docs/orchestrator.md).
 
@@ -88,16 +94,23 @@ In the chat prompt: `/` lists commands, `@` attaches a file, `!git status` runs 
 - [Orchestrator](docs/orchestrator.md): roles, dispatch, quota, handoffs
 - [Terminal client](tui/README.md): keys, prompt box, what the chat does not have
 - [Native app](docs/app.md): Cordata.app
-- [Settings](docs/settings.md): every setting
+- [Settings](docs/settings.md): every setting, including tool hooks
+- [Auto mode](docs/auto-mode.md): what auto mode allows without asking, and the folded transcript
+- [Claude Code hooks for the app's terminal](docs/hooks.md): declare agent state over OSC 7501
 - [Architecture](ARCHITECTURE.md) · [Threat model](THREAT_MODEL.md) · [Security](SECURITY.md)
 
 ## Development
 
 ```bash
+make verify          # secrets scan + terminal workspace tests; exit 0 or fail (ARGS=--all adds the app's)
 make tui-test        # terminal workspace tests (offline; no model or key needed)
 make app-test        # native app tests
+make app-check       # clippy -D warnings, cargo-deny, gpui snapshot proof
 make secrets         # no credential in the tree
+cordata doctor --docs   # doc sections whose covered code changed since review
 ```
+
+Contributor and agent rules are in [AGENTS.md](AGENTS.md).
 
 ## License
 

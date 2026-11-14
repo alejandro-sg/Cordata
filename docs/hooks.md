@@ -1,94 +1,57 @@
-# Claude Code Hooks for Cordata & OSC 7501 Terminals
+# Claude Code hooks for the app's terminal (OSC 7501)
 
-This document explains how to configure Claude Code to declare its execution state directly to Cordata (or any OSC 7501-compliant terminal host) via terminal escape sequences, eliminating screen scraping and guessing.
+How to make Claude Code declare its state to Cordata.app's dock terminal (or any host that understands OSC 7501),
+instead of the terminal guessing from the screen.
 
----
+These are Claude Code's hooks, not Cordata's own tool hooks (`.cordata/hooks.json`, see
+[`settings.md`](settings.md#tool-hooks-hooksjson)).
 
-## 1. Background: Declared State via OSC 7501
+## Declared state
 
-Rather than guessing whether an agent is `working`, `blocked` (waiting on user permission), `idle`, or `done` from terminal line scraping, programs emit OSC 7501 escape sequences:
+A program prints an escape sequence when its state changes:
 
 ```text
-\x1b]7501;state=<idle|working|done|blocked|error>[:kind=<permission|question|auth>]\x07
+\x1b]7501;state=<idle|working|done|blocked|error>[;kind=<permission|question|auth>]\x07
 ```
 
-Cordata's terminal PTY parser (`vt.rs`) detects OSC 7501 sequences in the byte stream and prioritizes declared state over screen-scraping heuristics (`detect.rs`).
+Fields are separated by `;`. `blocked` and `error` show as blocked, `idle` and `done` as idle. The dock terminal's
+parser (`app/crates/cordata-app/src/vt.rs`) reads the sequence from the byte stream and prefers it over the screen
+rules (`detect.rs`, `detect.toml`) until the program declares something else.
 
----
+## Claude Code configuration
 
-## 2. Claude Code Hook Configuration
-
-In your user or project settings (e.g. `~/.claude/settings.json` or `.claude/settings.json`), add the following `hooks` configuration:
+Hook output goes to Claude Code, not the terminal, so write to `/dev/tty`. In `~/.claude/settings.json` or the
+project's `.claude/settings.json`:
 
 ```json
 {
   "hooks": {
     "UserPromptSubmit": [
-      {
-        "matcher": ".*",
-        "command": "printf '\\033]7501;state=working\\007'"
-      }
+      { "hooks": [{ "type": "command", "command": "printf '\\033]7501;state=working\\007' > /dev/tty" }] }
     ],
     "Notification": [
-      {
-        "matcher": "permission_prompt",
-        "command": "printf '\\033]7501;state=blocked:kind=permission\\007'"
-      },
-      {
-        "matcher": "idle_prompt",
-        "command": "printf '\\033]7501;state=idle\\007'"
-      }
+      { "matcher": "permission_prompt",
+        "hooks": [{ "type": "command", "command": "printf '\\033]7501;state=blocked;kind=permission\\007' > /dev/tty" }] },
+      { "matcher": "idle_prompt",
+        "hooks": [{ "type": "command", "command": "printf '\\033]7501;state=idle\\007' > /dev/tty" }] }
     ],
     "Stop": [
-      {
-        "matcher": ".*",
-        "command": "printf '\\033]7501;state=done\\007'"
-      }
+      { "hooks": [{ "type": "command", "command": "printf '\\033]7501;state=done\\007' > /dev/tty" }] }
     ]
   }
 }
 ```
 
----
+Not verified against a running Claude Code in this repository: check the field names against
+[Claude Code's hooks reference](https://code.claude.com/docs/en/hooks) if a hook does not fire.
 
-## 3. Alternative: Shell Hook Script
+## Cordata's own client
 
-If you prefer a standalone script (e.g., `~/.claude/hooks/osc7501.sh`):
+`acp-tui` emits the sequence itself on state changes (`tui/crates/acp-tui/src/signals.rs`):
 
-```bash
-#!/usr/bin/env bash
-# ~/.claude/hooks/osc7501.sh
-
-EVENT_TYPE="$1"
-NOTIFICATION_TYPE="$2"
-
-case "$EVENT_TYPE" in
-  "UserPromptSubmit"|"Start")
-    printf '\033]7501;state=working\007'
-    ;;
-  "Notification")
-    case "$NOTIFICATION_TYPE" in
-      "permission_prompt")
-        printf '\033]7501;state=blocked:kind=permission\007'
-        ;;
-      "idle_prompt")
-        printf '\033]7501;state=idle\007'
-        ;;
-    esac
-    ;;
-  "Stop")
-    printf '\033]7501;state=done\007'
-    ;;
-esac
-```
-
----
-
-## 4. Cordata Client Emission
-
-For Cordata's native TUI and client processes (`acp-tui`), OSC 7501 sequences are automatically emitted by `acp-tui/src/signals.rs` on state transitions:
-
-- Working: `\x1b]7501;state=working\x07`
-- Blocked (waiting on permission): `\x1b]7501;state=blocked:kind=permission\x07`
-- Idle: `\x1b]7501;state=idle\x07`
-- Done: `\x1b]7501;state=done\x07`
+| state | sequence |
+|---|---|
+| working | `\x1b]7501;state=working\x07` |
+| waiting on an approval | `\x1b]7501;state=blocked;kind=permission\x07` |
+| done | `\x1b]7501;state=done\x07` |
+| idle, connecting, closed | `\x1b]7501;state=idle\x07` |

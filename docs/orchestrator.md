@@ -28,6 +28,21 @@ cordata resume <run_id>   # continue a paused or interrupted run (refused if you
 still inside the Seatbelt sandbox described in [`THREAT_MODEL.md`](../THREAT_MODEL.md). `CORDATA_VAULT_DIRECT=1` is the
 environment form of the flag.
 
+`cordata show <run_id> --step <id>` prints that step's tape, the scrubbed, size-capped event log each worker attempt writes
+to `~/.cordata/orchestrator/<run_id>/steps/<step>-<attempt>.ndjson`; add `--attempt N` for an earlier attempt and
+`--follow` to tail it while the step runs. `show <run_id> --timeline` draws the run as a waterfall of spans, and
+`cordata export <run_id> --otlp` writes the run as OpenTelemetry GenAI spans (a local file; Cordata sends nothing).
+
+`run --land review` finishes the run in `to_review` instead of `done`, with the work left in the project for you to read
+(the default, `--land all`, is the old behavior). `run --detach` starts the run in its own session (`setsid`) so it
+survives the terminal that launched it; `cordata resume` picks up a run whose process is gone. `--session-id` ties a run
+to the chat thread that started it (`/run` in the chat passes it).
+
+`cordata evolve [repomap|economizer|guard|custom] [--threshold N] [--dry-run] [--mutate CMD | --propose [TEXT]]` is a
+self-improvement cycle for Cordata's own subsystems: a candidate change is made in a copy-on-write sandbox and harvested
+only if it passes four gates (it compiles, the hermetic tests pass, the evaluator files are untouched, and a fitness
+score improves by at least the threshold).
+
 `run` also takes `--workers claude_code,antigravity,ollama` (`ollama` is Ollama Cloud through Cordata's own engine and needs a key rather than a CLI), `--run-id ID`, `--max-usd N`, `--max-rounds N`, `--max-parallel N` (default 3),
 `--no-research`, `--no-harden`, `--no-tier2`, `--no-step-check`, `--no-screen`, `--no-conformance` and `--json`. With no installed worker, `run` and
 `resume` exit 78 before doing anything. Ctrl+C stops the run where it is and records it `cancelled`. Every run has a control file, `~/.cordata/orchestrator/<run_id>/control.ndjson`: a line `{"cmd":"pause"}` pauses the run at its next safe point (never mid-call), and the window's Hold button writes exactly that. `cordata resume <run_id> --direction "…"` adds your words to the next unfinished step's task and notes it on the run; `--workers` picks who continues. Every run writes
