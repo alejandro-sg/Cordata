@@ -516,6 +516,7 @@ impl Workspace {
                 _ => MarkState::Working,
             };
             let state_word = match run.state.as_str() {
+                "paused" if run.awaits_approval => "plan awaits you".to_owned(),
                 "paused" => "held".to_owned(),
                 "budget_exhausted" => "out of budget".to_owned(),
                 "research" => "reading the project".to_owned(),
@@ -535,7 +536,7 @@ impl Workspace {
                 }
                 if run.can_resume() {
                     let id1 = id.clone();
-                    row = row.child(ui::button(("run-resume", rid), "Resume", Kind::Primary, cx).on_click(cx.listener(move |this, _, _, cx| this.resume_run(&id1, None, None, cx))));
+                    row = row.child(ui::button(("run-resume", rid), if run.awaits_approval { "Approve and build" } else { "Resume" }, Kind::Primary, cx).on_click(cx.listener(move |this, _, _, cx| this.resume_run(&id1, None, None, cx))));
                     for (fi, fam) in runs::FAMILIES.iter().enumerate() {
                         let id2 = id.clone();
                         row = row.child(ui::button(("run-resume-on", rid * 8 + fi), SharedString::from(format!("on {fam}")), Kind::Ghost, cx)
@@ -644,7 +645,8 @@ impl Workspace {
                     .px(s(12.)).rounded(s(6.)).border_1().border_color(edge).bg(c(tk.bg_main)).overflow_hidden()
                     .child(div().absolute().size_full().top_0().left_0().bg(ground))
                     .flex().items_center().gap(s(10.))
-                    .tooltip(ui::tip(format!("{} {} · {said}{}", step.id, step.name, if step.scope.is_empty() { String::new() } else { format!(" · may edit {}", step.scope.join(", ")) })))
+                    .tooltip(ui::tip(format!("{} {} · {said}{}{}", step.id, step.name, if step.scope.is_empty() { String::new() } else { format!(" · may edit {}", step.scope.join(", ")) },
+                        if step.behavior.is_empty() { String::new() } else { format!(" · expects: {}", step.behavior) })))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.select_step_tape(&rid, &sid, cx);
                     }))

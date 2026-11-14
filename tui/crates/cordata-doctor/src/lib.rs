@@ -1,6 +1,9 @@
 //! Is everything this tool leans on actually there, and what is the
 //! one command that fixes each gap? Every check is local; a key is only ever asked about ("is there one?").
 
+pub mod docs;
+pub mod suggest;
+
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
@@ -328,11 +331,23 @@ pub fn check_settings(settings: &Settings) -> Check {
     }
 }
 
+/// Stale doc sections as one line. `None` when there is nothing to say: no checkout, no git, or no section opted in.
+pub fn check_docs(repo: Option<&Path>) -> Option<Check> {
+    let repo = repo?;
+    let marked = docs::marked(repo);
+    let stale = docs::check(repo).filter(|_| marked > 0)?;
+    Some(if stale.is_empty() {
+        check("docs", Level::Ok, format!("{marked} marked section(s), all current"), "")
+    } else {
+        check("docs", Level::Warn, format!("{} of {marked} marked doc section(s) out of date", stale.len()), "cordata doctor --docs, review them, then cordata doctor --docs --stamp")
+    })
+}
+
 pub fn run_checks(cwd: &Path) -> Vec<Check> {
     let repo = repo_root(cwd);
     let repo = repo.as_deref();
     let settings = Settings::load(cwd);
-    vec![
+    let mut checks = vec![
         check_tui(repo),
         check_cli_linked(),
         check_claude(),
@@ -344,7 +359,9 @@ pub fn run_checks(cwd: &Path) -> Vec<Check> {
         check_pools(&settings),
         check_vault(&settings),
         check_settings(&settings),
-    ]
+    ];
+    checks.extend(check_docs(repo));
+    checks
 }
 
 pub fn render(checks: &[Check], color: bool) -> String {

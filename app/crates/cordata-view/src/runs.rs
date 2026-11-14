@@ -31,6 +31,10 @@ pub struct Step {
     pub deps: Vec<String>,
     pub last_event_at: Option<f64>,
     pub blocked_reason: Option<String>,
+    /// What the plan says a person can observe once this step is done; empty when the planner did not say.
+    pub behavior: String,
+    /// The problem the step removes; empty when the planner did not say.
+    pub because: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +58,8 @@ pub struct Run {
     pub handoffs: Vec<Handoff>,
     /// `(unix seconds, state)` for every transition, oldest first.
     pub history: Vec<(f64, String)>,
+    /// Paused by `--review-plan`: the plan is written, no worker has built anything, and a resume builds it.
+    pub awaits_approval: bool,
 }
 
 impl Run {
@@ -95,6 +101,7 @@ pub fn step_line(run: &Run, step: &Step) -> String {
         }
         "completed" => with("done") + &tries,
         "failed" => with("failed") + &tries,
+        _ if run.awaits_approval && !step.behavior.is_empty() => format!("expects: {}", step.behavior),
         _ => {
             let open: Vec<&str> = step.deps.iter().filter(|d| run.steps.iter().any(|s| &s.id == *d && s.status != "completed")).map(String::as_str).collect();
             if open.is_empty() { "not started".to_owned() } else { format!("waits on {}", open.join(", ")) }
@@ -150,6 +157,8 @@ pub fn parse(show: &Value, status: &Value) -> Option<Run> {
             deps: s.get("depends_on").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect(),
             last_event_at: s.get("last_event_at").and_then(Value::as_f64),
             blocked_reason: s.get("blocked_reason").and_then(Value::as_str).map(str::to_owned),
+            behavior: text(s, "behavior"),
+            because: text(s, "because"),
         })
         .collect();
     let handoffs = status
@@ -174,7 +183,9 @@ pub fn parse(show: &Value, status: &Value) -> Option<Run> {
         .flatten()
         .filter_map(|e| Some((e.get("ts")?.as_f64()?, e.get("state")?.as_str()?.to_owned())))
         .collect();
-    Some(Run { run_id: show.get("run_id")?.as_str()?.to_owned(), goal: text(show, "goal"), state: text(show, "state"), reason: text(show, "reason"), steps, handoffs, history })
+    let held_for_plan = show.get("history").and_then(Value::as_array).and_then(|h| h.last()).and_then(|e| e.get("reason")).and_then(Value::as_str) == Some("plan_review");
+    let awaits_approval = held_for_plan && text(show, "state") == "paused";
+    Some(Run { run_id: show.get("run_id")?.as_str()?.to_owned(), goal: text(show, "goal"), state: text(show, "state"), reason: text(show, "reason"), steps, handoffs, history, awaits_approval })
 }
 
 /// How long after a poll saw a step change the window may still show it moving. Past this the picture is still, so
@@ -319,12 +330,30 @@ mod tests {
         });
         let run = parse(&show, &status()).unwrap();
         assert_eq!((run.state.as_str(), run.steps.len(), run.handoffs.len()), ("paused", 2, 1));
-        assert_eq!(run.steps[0], Step { id: "s1".into(), name: "guard".into(), status: "running".into(), worker: Some("claude_code:fast".into()), attempts: 2, scope: vec!["src/**".into()], deps: Vec::new(), last_event_at: None, blocked_reason: None });
+        assert_eq!(run.steps[0], Step { id: "s1".into(), name: "guard".into(), status: "running".into(), worker: Some("claude_code:fast".into()), attempts: 2, scope: vec!["src/**".into()], deps: Vec::new(), last_event_at: None, blocked_reason: None, behavior: String::new(), because: String::new() });
         assert_eq!(run.steps[1].worker, None);
         assert_eq!(run.steps[1].deps, vec!["s1".to_owned()]);
         assert_eq!((run.handoffs[0].id.as_str(), run.handoffs[0].to.as_deref()), ("h1", Some("antigravity:x")));
         assert_eq!(run.history, vec![(10.0, "plan".to_owned()), (20.5, "execute".to_owned())]);
         assert!(run.can_resume() && !run.can_hold() && !run.finished());
+    }
+
+    #[test]
+    fn a_run_held_for_plan_review_awaits_approval_and_its_steps_say_what_they_expect() {
+        let mut show = json!({
+            "run_id": "r", "state": "paused", "reason": "the plan awaits approval",
+            "history": [{"ts": 1.0, "state": "plan"}, {"ts": 2.0, "state": "paused", "reason": "plan_review"}],
+            "plan": {"steps": [{"step_id": "s1", "name": "n", "status": "pending", "behavior": "A full slot is greyed out", "because": "customers pick full slots"}]},
+        });
+        let run = parse(&show, &json!({})).unwrap();
+        assert!(run.awaits_approval && run.can_resume());
+        assert_eq!(step_line(&run, &run.steps[0]), "expects: A full slot is greyed out");
+        assert_eq!(run.steps[0].because, "customers pick full slots");
+        show["history"][1]["reason"] = json!("user_pause");
+        assert!(!parse(&show, &json!({})).unwrap().awaits_approval, "a pause by the person is not a plan waiting");
+        show["history"][1]["reason"] = json!("plan_review");
+        show["state"] = json!("execute");
+        assert!(!parse(&show, &json!({})).unwrap().awaits_approval, "once building, the plan is no longer waiting");
     }
 
     #[test]
@@ -354,9 +383,10 @@ mod tests {
             goal: String::new(),
             state: "execute".into(),
             reason: String::new(),
-            steps: vec![Step { id: "s1".into(), name: "n".into(), status: status.into(), worker: worker.map(str::to_owned), attempts: 1, scope: Vec::new(), deps: Vec::new(), last_event_at: None, blocked_reason: None }],
+            steps: vec![Step { id: "s1".into(), name: "n".into(), status: status.into(), worker: worker.map(str::to_owned), attempts: 1, scope: Vec::new(), deps: Vec::new(), last_event_at: None, blocked_reason: None, behavior: String::new(), because: String::new() }],
             handoffs: Vec::new(),
             history: Vec::new(),
+            awaits_approval: false,
         }
     }
 
@@ -389,7 +419,7 @@ mod tests {
     #[test]
     fn a_step_says_what_it_is_doing_or_waiting_for() {
         let mut run = one_step("completed", Some("claude_code:haiku"));
-        run.steps.push(Step { id: "s2".into(), name: "n".into(), status: "pending".into(), worker: None, attempts: 0, scope: Vec::new(), deps: vec!["s1".into()], last_event_at: None, blocked_reason: None });
+        run.steps.push(Step { id: "s2".into(), name: "n".into(), status: "pending".into(), worker: None, attempts: 0, scope: Vec::new(), deps: vec!["s1".into()], last_event_at: None, blocked_reason: None, behavior: String::new(), because: String::new() });
         assert_eq!(step_line(&run, &run.steps[0]), "done · claude_code:haiku");
         assert_eq!(step_line(&run, &run.steps[1]), "not started", "what it waited on is done");
         run.steps[0].status = "running".into();

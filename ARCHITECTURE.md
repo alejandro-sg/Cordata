@@ -23,6 +23,7 @@ process.
 ```
 
 ## Crates
+<!-- covers: tui/Cargo.toml, app/Cargo.toml @ f1d1057 -->
 
 | crate | what |
 |---|---|
@@ -46,6 +47,7 @@ process.
 5. A checkpoint is taken before anything that may change files, so a turn can be undone.
 
 ## The orchestrator
+<!-- covers: tui/crates/cordata-orchestrator, tui/crates/cordata-run, tui/crates/cordata-ledger @ f1d1057 -->
 
 ```text
  cordata run "goal"

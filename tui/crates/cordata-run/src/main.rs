@@ -34,6 +34,9 @@ enum Command {
         max_parallel: Option<usize>,
         #[arg(long)]
         no_harden: bool,
+        /// stop after planning and show what the plan expects to build; `cordata-run resume <id>` then builds it
+        #[arg(long)]
+        review_plan: bool,
         /// skip the research brief before planning
         #[arg(long)]
         no_research: bool,
@@ -149,7 +152,7 @@ enum Command {
 async fn main() -> ExitCode {
     acp_core::policy::enforce_cordata_home();
     let code = match Cli::parse().command {
-        Command::Run { goal, cwd, workers, dispatch, allow_direct, max_usd, max_rounds, max_parallel, no_harden, no_research, research, no_conformance, no_tier2, no_step_check, no_screen, json, run_id, session_id, land, detach } => {
+        Command::Run { goal, cwd, workers, dispatch, allow_direct, max_usd, max_rounds, max_parallel, no_harden, review_plan, no_research, research, no_conformance, no_tier2, no_step_check, no_screen, json, run_id, session_id, land, detach } => {
             if detach {
                 #[cfg(unix)]
                 {
@@ -183,7 +186,7 @@ async fn main() -> ExitCode {
                 }
             }
             let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-            cli::run(RunArgs { goal, cwd, workers, dispatch, allow_direct, max_usd, max_rounds, max_parallel, no_harden, no_research, research, no_conformance, no_tier2, no_step_check, no_screen, json, run_id, session_id, land, detach }).await
+            cli::run(RunArgs { goal, cwd, workers, dispatch, allow_direct, max_usd, max_rounds, max_parallel, no_harden, review_plan, no_research, research, no_conformance, no_tier2, no_step_check, no_screen, json, run_id, session_id, land, detach }).await
         }
         Command::Status { json } => cli::status_cmd(json),
         Command::Show { run_id, json, step, attempt, follow, timeline } => cli::show_cmd(&run_id, json, step.as_deref(), attempt, follow, timeline),

@@ -173,6 +173,28 @@ fn a_pause_request_stops_the_run_and_resume_finishes_it() {
 }
 
 #[test]
+fn a_run_held_for_plan_review_builds_nothing_until_resumed_and_then_leaves_a_logic_diff() {
+    if !seatbelt_works() {
+        return eprintln!("skipped: sandbox-exec cannot be applied here");
+    }
+    let e = env();
+    let (out, events) = e.run_ok(&["--run-id", "run-review", "--review-plan"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(states(&events).ends_with(&["paused".to_owned()]), "{:?}", states(&events));
+    let plan_md = std::fs::read_to_string(e.home.join("orchestrator/run-review/plan.md")).unwrap();
+    assert!(plan_md.contains("# Plan") && plan_md.contains("## Steps"), "the preview is written before anything runs: {plan_md}");
+    assert_eq!(e.read("calc/a.txt"), None, "no worker built anything before approval");
+    let record: Value = serde_json::from_slice(&e.run(&["show", "run-review", "--json"]).stdout).unwrap();
+    assert_eq!((record["state"].as_str(), record["resume_state"].as_str()), (Some("paused"), Some("execute")));
+    assert!(record["reason"].as_str().unwrap().contains("awaits approval"));
+
+    let resumed = e.run(&["resume", "run-review", "--allow-direct", "--workers", "claude_code"]);
+    assert_eq!(resumed.status.code(), Some(0), "{} {}", text(&resumed), String::from_utf8_lossy(&resumed.stderr));
+    let receipt: Value = serde_json::from_str(&std::fs::read_to_string(e.home.join("orchestrator/run-review/receipt.json")).unwrap()).unwrap();
+    assert!(receipt["logic"].as_array().is_some_and(|l| !l.is_empty()), "{receipt}");
+}
+
+#[test]
 fn ctrl_c_stops_the_run_where_it_is_and_records_it() {
     if !seatbelt_works() {
         return eprintln!("skipped: sandbox-exec cannot be applied here");
