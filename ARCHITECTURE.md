@@ -23,7 +23,7 @@ process.
 ```
 
 ## Crates
-<!-- covers: tui/Cargo.toml, app/Cargo.toml @ b3a342a -->
+<!-- covers: tui/Cargo.toml, app/Cargo.toml @ f30734f -->
 
 | crate | what |
 |---|---|
@@ -50,7 +50,7 @@ process.
 5. Hooks (`.cordata/hooks.json`, [`docs/settings.md`](docs/settings.md#tool-hooks-hooksjson)) run around each tool call. Context is compacted when it nears the window. In auto mode ([`docs/auto-mode.md`](docs/auto-mode.md)) fixed rules replace the final ask. The chat takes no checkpoints: only `cordata run` does, so only a run can be rolled back.
 
 ## The orchestrator
-<!-- covers: tui/crates/cordata-orchestrator, tui/crates/cordata-run, tui/crates/cordata-ledger @ b3a342a -->
+<!-- covers: tui/crates/cordata-orchestrator, tui/crates/cordata-run, tui/crates/cordata-ledger @ f30734f -->
 
 ```text
  cordata run "goal"

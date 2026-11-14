@@ -26,7 +26,7 @@ terminal client (`Settings → Account`, service `cordata-*-api-key`). Window pr
 
 Conversation rail and transcript, approval cards with the exact command or diff, composer with `/` and `@` menus,
 command palette (⌘K), project picker (⌘O), settings (⌘,: launch, appearance, shortcuts, your API key), and a side panel
-with Files, Editor, Review (per-hunk keep/revert, git and pull requests) and Terminal. Both clients share one
+with Files, Editor, Review (per-hunk keep/revert, line comments that re-run the step that wrote the diff, git and pull requests) and Terminal. Both clients share one
 conversation reducer. Like the terminal client, sessions are saved and resumable (`/history`, `/resume`, `/forget`),
 edits and commands ask first unless your `chat.allow` rules say otherwise, and there is no undo or goal loop in the chat (`/run` hands a goal to the orchestrator). The
 window has three views of the same threads (`⌘0` canvas, `⌘1` transcript, `⌘D` change sheet); Settings → Default workspace
@@ -58,7 +58,7 @@ you look, and ⌘J (Go → Thread That Needs You) goes to the next one waiting o
 notification says when a thread finishes or needs you while the window is in the back (Settings → General).
 
 ### The field (⌘0)
-<!-- covers: app/crates/cordata-view/src/field.rs, app/crates/cordata-view/src/runs.rs, app/crates/cordata-app/src/workspace/field.rs @ b3a342a -->
+<!-- covers: app/crates/cordata-view/src/field.rs, app/crates/cordata-view/src/runs.rs, app/crates/cordata-app/src/workspace/field.rs @ f30734f -->
 
 The canvas opens on the **field**: the project's open threads as nodes, this project's newest orchestrated runs beside
 them, a goal bar on top (the composer), an attention rail on the right and a tape of the newest run along the bottom.
@@ -145,7 +145,7 @@ the connecting process's user, not just the file's mode). A prompt sent this way
 and the chat sandbox cannot reach the socket. `CORDATA_APP_CONTROL=off` keeps the window from listening.
 
 ## Crates (`app/crates`)
-<!-- covers: app/Cargo.toml @ b3a342a -->
+<!-- covers: app/Cargo.toml @ f30734f -->
 
 - `cordata-view`: the state the terminal and the app share: the reducer (`App::on_event`), slash commands, input, menus,
   the settings schema and editor, run board, the field, run feed and menu bar models, and the secret-masking table (`redact.rs`, tested against

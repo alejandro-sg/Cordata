@@ -12,7 +12,7 @@ family reviews, and the planner checks the result against its own plan.
 ```
 
 ## Using it
-<!-- covers: tui/crates/cordata-run/src/main.rs, tui/crates/cordata-run/src/cli.rs, tui/crates/cordata-run/src/receipt.rs @ b3a342a -->
+<!-- covers: tui/crates/cordata-run/src/main.rs, tui/crates/cordata-run/src/cli.rs, tui/crates/cordata-run/src/receipt.rs @ f30734f -->
 
 ```bash
 cordata run "Add retries to the HTTP client and test them" --cwd ~/proj --allow-direct
@@ -49,7 +49,7 @@ score improves by at least the threshold).
 
 `run` also takes `--workers claude_code,antigravity,ollama` (`ollama` is Ollama Cloud through Cordata's own engine and needs a key rather than a CLI), `--run-id ID`, `--max-usd N`, `--max-rounds N`, `--max-parallel N` (default 3),
 `--no-research`, `--no-harden`, `--no-tier2`, `--no-step-check`, `--no-screen`, `--no-conformance` and `--json`. With no installed worker, `run` and
-`resume` exit 78 before doing anything. Ctrl+C stops the run where it is and records it `cancelled`. Every run has a control file, `~/.cordata/orchestrator/<run_id>/control.ndjson`: a line `{"cmd":"pause"}` pauses the run at its next safe point (never mid-call), and the window's Hold button writes exactly that. `cordata resume <run_id> --direction "…"` adds your words to the next unfinished step's task and notes it on the run; `--workers` picks who continues. Every run writes
+`resume` exit 78 before doing anything. Ctrl+C stops the run where it is and records it `cancelled`. Every run has a control file, `~/.cordata/orchestrator/<run_id>/control.ndjson`: a line `{"cmd":"pause"}` pauses the run at its next safe point (never mid-call), and the window's Hold button writes exactly that. `cordata resume <run_id> --direction "…"` adds your words to the next unfinished step's task and notes it on the run; `--workers` picks who continues. `--redo-step <step_id>` runs a step again, even a completed one, with its worker and acceptance checks; an ended run goes back to `execute`, so later steps, hardening and the audit run again, and `--direction` then goes on that step (cancelled runs refuse). Every run writes
 `~/.cordata/orchestrator/<run_id>/plan.md` and `walkthrough.md`. Every run (and resume) also writes `receipt.json` there:
 criteria results, diffstat, cost, wall time and audit findings, and prints a one-line summary (not with `--json`). Its
 `logic` list is the run read as a logic diff: for each plan step, the behavior it was to bring and why (`behavior`,
@@ -89,7 +89,7 @@ would make the estimate low until it is updated. Antigravity and Ollama Cloud st
 Other `orchestrator.*` settings are in [`settings.md`](settings.md).
 
 ## How a run goes
-<!-- covers: tui/crates/cordata-orchestrator/src/machine.rs, tui/crates/cordata-orchestrator/src/plan.rs @ b3a342a -->
+<!-- covers: tui/crates/cordata-orchestrator/src/machine.rs, tui/crates/cordata-orchestrator/src/plan.rs @ f30734f -->
 
 1. **Research** (on by default). The planner, read-only, writes a brief of findings with evidence (`path:line` plus a
    quote). A deterministic check, no model, verifies each file reference; unverifiable findings are dropped, and the
@@ -99,7 +99,7 @@ Other `orchestrator.*` settings are in [`settings.md`](settings.md).
    directory), a `complexity` and `depends_on`. A plan with an unknown dependency,
    a cycle, or no step grounded in a finding is refused.
 3. **Execute.** Steps whose dependencies are done and whose write scopes are disjoint run together in copy-on-write
-   sandboxes; a rollback restores only that step's scope. A step that defeats every attempt is retried with the strongest
+   sandboxes; a rollback restores only that step's scope. Before a step's output is harvested, the project's copy of every file the step touched is compared with what the sandbox was cloned from; if the project changed any of them meanwhile, nothing is written and those files are reported as conflicts. A step that defeats every attempt is retried with the strongest
    worker before the run replans. Before a replan or a failure restores the project, the discarded work is saved as
    `discarded-NNN.patch` beside the plan.
 4. **Harden.** A worker from another model family runs the acceptance commands and fixes real failures inside the scope.
@@ -122,7 +122,7 @@ rolled back, a handoff packet (step, checkpoint, partial diff, failed attempts, 
 untrusted data) is saved, and the same step continues on another pool.
 
 ## Dispatch
-<!-- covers: tui/crates/cordata-orchestrator/src/dispatch.rs, tui/crates/cordata-orchestrator/src/bandit.rs @ b3a342a -->
+<!-- covers: tui/crates/cordata-orchestrator/src/dispatch.rs, tui/crates/cordata-orchestrator/src/bandit.rs @ f30734f -->
 
 Hard gates come first and are never learned: the role, the CLI being installed, the pool being under its hard line, and
 the reviewer coming from a family that wrote none of the change. Then the order: the cheapest competent worker per role.
@@ -155,7 +155,7 @@ left.
   criterion; prefer `command` or `file_exists` criteria for such suites.
 
 ## The run bus (workers talking to each other)
-<!-- covers: tui/crates/cordata-bus @ b3a342a -->
+<!-- covers: tui/crates/cordata-bus @ f30734f -->
 
 Parallel steps coordinate through one message bus per run (`tui/crates/cordata-bus`), modelled on herdr's socket API
 but built for untrusted workers:
@@ -196,7 +196,7 @@ and only the orchestrator takes them (`Bus::take_return`, once each).
   worker's account, not proof. The step is still judged by its checks and the audit.
 
 ## Code
-<!-- covers: tui/crates/cordata-orchestrator, tui/crates/cordata-run @ b3a342a -->
+<!-- covers: tui/crates/cordata-orchestrator, tui/crates/cordata-run @ f30734f -->
 
 `tui/crates/cordata-orchestrator`: `machine.rs` (the durable state machine in `state.db`), `research.rs`, `plan.rs`,
 `executor.rs`, `audit.rs`, `handoff.rs`, `dispatch.rs` and `bandit.rs`, `synthesizer.rs`, `scope.rs`, `checkpoints.rs`,

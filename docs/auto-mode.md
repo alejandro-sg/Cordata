@@ -4,7 +4,7 @@ Reference for what is built: `tui/crates/acp-core/src/auto.rs` (the judge) and `
 (the folded transcript).
 
 ## Auto mode
-<!-- covers: tui/crates/acp-core/src/auto.rs @ b3a342a -->
+<!-- covers: tui/crates/acp-core/src/auto.rs @ f30734f -->
 
 `chat.mode` is `ask` (the default) or `auto`. It is read from the user settings file only; a project or local value is
 ignored with a warning. In a session, ⇧⇥ cycles it (the app also has a chip in the composer footer), and the engine
@@ -47,7 +47,7 @@ expanded row (`auto · read-only fetch`), not as its own line. An ask in auto mo
 (`Auto mode asks: needs the network to POST`).
 
 ## The folded transcript
-<!-- covers: app/crates/cordata-view/src/fold.rs @ b3a342a -->
+<!-- covers: app/crates/cordata-view/src/fold.rs @ f30734f -->
 
 `fold::rows(messages)` turns the message list into display rows, so a research turn is one line, not a wall:
 
